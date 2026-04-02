@@ -4,12 +4,12 @@ Inventory tools — read and set inventory levels.
 update_inventory requires confirm=True.
 """
 
-from mcp.server import Server
+from mcp.server.fastmcp import FastMCP
 from shopify_client import ShopifyClient
 from tools._log import log_write
 
 
-def register(server: Server, client: ShopifyClient):
+def register(server: FastMCP, client: ShopifyClient):
 
     @server.tool()
     def get_inventory(product_id: str) -> str:

@@ -7,9 +7,7 @@ Run via: python shopify_mcp.py
 All credentials loaded from .env — never hardcoded here.
 """
 
-import sys
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
+from mcp.server.fastmcp import FastMCP
 from shopify_client import ShopifyClient
 import tools.products as products_module
 import tools.inventory as inventory_module
@@ -18,8 +16,8 @@ import tools.discounts as discounts_module
 import tools.orders as orders_module
 
 
-def create_server() -> Server:
-    server = Server("shopify-aon")
+def create_server() -> FastMCP:
+    server = FastMCP("shopify-aon")
     client = ShopifyClient()
 
     products_module.register(server, client)
@@ -33,8 +31,7 @@ def create_server() -> Server:
 
 def main():
     server = create_server()
-    import asyncio
-    asyncio.run(stdio_server(server))
+    server.run(transport="stdio")
 
 
 if __name__ == "__main__":

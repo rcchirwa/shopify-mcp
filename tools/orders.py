@@ -2,11 +2,11 @@
 Order tools — read-only access to Shopify orders.
 """
 
-from mcp.server import Server
+from mcp.server.fastmcp import FastMCP
 from shopify_client import ShopifyClient
 
 
-def register(server: Server, client: ShopifyClient):
+def register(server: FastMCP, client: ShopifyClient):
 
     @server.tool()
     def get_orders(limit: int = 20) -> str:

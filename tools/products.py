@@ -4,13 +4,13 @@ Product tools — read and write Shopify products.
 Write operations require confirm=True and log to aon_mcp_log.txt.
 """
 
-from mcp.server import Server
+from mcp.server.fastmcp import FastMCP
 from shopify_client import ShopifyClient
 from validators.naming import format_validation_result
 from tools._log import log_write
 
 
-def register(server: Server, client: ShopifyClient):
+def register(server: FastMCP, client: ShopifyClient):
 
     @server.tool()
     def get_products() -> str:

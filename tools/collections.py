@@ -4,7 +4,7 @@ Collection tools — read and update Shopify collections.
 update_collection requires confirm=True.
 """
 
-from mcp.server import Server
+from mcp.server.fastmcp import FastMCP
 from shopify_client import ShopifyClient
 from tools._log import log_write
 
@@ -22,7 +22,7 @@ def _resolve_collection(client: ShopifyClient, handle: str):
     return None, None
 
 
-def register(server: Server, client: ShopifyClient):
+def register(server: FastMCP, client: ShopifyClient):
 
     @server.tool()
     def get_collection(handle: str) -> str:
