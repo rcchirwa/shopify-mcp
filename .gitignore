@@ -4,6 +4,11 @@
 # Write operation log — local only
 aon_mcp_log.txt
 
+# Collaboration and AI session artifacts
+COLLABORATION_REPORT.md
+COLLABORATION_REPORT_GRAPHQL.md
+CLAUDE.md
+
 # Python
 __pycache__/
 *.py[cod]

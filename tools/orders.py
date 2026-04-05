@@ -3,7 +3,49 @@ Order tools — read-only access to Shopify orders.
 """
 
 from mcp.server.fastmcp import FastMCP
-from shopify_client import ShopifyClient
+from shopify_client import ShopifyClient, from_gid
+
+GET_ORDERS = """
+query GetOrders($first: Int!) {
+  orders(first: $first) {
+    nodes {
+      id
+      name
+      createdAt
+      totalPriceSet { shopMoney { amount } }
+      lineItems(first: 50) {
+        nodes {
+          name
+          quantity
+        }
+      }
+      referringSite
+      landingSite
+    }
+  }
+}
+"""
+
+GET_ORDER_BY_ID = """
+query GetOrderById($id: ID!) {
+  order(id: $id) {
+    id
+    name
+    createdAt
+    totalPriceSet { shopMoney { amount } }
+    displayFinancialStatus
+    displayFulfillmentStatus
+    referringSite
+    lineItems(first: 50) {
+      nodes {
+        name
+        quantity
+        originalUnitPriceSet { shopMoney { amount } }
+      }
+    }
+  }
+}
+"""
 
 
 def register(server: FastMCP, client: ShopifyClient):
@@ -15,26 +57,20 @@ def register(server: FastMCP, client: ShopifyClient):
         limit: number of orders to return (max 250).
         """
         limit = min(limit, 250)
-        data = client.get(
-            "/orders.json",
-            {
-                "limit": limit,
-                "status": "any",
-                "fields": "id,name,total_price,line_items,referring_site,landing_site,created_at",
-            },
-        )
-        orders = data.get("orders", [])
+        data = client.execute(GET_ORDERS, {"first": limit})
+        orders = data.get("orders", {}).get("nodes", [])
         if not orders:
             return "No orders found."
 
         lines = [f"Recent orders ({len(orders)}):\n"]
         for o in orders:
             items = ", ".join(
-                f"{li['name']} x{li['quantity']}" for li in o.get("line_items", [])
+                f"{li['name']} x{li['quantity']}" for li in o.get("lineItems", {}).get("nodes", [])
             )
-            traffic = o.get("referring_site") or o.get("landing_site") or "direct / unknown"
+            traffic = o.get("referringSite") or o.get("landingSite") or "direct / unknown"
+            total = o.get("totalPriceSet", {}).get("shopMoney", {}).get("amount", "N/A")
             lines.append(
-                f"  [{o['id']}] {o['name']} — ${o['total_price']} — {o['created_at'][:10]}\n"
+                f"  [{from_gid(o['id'])}] {o['name']} — ${total} — {o['createdAt'][:10]}\n"
                 f"    Items: {items}\n"
                 f"    Source: {traffic}"
             )
@@ -43,20 +79,22 @@ def register(server: FastMCP, client: ShopifyClient):
     @server.tool()
     def get_order(order_id: str) -> str:
         """Get a single order by id."""
-        data = client.get(f"/orders/{order_id}.json")
-        o = data.get("order", {})
+        from shopify_client import to_gid
+        data = client.execute(GET_ORDER_BY_ID, {"id": to_gid("Order", order_id)})
+        o = data.get("order")
         if not o:
             return f"Order {order_id} not found."
 
+        total = o.get("totalPriceSet", {}).get("shopMoney", {}).get("amount", "N/A")
         items = "\n".join(
-            f"  • {li['name']} x{li['quantity']} — ${li['price']}"
-            for li in o.get("line_items", [])
+            f"  • {li['name']} x{li['quantity']} — ${li.get('originalUnitPriceSet', {}).get('shopMoney', {}).get('amount', 'N/A')}"
+            for li in o.get("lineItems", {}).get("nodes", [])
         )
         return (
-            f"Order: {o['name']} (id: {o['id']})\n"
-            f"Date: {o['created_at']}\n"
-            f"Total: ${o['total_price']}\n"
-            f"Status: {o.get('financial_status')} / {o.get('fulfillment_status')}\n"
-            f"Traffic source: {o.get('referring_site') or 'direct'}\n"
+            f"Order: {o['name']} (id: {from_gid(o['id'])})\n"
+            f"Date: {o['createdAt']}\n"
+            f"Total: ${total}\n"
+            f"Status: {o.get('displayFinancialStatus')} / {o.get('displayFulfillmentStatus')}\n"
+            f"Traffic source: {o.get('referringSite') or 'direct'}\n"
             f"Line items:\n{items}"
         )

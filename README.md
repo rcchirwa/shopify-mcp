@@ -1,6 +1,6 @@
 # Shopify MCP Server
 
-A custom Python [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that connects Claude directly to a Shopify store via the Admin REST API. Built for the **All or Nothing Cypher** drop store under the **Global Streetwear Syndicate** parent brand.
+A custom Python [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that connects Claude directly to a Shopify store via the **Admin GraphQL API**. Built for the **All or Nothing Cypher** drop store under the **Global Streetwear Syndicate** parent brand.
 
 Enables Claude to read products, check inventory, manage collections, handle discounts, and review orders — all through natural language chat in Claude Desktop.
 
@@ -14,19 +14,19 @@ Enables Claude to read products, check inventory, manage collections, handle dis
 | `get_products` | List all products with id, title, handle, status, variants |
 | `get_product` | Fetch a single product by id or handle |
 | `update_product_title` | Update a product title (preview + confirm pattern) |
-| `update_product_description` | Update a product's body HTML description |
+| `update_product_description` | Update a product's HTML description |
 | `get_products_by_collection` | List all products in a collection by handle |
 
 ### Inventory
 | Tool | Description |
 |------|-------------|
-| `get_inventory` | Get inventory levels for a product's variants |
+| `get_inventory` | Get inventory levels for all variants of a product (single query) |
 | `update_inventory` | Set quantity for a variant at a location (preview + confirm) |
 
 ### Collections
 | Tool | Description |
 |------|-------------|
-| `get_collection` | Get collection details by handle |
+| `get_collection` | Get collection details by handle (works for both manual and smart collections) |
 | `update_collection` | Update collection title or description (preview + confirm) |
 
 ### Discounts
@@ -129,10 +129,17 @@ Expected output:
 ```
 Testing Shopify API connection...
   Connected to: Your Store Name (your-store.myshopify.com)
-  Plan: basic
+  Plan: Basic
   Currency: USD
 
 Connection test PASSED.
+
+Fetching first 3 products...
+  [123456789] Product Title — ACTIVE
+  ...
+Product fetch test PASSED (3 products returned).
+
+All tests passed. MCP server is ready to register with Claude Desktop.
 ```
 
 ### 7. Register with Claude Desktop
@@ -184,9 +191,9 @@ Show me inventory levels for product 12345678.
 ```
 shopify-mcp/
 ├── shopify_mcp.py          # MCP server entry point
-├── shopify_client.py       # Shopify REST API wrapper
+├── shopify_client.py       # Shopify GraphQL API client
 ├── tools/
-│   ├── _log.py             # write operation logger
+│   ├── _log.py             # Write operation logger
 │   ├── products.py
 │   ├── inventory.py
 │   ├── collections.py
@@ -199,6 +206,27 @@ shopify-mcp/
 ├── .env.example
 └── .gitignore
 ```
+
+---
+
+## API layer
+
+This project uses the **Shopify Admin GraphQL API** (version `2024-01`).
+
+Each tool module defines its own GraphQL query or mutation strings at the top of the file. All queries are executed through a single `ShopifyClient.execute(query, variables)` method in `shopify_client.py`, which handles:
+
+- Authentication via `X-Shopify-Access-Token` header
+- GraphQL transport errors (HTTP 4xx/5xx)
+- GraphQL body errors (`errors` array in response)
+- Mutation `userErrors` are checked at each call site before writing or logging
+
+Global IDs (GIDs) returned by the GraphQL API (e.g. `gid://shopify/Product/123`) are converted to plain numeric IDs for display using the `from_gid()` helper. User-supplied numeric IDs are converted back to GIDs using `to_gid()` before being passed to queries.
+
+### Why GraphQL over REST?
+
+- **Single queries** — `get_inventory` previously made one HTTP call per product variant (N+1). GraphQL fetches all variant inventory levels in a single nested query.
+- **Unified collections** — the REST API had separate `/custom_collections` and `/smart_collections` endpoints requiring a two-call fallback. GraphQL has one `Collection` type that covers both.
+- **Shopify direction** — Shopify is deprecating the Admin REST API in favour of GraphQL.
 
 ---
 
@@ -217,7 +245,8 @@ Product titles are validated against these brand formats:
 ## Built with
 
 - [Anthropic MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
-- [Shopify Admin REST API](https://shopify.dev/docs/api/admin-rest)
+- [Shopify Admin GraphQL API](https://shopify.dev/docs/api/admin-graphql)
+- [gql](https://github.com/graphql-python/gql) — Python GraphQL client
 - [python-dotenv](https://github.com/theskumar/python-dotenv)
 
 ---

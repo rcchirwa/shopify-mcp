@@ -5,21 +5,39 @@ update_collection requires confirm=True.
 """
 
 from mcp.server.fastmcp import FastMCP
-from shopify_client import ShopifyClient
+from shopify_client import ShopifyClient, to_gid, from_gid
 from tools._log import log_write
+
+GET_COLLECTION_BY_HANDLE = """
+query GetCollectionByHandle($handle: String!) {
+  collectionByHandle(handle: $handle) {
+    id
+    title
+    handle
+    descriptionHtml
+    ruleSet { appliedDisjunctively }
+  }
+}
+"""
+
+UPDATE_COLLECTION = """
+mutation UpdateCollection($input: CollectionInput!) {
+  collectionUpdate(input: $input) {
+    collection { id title handle }
+    userErrors { field message }
+  }
+}
+"""
 
 
 def _resolve_collection(client: ShopifyClient, handle: str):
     """Returns (collection_type, collection) tuple or (None, None)."""
-    custom = client.get("/custom_collections.json", {"handle": handle})
-    cols = custom.get("custom_collections", [])
-    if cols:
-        return "custom_collections", cols[0]
-    smart = client.get("/smart_collections.json", {"handle": handle})
-    cols = smart.get("smart_collections", [])
-    if cols:
-        return "smart_collections", cols[0]
-    return None, None
+    data = client.execute(GET_COLLECTION_BY_HANDLE, {"handle": handle})
+    col = data.get("collectionByHandle")
+    if not col:
+        return None, None
+    col_type = "smart" if col.get("ruleSet") else "manual"
+    return col_type, col
 
 
 def register(server: FastMCP, client: ShopifyClient):
@@ -30,11 +48,11 @@ def register(server: FastMCP, client: ShopifyClient):
         col_type, col = _resolve_collection(client, handle)
         if not col:
             return f"No collection found with handle '{handle}'."
-        desc = col.get("body_html") or "(no description)"
+        desc = col.get("descriptionHtml") or "(no description)"
         return (
             f"Collection: {col['title']}\n"
             f"Handle: {col['handle']}\n"
-            f"ID: {col['id']}\n"
+            f"ID: {from_gid(col['id'])}\n"
             f"Type: {col_type}\n"
             f"Description: {desc}"
         )
@@ -59,21 +77,16 @@ def register(server: FastMCP, client: ShopifyClient):
             return f"No collection found with handle '{handle}'."
 
         col_id = col["id"]
-        payload: dict = {}
-        if new_title:
-            payload["title"] = new_title
-        if new_description:
-            payload["body_html"] = new_description
 
         preview_lines = [
             f"PREVIEW — Collection update",
             f"  Handle : {handle}",
-            f"  ID     : {col_id}",
+            f"  ID     : {from_gid(col_id)}",
         ]
         if new_title:
             preview_lines.append(f"  Title  : '{col['title']}' → '{new_title}'")
         if new_description:
-            old_desc = (col.get("body_html") or "")[:80]
+            old_desc = (col.get("descriptionHtml") or "")[:80]
             preview_lines.append(f"  Desc   : '{old_desc}...' → (new description provided)")
 
         preview = "\n".join(preview_lines)
@@ -81,10 +94,17 @@ def register(server: FastMCP, client: ShopifyClient):
         if not confirm:
             return preview + "\n\nTo apply, call again with confirm=True."
 
-        singular = "custom_collection" if col_type == "custom_collections" else "smart_collection"
-        client.put(
-            f"/{col_type}/{col_id}.json",
-            {singular: payload},
-        )
-        log_write("update_collection", f"handle={handle} | changes: {list(payload.keys())}")
+        inp = {"id": col_id}
+        if new_title:
+            inp["title"] = new_title
+        if new_description:
+            inp["descriptionHtml"] = new_description
+
+        result = client.execute(UPDATE_COLLECTION, {"input": inp})
+        user_errors = result.get("collectionUpdate", {}).get("userErrors", [])
+        if user_errors:
+            msgs = "; ".join(f"{e['field']}: {e['message']}" for e in user_errors)
+            return f"Error: {msgs}"
+
+        log_write("update_collection", f"handle={handle} | changes: {[k for k in inp if k != 'id']}")
         return f"Done. {preview}"

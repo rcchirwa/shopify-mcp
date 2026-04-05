@@ -14,18 +14,41 @@ import os
 # Ensure project root is on the path
 sys.path.insert(0, os.path.dirname(__file__))
 
-from shopify_client import ShopifyClient
+from shopify_client import ShopifyClient, from_gid
+
+SHOP_QUERY = """
+query {
+  shop {
+    name
+    myshopifyDomain
+    plan { displayName }
+    currencyCode
+  }
+}
+"""
+
+GET_PRODUCTS = """
+query GetProducts($first: Int!) {
+  products(first: $first) {
+    nodes {
+      id
+      title
+      status
+    }
+  }
+}
+"""
 
 
 def test_connection():
     print("Testing Shopify API connection...")
     try:
         client = ShopifyClient()
-        data = client.get("/shop.json")
+        data = client.execute(SHOP_QUERY)
         shop = data.get("shop", {})
-        print(f"  Connected to: {shop.get('name')} ({shop.get('domain')})")
-        print(f"  Plan: {shop.get('plan_name')}")
-        print(f"  Currency: {shop.get('currency')}")
+        print(f"  Connected to: {shop.get('name')} ({shop.get('myshopifyDomain')})")
+        print(f"  Plan: {shop.get('plan', {}).get('displayName')}")
+        print(f"  Currency: {shop.get('currencyCode')}")
         print("\nConnection test PASSED.")
     except Exception as e:
         print(f"\nConnection test FAILED: {e}")
@@ -36,10 +59,10 @@ def test_products():
     print("\nFetching first 3 products...")
     try:
         client = ShopifyClient()
-        data = client.get("/products.json", {"limit": 3, "fields": "id,title,status"})
-        products = data.get("products", [])
+        data = client.execute(GET_PRODUCTS, {"first": 3})
+        products = data.get("products", {}).get("nodes", [])
         for p in products:
-            print(f"  [{p['id']}] {p['title']} — {p['status']}")
+            print(f"  [{from_gid(p['id'])}] {p['title']} — {p['status']}")
         print(f"Product fetch test PASSED ({len(products)} products returned).")
     except Exception as e:
         print(f"Product fetch test FAILED: {e}")

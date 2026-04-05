@@ -5,8 +5,54 @@ update_inventory requires confirm=True.
 """
 
 from mcp.server.fastmcp import FastMCP
-from shopify_client import ShopifyClient
+from shopify_client import ShopifyClient, to_gid, from_gid
 from tools._log import log_write
+
+GET_PRODUCT_INVENTORY = """
+query GetProductInventory($id: ID!) {
+  product(id: $id) {
+    title
+    variants(first: 50) {
+      nodes {
+        id
+        title
+        sku
+        inventoryItem {
+          id
+          inventoryLevels(first: 10) {
+            nodes {
+              available
+              location { id name }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+GET_INVENTORY_ITEM = """
+query GetInventoryItem($id: ID!) {
+  inventoryItem(id: $id) {
+    inventoryLevels(first: 10) {
+      nodes {
+        available
+        location { id }
+      }
+    }
+  }
+}
+"""
+
+SET_INVENTORY = """
+mutation SetInventory($input: InventorySetOnHandQuantitiesInput!) {
+  inventorySetOnHandQuantities(input: $input) {
+    inventoryAdjustmentGroup { createdAt }
+    userErrors { field message }
+  }
+}
+"""
 
 
 def register(server: FastMCP, client: ShopifyClient):
@@ -14,24 +60,19 @@ def register(server: FastMCP, client: ShopifyClient):
     @server.tool()
     def get_inventory(product_id: str) -> str:
         """Get inventory levels for a product and all its variants."""
-        data = client.get(f"/products/{product_id}.json")
-        product = data.get("product", {})
+        data = client.execute(GET_PRODUCT_INVENTORY, {"id": to_gid("Product", product_id)})
+        product = data.get("product")
         if not product:
             return f"Product {product_id} not found."
 
         lines = [f"Inventory for: {product['title']} (id: {product_id})\n"]
-        for variant in product.get("variants", []):
-            inv_item_id = variant.get("inventory_item_id")
-            # Fetch inventory levels for this item
-            inv_data = client.get(
-                "/inventory_levels.json",
-                {"inventory_item_ids": inv_item_id},
-            )
-            levels = inv_data.get("inventory_levels", [])
+        for variant in product.get("variants", {}).get("nodes", []):
+            inv_item = variant.get("inventoryItem", {})
+            levels = inv_item.get("inventoryLevels", {}).get("nodes", [])
             qty = levels[0]["available"] if levels else "N/A"
             lines.append(
                 f"  • {variant['title']} — SKU: {variant.get('sku', 'N/A')} "
-                f"— available: {qty} — variant_id: {variant['id']}"
+                f"— available: {qty} — variant_id: {from_gid(variant['id'])}"
             )
         return "\n".join(lines)
 
@@ -47,12 +88,12 @@ def register(server: FastMCP, client: ShopifyClient):
         Returns a preview unless confirm=True.
         """
         # Fetch current level
-        inv_data = client.get(
-            "/inventory_levels.json",
-            {"inventory_item_ids": inventory_item_id, "location_ids": location_id},
-        )
-        levels = inv_data.get("inventory_levels", [])
-        current_qty = levels[0]["available"] if levels else "unknown"
+        data = client.execute(GET_INVENTORY_ITEM, {"id": to_gid("InventoryItem", inventory_item_id)})
+        inv_item = data.get("inventoryItem", {})
+        levels = inv_item.get("inventoryLevels", {}).get("nodes", [])
+        location_gid = to_gid("Location", location_id)
+        matching = [lv for lv in levels if lv.get("location", {}).get("id") == location_gid]
+        current_qty = matching[0]["available"] if matching else "unknown"
 
         preview = (
             f"PREVIEW — Inventory update\n"
@@ -65,14 +106,23 @@ def register(server: FastMCP, client: ShopifyClient):
         if not confirm:
             return preview + "\n\nTo apply, call again with confirm=True."
 
-        client.post(
-            "/inventory_levels/set.json",
-            {
-                "inventory_item_id": int(inventory_item_id),
-                "location_id": int(location_id),
-                "available": quantity,
-            },
-        )
+        result = client.execute(SET_INVENTORY, {
+            "input": {
+                "reason": "correction",
+                "setQuantities": [
+                    {
+                        "inventoryItemId": to_gid("InventoryItem", inventory_item_id),
+                        "locationId": location_gid,
+                        "quantity": quantity,
+                    }
+                ],
+            }
+        })
+        user_errors = result.get("inventorySetOnHandQuantities", {}).get("userErrors", [])
+        if user_errors:
+            msgs = "; ".join(f"{e['field']}: {e['message']}" for e in user_errors)
+            return f"Error: {msgs}"
+
         log_write(
             "update_inventory",
             f"item={inventory_item_id} location={location_id} | {current_qty} → {quantity}",
