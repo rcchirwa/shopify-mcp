@@ -4,6 +4,7 @@ Discount tools — read and create discount codes.
 create_discount_code requires confirm=True.
 """
 
+from datetime import datetime, timezone
 from mcp.server.fastmcp import FastMCP
 from shopify_client import ShopifyClient, to_gid, from_gid
 from tools._log import log_write
@@ -98,7 +99,7 @@ def register(server: FastMCP, client: ShopifyClient):
             "valueType": "PERCENTAGE",
             "value": str(value),
             "customerSelection": {"forAllCustomers": True},
-            "startsAt": "2024-01-01T00:00:00Z",
+            "startsAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
         if usage_limit > 0:
             price_rule_input["usageLimit"] = usage_limit
@@ -110,6 +111,8 @@ def register(server: FastMCP, client: ShopifyClient):
             return f"Error creating price rule: {msgs}"
 
         rule_id = rule_result.get("priceRuleCreate", {}).get("priceRule", {}).get("id")
+        if not rule_id:
+            return "Error: price rule created but no ID returned."
 
         code_result = client.execute(CREATE_DISCOUNT_CODE, {
             "priceRuleId": rule_id,

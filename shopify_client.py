@@ -9,13 +9,6 @@ from gql import gql, Client
 from gql.transport.requests import RequestsHTTPTransport
 from gql.transport.exceptions import TransportServerError, TransportQueryError
 
-load_dotenv()
-
-STORE_URL = os.getenv("SHOPIFY_STORE_URL")
-ACCESS_TOKEN = os.getenv("SHOPIFY_ACCESS_TOKEN")
-API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2024-01")
-
-
 def to_gid(resource_type: str, numeric_id) -> str:
     return f"gid://shopify/{resource_type}/{numeric_id}"
 
@@ -26,13 +19,18 @@ def from_gid(gid: str) -> str:
 
 class ShopifyClient:
     def __init__(self):
-        if not STORE_URL or not ACCESS_TOKEN:
+        load_dotenv()
+        store_url = os.getenv("SHOPIFY_STORE_URL")
+        access_token = os.getenv("SHOPIFY_ACCESS_TOKEN")
+        api_version = os.getenv("SHOPIFY_API_VERSION", "2024-01")
+
+        if not store_url or not access_token:
             raise ValueError(
                 "SHOPIFY_STORE_URL and SHOPIFY_ACCESS_TOKEN must be set in .env"
             )
         transport = RequestsHTTPTransport(
-            url=f"https://{STORE_URL}/admin/api/{API_VERSION}/graphql.json",
-            headers={"X-Shopify-Access-Token": ACCESS_TOKEN},
+            url=f"https://{store_url}/admin/api/{api_version}/graphql.json",
+            headers={"X-Shopify-Access-Token": access_token},
             timeout=15,
         )
         self._client = Client(
