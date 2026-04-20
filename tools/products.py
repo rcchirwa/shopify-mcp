@@ -159,6 +159,16 @@ query GetProductFullByHandle($handle: String!) {
 }
 """
 
+GET_PRODUCT_SEO_BY_ID = """
+query GetProductSeoById($id: ID!) {
+  product(id: $id) {
+    id
+    title
+    seo { title description }
+  }
+}
+"""
+
 
 def register(server: FastMCP, client: ShopifyClient):
 
@@ -216,13 +226,31 @@ def register(server: FastMCP, client: ShopifyClient):
     ) -> str:
         """
         Update a product title. Returns a preview unless confirm=True.
-        Never changes the URL handle unless change_handle=True.
+        When change_handle=False the existing handle is explicitly preserved in
+        the mutation so Shopify does not auto-regenerate it. When change_handle
+        =True the new handle is the slugified new_title; if that slug matches
+        the existing handle, the handle is effectively unchanged.
         """
         data = client.execute(GET_PRODUCT_BY_ID, {"id": to_gid("Product", product_id)})
-        product = data.get("product", {})
+        product = data.get("product", {}) or {}
         old_title = product.get("title", "")
         old_handle = product.get("handle", "")
-        new_handle = slugify_shopify_handle(new_title) if change_handle else old_handle
+
+        slugified = slugify_shopify_handle(new_title)
+        if change_handle:
+            target_handle = slugified
+            if target_handle == old_handle:
+                handle_block = (
+                    f"  Handle     : UNCHANGED (new slug matches existing: {old_handle})"
+                )
+            else:
+                handle_block = (
+                    f"  Old handle : {old_handle}\n"
+                    f"  New handle : {target_handle}"
+                )
+        else:
+            target_handle = old_handle
+            handle_block = f"  Handle     : UNCHANGED (preserved; change_handle=False)"
 
         validation = format_validation_result(new_title)
 
@@ -231,15 +259,14 @@ def register(server: FastMCP, client: ShopifyClient):
             f"  Product ID : {product_id}\n"
             f"  Old title  : {old_title}\n"
             f"  New title  : {new_title}\n"
-            f"  Old handle : {old_handle}\n"
-            f"  New handle : {new_handle}{' (unchanged)' if not change_handle else ''}\n\n"
+            f"{handle_block}\n\n"
             f"Naming validation:\n{validation}"
         )
 
         if not confirm:
             return preview + "\n\nTo apply, call again with confirm=True."
 
-        inp = {"id": to_gid("Product", product_id), "title": new_title, "handle": new_handle}
+        inp = {"id": to_gid("Product", product_id), "title": new_title, "handle": target_handle}
 
         result = client.execute(UPDATE_PRODUCT, {"input": inp})
         user_errors = result.get("productUpdate", {}).get("userErrors", [])
@@ -249,7 +276,7 @@ def register(server: FastMCP, client: ShopifyClient):
 
         log_write(
             "update_product_title",
-            f"id={product_id} | '{old_title}' → '{new_title}' | handle '{old_handle}' → '{new_handle}'",
+            f"id={product_id} | '{old_title}' → '{new_title}' | handle '{old_handle}' → '{target_handle}'",
         )
         return f"Done. {preview}"
 
@@ -285,6 +312,89 @@ def register(server: FastMCP, client: ShopifyClient):
             return f"Error: {msgs}"
 
         log_write("update_product_description", f"id={product_id}")
+        return f"Done. {preview}"
+
+    @server.tool()
+    def update_product_seo(
+        product_id: str,
+        new_seo_title: str = "",
+        new_seo_description: str = "",
+        confirm: bool = False,
+    ) -> str:
+        """
+        Update a product's SEO title and/or meta description.
+        At least one of new_seo_title or new_seo_description must be provided.
+        Returns a preview unless confirm=True.
+        """
+        if not new_seo_title and not new_seo_description:
+            return "Error: provide at least one of new_seo_title or new_seo_description."
+
+        data = client.execute(GET_PRODUCT_SEO_BY_ID, {"id": to_gid("Product", product_id)})
+        product = data.get("product")
+        if not product:
+            return f"No product found with id {product_id}."
+
+        old_seo = product.get("seo") or {}
+        old_title = old_seo.get("title") or ""
+        old_desc = old_seo.get("description") or ""
+
+        warnings = []
+        if new_seo_title and len(new_seo_title) > 70:
+            warnings.append(
+                f"SEO title is {len(new_seo_title)} chars (> 70, may be truncated in Google SERPs)"
+            )
+        if new_seo_description and len(new_seo_description) > 160:
+            warnings.append(
+                f"SEO description is {len(new_seo_description)} chars (> 160, may be truncated in Google SERPs)"
+            )
+
+        old_title_line = old_title if old_title else "(empty)"
+        old_desc_line = old_desc if old_desc else "(empty)"
+        new_title_line = (
+            f"{new_seo_title} ({len(new_seo_title)} chars)"
+            if new_seo_title else "(unchanged)"
+        )
+        new_desc_line = (
+            f"{new_seo_description} ({len(new_seo_description)} chars)"
+            if new_seo_description else "(unchanged)"
+        )
+
+        preview = (
+            f"PREVIEW — Product SEO update\n"
+            f"  Product ID          : {product_id}\n"
+            f"  Old SEO title       : {old_title_line}\n"
+            f"  New SEO title       : {new_title_line}\n"
+            f"  Old SEO description : {old_desc_line}\n"
+            f"  New SEO description : {new_desc_line}"
+        )
+        if warnings:
+            preview += "\n\nWarnings:\n" + "\n".join(f"  • {w}" for w in warnings)
+
+        if not confirm:
+            return preview + "\n\nTo apply, call again with confirm=True."
+
+        seo_input = {}
+        if new_seo_title:
+            seo_input["title"] = new_seo_title
+        if new_seo_description:
+            seo_input["description"] = new_seo_description
+
+        result = client.execute(UPDATE_PRODUCT, {
+            "input": {"id": to_gid("Product", product_id), "seo": seo_input}
+        })
+        user_errors = result.get("productUpdate", {}).get("userErrors", [])
+        if user_errors:
+            msgs = "; ".join(f"{e['field']}: {e['message']}" for e in user_errors)
+            return f"Error: {msgs}"
+
+        changed = []
+        if new_seo_title:
+            changed.append(f"title: '{old_title}' → '{new_seo_title}'")
+        if new_seo_description:
+            changed.append(
+                f"description: {len(old_desc)} chars → {len(new_seo_description)} chars"
+            )
+        log_write("update_product_seo", f"id={product_id} | " + " | ".join(changed))
         return f"Done. {preview}"
 
     @server.tool()
