@@ -141,7 +141,8 @@ def test_seo_both_fields_mutation_shape():
         new_seo_description="The signature V, embroidered front and center.",
         confirm=True,
     )
-    assert out.startswith("Done."), out
+    assert out.startswith("CONFIRMED —"), out
+    assert "PREVIEW" not in out, out
     _, vars_put = fc.calls[1]
     assert vars_put["input"]["id"] == "gid://shopify/Product/6803111739545"
     assert vars_put["input"]["seo"] == {
@@ -150,6 +151,21 @@ def test_seo_both_fields_mutation_shape():
     }, vars_put
     assert fc.calls[0][0] == GET_PRODUCT_SEO_BY_ID
     assert fc.calls[1][0] == UPDATE_PRODUCT
+
+
+def test_seo_preview_path_does_not_call_mutation():
+    """confirm=False MUST NOT issue UPDATE_PRODUCT (FakeClient has no second response)."""
+    tools, fc = _build([_seo_read()])
+    out = tools["update_product_seo"](
+        product_id="123",
+        new_seo_title="Some title",
+        new_seo_description="Some description",
+        confirm=False,
+    )
+    assert out.startswith("PREVIEW —"), out
+    assert "confirm=True" in out
+    assert len(fc.calls) == 1, "preview must not issue the mutation"
+    assert fc.calls[0][0] == GET_PRODUCT_SEO_BY_ID
 
 
 def test_seo_title_only_mutation_shape():

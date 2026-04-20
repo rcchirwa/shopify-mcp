@@ -367,8 +367,7 @@ def register(server: FastMCP, client: ShopifyClient):
             if new_seo_description else "(unchanged)"
         )
 
-        preview = (
-            f"PREVIEW — Product SEO update\n"
+        body = (
             f"  Product ID          : {product_id}\n"
             f"  Old SEO title       : {old_title_line}\n"
             f"  New SEO title       : {new_title_line}\n"
@@ -376,10 +375,13 @@ def register(server: FastMCP, client: ShopifyClient):
             f"  New SEO description : {new_desc_line}"
         )
         if warnings:
-            preview += "\n\nWarnings:\n" + "\n".join(f"  • {w}" for w in warnings)
+            body += "\n\nWarnings:\n" + "\n".join(f"  • {w}" for w in warnings)
 
         if not confirm:
-            return preview + "\n\nTo apply, call again with confirm=True."
+            return (
+                f"PREVIEW — Product SEO update\n{body}"
+                f"\n\nTo apply, call again with confirm=True."
+            )
 
         seo_input = {}
         if new_seo_title:
@@ -405,7 +407,7 @@ def register(server: FastMCP, client: ShopifyClient):
                 f"description: {len(old_desc)} chars → {len(new_seo_description)} chars"
             )
         log_write("update_product_seo", f"id={product_id} | " + " | ".join(changed))
-        return f"Done. {preview}"
+        return f"CONFIRMED — Product SEO updated\n{body}"
 
     @server.tool()
     def get_products_by_collection(collection_handle: str) -> str:
