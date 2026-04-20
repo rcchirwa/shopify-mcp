@@ -41,6 +41,17 @@ Enables Claude to read products, check inventory, manage collections, handle dis
 | `get_orders` | List recent orders with line items and traffic source |
 | `get_order` | Fetch a single order by id |
 
+### Sales channel publications
+| Tool | Description |
+|------|-------------|
+| `list_sales_channels` | List every sales channel (publication) on the store |
+| `get_product_publications` | Show which channels a product is published to, and which it is not |
+| `publish_product_to_channels` | Publish a product to one or more channels (idempotent, preview + confirm) |
+| `unpublish_product_from_channels` | Unpublish from one or more channels (idempotent, preview + confirm) |
+| `set_product_publications` | Declarative — diff current vs. desired channels, apply minimal publish/unpublish (preview + confirm) |
+
+Requires `read_publications` and `write_publications` scopes. If the app was installed before these were added, reinstall it on the store.
+
 ---
 
 ## Safety design
@@ -114,6 +125,7 @@ read_price_rules
 write_price_rules
 read_discounts
 write_discounts
+read_publications
 write_publications
 ```
 
@@ -198,7 +210,8 @@ shopify-mcp/
 │   ├── inventory.py
 │   ├── collections.py
 │   ├── discounts.py
-│   └── orders.py
+│   ├── orders.py
+│   └── publications.py
 ├── validators/
 │   └── naming.py           # AON + Vanish title convention validator
 ├── requirements.txt
