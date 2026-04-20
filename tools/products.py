@@ -11,6 +11,12 @@ from shopify_client import ShopifyClient, to_gid, from_gid
 from validators.naming import format_validation_result
 from tools._log import log_write
 
+# SEO field length thresholds — above these, Google's SERP is likely to truncate.
+# Sources: typical SERP pixel budget translates to ~70 chars for title and
+# ~160 chars for meta description at default font/zoom.
+SEO_TITLE_MAX_CHARS = 70
+SEO_DESCRIPTION_MAX_CHARS = 160
+
 
 def slugify_shopify_handle(title: str) -> str:
     """Slugify a product title the way Shopify does when auto-generating a handle."""
@@ -339,13 +345,15 @@ def register(server: FastMCP, client: ShopifyClient):
         old_desc = old_seo.get("description") or ""
 
         warnings = []
-        if new_seo_title and len(new_seo_title) > 70:
+        if new_seo_title and len(new_seo_title) > SEO_TITLE_MAX_CHARS:
             warnings.append(
-                f"SEO title is {len(new_seo_title)} chars (> 70, may be truncated in Google SERPs)"
+                f"SEO title is {len(new_seo_title)} chars "
+                f"(> {SEO_TITLE_MAX_CHARS}, may be truncated in Google SERPs)"
             )
-        if new_seo_description and len(new_seo_description) > 160:
+        if new_seo_description and len(new_seo_description) > SEO_DESCRIPTION_MAX_CHARS:
             warnings.append(
-                f"SEO description is {len(new_seo_description)} chars (> 160, may be truncated in Google SERPs)"
+                f"SEO description is {len(new_seo_description)} chars "
+                f"(> {SEO_DESCRIPTION_MAX_CHARS}, may be truncated in Google SERPs)"
             )
 
         old_title_line = old_title if old_title else "(empty)"
@@ -389,7 +397,9 @@ def register(server: FastMCP, client: ShopifyClient):
 
         changed = []
         if new_seo_title:
-            changed.append(f"title: '{old_title}' → '{new_seo_title}'")
+            changed.append(
+                f"title: {len(old_title)} chars → {len(new_seo_title)} chars"
+            )
         if new_seo_description:
             changed.append(
                 f"description: {len(old_desc)} chars → {len(new_seo_description)} chars"
