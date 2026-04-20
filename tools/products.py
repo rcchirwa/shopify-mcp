@@ -77,6 +77,77 @@ query GetProductsByCollection($handle: String!, $first: Int!) {
 }
 """
 
+GET_PRODUCTS_WITH_DESCRIPTIONS = """
+query GetProductsWithDescriptions($first: Int!) {
+  products(first: $first) {
+    nodes {
+      id
+      title
+      handle
+      status
+      bodyHtml
+    }
+  }
+}
+"""
+
+GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS = """
+query GetProductsByCollectionWithDescriptions($handle: String!, $first: Int!) {
+  collectionByHandle(handle: $handle) {
+    id
+    title
+    handle
+    products(first: $first) {
+      nodes {
+        id
+        title
+        handle
+        status
+        bodyHtml
+      }
+    }
+  }
+}
+"""
+
+GET_PRODUCT_FULL_BY_ID = """
+query GetProductFullById($id: ID!) {
+  product(id: $id) {
+    id
+    title
+    handle
+    status
+    bodyHtml
+    tags
+    productType
+    vendor
+    seo { title description }
+    variants(first: 50) {
+      nodes { id title sku }
+    }
+  }
+}
+"""
+
+GET_PRODUCT_FULL_BY_HANDLE = """
+query GetProductFullByHandle($handle: String!) {
+  productByHandle(handle: $handle) {
+    id
+    title
+    handle
+    status
+    bodyHtml
+    tags
+    productType
+    vendor
+    seo { title description }
+    variants(first: 50) {
+      nodes { id title sku }
+    }
+  }
+}
+"""
+
 
 def register(server: FastMCP, client: ShopifyClient):
 
@@ -220,3 +291,104 @@ def register(server: FastMCP, client: ShopifyClient):
         for p in products:
             lines.append(f"  [{from_gid(p['id'])}] {p['title']} | handle: {p['handle']} | {p['status']}")
         return "\n".join(lines)
+
+    @server.tool()
+    def get_product_description(product_id: str = "", handle: str = "") -> str:
+        """Get the raw body_html description for a single product by id or handle."""
+        if product_id:
+            data = client.execute(GET_PRODUCT_BY_ID, {"id": to_gid("Product", product_id)})
+            p = data.get("product")
+        elif handle:
+            data = client.execute(GET_PRODUCT_BY_HANDLE, {"handle": handle})
+            p = data.get("productByHandle")
+        else:
+            return "Provide either product_id or handle."
+
+        if not p:
+            return "No product found."
+
+        return (
+            f"ID: {from_gid(p['id'])}\n"
+            f"Title: {p['title']}\n"
+            f"Handle: {p['handle']}\n"
+            f"body_html:\n{p.get('bodyHtml') or ''}"
+        )
+
+    @server.tool()
+    def get_products_with_descriptions(collection_handle: str = "", limit: int = 50) -> str:
+        """
+        Bulk read product descriptions. If collection_handle is provided, scopes to that collection.
+        Returns id, title, handle, status, and raw body_html for each product.
+        """
+        limit = max(1, min(limit, 250))
+
+        if collection_handle:
+            data = client.execute(GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS, {
+                "handle": collection_handle,
+                "first": limit,
+            })
+            col = data.get("collectionByHandle")
+            if not col:
+                return f"No collection found with handle '{collection_handle}'."
+            products = col.get("products", {}).get("nodes", [])
+            header = f"Products in '{collection_handle}' ({len(products)} total):"
+        else:
+            data = client.execute(GET_PRODUCTS_WITH_DESCRIPTIONS, {"first": limit})
+            products = data.get("products", {}).get("nodes", [])
+            header = f"Products ({len(products)} total):"
+
+        if not products:
+            return "No products found."
+
+        blocks = [header]
+        for p in products:
+            blocks.append(
+                f"\n---\n"
+                f"ID: {from_gid(p['id'])}\n"
+                f"Title: {p['title']}\n"
+                f"Handle: {p['handle']}\n"
+                f"Status: {p['status']}\n"
+                f"body_html:\n{p.get('bodyHtml') or ''}"
+            )
+        return "\n".join(blocks)
+
+    @server.tool()
+    def get_product_full(product_id: str = "", handle: str = "") -> str:
+        """
+        Get a full product record: id, title, handle, status, body_html, tags,
+        product_type, vendor, seo, and variants.
+        """
+        if product_id:
+            data = client.execute(GET_PRODUCT_FULL_BY_ID, {"id": to_gid("Product", product_id)})
+            p = data.get("product")
+        elif handle:
+            data = client.execute(GET_PRODUCT_FULL_BY_HANDLE, {"handle": handle})
+            p = data.get("productByHandle")
+        else:
+            return "Provide either product_id or handle."
+
+        if not p:
+            return "No product found."
+
+        variants = "\n".join(
+            f"  • {v['title']} — SKU: {v.get('sku','N/A')} — id: {from_gid(v['id'])}"
+            for v in p.get("variants", {}).get("nodes", [])
+        )
+        tags = ", ".join(p.get("tags") or []) or "(none)"
+        seo = p.get("seo") or {}
+        seo_title = seo.get("title") or "(none)"
+        seo_desc = seo.get("description") or "(none)"
+
+        return (
+            f"ID: {from_gid(p['id'])}\n"
+            f"Title: {p['title']}\n"
+            f"Handle: {p['handle']}\n"
+            f"Status: {p['status']}\n"
+            f"Product type: {p.get('productType') or '(none)'}\n"
+            f"Vendor: {p.get('vendor') or '(none)'}\n"
+            f"Tags: {tags}\n"
+            f"SEO title: {seo_title}\n"
+            f"SEO description: {seo_desc}\n"
+            f"Variants:\n{variants}\n"
+            f"body_html:\n{p.get('bodyHtml') or ''}"
+        )
