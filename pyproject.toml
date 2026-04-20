@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+# test_shopify_mcp.py is a live-store smoke runner, not an offline unit test.
+# It requires SHOPIFY_STORE_URL + SHOPIFY_ACCESS_TOKEN and would fail in CI
+# (and locally without a configured .env). Exclude it from pytest discovery.
+addopts = "--ignore=test_shopify_mcp.py"

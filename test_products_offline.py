@@ -8,7 +8,7 @@ update_product_title.
 Usage:
   cd ~/shopify-mcp
   source .venv/bin/activate
-  python3 test_products_offline.py
+  pytest test_products_offline.py -v
 """
 
 import os
@@ -17,6 +17,11 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 
 from tools import products
+from tools.products import (
+    GET_PRODUCT_BY_ID,
+    GET_PRODUCT_SEO_BY_ID,
+    UPDATE_PRODUCT,
+)
 
 
 class CapturingServer:
@@ -98,7 +103,6 @@ def test_slugify_strips_quotes_and_collapses_dashes():
     for title, expected in cases:
         actual = products.slugify_shopify_handle(title)
         assert actual == expected, f"{title!r} -> {actual!r} (expected {expected!r})"
-    print("[OK] slugify_shopify_handle covers quotes, dashes, spaces, underscores")
 
 
 # ---------- update_product_seo ----------
@@ -108,7 +112,6 @@ def test_seo_empty_payload_rejected_no_shopify_call():
     out = tools["update_product_seo"](product_id="123", confirm=True)
     assert out.startswith("Error:"), out
     assert fc.calls == [], "empty payload must not call Shopify"
-    print("[OK] update_product_seo empty payload rejected before any Shopify call")
 
 
 def test_seo_long_title_warning_preview_only():
@@ -119,7 +122,7 @@ def test_seo_long_title_warning_preview_only():
     assert "Warnings" in out and "> 70" in out, out
     assert "confirm=True" in out
     assert len(fc.calls) == 1, "only the SEO read should happen in preview mode"
-    print("[OK] update_product_seo >70-char title warns; no mutation in preview")
+    assert fc.calls[0][0] == GET_PRODUCT_SEO_BY_ID
 
 
 def test_seo_long_description_warning_preview_only():
@@ -128,7 +131,6 @@ def test_seo_long_description_warning_preview_only():
         product_id="123", new_seo_description="D" * 200, confirm=False,
     )
     assert "Warnings" in out and "> 160" in out, out
-    print("[OK] update_product_seo >160-char description warns")
 
 
 def test_seo_both_fields_mutation_shape():
@@ -146,7 +148,8 @@ def test_seo_both_fields_mutation_shape():
         "title": "Vanish Trucker Hat | Streetwear",
         "description": "The signature V, embroidered front and center.",
     }, vars_put
-    print("[OK] update_product_seo both fields -> seo:{title, description}")
+    assert fc.calls[0][0] == GET_PRODUCT_SEO_BY_ID
+    assert fc.calls[1][0] == UPDATE_PRODUCT
 
 
 def test_seo_title_only_mutation_shape():
@@ -156,7 +159,6 @@ def test_seo_title_only_mutation_shape():
     )
     _, vars_put = fc.calls[1]
     assert vars_put["input"]["seo"] == {"title": "Only Title"}, vars_put
-    print("[OK] update_product_seo title-only -> seo:{title}")
 
 
 def test_seo_description_only_mutation_shape():
@@ -166,7 +168,6 @@ def test_seo_description_only_mutation_shape():
     )
     _, vars_put = fc.calls[1]
     assert vars_put["input"]["seo"] == {"description": "Only desc"}, vars_put
-    print("[OK] update_product_seo description-only -> seo:{description}")
 
 
 def test_seo_user_errors_surfaced():
@@ -175,7 +176,6 @@ def test_seo_user_errors_surfaced():
         product_id="123", new_seo_title="x", confirm=True,
     )
     assert out.startswith("Error:") and "must be a string" in out, out
-    print("[OK] update_product_seo surfaces userErrors")
 
 
 def _between(text, label, next_label=None):
@@ -197,7 +197,6 @@ def test_seo_preview_shows_old_empty_and_unchanged_field():
     assert "(empty)" in old_title_val, out
     assert "(empty)" in old_desc_val, out
     assert "(unchanged)" in new_desc_val, out
-    print("[OK] update_product_seo preview shows (empty) and (unchanged) markers")
 
 
 # ---------- update_product_title handle logic ----------
@@ -220,7 +219,8 @@ def test_title_change_handle_false_preserves_handle_explicitly():
     )
     assert "UNCHANGED (preserved; change_handle=False)" in out, out
     assert fc.calls[1][1]["input"]["handle"] == CUR_HANDLE
-    print("[OK] update_product_title change_handle=False passes old handle explicitly")
+    assert fc.calls[0][0] == GET_PRODUCT_BY_ID
+    assert fc.calls[1][0] == UPDATE_PRODUCT
 
 
 def test_title_change_handle_true_slug_matches_shows_unchanged():
@@ -236,7 +236,6 @@ def test_title_change_handle_true_slug_matches_shows_unchanged():
     )
     assert f"UNCHANGED (new slug matches existing: {CUR_HANDLE})" in out, out
     assert fc.calls[1][1]["input"]["handle"] == CUR_HANDLE
-    print("[OK] update_product_title change_handle=True, slug matches -> UNCHANGED")
 
 
 def test_title_change_handle_true_slug_differs_shows_old_new_pair():
@@ -252,7 +251,6 @@ def test_title_change_handle_true_slug_differs_shows_old_new_pair():
     )
     assert f"Old handle : {CUR_HANDLE}" in out, out
     assert "New handle : iconic-v-crewneck" in out, out
-    print("[OK] update_product_title change_handle=True, slug differs -> old/new pair")
 
 
 def test_title_user_errors_surfaced():
@@ -267,35 +265,3 @@ def test_title_user_errors_surfaced():
         confirm=True,
     )
     assert out.startswith("Error:") and "has already been taken" in out, out
-    print("[OK] update_product_title surfaces duplicate-handle userErrors")
-
-
-TESTS = [
-    test_slugify_strips_quotes_and_collapses_dashes,
-    test_seo_empty_payload_rejected_no_shopify_call,
-    test_seo_long_title_warning_preview_only,
-    test_seo_long_description_warning_preview_only,
-    test_seo_both_fields_mutation_shape,
-    test_seo_title_only_mutation_shape,
-    test_seo_description_only_mutation_shape,
-    test_seo_user_errors_surfaced,
-    test_seo_preview_shows_old_empty_and_unchanged_field,
-    test_title_change_handle_false_preserves_handle_explicitly,
-    test_title_change_handle_true_slug_matches_shows_unchanged,
-    test_title_change_handle_true_slug_differs_shows_old_new_pair,
-    test_title_user_errors_surfaced,
-]
-
-
-if __name__ == "__main__":
-    failed = 0
-    for t in TESTS:
-        try:
-            t()
-        except AssertionError as e:
-            failed += 1
-            print(f"[FAIL] {t.__name__}: {e}")
-    if failed:
-        print(f"\n{failed} / {len(TESTS)} test(s) FAILED.")
-        sys.exit(1)
-    print(f"\nAll {len(TESTS)} offline tests PASSED.")
