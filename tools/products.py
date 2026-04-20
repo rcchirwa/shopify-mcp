@@ -4,10 +4,21 @@ Product tools — read and write Shopify products.
 Write operations require confirm=True and log to aon_mcp_log.txt.
 """
 
+import re
+
 from mcp.server.fastmcp import FastMCP
 from shopify_client import ShopifyClient, to_gid, from_gid
 from validators.naming import format_validation_result
 from tools._log import log_write
+
+
+def slugify_shopify_handle(title: str) -> str:
+    """Slugify a product title the way Shopify does when auto-generating a handle."""
+    s = title.lower()
+    s = re.sub(r'["\u201c\u201d\u2018\u2019\']', '', s)
+    s = re.sub(r'[^a-z0-9\-_]+', '-', s)
+    s = re.sub(r'-+', '-', s)
+    return s.strip('-')
 
 GET_PRODUCTS = """
 query GetProducts($first: Int!) {
@@ -210,6 +221,8 @@ def register(server: FastMCP, client: ShopifyClient):
         data = client.execute(GET_PRODUCT_BY_ID, {"id": to_gid("Product", product_id)})
         product = data.get("product", {})
         old_title = product.get("title", "")
+        old_handle = product.get("handle", "")
+        new_handle = slugify_shopify_handle(new_title) if change_handle else old_handle
 
         validation = format_validation_result(new_title)
 
@@ -218,16 +231,15 @@ def register(server: FastMCP, client: ShopifyClient):
             f"  Product ID : {product_id}\n"
             f"  Old title  : {old_title}\n"
             f"  New title  : {new_title}\n"
-            f"  Handle     : {'UNCHANGED' if not change_handle else 'WILL BE UPDATED'}\n\n"
+            f"  Old handle : {old_handle}\n"
+            f"  New handle : {new_handle}{' (unchanged)' if not change_handle else ''}\n\n"
             f"Naming validation:\n{validation}"
         )
 
         if not confirm:
             return preview + "\n\nTo apply, call again with confirm=True."
 
-        inp = {"id": to_gid("Product", product_id), "title": new_title}
-        if not change_handle:
-            inp["handle"] = product.get("handle")
+        inp = {"id": to_gid("Product", product_id), "title": new_title, "handle": new_handle}
 
         result = client.execute(UPDATE_PRODUCT, {"input": inp})
         user_errors = result.get("productUpdate", {}).get("userErrors", [])
@@ -235,7 +247,10 @@ def register(server: FastMCP, client: ShopifyClient):
             msgs = "; ".join(f"{e['field']}: {e['message']}" for e in user_errors)
             return f"Error: {msgs}"
 
-        log_write("update_product_title", f"id={product_id} | '{old_title}' → '{new_title}'")
+        log_write(
+            "update_product_title",
+            f"id={product_id} | '{old_title}' → '{new_title}' | handle '{old_handle}' → '{new_handle}'",
+        )
         return f"Done. {preview}"
 
     @server.tool()
