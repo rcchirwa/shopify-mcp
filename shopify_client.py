@@ -40,13 +40,23 @@ class ShopifyClient:
 
     def execute(self, query_str: str, variables: dict = None) -> dict:
         try:
-            return self._client.execute(
+            result = self._client.execute(
                 gql(query_str), variable_values=variables or {}
             )
         except TransportQueryError as e:
             raise RuntimeError(f"Shopify GraphQL error: {_format_errors(e.errors)}") from e
         except TransportServerError as e:
             raise RuntimeError(f"Shopify HTTP error: {str(e)}") from e
+
+        if not isinstance(result, dict):
+            # Surface the real payload (scope error text, HTML error page, etc.)
+            # so callers don't crash downstream with 'str' object has no attribute 'get'.
+            preview = str(result)[:500]
+            raise RuntimeError(
+                f"Shopify returned non-dict response "
+                f"(type={type(result).__name__}): {preview}"
+            )
+        return result
 
 
 def _format_errors(errors) -> str:
