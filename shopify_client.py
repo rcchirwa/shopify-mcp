@@ -44,7 +44,30 @@ class ShopifyClient:
                 gql(query_str), variable_values=variables or {}
             )
         except TransportQueryError as e:
-            msgs = "; ".join(err.get("message", str(err)) for err in e.errors)
-            raise RuntimeError(f"Shopify GraphQL error: {msgs}") from e
+            raise RuntimeError(f"Shopify GraphQL error: {_format_errors(e.errors)}") from e
         except TransportServerError as e:
-            raise RuntimeError(f"Shopify HTTP error: {e}") from e
+            raise RuntimeError(f"Shopify HTTP error: {str(e)}") from e
+
+
+def _format_errors(errors) -> str:
+    # `TransportQueryError.errors` is typed Optional[List[Any]] in gql 4.0 — in
+    # practice it can be a list of dicts, a list of GraphQLError objects, a
+    # list of strings, a single string, or None. Earlier versions of this
+    # handler assumed list-of-dicts and crashed with
+    # `'str' object has no attribute 'get'` on the other shapes, masking the
+    # real Shopify error from callers.
+    if errors is None:
+        return "(no error details)"
+    if isinstance(errors, str):
+        return errors
+    if not isinstance(errors, list):
+        return str(errors)
+    return "; ".join(_format_one_error(err) for err in errors)
+
+
+def _format_one_error(err) -> str:
+    if isinstance(err, dict):
+        return err.get("message") or str(err)
+    if isinstance(err, str):
+        return err
+    return str(err)

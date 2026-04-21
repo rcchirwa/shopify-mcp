@@ -1,9 +1,8 @@
 """
-Offline unit tests for tools/products.py write paths.
+Offline unit tests for tools/products.py.
 
-Uses a fake client to exercise preview/mutation-shape branches without
-hitting Shopify. Covers update_product_seo and the handle logic in
-update_product_title.
+Uses a fake client to exercise read-path response unwrap and write-path
+preview/mutation-shape branches without hitting Shopify.
 
 Usage:
   cd ~/shopify-mcp
@@ -21,6 +20,10 @@ from tools.products import (
     GET_PRODUCT_BY_ID,
     GET_PRODUCT_SEO_BY_ID,
     UPDATE_PRODUCT,
+    GET_PRODUCTS,
+    GET_PRODUCTS_BY_COLLECTION,
+    GET_PRODUCTS_WITH_DESCRIPTIONS,
+    GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS,
 )
 
 
@@ -281,3 +284,135 @@ def test_title_user_errors_surfaced():
         confirm=True,
     )
     assert out.startswith("Error:") and "has already been taken" in out, out
+
+
+# ---------- List / collection response-unwrap regressions ----------
+
+def _product_summary(pid, title, handle, status="ACTIVE", variants=None):
+    return {
+        "id": f"gid://shopify/Product/{pid}",
+        "title": title,
+        "handle": handle,
+        "status": status,
+        "variants": {"nodes": variants or []},
+    }
+
+
+def _variant(vid, title):
+    return {"id": f"gid://shopify/ProductVariant/{vid}", "title": title}
+
+
+def _product_with_body(pid, title, handle, body, status="ACTIVE"):
+    return {
+        "id": f"gid://shopify/Product/{pid}",
+        "title": title,
+        "handle": handle,
+        "status": status,
+        "bodyHtml": body,
+    }
+
+
+def test_get_products_unwraps_nodes_list():
+    response = {"products": {"nodes": [
+        _product_summary("111", "Tee One", "tee-one", variants=[_variant("11", "Black")]),
+        _product_summary("222", "Tee Two", "tee-two", variants=[_variant("22", "White")]),
+    ]}}
+    tools, fc = _build([response])
+    out = tools["get_products"]()
+    assert "[111] Tee One" in out and "handle: tee-one" in out and "status: ACTIVE" in out
+    assert "[222] Tee Two" in out
+    assert "Black (id:11)" in out and "White (id:22)" in out
+    assert fc.calls[0][0] == GET_PRODUCTS
+    assert fc.calls[0][1] == {"first": 250}
+
+
+def test_get_products_empty_returns_message():
+    tools, fc = _build([{"products": {"nodes": []}}])
+    out = tools["get_products"]()
+    assert out == "No products found."
+
+
+def test_get_products_by_collection_unwraps_nested_nodes():
+    response = {"collectionByHandle": {
+        "id": "gid://shopify/Collection/999",
+        "title": "Vanish",
+        "handle": "vanish",
+        "products": {"nodes": [
+            _product_summary("111", "Tee One", "tee-one"),
+            _product_summary("222", "Tee Two", "tee-two"),
+        ]},
+    }}
+    tools, fc = _build([response])
+    out = tools["get_products_by_collection"](collection_handle="vanish")
+    assert "Products in 'vanish' (2 total)" in out
+    assert "[111] Tee One" in out and "[222] Tee Two" in out
+    assert fc.calls[0][0] == GET_PRODUCTS_BY_COLLECTION
+    assert fc.calls[0][1] == {"handle": "vanish", "first": 250}
+
+
+def test_get_products_by_collection_handle_not_found():
+    tools, fc = _build([{"collectionByHandle": None}])
+    out = tools["get_products_by_collection"](collection_handle="nope")
+    assert out == "No collection found with handle 'nope'."
+
+
+def test_get_products_by_collection_empty_collection():
+    response = {"collectionByHandle": {
+        "id": "gid://shopify/Collection/999",
+        "title": "Empty",
+        "handle": "empty",
+        "products": {"nodes": []},
+    }}
+    tools, fc = _build([response])
+    out = tools["get_products_by_collection"](collection_handle="empty")
+    assert out == "No products in collection 'empty'."
+
+
+def test_get_products_with_descriptions_scoped_to_collection():
+    response = {"collectionByHandle": {
+        "id": "gid://shopify/Collection/999",
+        "title": "Vanish",
+        "handle": "vanish",
+        "products": {"nodes": [
+            _product_with_body("111", "Tee One", "tee-one", "<p>body one</p>"),
+        ]},
+    }}
+    tools, fc = _build([response])
+    out = tools["get_products_with_descriptions"](collection_handle="vanish", limit=25)
+    assert "Products in 'vanish' (1 total)" in out
+    assert "ID: 111" in out and "<p>body one</p>" in out
+    assert fc.calls[0][0] == GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS
+    assert fc.calls[0][1] == {"handle": "vanish", "first": 25}
+
+
+def test_get_products_with_descriptions_unscoped_bulk():
+    response = {"products": {"nodes": [
+        _product_with_body("111", "Tee One", "tee-one", "<p>one</p>"),
+        _product_with_body("222", "Tee Two", "tee-two", "<p>two</p>"),
+    ]}}
+    tools, fc = _build([response])
+    out = tools["get_products_with_descriptions"](limit=10)
+    assert "Products (2 total)" in out
+    assert "<p>one</p>" in out and "<p>two</p>" in out
+    assert fc.calls[0][0] == GET_PRODUCTS_WITH_DESCRIPTIONS
+    assert fc.calls[0][1] == {"first": 10}
+
+
+def test_get_products_with_descriptions_collection_not_found():
+    tools, fc = _build([{"collectionByHandle": None}])
+    out = tools["get_products_with_descriptions"](collection_handle="missing", limit=10)
+    assert out == "No collection found with handle 'missing'."
+
+
+def test_get_products_with_descriptions_limit_clamped_high():
+    response = {"products": {"nodes": []}}
+    tools, fc = _build([response])
+    tools["get_products_with_descriptions"](limit=9999)
+    assert fc.calls[0][1] == {"first": 250}
+
+
+def test_get_products_with_descriptions_limit_clamped_low():
+    response = {"products": {"nodes": []}}
+    tools, fc = _build([response])
+    tools["get_products_with_descriptions"](limit=0)
+    assert fc.calls[0][1] == {"first": 1}
