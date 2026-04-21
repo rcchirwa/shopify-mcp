@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from gql.transport.exceptions import TransportQueryError, TransportServerError
 
-from shopify_client import ShopifyClient, _format_errors
+from shopify_client import ShopifyClient, _format_errors, _mask_token
 
 
 class _StubGqlClient:
@@ -119,3 +119,85 @@ def test_format_errors_handles_string():
 def test_format_errors_joins_mixed_list():
     errors = [{"message": "first"}, "second", 42]
     assert _format_errors(errors) == "first; second; 42"
+
+
+# ---------- _mask_token helper ----------
+
+def test_mask_token_preserves_shpat_prefix_and_last4():
+    # Full-length Shopify admin token: shpat_ + 32 hex = 38 chars.
+    token = "shpat_" + "0" * 28 + "abcd"
+    masked = _mask_token(token)
+    assert masked == "shpat_…abcd"
+    assert "0" * 28 not in masked, "body of token must not leak"
+
+
+def test_mask_token_non_shpat_uses_first4_last4():
+    token = "abcdef1234567890XYZW"
+    masked = _mask_token(token)
+    assert masked == "abcd…XYZW"
+    assert "ef1234567890XYZ" not in masked
+
+
+def test_mask_token_short_token_fully_masked():
+    # Tokens shorter than 9 chars: mask entirely (nothing safe to leak).
+    assert _mask_token("abc") == "***"
+    assert _mask_token("abcdefgh") == "********"
+
+
+def test_mask_token_empty_or_none():
+    assert _mask_token("") == "(empty)"
+    assert _mask_token(None) == "(empty)"
+
+
+# ---------- .env loading: override=True + script-relative path ----------
+
+def test_init_env_override_wins_over_process_env(tmp_path, monkeypatch, capsys):
+    """.env on disk must win over stale env vars injected by the launcher."""
+    import shopify_client as sc
+
+    # Simulate Claude-Desktop-style injection: process env has the OLD token.
+    monkeypatch.setenv("SHOPIFY_STORE_URL", "stale.myshopify.com")
+    monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "shpat_stale00000000000000000000old1")
+    monkeypatch.setenv("SHOPIFY_API_VERSION", "2023-01")
+
+    # And .env on disk has the NEW token.
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "SHOPIFY_STORE_URL=fresh.myshopify.com\n"
+        "SHOPIFY_ACCESS_TOKEN=shpat_fresh000000000000000000new2\n"
+        "SHOPIFY_API_VERSION=2024-10\n"
+    )
+    monkeypatch.setattr(sc, "_ENV_PATH", env_file)
+
+    # Avoid real HTTP client construction — replace Client with a stub.
+    monkeypatch.setattr(sc, "Client", lambda **_kw: object())
+    monkeypatch.setattr(sc, "RequestsHTTPTransport", lambda **_kw: object())
+
+    sc.ShopifyClient()
+
+    # After __init__, os.environ should reflect .env values (override=True).
+    assert os.environ["SHOPIFY_STORE_URL"] == "fresh.myshopify.com"
+    assert os.environ["SHOPIFY_ACCESS_TOKEN"].endswith("new2")
+    assert os.environ["SHOPIFY_API_VERSION"] == "2024-10"
+
+    # Startup fingerprint log goes to stderr, masked, with .env source.
+    err = capsys.readouterr().err
+    assert "store=fresh.myshopify.com" in err
+    assert "api_version=2024-10" in err
+    assert "token=shpat_…new2" in err
+    assert "source=.env" in err
+    # The old stale token must not appear anywhere in the log.
+    assert "old1" not in err
+    assert "stale" not in err
+
+
+def test_init_missing_credentials_raises(monkeypatch, tmp_path):
+    """No .env on disk + no process env → clear ValueError."""
+    import shopify_client as sc
+
+    monkeypatch.delenv("SHOPIFY_STORE_URL", raising=False)
+    monkeypatch.delenv("SHOPIFY_ACCESS_TOKEN", raising=False)
+    monkeypatch.setattr(sc, "_ENV_PATH", tmp_path / "nonexistent.env")
+
+    with pytest.raises(ValueError, match="SHOPIFY_STORE_URL and SHOPIFY_ACCESS_TOKEN"):
+        sc.ShopifyClient()
