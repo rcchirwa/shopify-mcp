@@ -165,6 +165,9 @@ query GetProductFullByHandle($handle: String!) {
 }
 """
 
+# Shopify caps this connection at 250 per request. A product with more memberships
+# would need pagination; emit an at-cap warning so operators don't silently miss
+# collections — the whole point of this tool is completeness on the vault path.
 GET_PRODUCT_COLLECTIONS = """
 query GetProductCollections($id: ID!) {
   product(id: $id) {
@@ -182,9 +185,6 @@ query GetProductCollections($id: ID!) {
   }
 }
 """
-# Shopify caps this connection at 250 per request. A product with more memberships
-# would need pagination; emit an at-cap warning so operators don't silently miss
-# collections — the whole point of this tool is completeness on the vault path.
 
 GET_PRODUCT_SEO_BY_ID = """
 query GetProductSeoById($id: ID!) {

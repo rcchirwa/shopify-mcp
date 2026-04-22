@@ -85,6 +85,19 @@ def _available_qty(level: dict):
     return None
 
 
+def _tracked_display(current):
+    # Shopify omits `tracked` on variants without an InventoryItem; render
+    # that as "unset" so the preview reads "unset → True" instead of the
+    # literal "None → True".
+    return "unset" if current is None else current
+
+
+def _variant_label(v: dict) -> str:
+    # Fall back to the numeric variant id when a variant has no title,
+    # so the Failed list stays actionable instead of printing "None".
+    return v.get("title") or f"variant {from_gid(v.get('id', ''))}"
+
+
 def register(server: FastMCP, client: ShopifyClient):
 
     @server.tool()
@@ -234,7 +247,10 @@ def register(server: FastMCP, client: ShopifyClient):
             )
 
         change_lines = "\n".join(
-            _variant_line(v, f"{(v.get('inventoryItem') or {}).get('tracked')} → {tracked}")
+            _variant_line(
+                v,
+                f"{_tracked_display((v.get('inventoryItem') or {}).get('tracked'))} → {tracked}",
+            )
             for v in to_change
         ) or "    (none)"
         unchanged_lines = "\n".join(
@@ -263,7 +279,7 @@ def register(server: FastMCP, client: ShopifyClient):
             inv_item_gid = (v.get("inventoryItem") or {}).get("id")
             if not inv_item_gid:
                 failed.append({
-                    "variant": v.get("title"),
+                    "variant": _variant_label(v),
                     "error": "variant has no inventoryItem id",
                 })
                 continue
@@ -277,7 +293,7 @@ def register(server: FastMCP, client: ShopifyClient):
                 )
             except Exception as e:
                 failed.append({
-                    "variant": v.get("title"),
+                    "variant": _variant_label(v),
                     "error": f"transport error: {e}",
                 })
                 continue
@@ -287,7 +303,7 @@ def register(server: FastMCP, client: ShopifyClient):
                 msgs = "; ".join(
                     f"{e.get('field')}: {e.get('message')}" for e in user_errors
                 )
-                failed.append({"variant": v.get("title"), "error": msgs})
+                failed.append({"variant": _variant_label(v), "error": msgs})
             else:
                 changed.append(v)
 
