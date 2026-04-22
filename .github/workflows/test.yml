@@ -1,10 +1,11 @@
 name: test
 
-# Runs the offline unit tests (test_products_offline.py) on every push to main
-# and every PR against main. test_shopify_mcp.py is intentionally NOT run here —
-# it requires SHOPIFY_STORE_URL + SHOPIFY_ACCESS_TOKEN against a live store,
-# which would mean wiring secrets into a public repo just for a smoke test.
-# The offline suite covers the write-path preview logic with a fake client.
+# Runs all offline unit suites (test_*_offline.py) on every push to main and
+# every PR against main. Live-integration tests (test_shopify_mcp.py,
+# test_webhooks.py) are intentionally NOT run here — they require
+# SHOPIFY_STORE_URL + SHOPIFY_ACCESS_TOKEN against a live store, which would
+# mean wiring secrets into a public repo just for a smoke test. The offline
+# suites cover the write-path preview/confirm logic with a fake client.
 
 on:
   push:
@@ -22,4 +23,4 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -r requirements.txt
-      - run: pytest test_products_offline.py -v
+      - run: pytest test_*_offline.py -v
