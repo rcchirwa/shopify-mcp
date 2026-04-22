@@ -23,6 +23,7 @@ from tools.inventory import (
     GET_PRODUCT_INVENTORY,
     GET_INVENTORY_ITEM,
     SET_INVENTORY,
+    UPDATE_INVENTORY_ITEM_TRACKED,
     _available_qty,
 )
 
@@ -83,13 +84,14 @@ def _product_with_variants(variants):
     }
 
 
-def _variant(vid, title, sku, levels):
+def _variant(vid, title, sku, levels, tracked=True):
     return {
         "id": f"gid://shopify/ProductVariant/{vid}",
         "title": title,
         "sku": sku,
         "inventoryItem": {
             "id": f"gid://shopify/InventoryItem/{vid}",
+            "tracked": tracked,
             "inventoryLevels": {"nodes": levels},
         },
     }
@@ -287,3 +289,285 @@ def test_update_inventory_surfaces_user_errors_as_error_string():
     )
     assert out.startswith("Error:")
     assert "Quantity must be non-negative" in out
+
+
+# ---- update_variant_inventory_tracking ----
+
+def _tracked_update_ok(inv_item_gid, tracked):
+    return {"inventoryItemUpdate": {
+        "inventoryItem": {"id": inv_item_gid, "tracked": tracked},
+        "userErrors": [],
+    }}
+
+
+def _tracked_update_err(field, message):
+    return {"inventoryItemUpdate": {
+        "inventoryItem": None,
+        "userErrors": [{"field": field, "message": message}],
+    }}
+
+
+def test_tracking_product_not_found():
+    tools, fc = _build([{"product": None}])
+    out = tools["update_variant_inventory_tracking"](
+        product_id="999", tracked=True, confirm=True,
+    )
+    assert out == "No product found with id 999."
+    assert len(fc.calls) == 1, "no mutation should run on missing product"
+
+
+def test_tracking_preview_lists_all_variants_when_ids_omitted():
+    """variant_ids=None → operate on every variant of the product."""
+    variants = [
+        _variant("100", "S", "REEF-S", [], tracked=False),
+        _variant("101", "M", "REEF-M", [], tracked=False),
+        _variant("102", "L", "REEF-L", [], tracked=False),
+    ]
+    tools, fc = _build([_product_with_variants(variants)])
+    out = tools["update_variant_inventory_tracking"](
+        product_id="555", tracked=True, confirm=False,
+    )
+    assert "PREVIEW" in out
+    assert "Target  : tracked=True" in out
+    assert "Would change (3):" in out
+    assert "Unchanged (0):" in out
+    assert "False → True" in out
+    # Preview must not issue mutations
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == GET_PRODUCT_INVENTORY
+
+
+def test_tracking_confirm_issues_one_mutation_per_changed_variant():
+    variants = [
+        _variant("100", "S", "REEF-S", [], tracked=False),
+        _variant("101", "M", "REEF-M", [], tracked=False),
+    ]
+    tools, fc = _build([
+        _product_with_variants(variants),
+        _tracked_update_ok("gid://shopify/InventoryItem/100", True),
+        _tracked_update_ok("gid://shopify/InventoryItem/101", True),
+    ])
+    out = tools["update_variant_inventory_tracking"](
+        product_id="555", tracked=True, confirm=True,
+    )
+    assert out.startswith("CONFIRMED")
+    assert "Changed (2):" in out
+    # First call is the read; mutations come after with the right GIDs.
+    mutation_calls = fc.calls[1:]
+    assert len(mutation_calls) == 2
+    for i, vid in enumerate(("100", "101")):
+        query, vars_ = mutation_calls[i]
+        assert query == UPDATE_INVENTORY_ITEM_TRACKED
+        assert vars_ == {
+            "id": f"gid://shopify/InventoryItem/{vid}",
+            "input": {"tracked": True},
+        }
+
+
+def test_tracking_unchanged_variants_get_no_mutation():
+    """Variants already at the target state are reported as unchanged; no
+    mutation is issued for them. Saves API calls on repeat runs."""
+    variants = [
+        _variant("100", "S", "REEF-S", [], tracked=True),   # already at target
+        _variant("101", "M", "REEF-M", [], tracked=False),  # needs change
+    ]
+    tools, fc = _build([
+        _product_with_variants(variants),
+        _tracked_update_ok("gid://shopify/InventoryItem/101", True),
+    ])
+    out = tools["update_variant_inventory_tracking"](
+        product_id="555", tracked=True, confirm=True,
+    )
+    assert "Changed (1):" in out
+    assert "Unchanged (1):" in out
+    # Only one mutation: for variant 101
+    assert len(fc.calls) == 2
+    assert fc.calls[1][1]["id"] == "gid://shopify/InventoryItem/101"
+
+
+def test_tracking_all_already_at_target_issues_no_mutations():
+    variants = [
+        _variant("100", "S", "REEF-S", [], tracked=True),
+        _variant("101", "M", "REEF-M", [], tracked=True),
+    ]
+    tools, fc = _build([_product_with_variants(variants)])
+    out = tools["update_variant_inventory_tracking"](
+        product_id="555", tracked=True, confirm=True,
+    )
+    assert out.startswith("CONFIRMED")
+    assert "Changed (0):" in out
+    assert "Unchanged (2):" in out
+    # Only the initial read ran
+    assert len(fc.calls) == 1
+
+
+def test_tracking_variant_ids_filter_applies():
+    """Caller-supplied variant_ids filter the targets; unknown ids are
+    surfaced in an 'Unresolved' block and skipped."""
+    variants = [
+        _variant("100", "S", "REEF-S", [], tracked=False),
+        _variant("101", "M", "REEF-M", [], tracked=False),
+        _variant("102", "L", "REEF-L", [], tracked=False),
+    ]
+    tools, fc = _build([
+        _product_with_variants(variants),
+        _tracked_update_ok("gid://shopify/InventoryItem/100", True),
+    ])
+    out = tools["update_variant_inventory_tracking"](
+        product_id="555",
+        tracked=True,
+        variant_ids=["100", "999"],  # 999 is not on this product
+        confirm=True,
+    )
+    assert "Changed (1):" in out
+    assert "Unresolved variant ids:" in out
+    assert "999" in out
+    # Only variant 100 should have been mutated
+    assert len(fc.calls) == 2
+    assert fc.calls[1][1]["id"] == "gid://shopify/InventoryItem/100"
+
+
+def test_tracking_partial_failure_reports_per_variant():
+    """One failed mutation must not abort the others. Aggregate report lists
+    each outcome."""
+    variants = [
+        _variant("100", "S", "REEF-S", [], tracked=False),
+        _variant("101", "M", "REEF-M", [], tracked=False),
+    ]
+    tools, fc = _build([
+        _product_with_variants(variants),
+        _tracked_update_ok("gid://shopify/InventoryItem/100", True),
+        _tracked_update_err("inventoryItemId", "locked by another process"),
+    ])
+    out = tools["update_variant_inventory_tracking"](
+        product_id="555", tracked=True, confirm=True,
+    )
+    assert out.startswith("CONFIRMED")
+    assert "Changed (1):" in out
+    assert "Failed (1):" in out
+    assert "locked by another process" in out
+
+
+def test_tracking_preview_only_issues_exactly_one_execute_call():
+    """confirm=False must not issue any mutations, even if there are targets."""
+    variants = [_variant("100", "S", "REEF-S", [], tracked=False)]
+    tools, fc = _build([_product_with_variants(variants)])
+    tools["update_variant_inventory_tracking"](
+        product_id="555", tracked=True, confirm=False,
+    )
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == GET_PRODUCT_INVENTORY
+
+
+def test_tracking_product_with_no_variants_issues_no_mutations():
+    """Product exists but has zero variants — confirm is a clean no-op."""
+    tools, fc = _build([_product_with_variants([])])
+    out = tools["update_variant_inventory_tracking"](
+        product_id="555", tracked=True, confirm=True,
+    )
+    assert out.startswith("CONFIRMED")
+    assert "Changed (0):" in out
+    assert "Unchanged (0):" in out
+    assert len(fc.calls) == 1, "only the read should run when there are no targets"
+
+
+def test_tracking_transport_error_mid_loop_does_not_abort_batch():
+    """If client.execute raises on variant N (network glitch, 5xx), prior
+    successes must still be reported and subsequent variants must still be
+    attempted — otherwise a flaky store silently leaves partial state with no
+    log line or user-facing confirmation."""
+    variants = [
+        _variant("100", "S", "REEF-S", [], tracked=False),
+        _variant("101", "M", "REEF-M", [], tracked=False),
+        _variant("102", "L", "REEF-L", [], tracked=False),
+    ]
+
+    class FlakyFakeClient:
+        def __init__(self):
+            self.calls = []
+        def execute(self, query, variables=None):
+            self.calls.append((query, variables))
+            if len(self.calls) == 1:
+                return _product_with_variants(variants)
+            if len(self.calls) == 3:
+                # Variant 101's mutation throws
+                raise RuntimeError("upstream 502")
+            # Variants 100 and 102 succeed
+            return _tracked_update_ok(variables["id"], True)
+
+    srv = CapturingServer()
+    fc = FlakyFakeClient()
+    inventory.register(srv, fc)
+    out = srv.tools["update_variant_inventory_tracking"](
+        product_id="555", tracked=True, confirm=True,
+    )
+    assert out.startswith("CONFIRMED"), out
+    assert "Changed (2):" in out
+    assert "Failed (1):" in out
+    assert "transport error" in out and "upstream 502" in out
+    # All three mutations attempted (1 read + 3 mutation attempts)
+    assert len(fc.calls) == 4
+
+
+def test_tracking_unresolved_variant_ids_are_deduped():
+    """A caller that supplies the same unknown id twice should see it reported
+    once, not twice. Mirrors the dedup behavior in update_variant_inventory_policy."""
+    variants = [_variant("100", "S", "REEF-S", [], tracked=False)]
+    tools, fc = _build([
+        _product_with_variants(variants),
+        _tracked_update_ok("gid://shopify/InventoryItem/100", True),
+    ])
+    out = tools["update_variant_inventory_tracking"](
+        product_id="555",
+        tracked=True,
+        variant_ids=["100", "999", "999", "999"],
+        confirm=True,
+    )
+    # 999 should appear exactly once in the unresolved block
+    assert out.count("• 999") == 1
+
+
+def test_tracking_duplicate_known_variant_ids_are_deduped():
+    """A caller that supplies the same known id twice must not mutate it twice."""
+    variants = [_variant("100", "S", "REEF-S", [], tracked=False)]
+    tools, fc = _build([
+        _product_with_variants(variants),
+        _tracked_update_ok("gid://shopify/InventoryItem/100", True),
+    ])
+    tools["update_variant_inventory_tracking"](
+        product_id="555",
+        tracked=True,
+        variant_ids=["100", "100", "100"],
+        confirm=True,
+    )
+    # Exactly one mutation (plus the read)
+    assert len(fc.calls) == 2
+    assert fc.calls[1][1]["id"] == "gid://shopify/InventoryItem/100"
+
+
+def test_tracking_variant_ids_order_is_preserved():
+    """Caller-supplied variant_ids order must drive mutation order (the old
+    set-comprehension pattern produced non-deterministic ordering)."""
+    variants = [
+        _variant("100", "S", "REEF-S", [], tracked=False),
+        _variant("101", "M", "REEF-M", [], tracked=False),
+        _variant("102", "L", "REEF-L", [], tracked=False),
+    ]
+    tools, fc = _build([
+        _product_with_variants(variants),
+        _tracked_update_ok("gid://shopify/InventoryItem/102", True),
+        _tracked_update_ok("gid://shopify/InventoryItem/100", True),
+        _tracked_update_ok("gid://shopify/InventoryItem/101", True),
+    ])
+    tools["update_variant_inventory_tracking"](
+        product_id="555",
+        tracked=True,
+        variant_ids=["102", "100", "101"],
+        confirm=True,
+    )
+    mutation_ids = [fc.calls[i][1]["id"] for i in range(1, 4)]
+    assert mutation_ids == [
+        "gid://shopify/InventoryItem/102",
+        "gid://shopify/InventoryItem/100",
+        "gid://shopify/InventoryItem/101",
+    ]

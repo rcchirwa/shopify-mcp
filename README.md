@@ -19,12 +19,14 @@ Enables Claude to read products, check inventory, manage collections, handle dis
 | `update_product_status` | Transition product status — ACTIVE / DRAFT / ARCHIVED (preview + confirm) |
 | `update_variant_inventory_policy` | Set variant inventoryPolicy — DENY / CONTINUE (preview + confirm; defaults to all variants) |
 | `get_products_by_collection` | List all products in a collection by handle |
+| `get_product_collections` | List every collection a product belongs to (manual + smart, with type label) |
 
 ### Inventory
 | Tool | Description |
 |------|-------------|
 | `get_inventory` | Get inventory levels for all variants of a product (single query) |
 | `update_inventory` | Set quantity for a variant at a location (preview + confirm) |
+| `update_variant_inventory_tracking` | Toggle `InventoryItem.tracked` on variants — required on POD products before DENY + 0 take effect at the storefront (preview + confirm; defaults to all variants) |
 
 ### Collections
 | Tool | Description |
