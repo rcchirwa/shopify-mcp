@@ -15,6 +15,9 @@ Enables Claude to read products, check inventory, manage collections, handle dis
 | `get_product` | Fetch a single product by id or handle |
 | `update_product_title` | Update a product title (preview + confirm pattern) |
 | `update_product_description` | Update a product's HTML description |
+| `update_product_tags` | Update product tags — replace / append / remove modes (preview + confirm) |
+| `update_product_status` | Transition product status — ACTIVE / DRAFT / ARCHIVED (preview + confirm) |
+| `update_variant_inventory_policy` | Set variant inventoryPolicy — DENY / CONTINUE (preview + confirm; defaults to all variants) |
 | `get_products_by_collection` | List all products in a collection by handle |
 
 ### Inventory
