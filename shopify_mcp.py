@@ -15,6 +15,7 @@ import tools.collections as collections_module
 import tools.discounts as discounts_module
 import tools.orders as orders_module
 import tools.publications as publications_module
+import tools.webhooks as webhooks_module
 
 
 def create_server() -> FastMCP:
@@ -27,6 +28,7 @@ def create_server() -> FastMCP:
     discounts_module.register(server, client)
     orders_module.register(server, client)
     publications_module.register(server, client)
+    webhooks_module.register(server, client)
 
     return server
 
