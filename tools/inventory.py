@@ -22,6 +22,7 @@ query GetProductInventory($id: ID!) {
         sku
         inventoryItem {
           id
+          tracked
           inventoryLevels(first: 10) {
             nodes {
               quantities(names: ["available"]) { name quantity }
@@ -31,6 +32,21 @@ query GetProductInventory($id: ID!) {
         }
       }
     }
+  }
+}
+"""
+
+# Per-variant toggle for InventoryItem.tracked. When tracked=false, Shopify's
+# storefront reports the variant as available regardless of inventoryPolicy or
+# quantity — the vault-product skill needs tracked=true before DENY + 0 take
+# effect at the theme layer. Shopify Admin API 2024-10 exposes inventoryItemUpdate
+# per item; no bulk variant taking a list of (id, input) pairs is documented in
+# this API version, so the caller issues one mutation per variant.
+UPDATE_INVENTORY_ITEM_TRACKED = """
+mutation UpdateInventoryItemTracked($id: ID!, $input: InventoryItemInput!) {
+  inventoryItemUpdate(id: $id, input: $input) {
+    inventoryItem { id tracked }
+    userErrors { field message }
   }
 }
 """
@@ -153,3 +169,152 @@ def register(server: FastMCP, client: ShopifyClient):
             f"item={inventory_item_id} location={location_id} | {current_qty} → {quantity}",
         )
         return f"Done. {preview}"
+
+    @server.tool()
+    def update_variant_inventory_tracking(
+        product_id: str,
+        tracked: bool,
+        variant_ids: list[str] = None,
+        confirm: bool = False,
+    ) -> str:
+        """
+        Toggle InventoryItem.tracked on product variants via inventoryItemUpdate.
+        When variant_ids is omitted, reads all variants of the product and applies
+        the target state to each. When provided, filters to those variant ids;
+        unknown ids are surfaced in the response and skipped. Variants already at
+        the target state are reported as unchanged and no mutation is issued for
+        them. Returns a preview unless confirm=True.
+        """
+        product_gid = to_gid("Product", product_id)
+        data = client.execute(GET_PRODUCT_INVENTORY, {"id": product_gid})
+        product = data.get("product")
+        if not product:
+            return f"No product found with id {product_id}."
+
+        variants = (product.get("variants") or {}).get("nodes", []) or []
+        title = product.get("title", "")
+
+        unresolved: list[str] = []
+        if variant_ids:
+            # Single pass over caller-supplied ids: preserves caller's order for
+            # both targets and unresolved, and dedupes both sides (a caller that
+            # passes the same id twice shouldn't see it mutated twice, nor
+            # reported twice as unresolved).
+            by_gid = {v["id"]: v for v in variants}
+            targets = []
+            seen_target_gids: set = set()
+            seen_unresolved: set = set()
+            for vid in variant_ids:
+                gid = to_gid("ProductVariant", vid)
+                if gid in by_gid:
+                    if gid not in seen_target_gids:
+                        targets.append(by_gid[gid])
+                        seen_target_gids.add(gid)
+                elif vid not in seen_unresolved:
+                    unresolved.append(vid)
+                    seen_unresolved.add(vid)
+        else:
+            targets = list(variants)
+
+        # Split into "needs change" and "unchanged" based on current tracked state.
+        to_change = []
+        unchanged = []
+        for v in targets:
+            current = (v.get("inventoryItem") or {}).get("tracked")
+            if current == tracked:
+                unchanged.append(v)
+            else:
+                to_change.append(v)
+
+        def _variant_line(v, suffix):
+            inv_item = v.get("inventoryItem") or {}
+            return (
+                f"    • {v['title']} — variant_id: {from_gid(v['id'])}, "
+                f"inventory_item: {from_gid(inv_item.get('id', ''))} — {suffix}"
+            )
+
+        change_lines = "\n".join(
+            _variant_line(v, f"{(v.get('inventoryItem') or {}).get('tracked')} → {tracked}")
+            for v in to_change
+        ) or "    (none)"
+        unchanged_lines = "\n".join(
+            _variant_line(v, f"already tracked={tracked}") for v in unchanged
+        ) or "    (none)"
+        unresolved_block = (
+            "\n  Unresolved variant ids:\n" +
+            "\n".join(f"    • {vid}" for vid in unresolved)
+        ) if unresolved else ""
+
+        preview = (
+            f"PREVIEW — Variant inventory tracking update\n"
+            f"  Product : {title} (id: {product_id})\n"
+            f"  Target  : tracked={tracked}\n"
+            f"  Would change ({len(to_change)}):\n{change_lines}\n"
+            f"  Unchanged ({len(unchanged)}):\n{unchanged_lines}"
+            f"{unresolved_block}"
+        )
+
+        if not confirm:
+            return preview + "\n\nTo apply, call again with confirm=True."
+
+        changed = []
+        failed = []
+        for v in to_change:
+            inv_item_gid = (v.get("inventoryItem") or {}).get("id")
+            if not inv_item_gid:
+                failed.append({
+                    "variant": v.get("title"),
+                    "error": "variant has no inventoryItem id",
+                })
+                continue
+            # Isolate transport errors per variant so a mid-loop failure doesn't
+            # abort the batch — prior successes must still be reported and
+            # logged, subsequent variants must still be attempted.
+            try:
+                result = client.execute(
+                    UPDATE_INVENTORY_ITEM_TRACKED,
+                    {"id": inv_item_gid, "input": {"tracked": tracked}},
+                )
+            except Exception as e:
+                failed.append({
+                    "variant": v.get("title"),
+                    "error": f"transport error: {e}",
+                })
+                continue
+            payload = result.get("inventoryItemUpdate", {}) or {}
+            user_errors = payload.get("userErrors", []) or []
+            if user_errors:
+                msgs = "; ".join(
+                    f"{e.get('field')}: {e.get('message')}" for e in user_errors
+                )
+                failed.append({"variant": v.get("title"), "error": msgs})
+            else:
+                changed.append(v)
+
+        changed_lines = "\n".join(
+            _variant_line(v, f"tracked={tracked}") for v in changed
+        ) or "    (none)"
+        failed_block = ""
+        if failed:
+            failed_block = (
+                f"\n  Failed ({len(failed)}):\n" +
+                "\n".join(f"    • {f['variant']}: {f['error']}" for f in failed)
+            )
+
+        log_write(
+            "update_variant_inventory_tracking",
+            f"product={product_id} target=tracked={tracked} "
+            f"changed={[v['title'] for v in changed]} "
+            f"unchanged={[v['title'] for v in unchanged]} "
+            f"failed={len(failed)} unresolved={len(unresolved)}",
+        )
+
+        return (
+            f"CONFIRMED — Variant inventory tracking update\n"
+            f"  Product : {title} (id: {product_id})\n"
+            f"  Target  : tracked={tracked}\n"
+            f"  Changed ({len(changed)}):\n{changed_lines}\n"
+            f"  Unchanged ({len(unchanged)}):\n{unchanged_lines}"
+            f"{failed_block}"
+            f"{unresolved_block}"
+        )

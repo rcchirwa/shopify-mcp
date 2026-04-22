@@ -165,6 +165,27 @@ query GetProductFullByHandle($handle: String!) {
 }
 """
 
+GET_PRODUCT_COLLECTIONS = """
+query GetProductCollections($id: ID!) {
+  product(id: $id) {
+    id
+    title
+    collections(first: 250) {
+      nodes {
+        id
+        handle
+        title
+        ruleSet { appliedDisjunctively }
+      }
+      pageInfo { hasNextPage }
+    }
+  }
+}
+"""
+# Shopify caps this connection at 250 per request. A product with more memberships
+# would need pagination; emit an at-cap warning so operators don't silently miss
+# collections — the whole point of this tool is completeness on the vault path.
+
 GET_PRODUCT_SEO_BY_ID = """
 query GetProductSeoById($id: ID!) {
   product(id: $id) {
@@ -577,6 +598,38 @@ def register(server: FastMCP, client: ShopifyClient):
             f"Variants:\n{variants}\n"
             f"body_html:\n{p.get('bodyHtml') or ''}"
         )
+
+    @server.tool()
+    def get_product_collections(product_id: str) -> str:
+        """List every collection this product belongs to — manual and smart."""
+        data = client.execute(GET_PRODUCT_COLLECTIONS, {"id": to_gid("Product", product_id)})
+        product = data.get("product")
+        if not product:
+            return f"No product found with id {product_id}."
+
+        collections = product.get("collections") or {}
+        nodes = collections.get("nodes", []) or []
+        has_more = (collections.get("pageInfo") or {}).get("hasNextPage", False)
+        header = f"Product: {product.get('title', '')} (id: {product_id})"
+
+        if not nodes:
+            return f"{header}\nCollections (0 total): (none)"
+
+        lines = [header, f"Collections ({len(nodes)} total):"]
+        for c in nodes:
+            # Match the type rule in tools/collections.py:_resolve_collection —
+            # presence of ruleSet means smart (rule-driven), absence means manual.
+            col_type = "smart" if c.get("ruleSet") else "manual"
+            lines.append(
+                f"  • {c.get('title', '')} (handle: {c.get('handle', '')}, "
+                f"id: {from_gid(c.get('id', ''))}, type: {col_type})"
+            )
+        if has_more:
+            lines.append(
+                "  WARNING: product has more than 250 collection memberships — "
+                "additional collections exist but are not listed here."
+            )
+        return "\n".join(lines)
 
     @server.tool()
     def update_product_tags(

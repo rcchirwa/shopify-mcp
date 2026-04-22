@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from tools import products
 from tools.products import (
     GET_PRODUCT_BY_ID,
+    GET_PRODUCT_COLLECTIONS,
     GET_PRODUCT_FULL_BY_ID,
     GET_PRODUCT_SEO_BY_ID,
     GET_PRODUCT_VARIANTS_POLICY,
@@ -897,3 +898,91 @@ def test_policy_at_cap_warning_surfaces_when_reading_250_variants():
         product_id="123", new_policy="DENY", confirm=False,
     )
     assert "WARNING" in out and "250-variant" in out, out
+
+
+# ---------- get_product_collections ----------
+
+def _collection_node(cid, handle, title, smart=False):
+    return {
+        "id": f"gid://shopify/Collection/{cid}",
+        "handle": handle,
+        "title": title,
+        "ruleSet": {"appliedDisjunctively": False} if smart else None,
+    }
+
+
+def _product_collections_read(pid, title, nodes, has_next=False):
+    return {"product": {
+        "id": f"gid://shopify/Product/{pid}",
+        "title": title,
+        "collections": {
+            "nodes": nodes,
+            "pageInfo": {"hasNextPage": has_next},
+        },
+    }}
+
+
+def test_get_product_collections_product_not_found():
+    tools, fc = _build([{"product": None}])
+    out = tools["get_product_collections"](product_id="999")
+    assert out == "No product found with id 999."
+    assert fc.calls[0][0] == GET_PRODUCT_COLLECTIONS
+
+
+def test_get_product_collections_empty_list():
+    tools, fc = _build([_product_collections_read("123", "Hoodie", [])])
+    out = tools["get_product_collections"](product_id="123")
+    assert "Product: Hoodie (id: 123)" in out
+    assert "Collections (0 total): (none)" in out
+
+
+def test_get_product_collections_manual_only():
+    nodes = [
+        _collection_node("10", "fall-2025-merch", "Fall 2025"),
+        _collection_node("11", "vanish", "Vanish Clothing"),
+    ]
+    tools, fc = _build([_product_collections_read("123", "Hoodie", nodes)])
+    out = tools["get_product_collections"](product_id="123")
+    assert "Collections (2 total):" in out
+    assert "Fall 2025 (handle: fall-2025-merch, id: 10, type: manual)" in out
+    assert "Vanish Clothing (handle: vanish, id: 11, type: manual)" in out
+    assert "type: smart" not in out
+
+
+def test_get_product_collections_mixed_manual_and_smart():
+    """A smart collection has a ruleSet; a manual one does not. The type label
+    must differ between them."""
+    nodes = [
+        _collection_node("10", "vanish", "Vanish Clothing", smart=False),
+        _collection_node("20", "best-sellers", "Best Sellers", smart=True),
+    ]
+    tools, fc = _build([_product_collections_read("123", "Hoodie", nodes)])
+    out = tools["get_product_collections"](product_id="123")
+    assert "Collections (2 total):" in out
+    assert "Vanish Clothing (handle: vanish, id: 10, type: manual)" in out
+    assert "Best Sellers (handle: best-sellers, id: 20, type: smart)" in out
+
+
+def test_get_product_collections_uses_product_gid():
+    tools, fc = _build([_product_collections_read("8559386689689", "X", [])])
+    tools["get_product_collections"](product_id="8559386689689")
+    _, vars_ = fc.calls[0]
+    assert vars_ == {"id": "gid://shopify/Product/8559386689689"}
+
+
+def test_get_product_collections_warns_when_more_pages_available():
+    """hasNextPage=True → surface an at-cap warning so operators know the list
+    is truncated. The whole point of this tool is completeness on the vault
+    path; a silent truncation re-introduces the bug it was built to fix."""
+    nodes = [_collection_node(str(i), f"c-{i}", f"Col {i}") for i in range(3)]
+    tools, fc = _build([_product_collections_read("123", "X", nodes, has_next=True)])
+    out = tools["get_product_collections"](product_id="123")
+    assert "WARNING" in out
+    assert "250" in out
+
+
+def test_get_product_collections_no_warning_when_all_on_one_page():
+    nodes = [_collection_node("10", "c-10", "Col 10")]
+    tools, fc = _build([_product_collections_read("123", "X", nodes, has_next=False)])
+    out = tools["get_product_collections"](product_id="123")
+    assert "WARNING" not in out
