@@ -120,17 +120,22 @@ def _resolve_names(client: ShopifyClient, cache: dict, names: list) -> tuple:
 def _resolve_ids(client: ShopifyClient, cache: dict, pub_ids: list) -> tuple:
     """Map publication IDs → publication nodes. Unknown IDs go to `failed`,
     mirroring `_resolve_names` so both paths short-circuit before mutating.
+    Accepts both full GID form (`gid://shopify/Publication/123`) and raw
+    numeric form (`"123"` or `123`) — the latter is what `get_product_publications`
+    prints to the user, so copy-paste between tools works.
     Returns (resolved: list[node], failed: list[dict])."""
     _ensure_channels(client, cache)
     resolved = []
     failed = []
     for pid in pub_ids:
-        node = cache["by_id"].get(pid)
+        pid_str = str(pid)
+        pid_gid = pid_str if pid_str.startswith("gid://") else to_gid("Publication", pid_str)
+        node = cache["by_id"].get(pid_gid)
         if node:
             resolved.append(node)
         else:
             failed.append({
-                "channel_name": pid,
+                "channel_name": pid_str,
                 "error": "publication id not found on this store",
             })
     return resolved, failed

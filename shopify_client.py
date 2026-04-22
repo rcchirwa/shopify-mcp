@@ -44,7 +44,10 @@ class ShopifyClient:
         load_dotenv(dotenv_path=_ENV_PATH, override=True)
         store_url = os.getenv("SHOPIFY_STORE_URL")
         access_token = os.getenv("SHOPIFY_ACCESS_TOKEN")
-        api_version = os.getenv("SHOPIFY_API_VERSION", "2024-01")
+        # 2024-10: current stable. `InventoryLevel.available` was removed in
+        # 2024-07 in favor of `quantities(names: ["available"])`, so older
+        # pins will fail the inventory queries.
+        api_version = os.getenv("SHOPIFY_API_VERSION", "2024-10")
 
         if not store_url or not access_token:
             raise ValueError(
