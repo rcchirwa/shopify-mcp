@@ -175,6 +175,54 @@ query GetProductSeoById($id: ID!) {
 }
 """
 
+UPDATE_PRODUCT_TAGS = """
+mutation UpdateProductTags($input: ProductInput!) {
+  productUpdate(input: $input) {
+    product { id tags }
+    userErrors { field message }
+  }
+}
+"""
+
+UPDATE_PRODUCT_STATUS = """
+mutation UpdateProductStatus($input: ProductInput!) {
+  productUpdate(input: $input) {
+    product { id status }
+    userErrors { field message }
+  }
+}
+"""
+
+GET_PRODUCT_VARIANTS_POLICY = """
+query GetProductVariantsPolicy($id: ID!) {
+  product(id: $id) {
+    id
+    title
+    variants(first: 250) {
+      nodes { id title inventoryPolicy }
+    }
+  }
+}
+"""
+# Shopify's per-request ceiling for the variants connection is 250; a product
+# that actually hits this cap would need paginated reads + chunked bulk updates.
+# Warn at-cap so operators can see they've hit a latent limit.
+VARIANTS_PAGE_CAP = 250
+
+UPDATE_PRODUCT_VARIANTS_POLICY = """
+mutation UpdateProductVariantsPolicy($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+  productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+    product { id }
+    productVariants { id inventoryPolicy }
+    userErrors { field message }
+  }
+}
+"""
+
+PRODUCT_STATUS_VALUES = ("ACTIVE", "DRAFT", "ARCHIVED")
+INVENTORY_POLICY_VALUES = ("DENY", "CONTINUE")
+TAG_MODES = ("replace", "append", "remove")
+
 
 def register(server: FastMCP, client: ShopifyClient):
 
@@ -528,4 +576,256 @@ def register(server: FastMCP, client: ShopifyClient):
             f"SEO description: {seo_desc}\n"
             f"Variants:\n{variants}\n"
             f"body_html:\n{p.get('bodyHtml') or ''}"
+        )
+
+    @server.tool()
+    def update_product_tags(
+        product_id: str,
+        new_tags: list[str] = None,
+        mode: str = "replace",
+        confirm: bool = False,
+    ) -> str:
+        """
+        Update a product's tags. Modes: replace (set tags verbatim — no pre-read),
+        append (case-insensitive merge, existing casing wins), remove
+        (case-insensitive strip). append and remove pre-read the product to
+        compute the diff. Returns a preview unless confirm=True.
+        """
+        if mode not in TAG_MODES:
+            return f"Error: mode must be one of {', '.join(TAG_MODES)}."
+        if not new_tags:
+            return "Error: new_tags must be a non-empty list."
+
+        gid = to_gid("Product", product_id)
+        old_tags: list[str] = []
+        if mode in ("append", "remove"):
+            data = client.execute(GET_PRODUCT_FULL_BY_ID, {"id": gid})
+            product = data.get("product")
+            if not product:
+                return f"No product found with id {product_id}."
+            old_tags = list(product.get("tags") or [])
+
+        if mode == "replace":
+            target = list(new_tags)
+        elif mode == "append":
+            # Case-insensitive dedup matching Shopify's server-side tag
+            # normalization — existing casing wins on collision.
+            target = list(old_tags)
+            seen_lower = {t.lower() for t in target}
+            for t in new_tags:
+                if t.lower() not in seen_lower:
+                    target.append(t)
+                    seen_lower.add(t.lower())
+        else:  # remove
+            strip_lower = {t.lower() for t in new_tags}
+            target = [t for t in old_tags if t.lower() not in strip_lower]
+
+        if mode == "replace":
+            body = (
+                f"  Product ID : {product_id}\n"
+                f"  Mode       : replace (no pre-read — overwrites verbatim)\n"
+                f"  New tags   : {', '.join(target) if target else '(none)'}"
+            )
+        else:
+            old_lower = {t.lower() for t in old_tags}
+            new_lower = {t.lower() for t in target}
+            added = [t for t in target if t.lower() not in old_lower]
+            removed = [t for t in old_tags if t.lower() not in new_lower]
+            body = (
+                f"  Product ID : {product_id}\n"
+                f"  Mode       : {mode}\n"
+                f"  Old tags   : {', '.join(old_tags) if old_tags else '(none)'}\n"
+                f"  New tags   : {', '.join(target) if target else '(none)'}\n"
+                f"  Added      : {', '.join(added) if added else '(none)'}\n"
+                f"  Removed    : {', '.join(removed) if removed else '(none)'}"
+            )
+
+        if not confirm:
+            return (
+                f"PREVIEW — Product tags update\n{body}"
+                f"\n\nTo apply, call again with confirm=True."
+            )
+
+        result = client.execute(UPDATE_PRODUCT_TAGS, {
+            "input": {"id": gid, "tags": target}
+        })
+        user_errors = result.get("productUpdate", {}).get("userErrors", [])
+        if user_errors:
+            msgs = "; ".join(f"{e['field']}: {e['message']}" for e in user_errors)
+            return f"Error: {msgs}"
+
+        log_write(
+            "update_product_tags",
+            f"id={product_id} mode={mode} | {len(old_tags)} tags → {len(target)} tags",
+        )
+        return f"CONFIRMED — Product tags updated\n{body}"
+
+    @server.tool()
+    def update_product_status(
+        product_id: str,
+        new_status: str,
+        confirm: bool = False,
+    ) -> str:
+        """
+        Update a product's status: ACTIVE, DRAFT, or ARCHIVED. Reads current
+        status for the preview. Returns a preview unless confirm=True.
+        """
+        if new_status not in PRODUCT_STATUS_VALUES:
+            return (
+                f"Error: new_status must be one of {', '.join(PRODUCT_STATUS_VALUES)}."
+            )
+
+        gid = to_gid("Product", product_id)
+        data = client.execute(GET_PRODUCT_BY_ID, {"id": gid})
+        product = data.get("product")
+        if not product:
+            return f"No product found with id {product_id}."
+        old_status = product.get("status") or "(unknown)"
+
+        no_op_suffix = "  (no-op — already at target status)" if old_status == new_status else ""
+        body = (
+            f"  Product ID : {product_id}\n"
+            f"  Old status : {old_status}\n"
+            f"  New status : {new_status}{no_op_suffix}"
+        )
+
+        if not confirm:
+            return (
+                f"PREVIEW — Product status update\n{body}"
+                f"\n\nTo apply, call again with confirm=True."
+            )
+
+        result = client.execute(UPDATE_PRODUCT_STATUS, {
+            "input": {"id": gid, "status": new_status}
+        })
+        user_errors = result.get("productUpdate", {}).get("userErrors", [])
+        if user_errors:
+            msgs = "; ".join(f"{e['field']}: {e['message']}" for e in user_errors)
+            return f"Error: {msgs}"
+
+        log_write(
+            "update_product_status",
+            f"id={product_id} | {old_status} → {new_status}",
+        )
+        return f"CONFIRMED — Product status updated\n{body}"
+
+    @server.tool()
+    def update_variant_inventory_policy(
+        product_id: str,
+        new_policy: str,
+        variant_ids: list[str] = None,
+        confirm: bool = False,
+    ) -> str:
+        """
+        Set inventoryPolicy (DENY or CONTINUE) on product variants via
+        productVariantsBulkUpdate. When variant_ids is omitted, reads all
+        variants of the product and applies the policy to each. When provided,
+        filters to those variant ids; unknown ids are surfaced in the response
+        and skipped. Returns a preview unless confirm=True.
+        """
+        if new_policy not in INVENTORY_POLICY_VALUES:
+            return (
+                f"Error: new_policy must be one of {', '.join(INVENTORY_POLICY_VALUES)}."
+            )
+
+        product_gid = to_gid("Product", product_id)
+        data = client.execute(GET_PRODUCT_VARIANTS_POLICY, {"id": product_gid})
+        product = data.get("product")
+        if not product:
+            return f"No product found with id {product_id}."
+
+        variants = (product.get("variants") or {}).get("nodes", []) or []
+        title = product.get("title", "")
+        at_cap_warning = (
+            f"  WARNING: variant read hit the {VARIANTS_PAGE_CAP}-variant page "
+            f"cap — additional variants (if any) are not covered by this call."
+        ) if len(variants) >= VARIANTS_PAGE_CAP else ""
+
+        unresolved: list[str] = []
+        if variant_ids:
+            requested_gids = {to_gid("ProductVariant", vid) for vid in variant_ids}
+            by_gid = {v["id"]: v for v in variants}
+            targets = [by_gid[g] for g in requested_gids if g in by_gid]
+            seen = set()
+            unresolved = []
+            for vid in variant_ids:
+                if to_gid("ProductVariant", vid) in by_gid or vid in seen:
+                    continue
+                seen.add(vid)
+                unresolved.append(vid)
+        else:
+            targets = list(variants)
+
+        target_lines = "\n".join(
+            f"    • {v['title']} — id: {from_gid(v['id'])} — "
+            f"{v.get('inventoryPolicy', '(unknown)')} → {new_policy}"
+            for v in targets
+        ) or "    (none)"
+        unresolved_block = (
+            "\n  Unresolved variant ids:\n" +
+            "\n".join(f"    • {vid}" for vid in unresolved)
+        ) if unresolved else ""
+
+        warning_block = f"\n{at_cap_warning}" if at_cap_warning else ""
+        preview = (
+            f"PREVIEW — Variant inventory policy update\n"
+            f"  Product    : {title} (id: {product_id})\n"
+            f"  New policy : {new_policy}\n"
+            f"  Targets ({len(targets)}):\n{target_lines}"
+            f"{unresolved_block}"
+            f"{warning_block}"
+        )
+
+        if not confirm:
+            return preview + "\n\nTo apply, call again with confirm=True."
+
+        if not targets:
+            body = (
+                f"CONFIRMED — Variant inventory policy update (no-op)\n"
+                f"  Product    : {title} (id: {product_id})\n"
+                f"  New policy : {new_policy}\n"
+                f"  Targets    : (none — nothing to update)"
+                f"{unresolved_block}"
+                f"{warning_block}"
+            )
+            log_write(
+                "update_variant_inventory_policy",
+                f"product={product_id} policy={new_policy} variants=0 unresolved={len(unresolved)}",
+            )
+            return body
+
+        variants_input = [
+            {"id": v["id"], "inventoryPolicy": new_policy} for v in targets
+        ]
+        result = client.execute(UPDATE_PRODUCT_VARIANTS_POLICY, {
+            "productId": product_gid,
+            "variants": variants_input,
+        })
+        payload = result.get("productVariantsBulkUpdate", {}) or {}
+        user_errors = payload.get("userErrors", []) or []
+        if user_errors:
+            def _fmt(e):
+                field_path = ".".join(str(f) for f in (e.get("field") or []))
+                return f"{field_path or '(no field)'}: {e.get('message', '')}"
+            msgs = "; ".join(_fmt(e) for e in user_errors)
+            return f"Error: {msgs}"
+
+        updated = payload.get("productVariants") or []
+        updated_lines = "\n".join(
+            f"    • id: {from_gid(v['id'])} — inventoryPolicy: {v.get('inventoryPolicy')}"
+            for v in updated
+        ) or "    (none returned)"
+
+        log_write(
+            "update_variant_inventory_policy",
+            f"product={product_id} policy={new_policy} variants={len(targets)} "
+            f"unresolved={len(unresolved)}",
+        )
+        return (
+            f"CONFIRMED — Variant inventory policy update\n"
+            f"  Product    : {title} (id: {product_id})\n"
+            f"  New policy : {new_policy}\n"
+            f"  Updated ({len(updated)}):\n{updated_lines}"
+            f"{unresolved_block}"
+            f"{warning_block}"
         )
