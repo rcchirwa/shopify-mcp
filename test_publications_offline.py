@@ -487,3 +487,77 @@ def test_set_declarative_requires_channel_names():
     tools, fc = _build([])
     out = tools["set_product_publications"](product_id="123", confirm=True)
     assert "Provide channel_names" in out
+
+
+# ---------- numeric publication_id normalization ----------
+# get_product_publications prints numeric IDs (GID prefix stripped), so users
+# copy-pasting those IDs into publish/unpublish must succeed even though the
+# cache is keyed by full GID.
+
+def test_publish_accepts_numeric_publication_id():
+    tools, fc = _build([
+        _channels_response(),
+        _product_pubs(pid="123", published_ids=[], not_published_ids=[1, 2, 3]),
+        _publish_ok(),
+    ])
+    out = tools["publish_product_to_channels"](
+        product_id="123",
+        publication_ids=["1"],  # bare numeric, as get_product_publications prints
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED")
+    # The mutation must receive the full GID, not the bare numeric.
+    _, vars_put = fc.calls[2]
+    assert vars_put["input"] == [{"publicationId": ONLINE["id"]}]
+
+
+def test_unpublish_accepts_numeric_publication_id():
+    tools, fc = _build([
+        _channels_response(),
+        _product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3]),
+        _unpublish_ok(),
+    ])
+    out = tools["unpublish_product_from_channels"](
+        product_id="123",
+        publication_ids=["1"],
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED")
+    _, vars_put = fc.calls[2]
+    assert vars_put["input"] == [{"publicationId": ONLINE["id"]}]
+
+
+def test_unpublish_accepts_mixed_gid_and_numeric_ids():
+    tools, fc = _build([
+        _channels_response(),
+        _product_pubs(pid="123", published_ids=[1, 2], not_published_ids=[3, 4]),
+        _unpublish_ok(),
+    ])
+    out = tools["unpublish_product_from_channels"](
+        product_id="123",
+        publication_ids=["1", POS["id"]],  # numeric + full GID in same call
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED")
+    _, vars_put = fc.calls[2]
+    submitted_ids = {i["publicationId"] for i in vars_put["input"]}
+    assert submitted_ids == {ONLINE["id"], POS["id"]}
+
+
+def test_unknown_numeric_publication_id_reports_raw_input_in_failure():
+    """Unknown numeric IDs should still land in `failed` — and the error line
+    should show the numeric ID the user passed, not a mangled GID string."""
+    tools, fc = _build([
+        _channels_response(),
+        _product_pubs(pid="123", published_ids=[], not_published_ids=[1, 2, 3]),
+        _publish_ok(),
+    ])
+    out = tools["publish_product_to_channels"](
+        product_id="123",
+        publication_ids=["1", "99999"],
+        confirm=True,
+    )
+    # Known id gets published; unknown numeric id lands in failed with its raw form.
+    _, vars_put = fc.calls[2]
+    assert vars_put["input"] == [{"publicationId": ONLINE["id"]}]
+    assert "99999" in out and "not found" in out
