@@ -12,6 +12,7 @@ Usage:
 """
 
 import os
+import re
 import sys
 
 import pytest
@@ -523,8 +524,10 @@ def test_tracking_unresolved_variant_ids_are_deduped():
         variant_ids=["100", "999", "999", "999"],
         confirm=True,
     )
-    # 999 should appear exactly once in the unresolved block
-    assert out.count("• 999") == 1
+    # 999 should appear exactly once in the unresolved block — match the full
+    # bulleted line so a substring like "• 9999" from a future test wouldn't
+    # incorrectly satisfy the old `count("• 999") == 1` assertion.
+    assert len(re.findall(r"^    • 999$", out, re.MULTILINE)) == 1
 
 
 def test_tracking_duplicate_known_variant_ids_are_deduped():
