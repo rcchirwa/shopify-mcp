@@ -493,7 +493,8 @@ def test_upload_staged_target_put_failure_labels_stage_upload():
         patch("tools.media._upload._reject_if_private_host", return_value=None),
         patch("tools.media._upload.requests.get", return_value=_make_http_response()),
         patch(
-            "tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=500, text="oops")
+            "tools.media._upload.requests.put",
+            return_value=FakeHTTPResponse(status_code=500, text="oops"),
         ),
     ):
         out = tools["upload_product_image"](
@@ -1050,7 +1051,9 @@ def test_format_bytes_kb_and_mb_branches():
 def test_download_image_request_exception_wrapped():
     with (
         patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", side_effect=_requests.ConnectionError("dns timeout")),
+        patch(
+            "tools.media._upload.requests.get", side_effect=_requests.ConnectionError("dns timeout")
+        ),
         pytest.raises(RuntimeError) as exc,
     ):
         _download_image("https://cdn.example.com/a.jpg")
@@ -1150,7 +1153,10 @@ def test_upload_bytes_to_target_request_exception_wrapped():
         "parameters": [{"name": "content_type", "value": "image/jpeg"}],
     }
     with (
-        patch("tools.media._upload.requests.put", side_effect=_requests.ConnectionError("socket reset")),
+        patch(
+            "tools.media._upload.requests.put",
+            side_effect=_requests.ConnectionError("socket reset"),
+        ),
         pytest.raises(RuntimeError) as exc,
     ):
         _upload_bytes_to_target(target, b"bytes")
