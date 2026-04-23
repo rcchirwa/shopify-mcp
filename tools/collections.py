@@ -11,6 +11,7 @@ their contents are driven by rules; direct membership writes have no effect.
 from mcp.server.fastmcp import FastMCP
 
 from shopify_client import (
+    JOB_POLL_TIMEOUT_S,
     ShopifyClient,
     format_user_errors,
     from_gid,
@@ -19,11 +20,6 @@ from shopify_client import (
     with_confirm_hint,
 )
 from tools._log import log_write
-
-# When a membership mutation returns `job.done=false`, poll the job node until
-# it flips or the budget is exhausted. Single-product writes usually come back
-# done-on-first-response; the budget matters for jobs that genuinely run async.
-_JOB_POLL_TIMEOUT_S = 10
 
 GET_COLLECTION_BY_HANDLE = """
 query GetCollectionByHandle($handle: String!) {
@@ -47,7 +43,7 @@ mutation UpdateCollection($input: CollectionInput!) {
 """
 
 # Both membership mutations return an async `job` in 2024-07+. If the initial
-# response has done=false, poll_job() blocks up to _JOB_POLL_TIMEOUT_S so the
+# response has done=false, poll_job() blocks up to JOB_POLL_TIMEOUT_S so the
 # caller sees a final done state instead of an indeterminate one.
 ADD_PRODUCTS_TO_COLLECTION = """
 mutation AddProductsToCollection($id: ID!, $productIds: [ID!]!) {
@@ -220,7 +216,7 @@ def register(server: FastMCP, client: ShopifyClient):
         # product writes), the extra round-trip is pure overhead.
         poll_result = None
         if job_id and not initial_done:
-            poll_result = poll_job(client, job_id, timeout_s=_JOB_POLL_TIMEOUT_S)
+            poll_result = poll_job(client, job_id, timeout_s=JOB_POLL_TIMEOUT_S)
 
         final_done = poll_result["done"] if poll_result else initial_done
         elapsed_s = poll_result["elapsed_s"] if poll_result else 0.0
@@ -249,7 +245,7 @@ def register(server: FastMCP, client: ShopifyClient):
             elif timed_out:
                 body += (
                     f"\n  Job        : {numeric} (done=False, still running "
-                    f"server-side after {_JOB_POLL_TIMEOUT_S}s timeout — "
+                    f"server-side after {JOB_POLL_TIMEOUT_S}s timeout — "
                     f"operation likely completed, verify via get_collection)"
                 )
         return body
