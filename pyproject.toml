@@ -7,11 +7,24 @@ name = "shopify-mcp"
 version = "0.1.0"
 description = "Shopify MCP server — Model Context Protocol tools for Shopify Admin API."
 requires-python = ">=3.10"
-# Runtime deps stay in requirements.txt, dev deps in requirements-dev.txt.
-# This [project] block exists solely to make the repo installable via
-# `pip install -e .` so test files don't need a sys.path prelude to find
-# shopify_client / tools / validators / _testing. Consolidating deps into
-# pyproject.toml is a deliberate follow-up, not this change.
+dependencies = [
+    "mcp>=1.0.0",
+    "python-dotenv>=1.0.0",
+    "requests>=2.31.0",
+    "gql[requests]>=3.4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "coverage>=7",
+]
+
+[project.scripts]
+# Installed into the venv's bin/ by `pip install -e .`. Lets Claude Desktop
+# launch the server via a single command path (`.venv/bin/shopify-mcp`)
+# instead of splitting across Python interpreter + script path.
+shopify-mcp = "shopify_mcp:main"
 
 [tool.setuptools]
 py-modules = ["shopify_client", "shopify_mcp"]
