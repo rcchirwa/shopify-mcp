@@ -3,3 +3,10 @@
 # It requires SHOPIFY_STORE_URL + SHOPIFY_ACCESS_TOKEN and would fail in CI
 # (and locally without a configured .env). Exclude it from pytest discovery.
 addopts = "--ignore=test_shopify_mcp.py"
+
+[tool.coverage.run]
+# Single source of truth for what coverage measures — consumed by both
+# `coverage run` locally and the CI workflow, so the two can't drift.
+# `_testing/` is intentionally excluded: it holds test doubles exercised
+# only through the offline suites, not production code worth gating on.
+source = ["shopify_client", "tools", "validators"]

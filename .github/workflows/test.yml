@@ -24,7 +24,10 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt coverage
       - name: Run offline tests under coverage
-        run: coverage run --source=shopify_client,tools,validators -m pytest test_*_offline.py -v
+        # Source list lives in pyproject.toml [tool.coverage.run] so local
+        # runs and CI measure the same packages. Don't re-specify --source
+        # here — it would override the config instead of layering on top.
+        run: coverage run -m pytest test_*_offline.py -v
       - name: Enforce 100% coverage
         # `coverage report` prints the per-file table plus TOTAL percentage.
         # `--fail-under=100` exits non-zero if TOTAL drops below 100%, failing
