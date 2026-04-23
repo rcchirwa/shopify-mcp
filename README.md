@@ -106,18 +106,20 @@ source .venv/bin/activate
 ### 3. Install dependencies
 
 ```bash
-pip install -e . -r requirements.txt
+pip install -e .
 ```
 
-The `-e .` installs the repo as an editable package so `shopify_client`,
-`tools`, `validators`, and `_testing` are importable from any working
-directory. `-r requirements.txt` pulls in runtime dependencies.
+Installs the repo as an editable package along with all runtime
+dependencies (`mcp`, `python-dotenv`, `requests`, `gql[requests]`),
+declared in [pyproject.toml](pyproject.toml). `shopify_client`, `tools`,
+`validators`, and `_testing` become importable from any working
+directory, and a `shopify-mcp` console command lands in `.venv/bin/`.
 
-For contributors running the test suite, use `requirements-dev.txt`
-instead, which pulls in runtime deps plus `pytest` and `coverage`:
+For contributors running the test suite, install with the `dev` extra
+to also pull in `pytest` and `coverage`:
 
 ```bash
-pip install -e . -r requirements-dev.txt
+pip install -e .[dev]
 ```
 
 ### 4. Configure credentials
@@ -190,8 +192,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 {
   "mcpServers": {
     "shopify-aon": {
-      "command": "/Users/YOUR_USERNAME/shopify-mcp/.venv/bin/python",
-      "args": ["/Users/YOUR_USERNAME/shopify-mcp/shopify_mcp.py"],
+      "command": "/Users/YOUR_USERNAME/shopify-mcp/.venv/bin/shopify-mcp",
       "env": {
         "SHOPIFY_STORE_URL": "your-store.myshopify.com",
         "SHOPIFY_ACCESS_TOKEN": "shpat_xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
@@ -201,6 +202,13 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
   }
 }
 ```
+
+The `shopify-mcp` command is registered by `pip install -e .` via the
+`[project.scripts]` entry in [pyproject.toml](pyproject.toml) — it's a
+thin wrapper around `shopify_mcp:main`. The older form (`command` set
+to the venv's Python with `args: ["shopify_mcp.py"]`) still works if
+you have it wired up; the console script is just a cleaner one-path
+alternative.
 
 Replace `YOUR_USERNAME` with your macOS username (`whoami` in Terminal).
 
@@ -243,7 +251,7 @@ shopify-mcp/
 │   └── media.py
 ├── validators/
 │   └── naming.py           # AON + Vanish title convention validator
-├── requirements.txt
+├── pyproject.toml          # Package metadata, deps, console script, test/coverage config
 ├── test_shopify_mcp.py
 ├── .env.example
 └── .gitignore

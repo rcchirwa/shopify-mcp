@@ -1,7 +1,0 @@
-# Dev-only dependencies: test runner and coverage tool.
-# Runtime deps (what the MCP server itself needs to execute) live in
-# requirements.txt — install from there for production, from this file
-# for local test runs and in CI.
--r requirements.txt
-pytest>=7
-coverage>=7
