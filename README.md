@@ -106,7 +106,18 @@ source .venv/bin/activate
 ### 3. Install dependencies
 
 ```bash
-pip install -r requirements.txt
+pip install -e . -r requirements.txt
+```
+
+The `-e .` installs the repo as an editable package so `shopify_client`,
+`tools`, `validators`, and `_testing` are importable from any working
+directory. `-r requirements.txt` pulls in runtime dependencies.
+
+For contributors running the test suite, use `requirements-dev.txt`
+instead, which pulls in runtime deps plus `pytest` and `coverage`:
+
+```bash
+pip install -e . -r requirements-dev.txt
 ```
 
 ### 4. Configure credentials

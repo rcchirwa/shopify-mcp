@@ -12,10 +12,7 @@ even on failure partway through.
 """
 
 import sys
-import os
 import re
-
-sys.path.insert(0, os.path.dirname(__file__))
 
 from shopify_client import ShopifyClient
 import tools.webhooks as webhooks_module

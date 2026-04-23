@@ -11,12 +11,7 @@ Usage:
   pytest test_collections_offline.py -v
 """
 
-import os
-import sys
-
 import pytest
-
-sys.path.insert(0, os.path.dirname(__file__))
 
 from tools import collections
 from tools.collections import (

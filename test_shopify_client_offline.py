@@ -11,11 +11,8 @@ Usage:
 """
 
 import os
-import sys
 
 import pytest
-
-sys.path.insert(0, os.path.dirname(__file__))
 
 from gql.transport.exceptions import TransportQueryError, TransportServerError
 

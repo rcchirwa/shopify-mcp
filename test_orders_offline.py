@@ -11,12 +11,7 @@ Usage:
   pytest test_orders_offline.py -v
 """
 
-import os
-import sys
-
 import pytest
-
-sys.path.insert(0, os.path.dirname(__file__))
 
 from tools import orders
 from tools.orders import GET_ORDERS, GET_ORDER_BY_ID

@@ -11,13 +11,9 @@ Usage:
   pytest test_discounts_offline.py -v
 """
 
-import os
 import re
-import sys
 
 import pytest
-
-sys.path.insert(0, os.path.dirname(__file__))
 
 from tools import discounts
 from tools.discounts import (
