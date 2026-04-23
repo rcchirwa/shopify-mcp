@@ -16,14 +16,9 @@ from shopify_client import (
     with_confirm_hint,
 )
 from validators.naming import format_validation_diff
+from validators.seo import SEO_TITLE_MAX_CHARS, SEO_DESCRIPTION_MAX_CHARS
 from tools._log import log_write
 from tools._filters import filter_variant_targets
-
-# SEO field length thresholds — above these, Google's SERP is likely to truncate.
-# Sources: typical SERP pixel budget translates to ~70 chars for title and
-# ~160 chars for meta description at default font/zoom.
-SEO_TITLE_MAX_CHARS = 70
-SEO_DESCRIPTION_MAX_CHARS = 160
 
 
 def slugify_shopify_handle(title: str) -> str:
