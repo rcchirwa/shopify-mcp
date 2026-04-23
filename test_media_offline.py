@@ -29,7 +29,6 @@ from tools.media import (
     _as_product_gid,
     _download_image,
     _format_bytes,
-    _reject_if_private_host,
     _render_media_list,
     _upload_bytes_to_target,
 )
@@ -948,75 +947,21 @@ def test_upload_failed_processing_still_reorder_when_position_set():
     assert PRODUCT_REORDER_MEDIA not in [c[0] for c in fc.calls]
 
 
-# ---------- SSRF defense (_reject_if_private_host) ----------
-
-
-def _resolve_to(*ips):
-    """Build a getaddrinfo-shaped return value for the given IPs."""
-    return [(socket.AF_INET, 0, 0, "", (ip, 0)) for ip in ips]
-
-
-def test_ssrf_rejects_rfc1918_private():
-    with (
-        patch("tools.media.socket.getaddrinfo", return_value=_resolve_to("10.0.0.5")),
-        pytest.raises(RuntimeError) as exc,
-    ):
-        _reject_if_private_host("https://internal.corp/hero.jpg")
-    msg = str(exc.value)
-    assert "10.0.0.5" in msg and "SSRF" in msg
-
-
-def test_ssrf_rejects_link_local_imds():
-    """169.254.169.254 is the AWS/GCP IMDS endpoint — the textbook SSRF target."""
-    with (
-        patch("tools.media.socket.getaddrinfo", return_value=_resolve_to("169.254.169.254")),
-        pytest.raises(RuntimeError, match=r"169\.254\.169\.254"),
-    ):
-        _reject_if_private_host("https://metadata.example/token")
-
-
-def test_ssrf_rejects_loopback():
-    with (
-        patch("tools.media.socket.getaddrinfo", return_value=_resolve_to("127.0.0.1")),
-        pytest.raises(RuntimeError),
-    ):
-        _reject_if_private_host("https://localhost.example/hero.jpg")
-
-
-def test_ssrf_rejects_any_private_ip_in_multi_record_resolution():
-    """If a host resolves to multiple IPs and ANY are private, reject. A
-    host that returns a mix of public and private addresses is often a
-    rebinding attempt."""
-    with (
-        patch(
-            "tools.media.socket.getaddrinfo", return_value=_resolve_to("93.184.216.34", "10.0.0.5")
-        ),
-        pytest.raises(RuntimeError, match=r"10\.0\.0\.5"),
-    ):
-        _reject_if_private_host("https://mixed.example/hero.jpg")
-
-
-def test_ssrf_accepts_public_ip():
-    """example.com's canonical IP — must pass."""
-    with patch("tools.media.socket.getaddrinfo", return_value=_resolve_to("93.184.216.34")):
-        _reject_if_private_host("https://cdn.example.com/hero.jpg")  # no raise
-
-
-def test_ssrf_unresolvable_host_is_rejected():
-    with (
-        patch(
-            "tools.media.socket.getaddrinfo", side_effect=socket.gaierror("name resolution failed")
-        ),
-        pytest.raises(RuntimeError, match="could not resolve host"),
-    ):
-        _reject_if_private_host("https://definitely-not-a-real-host.invalid/a.jpg")
+# ---------- upload pipeline: SSRF rejection surfaces at stage=download ----------
+#
+# The SSRF guard itself (and its edge-shape regression suite) lives in
+# `test_url_safety_offline.py`. This test stays here because it exercises
+# the upload pipeline's stage-error labelling, not the guard's logic.
 
 
 def test_upload_ssrf_private_host_labels_download_stage():
     """End-to-end: an SSRF-private URL is rejected inside `_download_image`,
     which bubbles up to the caller as `Error at stage=download:`."""
     tools, fc = _build([_product_media_read([])])
-    with patch("tools.media.socket.getaddrinfo", return_value=_resolve_to("10.0.0.5")):
+    with patch(
+        "tools._url_safety.socket.getaddrinfo",
+        return_value=[(socket.AF_INET, 0, 0, "", ("10.0.0.5", 0))],
+    ):
         out = tools["upload_product_image"](
             product_id="123",
             source="https://internal.corp/hero.jpg",
@@ -1097,47 +1042,6 @@ def test_format_bytes_non_numeric_returns_placeholder():
 def test_format_bytes_kb_and_mb_branches():
     assert _format_bytes(2048) == "2.0 KB"
     assert _format_bytes(5 * 1024 * 1024) == "5.00 MB"
-
-
-# ---------- _reject_if_private_host edge shapes ----------
-
-
-def test_reject_if_private_host_no_hostname_raises():
-    """A URL with no hostname (e.g. `https:///path`) can't be resolved —
-    refuse up front rather than passing through to getaddrinfo with None."""
-    with pytest.raises(RuntimeError, match="no hostname"):
-        _reject_if_private_host("https:///no-host")
-
-
-def test_reject_if_private_host_skips_unparseable_ip_entries():
-    """If getaddrinfo returns a malformed IP string (shouldn't happen in
-    practice, but defensive), skip that entry rather than crashing."""
-    # Mix a garbage entry with a public IP — must not raise.
-    results = [
-        (socket.AF_INET, 0, 0, "", ("not-an-ip", 0)),
-        (socket.AF_INET, 0, 0, "", ("93.184.216.34", 0)),
-    ]
-    with patch("tools.media.socket.getaddrinfo", return_value=results):
-        _reject_if_private_host("https://example.com/a.jpg")  # must not raise
-
-
-def test_reject_if_private_host_still_rejects_private_ip_after_unparseable_entry():
-    """Regression guard for the loop semantics: the unparseable branch must
-    `continue` to the next entry, not `break`/`return`. If someone refactors
-    the try/except and short-circuits after the first garbage IP, a private
-    IP listed AFTER it would silently slip through — exactly the SSRF
-    defense this function exists to provide."""
-    results = [
-        (socket.AF_INET, 0, 0, "", ("not-an-ip", 0)),
-        (socket.AF_INET, 0, 0, "", ("10.0.0.1", 0)),
-    ]
-    with (
-        patch("tools.media.socket.getaddrinfo", return_value=results),
-        pytest.raises(RuntimeError) as exc,
-    ):
-        _reject_if_private_host("https://sneaky.example/a.jpg")
-    msg = str(exc.value)
-    assert "10.0.0.1" in msg and "SSRF" in msg
 
 
 # ---------- _download_image: request failure, caps, missing content-type ----------

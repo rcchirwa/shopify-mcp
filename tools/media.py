@@ -11,9 +11,7 @@ not multipart form fields — that shape is reserved for video / 3D model upload
 which are out of scope for v1.
 """
 
-import ipaddress
 import mimetypes
-import socket
 import sys
 import time
 from pathlib import Path
@@ -31,6 +29,7 @@ from shopify_client import (
     with_confirm_hint,
 )
 from tools._log import log_write
+from tools._url_safety import _reject_if_private_host
 
 # Shopify caps product images at 20 MB. Reject earlier than Shopify would to
 # avoid uploading bytes that can't be attached.
@@ -204,45 +203,6 @@ def _filename_from_url(url: str) -> str:
     path = urlparse(url).path
     name = Path(path).name
     return name or "upload.bin"
-
-
-def _reject_if_private_host(url: str) -> None:
-    """Raise RuntimeError if the URL's hostname resolves to a non-public IP
-    (RFC1918 private, loopback, link-local, multicast, reserved, unspecified).
-
-    Bounded SSRF defense: without this, a prompt-injected caller could
-    target 169.254.169.254 (cloud IMDS), 10/8 / 172.16/12 / 192.168/16
-    internals, or localhost via any `https://` URL. The confirm/preview gate
-    and `image/*` MIME filter narrow the exfil surface but don't close it —
-    this closes it at the network boundary. TOCTOU against DNS rebinding
-    is out of scope; that fix requires pinning the resolved IP through the
-    request, which is not worth the complexity for this threat model.
-    """
-    host = urlparse(url).hostname
-    if not host:
-        raise RuntimeError("URL has no hostname")
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror as e:
-        raise RuntimeError(f"could not resolve host {host!r}: {e}") from e
-    for info in infos:
-        ip_str = info[4][0]
-        try:
-            ip = ipaddress.ip_address(ip_str)
-        except ValueError:
-            continue
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_multicast
-            or ip.is_reserved
-            or ip.is_unspecified
-        ):
-            raise RuntimeError(
-                f"host {host!r} resolves to non-public IP {ip_str} "
-                f"— blocked to prevent SSRF to internal resources"
-            )
 
 
 def _download_image(url: str):
