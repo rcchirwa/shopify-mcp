@@ -195,3 +195,46 @@ def _format_one_error(err) -> str:
     if isinstance(err, str):
         return err
     return str(err)
+
+
+def extract_user_errors(
+    result: dict,
+    mutation_key: str,
+    *,
+    error_key: str = "userErrors",
+) -> list:
+    """
+    Pull the userErrors list out of a mutation response, or [] if absent/null.
+
+    Shared by every tool that needs to inspect userErrors — including callers
+    that can't use `format_user_errors` because they iterate each error (e.g.
+    publications.py bulk flows, media.py stage-aware reporting) or format
+    non-string field paths (products.py variant bulk update).
+
+    - `error_key` overrides the default `userErrors` slot; `priceRuleCreate`
+      returns `priceRuleUserErrors` instead.
+    """
+    return (result.get(mutation_key) or {}).get(error_key) or []
+
+
+def format_user_errors(
+    result: dict,
+    mutation_key: str,
+    *,
+    error_key: str = "userErrors",
+    prefix: str = "Error",
+) -> str | None:
+    """
+    Extract and format a mutation's userErrors payload.
+
+    Returns an 'Error: field: message; …' string if the mutation reported
+    any userErrors, else None. Callers guard with `if err: return err`.
+
+    - `error_key` overrides the default `userErrors` slot.
+    - `prefix` customizes the leading token (e.g. 'Error creating price rule').
+    """
+    errors = extract_user_errors(result, mutation_key, error_key=error_key)
+    if not errors:
+        return None
+    msgs = "; ".join(f"{e.get('field')}: {e.get('message')}" for e in errors)
+    return f"{prefix}: {msgs}"

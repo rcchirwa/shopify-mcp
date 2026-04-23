@@ -7,7 +7,13 @@ Write operations require confirm=True and log to aon_mcp_log.txt.
 import re
 
 from mcp.server.fastmcp import FastMCP
-from shopify_client import ShopifyClient, to_gid, from_gid
+from shopify_client import (
+    ShopifyClient,
+    extract_user_errors,
+    format_user_errors,
+    to_gid,
+    from_gid,
+)
 from validators.naming import format_validation_diff
 from tools._log import log_write
 from tools._filters import filter_variant_targets
@@ -345,10 +351,9 @@ def register(server: FastMCP, client: ShopifyClient):
         inp = {"id": to_gid("Product", product_id), "title": new_title, "handle": target_handle}
 
         result = client.execute(UPDATE_PRODUCT, {"input": inp})
-        user_errors = result.get("productUpdate", {}).get("userErrors", [])
-        if user_errors:
-            msgs = "; ".join(f"{e['field']}: {e['message']}" for e in user_errors)
-            return f"Error: {msgs}"
+        err = format_user_errors(result, "productUpdate")
+        if err:
+            return err
 
         log_write(
             "update_product_title",
@@ -382,10 +387,9 @@ def register(server: FastMCP, client: ShopifyClient):
         result = client.execute(UPDATE_PRODUCT, {
             "input": {"id": to_gid("Product", product_id), "descriptionHtml": new_description}
         })
-        user_errors = result.get("productUpdate", {}).get("userErrors", [])
-        if user_errors:
-            msgs = "; ".join(f"{e['field']}: {e['message']}" for e in user_errors)
-            return f"Error: {msgs}"
+        err = format_user_errors(result, "productUpdate")
+        if err:
+            return err
 
         log_write("update_product_description", f"id={product_id}")
         return f"Done. {preview}"
@@ -462,10 +466,9 @@ def register(server: FastMCP, client: ShopifyClient):
         result = client.execute(UPDATE_PRODUCT, {
             "input": {"id": to_gid("Product", product_id), "seo": seo_input}
         })
-        user_errors = result.get("productUpdate", {}).get("userErrors", [])
-        if user_errors:
-            msgs = "; ".join(f"{e['field']}: {e['message']}" for e in user_errors)
-            return f"Error: {msgs}"
+        err = format_user_errors(result, "productUpdate")
+        if err:
+            return err
 
         changed = []
         if new_seo_title:
@@ -703,10 +706,9 @@ def register(server: FastMCP, client: ShopifyClient):
         result = client.execute(UPDATE_PRODUCT_TAGS, {
             "input": {"id": gid, "tags": target}
         })
-        user_errors = result.get("productUpdate", {}).get("userErrors", [])
-        if user_errors:
-            msgs = "; ".join(f"{e['field']}: {e['message']}" for e in user_errors)
-            return f"Error: {msgs}"
+        err = format_user_errors(result, "productUpdate")
+        if err:
+            return err
 
         log_write(
             "update_product_tags",
@@ -752,10 +754,9 @@ def register(server: FastMCP, client: ShopifyClient):
         result = client.execute(UPDATE_PRODUCT_STATUS, {
             "input": {"id": gid, "status": new_status}
         })
-        user_errors = result.get("productUpdate", {}).get("userErrors", [])
-        if user_errors:
-            msgs = "; ".join(f"{e['field']}: {e['message']}" for e in user_errors)
-            return f"Error: {msgs}"
+        err = format_user_errors(result, "productUpdate")
+        if err:
+            return err
 
         log_write(
             "update_product_status",
@@ -842,16 +843,19 @@ def register(server: FastMCP, client: ShopifyClient):
             "productId": product_gid,
             "variants": variants_input,
         })
-        payload = result.get("productVariantsBulkUpdate", {}) or {}
-        user_errors = payload.get("userErrors", []) or []
+        user_errors = extract_user_errors(result, "productVariantsBulkUpdate")
         if user_errors:
+            # `field` is a dotted path list on productVariantsBulkUpdate (e.g.
+            # ["variants", "0", "inventoryPolicy"]) — unlike simple scalar-field
+            # mutations — so format_user_errors' stringify-field logic won't
+            # render it readably. Keep the local formatter.
             def _fmt(e):
                 field_path = ".".join(str(f) for f in (e.get("field") or []))
                 return f"{field_path or '(no field)'}: {e.get('message', '')}"
             msgs = "; ".join(_fmt(e) for e in user_errors)
             return f"Error: {msgs}"
 
-        updated = payload.get("productVariants") or []
+        updated = (result.get("productVariantsBulkUpdate") or {}).get("productVariants") or []
         updated_lines = "\n".join(
             f"    • id: {from_gid(v['id'])} — inventoryPolicy: {v.get('inventoryPolicy')}"
             for v in updated

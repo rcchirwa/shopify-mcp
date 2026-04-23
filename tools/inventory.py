@@ -5,7 +5,13 @@ update_inventory requires confirm=True.
 """
 
 from mcp.server.fastmcp import FastMCP
-from shopify_client import ShopifyClient, to_gid, from_gid
+from shopify_client import (
+    ShopifyClient,
+    extract_user_errors,
+    format_user_errors,
+    to_gid,
+    from_gid,
+)
 from tools._log import log_write
 from tools._filters import filter_variant_targets
 
@@ -194,10 +200,9 @@ def register(server: FastMCP, client: ShopifyClient):
                 ],
             }
         })
-        user_errors = result.get("inventorySetOnHandQuantities", {}).get("userErrors", [])
-        if user_errors:
-            msgs = "; ".join(f"{e['field']}: {e['message']}" for e in user_errors)
-            return f"Error: {msgs}"
+        err = format_user_errors(result, "inventorySetOnHandQuantities")
+        if err:
+            return err
 
         log_write(
             "update_inventory",
@@ -299,8 +304,7 @@ def register(server: FastMCP, client: ShopifyClient):
                     "error": f"transport error: {e}",
                 })
                 continue
-            payload = result.get("inventoryItemUpdate", {}) or {}
-            user_errors = payload.get("userErrors", []) or []
+            user_errors = extract_user_errors(result, "inventoryItemUpdate")
             if user_errors:
                 msgs = "; ".join(
                     f"{e.get('field')}: {e.get('message')}" for e in user_errors
@@ -498,12 +502,9 @@ def register(server: FastMCP, client: ShopifyClient):
                 "setQuantities": set_quantities,
             }
         })
-        user_errors = result.get("inventorySetOnHandQuantities", {}).get("userErrors", []) or []
-        if user_errors:
-            msgs = "; ".join(
-                f"{e.get('field')}: {e.get('message')}" for e in user_errors
-            )
-            return f"Error: {msgs}"
+        err = format_user_errors(result, "inventorySetOnHandQuantities")
+        if err:
+            return err
 
         changed_lines = "\n".join(
             f"{_pair_prefix(v, lv, loc)} — {_current_display(cur)} → {quantity}"

@@ -16,7 +16,14 @@ import pytest
 
 from gql.transport.exceptions import TransportQueryError, TransportServerError
 
-from shopify_client import ShopifyClient, _format_errors, _mask_token, from_gid
+from shopify_client import (
+    ShopifyClient,
+    _format_errors,
+    _mask_token,
+    extract_user_errors,
+    format_user_errors,
+    from_gid,
+)
 
 
 class _StubGqlClient:
@@ -222,3 +229,110 @@ def test_init_missing_credentials_raises(monkeypatch, tmp_path):
 
     with pytest.raises(ValueError, match="SHOPIFY_STORE_URL and SHOPIFY_ACCESS_TOKEN"):
         sc.ShopifyClient()
+
+
+# ---------------------------------------------------------------------------
+# format_user_errors
+# ---------------------------------------------------------------------------
+
+
+def test_format_user_errors_happy_path():
+    result = {
+        "productUpdate": {
+            "userErrors": [
+                {"field": "title", "message": "can't be blank"},
+                {"field": "handle", "message": "already taken"},
+            ]
+        }
+    }
+    assert format_user_errors(result, "productUpdate") == (
+        "Error: title: can't be blank; handle: already taken"
+    )
+
+
+def test_format_user_errors_no_errors_returns_none():
+    result = {"productUpdate": {"userErrors": []}}
+    assert format_user_errors(result, "productUpdate") is None
+
+
+def test_format_user_errors_missing_mutation_key_returns_none():
+    # Whole mutation slot absent (e.g. partial/permissions-trimmed response).
+    assert format_user_errors({}, "productUpdate") is None
+
+
+def test_format_user_errors_missing_user_errors_slot_returns_none():
+    # Mutation returned, but the userErrors key was omitted entirely.
+    assert format_user_errors({"productUpdate": {}}, "productUpdate") is None
+
+
+def test_format_user_errors_mutation_slot_is_none_returns_none():
+    # GraphQL can return explicit null for a mutation payload — `or {}` guard.
+    assert format_user_errors({"productUpdate": None}, "productUpdate") is None
+
+
+def test_format_user_errors_alt_error_key():
+    # priceRuleCreate uses priceRuleUserErrors instead of userErrors.
+    result = {
+        "priceRuleCreate": {
+            "priceRuleUserErrors": [{"field": "value", "message": "out of range"}]
+        }
+    }
+    assert format_user_errors(
+        result, "priceRuleCreate", error_key="priceRuleUserErrors"
+    ) == "Error: value: out of range"
+
+
+def test_format_user_errors_custom_prefix():
+    result = {
+        "priceRuleDiscountCodeCreate": {
+            "userErrors": [{"field": "code", "message": "already exists"}]
+        }
+    }
+    assert format_user_errors(
+        result, "priceRuleDiscountCodeCreate", prefix="Error attaching discount code"
+    ) == "Error attaching discount code: code: already exists"
+
+
+def test_format_user_errors_tolerates_missing_field_or_message():
+    # Defensive: Shopify's contract guarantees both keys, but an unexpected
+    # response shape yields "None: None" rather than a KeyError.
+    result = {"productUpdate": {"userErrors": [{}]}}
+    assert format_user_errors(result, "productUpdate") == "Error: None: None"
+
+
+# ---------------------------------------------------------------------------
+# extract_user_errors
+# ---------------------------------------------------------------------------
+
+
+def test_extract_user_errors_returns_list():
+    errors = [{"field": "title", "message": "blank"}]
+    result = {"productUpdate": {"userErrors": errors}}
+    assert extract_user_errors(result, "productUpdate") == errors
+
+
+def test_extract_user_errors_missing_mutation_returns_empty_list():
+    assert extract_user_errors({}, "productUpdate") == []
+
+
+def test_extract_user_errors_null_mutation_returns_empty_list():
+    # Shopify can return explicit null for a mutation payload.
+    assert extract_user_errors({"productUpdate": None}, "productUpdate") == []
+
+
+def test_extract_user_errors_null_list_returns_empty_list():
+    # Mutation returned, userErrors slot is explicit null rather than [].
+    assert extract_user_errors(
+        {"productUpdate": {"userErrors": None}}, "productUpdate"
+    ) == []
+
+
+def test_extract_user_errors_alt_error_key():
+    result = {
+        "publishablePublish": {
+            "mediaUserErrors": [{"field": "media", "message": "bad"}]
+        }
+    }
+    assert extract_user_errors(
+        result, "publishablePublish", error_key="mediaUserErrors"
+    ) == [{"field": "media", "message": "bad"}]

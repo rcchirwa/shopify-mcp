@@ -22,7 +22,13 @@ from urllib.parse import urlparse
 import requests
 
 from mcp.server.fastmcp import FastMCP
-from shopify_client import ShopifyClient, to_gid, from_gid, poll_job
+from shopify_client import (
+    ShopifyClient,
+    extract_user_errors,
+    to_gid,
+    from_gid,
+    poll_job,
+)
 from tools._log import log_write
 
 
@@ -171,6 +177,14 @@ def _fmt_media_user_errors(errors, stage: str) -> str:
         f"{e.get('field') or '(no field)'}: {e.get('message', '')}" for e in errors
     )
     return f"Error at stage={stage}: {msgs}"
+
+
+def _extract_media_user_errors(result: dict, mutation_key: str) -> list:
+    """Extract userErrors from a media mutation, checking mediaUserErrors first
+    then falling back to userErrors. productReorderMedia can surface errors
+    under either slot depending on the failure mode."""
+    return (extract_user_errors(result, mutation_key, error_key="mediaUserErrors")
+            or extract_user_errors(result, mutation_key))
 
 
 def _format_bytes(n) -> str:
@@ -353,11 +367,10 @@ def _stage_upload(client: ShopifyClient, filename: str, mime_type: str, size: in
         })
     except Exception as e:
         return None, f"Error at stage=stage_upload: {e}"
-    staged_payload = staged.get("stagedUploadsCreate", {}) or {}
-    staged_errors = staged_payload.get("userErrors", []) or []
+    staged_errors = extract_user_errors(staged, "stagedUploadsCreate")
     if staged_errors:
         return None, _fmt_media_user_errors(staged_errors, "stage_upload")
-    targets = staged_payload.get("stagedTargets", []) or []
+    targets = (staged.get("stagedUploadsCreate") or {}).get("stagedTargets") or []
     if not targets:
         return None, "Error at stage=stage_upload: no stagedTargets returned."
     return targets[0], None
@@ -380,11 +393,12 @@ def _attach_media(client: ShopifyClient, product_gid: str, alt: str, resource_ur
         })
     except Exception as e:
         return None, f"Error at stage=attach: {e}"
-    attach_payload = attach.get("productCreateMedia", {}) or {}
-    attach_errors = attach_payload.get("mediaUserErrors", []) or []
+    attach_errors = extract_user_errors(
+        attach, "productCreateMedia", error_key="mediaUserErrors"
+    )
     if attach_errors:
         return None, _fmt_media_user_errors(attach_errors, "attach")
-    attached = attach_payload.get("media") or []
+    attached = (attach.get("productCreateMedia") or {}).get("media") or []
     if not attached:
         return None, "Error at stage=attach: productCreateMedia returned no media."
     return attached[0], None
@@ -417,8 +431,7 @@ def _maybe_reorder_new_media(
     except Exception as e:
         return f"\n  Reorder    : FAILED at stage=reorder ({e})"
     rpayload = reorder.get("productReorderMedia", {}) or {}
-    rerrs = (rpayload.get("mediaUserErrors") or []) \
-            or (rpayload.get("userErrors") or [])
+    rerrs = _extract_media_user_errors(reorder, "productReorderMedia")
     if rerrs:
         return "\n  " + _fmt_media_user_errors(
             rerrs, "reorder"
@@ -727,8 +740,7 @@ def register(server: FastMCP, client: ShopifyClient):
             "moves": api_moves,
         })
         payload = result.get("productReorderMedia", {}) or {}
-        media_errors = (payload.get("mediaUserErrors") or []) \
-                       or (payload.get("userErrors") or [])
+        media_errors = _extract_media_user_errors(result, "productReorderMedia")
         if media_errors:
             return _fmt_media_user_errors(media_errors, "reorder")
 
@@ -814,8 +826,9 @@ def register(server: FastMCP, client: ShopifyClient):
             "productId": gid,
             "media": [{"id": media_id, "alt": alt}],
         })
-        payload = result.get("productUpdateMedia", {}) or {}
-        errors = payload.get("mediaUserErrors", []) or []
+        errors = extract_user_errors(
+            result, "productUpdateMedia", error_key="mediaUserErrors"
+        )
         if errors:
             return _fmt_media_user_errors(errors, "update")
 
@@ -898,7 +911,9 @@ def register(server: FastMCP, client: ShopifyClient):
             "mediaIds": matched,
         })
         payload = result.get("productDeleteMedia", {}) or {}
-        errors = payload.get("mediaUserErrors", []) or []
+        errors = extract_user_errors(
+            result, "productDeleteMedia", error_key="mediaUserErrors"
+        )
         if errors:
             return _fmt_media_user_errors(errors, "delete")
         deleted = payload.get("deletedMediaIds") or []
