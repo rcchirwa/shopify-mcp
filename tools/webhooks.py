@@ -6,7 +6,7 @@ Write operations require confirm=True and log to aon_mcp_log.txt.
 """
 
 from mcp.server.fastmcp import FastMCP
-from shopify_client import ShopifyClient, to_gid, from_gid
+from shopify_client import ShopifyClient, format_user_errors, to_gid, from_gid
 from tools._log import log_write
 
 
@@ -117,10 +117,9 @@ def register(server: FastMCP, client: ShopifyClient):
         }
         result = client.execute(CREATE_WEBHOOK, variables)
         payload = result.get("webhookSubscriptionCreate", {}) or {}
-        user_errors = payload.get("userErrors", []) or []
-        if user_errors:
-            msgs = "; ".join(f"{e.get('field')}: {e.get('message')}" for e in user_errors)
-            return f"Error: {msgs}"
+        err = format_user_errors(result, "webhookSubscriptionCreate")
+        if err:
+            return err
 
         sub = payload.get("webhookSubscription") or {}
         sub_gid = sub.get("id")
@@ -157,10 +156,9 @@ def register(server: FastMCP, client: ShopifyClient):
             {"id": to_gid("WebhookSubscription", numeric_id)},
         )
         payload = result.get("webhookSubscriptionDelete", {}) or {}
-        user_errors = payload.get("userErrors", []) or []
-        if user_errors:
-            msgs = "; ".join(f"{e.get('field')}: {e.get('message')}" for e in user_errors)
-            return f"Error: {msgs}"
+        err = format_user_errors(result, "webhookSubscriptionDelete")
+        if err:
+            return err
 
         deleted_gid = payload.get("deletedWebhookSubscriptionId")
         if not deleted_gid:

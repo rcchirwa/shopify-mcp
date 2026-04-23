@@ -10,7 +10,7 @@ Write operations require confirm=True and log to aon_mcp_log.txt.
 """
 
 from mcp.server.fastmcp import FastMCP
-from shopify_client import ShopifyClient, to_gid, from_gid
+from shopify_client import ShopifyClient, extract_user_errors, to_gid, from_gid
 from tools._log import log_write
 
 
@@ -350,7 +350,7 @@ def register(server: FastMCP, client: ShopifyClient):
                 result = client.execute(PUBLISHABLE_PUBLISH, {"id": gid, "input": inputs})
             except Exception as e:
                 return f"Error: {e}\n{SCOPE_HINT}"
-            user_errors = result.get("publishablePublish", {}).get("userErrors", []) or []
+            user_errors = extract_user_errors(result, "publishablePublish")
             if user_errors:
                 for ue in user_errors:
                     apply_failed.append(_map_user_error(ue, to_publish))
@@ -440,7 +440,7 @@ def register(server: FastMCP, client: ShopifyClient):
                 result = client.execute(PUBLISHABLE_UNPUBLISH, {"id": gid, "input": inputs})
             except Exception as e:
                 return f"Error: {e}\n{SCOPE_HINT}"
-            user_errors = result.get("publishableUnpublish", {}).get("userErrors", []) or []
+            user_errors = extract_user_errors(result, "publishableUnpublish")
             if user_errors:
                 for ue in user_errors:
                     apply_failed.append(_map_user_error(ue, to_unpublish))
@@ -541,7 +541,7 @@ def register(server: FastMCP, client: ShopifyClient):
                 result = client.execute(PUBLISHABLE_PUBLISH, {"id": gid, "input": inputs})
             except Exception as e:
                 return f"Error during publish: {e}\n{SCOPE_HINT}"
-            user_errors = result.get("publishablePublish", {}).get("userErrors", []) or []
+            user_errors = extract_user_errors(result, "publishablePublish")
             if user_errors:
                 for ue in user_errors:
                     apply_failed.append(_map_user_error(ue, added_nodes))
@@ -554,7 +554,7 @@ def register(server: FastMCP, client: ShopifyClient):
                 result = client.execute(PUBLISHABLE_UNPUBLISH, {"id": gid, "input": inputs})
             except Exception as e:
                 return f"Error during unpublish: {e}\n{SCOPE_HINT}"
-            user_errors = result.get("publishableUnpublish", {}).get("userErrors", []) or []
+            user_errors = extract_user_errors(result, "publishableUnpublish")
             if user_errors:
                 for ue in user_errors:
                     apply_failed.append(_map_user_error(ue, removed_nodes))

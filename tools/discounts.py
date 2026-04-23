@@ -6,7 +6,7 @@ create_discount_code requires confirm=True.
 
 from datetime import datetime, timezone
 from mcp.server.fastmcp import FastMCP
-from shopify_client import ShopifyClient, to_gid, from_gid
+from shopify_client import ShopifyClient, format_user_errors, to_gid, from_gid
 from tools._log import log_write
 
 GET_PRICE_RULES = """
@@ -105,10 +105,14 @@ def register(server: FastMCP, client: ShopifyClient):
             price_rule_input["usageLimit"] = usage_limit
 
         rule_result = client.execute(CREATE_PRICE_RULE, {"input": price_rule_input})
-        pr_errors = rule_result.get("priceRuleCreate", {}).get("priceRuleUserErrors", [])
-        if pr_errors:
-            msgs = "; ".join(f"{e['field']}: {e['message']}" for e in pr_errors)
-            return f"Error creating price rule: {msgs}"
+        err = format_user_errors(
+            rule_result,
+            "priceRuleCreate",
+            error_key="priceRuleUserErrors",
+            prefix="Error creating price rule",
+        )
+        if err:
+            return err
 
         # priceRule is None when the mutation shape-drifts or userErrors are
         # empty but the server-side commit still failed — guard with `or {}`
@@ -124,10 +128,13 @@ def register(server: FastMCP, client: ShopifyClient):
             "priceRuleId": rule_id,
             "code": code,
         })
-        code_errors = code_result.get("priceRuleDiscountCodeCreate", {}).get("userErrors", [])
-        if code_errors:
-            msgs = "; ".join(f"{e['field']}: {e['message']}" for e in code_errors)
-            return f"Error attaching discount code: {msgs}"
+        err = format_user_errors(
+            code_result,
+            "priceRuleDiscountCodeCreate",
+            prefix="Error attaching discount code",
+        )
+        if err:
+            return err
 
         log_write(
             "create_discount_code",

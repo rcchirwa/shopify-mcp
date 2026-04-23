@@ -9,7 +9,7 @@ their contents are driven by rules; direct membership writes have no effect.
 """
 
 from mcp.server.fastmcp import FastMCP
-from shopify_client import ShopifyClient, to_gid, from_gid, poll_job
+from shopify_client import ShopifyClient, format_user_errors, to_gid, from_gid, poll_job
 from tools._log import log_write
 
 # When a membership mutation returns `job.done=false`, poll the job node until
@@ -153,10 +153,9 @@ def register(server: FastMCP, client: ShopifyClient):
             inp["descriptionHtml"] = new_description
 
         result = client.execute(UPDATE_COLLECTION, {"input": inp})
-        user_errors = result.get("collectionUpdate", {}).get("userErrors", [])
-        if user_errors:
-            msgs = "; ".join(f"{e['field']}: {e['message']}" for e in user_errors)
-            return f"Error: {msgs}"
+        err = format_user_errors(result, "collectionUpdate")
+        if err:
+            return err
 
         log_write("update_collection", f"handle={handle} | changes: {[k for k in inp if k != 'id']}")
         return f"Done. {preview}"
@@ -198,10 +197,9 @@ def register(server: FastMCP, client: ShopifyClient):
             {"id": col_id, "productIds": [product_gid]},
         )
         payload = result.get(op["result_key"], {}) or {}
-        user_errors = payload.get("userErrors", []) or []
-        if user_errors:
-            msgs = "; ".join(f"{e.get('field')}: {e.get('message')}" for e in user_errors)
-            return f"Error: {msgs}"
+        err = format_user_errors(result, op["result_key"])
+        if err:
+            return err
 
         job = payload.get("job") or {}
         job_id = job.get("id")
