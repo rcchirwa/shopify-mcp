@@ -28,6 +28,7 @@ from tools.media import (
     _render_media_list,
     _upload_bytes_to_target,
     GET_PRODUCT_MEDIA,
+    GET_MEDIA_STATUS,
     STAGED_UPLOADS_CREATE,
     PRODUCT_CREATE_MEDIA,
     PRODUCT_REORDER_MEDIA,
@@ -109,6 +110,15 @@ def _product_media_read(nodes, pid="123", title="Hoodie", has_next=False):
         "id": f"gid://shopify/Product/{pid}",
         "title": title,
         "media": {"nodes": nodes, "pageInfo": {"hasNextPage": has_next}},
+    }}
+
+
+def _node_media_status(mid, status="READY", preview_url=None):
+    """Response shape for the GET_MEDIA_STATUS poll query (node(id))."""
+    return {"node": {
+        "id": mid,
+        "status": status,
+        "preview": {"image": {"url": preview_url or f"https://cdn.shopify.com/{mid}.jpg"}},
     }}
 
 
@@ -282,10 +292,10 @@ def test_upload_execute_happy_path_append():
         _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),  # initial read
         _staged_ok(),                                                       # stagedUploadsCreate
         _create_media_ok(mid=MEDIA_C, status="PROCESSING"),                 # productCreateMedia
-        _product_media_read([                                               # poll (READY)
-            _media_node(MEDIA_A), _media_node(MEDIA_B),
-            _media_node(MEDIA_C, status="READY", preview_url="https://cdn.shopify.com/new.jpg"),
-        ]),
+        _node_media_status(                                                 # poll (READY)
+            MEDIA_C, status="READY",
+            preview_url="https://cdn.shopify.com/new.jpg",
+        ),
     ])
 
     with patch("tools.media._reject_if_private_host", return_value=None), \
@@ -304,12 +314,14 @@ def test_upload_execute_happy_path_append():
     assert "Status     : READY" in out
     assert "https://cdn.shopify.com/new.jpg" in out
     # Call sequence: read, stagedUploadsCreate, productCreateMedia, poll-read.
+    # Poll now reads just the node rather than the whole product media list.
     assert [c[0] for c in fc.calls] == [
         GET_PRODUCT_MEDIA,
         STAGED_UPLOADS_CREATE,
         PRODUCT_CREATE_MEDIA,
-        GET_PRODUCT_MEDIA,
+        GET_MEDIA_STATUS,
     ]
+    assert fc.calls[3][1] == {"id": MEDIA_C}
     # stagedUploadsCreate input shape check: PUT, IMAGE, size as string.
     _, staged_vars = fc.calls[1]
     assert staged_vars["input"][0]["httpMethod"] == "PUT"
@@ -331,10 +343,7 @@ def test_upload_execute_reorder_when_non_append_position():
         _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
         _staged_ok(),
         _create_media_ok(mid=MEDIA_C, status="READY"),
-        _product_media_read([
-            _media_node(MEDIA_A), _media_node(MEDIA_B),
-            _media_node(MEDIA_C, status="READY"),
-        ]),
+        _node_media_status(MEDIA_C, status="READY"),
         _reorder_ok(done=True),
     ])
 
@@ -363,9 +372,7 @@ def test_upload_execute_skips_reorder_when_position_equals_append():
         _product_media_read([_media_node(MEDIA_A)]),
         _staged_ok(),
         _create_media_ok(mid=MEDIA_C, status="READY"),
-        _product_media_read([
-            _media_node(MEDIA_A), _media_node(MEDIA_C, status="READY"),
-        ]),
+        _node_media_status(MEDIA_C, status="READY"),
     ])
 
     with patch("tools.media._reject_if_private_host", return_value=None), \
@@ -381,7 +388,7 @@ def test_upload_execute_skips_reorder_when_position_equals_append():
 
     assert out.startswith("CONFIRMED —"), out
     assert [c[0] for c in fc.calls] == [
-        GET_PRODUCT_MEDIA, STAGED_UPLOADS_CREATE, PRODUCT_CREATE_MEDIA, GET_PRODUCT_MEDIA,
+        GET_PRODUCT_MEDIA, STAGED_UPLOADS_CREATE, PRODUCT_CREATE_MEDIA, GET_MEDIA_STATUS,
     ]  # no reorder call
 
 
@@ -460,16 +467,16 @@ def test_upload_processing_timeout_returns_success_with_note():
         _create_media_ok(mid=MEDIA_C, status="PROCESSING"),
         # Poll keeps returning PROCESSING. Give several responses so the loop
         # can iterate until its budget is exhausted (patched sleep fast-fwds).
-        _product_media_read([_media_node(MEDIA_C, status="PROCESSING")]),
-        _product_media_read([_media_node(MEDIA_C, status="PROCESSING")]),
-        _product_media_read([_media_node(MEDIA_C, status="PROCESSING")]),
-        _product_media_read([_media_node(MEDIA_C, status="PROCESSING")]),
-        _product_media_read([_media_node(MEDIA_C, status="PROCESSING")]),
-        _product_media_read([_media_node(MEDIA_C, status="PROCESSING")]),
-        _product_media_read([_media_node(MEDIA_C, status="PROCESSING")]),
-        _product_media_read([_media_node(MEDIA_C, status="PROCESSING")]),
-        _product_media_read([_media_node(MEDIA_C, status="PROCESSING")]),
-        _product_media_read([_media_node(MEDIA_C, status="PROCESSING")]),
+        _node_media_status(MEDIA_C, status="PROCESSING"),
+        _node_media_status(MEDIA_C, status="PROCESSING"),
+        _node_media_status(MEDIA_C, status="PROCESSING"),
+        _node_media_status(MEDIA_C, status="PROCESSING"),
+        _node_media_status(MEDIA_C, status="PROCESSING"),
+        _node_media_status(MEDIA_C, status="PROCESSING"),
+        _node_media_status(MEDIA_C, status="PROCESSING"),
+        _node_media_status(MEDIA_C, status="PROCESSING"),
+        _node_media_status(MEDIA_C, status="PROCESSING"),
+        _node_media_status(MEDIA_C, status="PROCESSING"),
     ])
 
     # Advance monotonic by 3s per tick so the timeout (15s) fires after ~5 reads.
@@ -777,9 +784,7 @@ def test_upload_failed_processing_returns_error_with_cleanup_hint():
         _product_media_read([]),                                # initial read
         _staged_ok(),                                           # stagedUploadsCreate
         _create_media_ok(mid=MEDIA_C, status="PROCESSING"),     # productCreateMedia
-        _product_media_read([                                   # poll: FAILED
-            _media_node(MEDIA_C, status="FAILED"),
-        ]),
+        _node_media_status(MEDIA_C, status="FAILED"),           # poll: FAILED
     ])
     with patch("tools.media._reject_if_private_host", return_value=None), \
          patch("tools.media.requests.get", return_value=_make_http_response()), \
@@ -805,9 +810,7 @@ def test_upload_failed_processing_still_reorder_when_position_set():
         _product_media_read([_media_node(MEDIA_A)]),
         _staged_ok(),
         _create_media_ok(mid=MEDIA_C, status="PROCESSING"),
-        _product_media_read([
-            _media_node(MEDIA_A), _media_node(MEDIA_C, status="FAILED"),
-        ]),
+        _node_media_status(MEDIA_C, status="FAILED"),
     ])
     with patch("tools.media._reject_if_private_host", return_value=None), \
          patch("tools.media.requests.get", return_value=_make_http_response()), \
@@ -917,6 +920,51 @@ def test_as_product_gid_empty_string_returns_empty():
     """Guard for empty product_id. Public tools rely on this to short-circuit
     before any network call."""
     assert _as_product_gid("") == ""
+
+
+def test_as_product_gid_wrong_type_returns_empty():
+    """A gid of the wrong resource type (e.g. Order, Customer) must not pass
+    through — same short-circuit path as missing input. Defense in depth
+    against a caller accidentally targeting the wrong resource."""
+    assert _as_product_gid("gid://shopify/Order/42") == ""
+    assert _as_product_gid("gid://shopify/Customer/42") == ""
+
+
+def test_as_product_gid_product_prefix_passes_through():
+    """Well-formed Product gid passes through unchanged; numeric id gets wrapped."""
+    assert _as_product_gid("gid://shopify/Product/123") == "gid://shopify/Product/123"
+    assert _as_product_gid("123") == "gid://shopify/Product/123"
+
+
+def test_upload_preview_flags_over_range_position_as_clamped():
+    """Shopify silently clamps an out-of-range position. The preview must
+    annotate this so the operator isn't surprised when 'position 100' lands
+    at position 4."""
+    tools, fc = _build([_product_media_read([
+        _media_node(MEDIA_A), _media_node(MEDIA_B), _media_node(MEDIA_C),
+    ])])
+    out = tools["upload_product_image"](
+        product_id="123",
+        source="https://cdn.example.com/hero.jpg",
+        position=100,  # 3 existing media — 4 would append; 100 is off the end
+        confirm=False,
+    )
+    assert "position 100" in out
+    assert "exceeds current count" in out
+    assert "Shopify will clamp to 4" in out
+
+
+def test_upload_tool_rejects_wrong_gid_type_product_id():
+    """End-to-end check: passing a non-Product gid to upload short-circuits
+    at the same error as an empty product_id."""
+    tools, fc = _build([])
+    out = tools["upload_product_image"](
+        product_id="gid://shopify/Order/42",
+        source="https://cdn.example.com/a.jpg",
+        confirm=False,
+    )
+    assert out.startswith("Error at stage=input:")
+    assert fc.calls == []
 
 
 def test_format_bytes_non_numeric_returns_placeholder():
@@ -1074,10 +1122,10 @@ def test_upload_poll_transient_exception_is_swallowed():
         # Poll attempts: first raises, next returns READY. The raise must be
         # absorbed so the retry can succeed.
         RuntimeError("transient 502"),
-        _product_media_read([
-            _media_node(MEDIA_C, status="READY",
-                        preview_url="https://cdn.shopify.com/ok.jpg"),
-        ]),
+        _node_media_status(
+            MEDIA_C, status="READY",
+            preview_url="https://cdn.shopify.com/ok.jpg",
+        ),
     ])
     with patch("tools.media._reject_if_private_host", return_value=None), \
          patch("tools.media.requests.get", return_value=_make_http_response()), \
@@ -1299,10 +1347,7 @@ def test_upload_reorder_exception_appends_failure_note_still_confirms():
         _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
         _staged_ok(),
         _create_media_ok(mid=MEDIA_C, status="READY"),
-        _product_media_read([
-            _media_node(MEDIA_A), _media_node(MEDIA_B),
-            _media_node(MEDIA_C, status="READY"),
-        ]),
+        _node_media_status(MEDIA_C, status="READY"),
         RuntimeError("reorder 502"),
     ])
     with patch("tools.media._reject_if_private_host", return_value=None), \
@@ -1325,10 +1370,7 @@ def test_upload_reorder_media_user_errors_append_note():
         _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
         _staged_ok(),
         _create_media_ok(mid=MEDIA_C, status="READY"),
-        _product_media_read([
-            _media_node(MEDIA_A), _media_node(MEDIA_B),
-            _media_node(MEDIA_C, status="READY"),
-        ]),
+        _node_media_status(MEDIA_C, status="READY"),
         _reorder_err_mediauser("bad position"),
     ])
     with patch("tools.media._reject_if_private_host", return_value=None), \
@@ -1354,10 +1396,7 @@ def test_upload_reorder_polls_job_when_not_done():
         _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
         _staged_ok(),
         _create_media_ok(mid=MEDIA_C, status="READY"),
-        _product_media_read([
-            _media_node(MEDIA_A), _media_node(MEDIA_B),
-            _media_node(MEDIA_C, status="READY"),
-        ]),
+        _node_media_status(MEDIA_C, status="READY"),
         _reorder_ok(done=False, job_id="gid://shopify/Job/up1"),
         # poll_job uses JOB_STATUS_QUERY — return done=True quickly.
         {"node": {"id": "gid://shopify/Job/up1", "done": True}},
