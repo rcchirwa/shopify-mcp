@@ -7,11 +7,11 @@ import os
 import sys
 import time
 from pathlib import Path
-from dotenv import load_dotenv
-from gql import gql, Client
-from gql.transport.requests import RequestsHTTPTransport
-from gql.transport.exceptions import TransportServerError, TransportQueryError
 
+from dotenv import load_dotenv
+from gql import Client, gql
+from gql.transport.exceptions import TransportQueryError, TransportServerError
+from gql.transport.requests import RequestsHTTPTransport
 
 # Some Shopify mutations (collectionAddProductsV2, collectionRemoveProducts, …)
 # return a Job node rather than completing inline. `node(id)` lets us resolve
@@ -77,9 +77,7 @@ class ShopifyClient:
         api_version = os.getenv("SHOPIFY_API_VERSION", "2026-01")
 
         if not store_url or not access_token:
-            raise ValueError(
-                "SHOPIFY_STORE_URL and SHOPIFY_ACCESS_TOKEN must be set in .env"
-            )
+            raise ValueError("SHOPIFY_STORE_URL and SHOPIFY_ACCESS_TOKEN must be set in .env")
 
         # Log the active credential fingerprint to stderr so operators can tell
         # at a glance which token is live without reading .env. Goes to stderr
@@ -103,23 +101,20 @@ class ShopifyClient:
             fetch_schema_from_transport=False,
         )
 
-    def execute(self, query_str: str, variables: dict = None) -> dict:
+    def execute(self, query_str: str, variables: dict | None = None) -> dict:
         try:
-            result = self._client.execute(
-                gql(query_str), variable_values=variables or {}
-            )
+            result = self._client.execute(gql(query_str), variable_values=variables or {})
         except TransportQueryError as e:
             raise RuntimeError(f"Shopify GraphQL error: {_format_errors(e.errors)}") from e
         except TransportServerError as e:
-            raise RuntimeError(f"Shopify HTTP error: {str(e)}") from e
+            raise RuntimeError(f"Shopify HTTP error: {e!s}") from e
 
         if not isinstance(result, dict):
             # Surface the real payload (scope error text, HTML error page, etc.)
             # so callers don't crash downstream with 'str' object has no attribute 'get'.
             preview = str(result)[:500]
             raise RuntimeError(
-                f"Shopify returned non-dict response "
-                f"(type={type(result).__name__}): {preview}"
+                f"Shopify returned non-dict response (type={type(result).__name__}): {preview}"
             )
         return result
 
@@ -144,7 +139,7 @@ def poll_job(
     the caller invokes this — polling is strictly informational.
     """
     start = time.monotonic()
-    last_error: str = None
+    last_error: str | None = None
     last_done: bool = False
     while True:
         try:

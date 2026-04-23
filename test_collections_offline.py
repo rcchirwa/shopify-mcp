@@ -13,15 +13,15 @@ Usage:
 
 import pytest
 
+from _testing import CapturingServer, FakeClient
+from shopify_client import JOB_STATUS_QUERY
 from tools import collections
 from tools.collections import (
-    GET_COLLECTION_BY_HANDLE,
     ADD_PRODUCTS_TO_COLLECTION,
+    GET_COLLECTION_BY_HANDLE,
     REMOVE_PRODUCTS_FROM_COLLECTION,
     UPDATE_COLLECTION,
 )
-from shopify_client import JOB_STATUS_QUERY
-from _testing import CapturingServer, FakeClient
 
 
 class _FakeClock:
@@ -29,6 +29,7 @@ class _FakeClock:
     reaches its 10s budget deterministically without real sleep. `baseline`
     is captured at fixture setup so `monotonic()` starts at 0 and advances
     predictably regardless of actual wall-clock time."""
+
     def __init__(self, step=1.0):
         self.t = 0.0
         self.step = step
@@ -48,6 +49,7 @@ def fake_poll_clock(monkeypatch):
     adding `fake_poll_clock` to a test's signature. Not autouse — future tests
     that need wall-clock timing mustn't silently pick up the fake."""
     import shopify_client
+
     clock = _FakeClock(step=1.0)
     monkeypatch.setattr(shopify_client.time, "sleep", lambda s: None)
     monkeypatch.setattr(shopify_client.time, "monotonic", clock.monotonic)
@@ -67,21 +69,28 @@ def _build(responses):
 
 
 def _collection(handle, title, description_html=None, rule_set=None):
-    return {"collectionByHandle": {
-        "id": f"gid://shopify/Collection/123",
-        "title": title,
-        "handle": handle,
-        "descriptionHtml": description_html,
-        "ruleSet": rule_set,
-    }}
+    return {
+        "collectionByHandle": {
+            "id": "gid://shopify/Collection/123",
+            "title": title,
+            "handle": handle,
+            "descriptionHtml": description_html,
+            "ruleSet": rule_set,
+        }
+    }
 
 
 def test_get_collection_smart_has_rule_set():
-    tools, fc = _build([_collection(
-        "smart-vanish", "Smart Vanish",
-        description_html="<p>auto-populated</p>",
-        rule_set={"appliedDisjunctively": True},
-    )])
+    tools, fc = _build(
+        [
+            _collection(
+                "smart-vanish",
+                "Smart Vanish",
+                description_html="<p>auto-populated</p>",
+                rule_set={"appliedDisjunctively": True},
+            )
+        ]
+    )
     out = tools["get_collection"](handle="smart-vanish")
     assert "Collection: Smart Vanish" in out
     assert "Handle: smart-vanish" in out
@@ -92,11 +101,16 @@ def test_get_collection_smart_has_rule_set():
 
 
 def test_get_collection_manual_no_rule_set():
-    tools, fc = _build([_collection(
-        "vanish", "Vanish Collection",
-        description_html="<p>hand-curated</p>",
-        rule_set=None,
-    )])
+    tools, fc = _build(
+        [
+            _collection(
+                "vanish",
+                "Vanish Collection",
+                description_html="<p>hand-curated</p>",
+                rule_set=None,
+            )
+        ]
+    )
     out = tools["get_collection"](handle="vanish")
     assert "Type: manual" in out
     assert "Vanish Collection" in out
@@ -109,9 +123,16 @@ def test_get_collection_not_found():
 
 
 def test_get_collection_empty_description_shown_as_placeholder():
-    tools, fc = _build([_collection(
-        "bare", "Bare", description_html=None, rule_set=None,
-    )])
+    tools, fc = _build(
+        [
+            _collection(
+                "bare",
+                "Bare",
+                description_html=None,
+                rule_set=None,
+            )
+        ]
+    )
     out = tools["get_collection"](handle="bare")
     assert "Description: (no description)" in out
 
@@ -132,17 +153,21 @@ def test_get_collection_empty_description_shown_as_placeholder():
 
 
 def _add_ok(job_id="123", done=True):
-    return {"collectionAddProductsV2": {
-        "job": {"id": f"gid://shopify/Job/{job_id}", "done": done},
-        "userErrors": [],
-    }}
+    return {
+        "collectionAddProductsV2": {
+            "job": {"id": f"gid://shopify/Job/{job_id}", "done": done},
+            "userErrors": [],
+        }
+    }
 
 
 def _remove_ok(job_id="123", done=True):
-    return {"collectionRemoveProducts": {
-        "job": {"id": f"gid://shopify/Job/{job_id}", "done": done},
-        "userErrors": [],
-    }}
+    return {
+        "collectionRemoveProducts": {
+            "job": {"id": f"gid://shopify/Job/{job_id}", "done": done},
+            "userErrors": [],
+        }
+    }
 
 
 def _manual_collection(handle="vanish", title="Vanish"):
@@ -150,16 +175,20 @@ def _manual_collection(handle="vanish", title="Vanish"):
 
 
 def _smart_collection(handle="smart-vanish", title="Smart Vanish"):
-    return _collection(handle, title, description_html="<p>smart</p>",
-                       rule_set={"appliedDisjunctively": True})
+    return _collection(
+        handle, title, description_html="<p>smart</p>", rule_set={"appliedDisjunctively": True}
+    )
 
 
 # --- add_product_to_collection ---
 
+
 def test_add_product_preview_does_not_mutate():
     tools, fc = _build([_manual_collection()])
     out = tools["add_product_to_collection"](
-        handle="vanish", product_id="777", confirm=False,
+        handle="vanish",
+        product_id="777",
+        confirm=False,
     )
     assert "PREVIEW" in out
     assert "Add product to collection" in out
@@ -174,7 +203,9 @@ def test_add_product_preview_does_not_mutate():
 def test_add_product_confirmed_calls_mutation_with_correct_gids():
     tools, fc = _build([_manual_collection(), _add_ok(job_id="999")])
     out = tools["add_product_to_collection"](
-        handle="vanish", product_id="777", confirm=True,
+        handle="vanish",
+        product_id="777",
+        confirm=True,
     )
     assert out.startswith("Done.")
     assert "Added product to collection" in out
@@ -190,7 +221,9 @@ def test_add_product_confirmed_calls_mutation_with_correct_gids():
 def test_add_product_rejects_smart_collection_without_mutation():
     tools, fc = _build([_smart_collection()])
     out = tools["add_product_to_collection"](
-        handle="smart-vanish", product_id="777", confirm=True,
+        handle="smart-vanish",
+        product_id="777",
+        confirm=True,
     )
     assert "Error:" in out
     assert "smart collection" in out
@@ -202,7 +235,9 @@ def test_add_product_rejects_smart_collection_without_mutation():
 def test_add_product_collection_not_found():
     tools, fc = _build([{"collectionByHandle": None}])
     out = tools["add_product_to_collection"](
-        handle="missing", product_id="777", confirm=True,
+        handle="missing",
+        product_id="777",
+        confirm=True,
     )
     assert out == "No collection found with handle 'missing'."
     assert len(fc.calls) == 1
@@ -212,24 +247,32 @@ def test_add_product_rejects_empty_product_id_without_reading_collection():
     """Empty product_id should short-circuit before hitting Shopify."""
     tools, fc = _build([])
     out = tools["add_product_to_collection"](
-        handle="vanish", product_id="", confirm=True,
+        handle="vanish",
+        product_id="",
+        confirm=True,
     )
     assert out == "Provide product_id."
     assert len(fc.calls) == 0
 
 
 def test_add_product_surfaces_user_errors():
-    tools, fc = _build([
-        _manual_collection(),
-        {"collectionAddProductsV2": {
-            "job": None,
-            "userErrors": [
-                {"field": ["productIds", "0"], "message": "Product already in collection"},
-            ],
-        }},
-    ])
+    tools, fc = _build(
+        [
+            _manual_collection(),
+            {
+                "collectionAddProductsV2": {
+                    "job": None,
+                    "userErrors": [
+                        {"field": ["productIds", "0"], "message": "Product already in collection"},
+                    ],
+                }
+            },
+        ]
+    )
     out = tools["add_product_to_collection"](
-        handle="vanish", product_id="777", confirm=True,
+        handle="vanish",
+        product_id="777",
+        confirm=True,
     )
     assert out.startswith("Error:")
     assert "Product already in collection" in out
@@ -237,10 +280,13 @@ def test_add_product_surfaces_user_errors():
 
 # --- remove_product_from_collection ---
 
+
 def test_remove_product_preview_does_not_mutate():
     tools, fc = _build([_manual_collection()])
     out = tools["remove_product_from_collection"](
-        handle="vanish", product_id="777", confirm=False,
+        handle="vanish",
+        product_id="777",
+        confirm=False,
     )
     assert "PREVIEW" in out
     assert "Remove product from collection" in out
@@ -251,7 +297,9 @@ def test_remove_product_preview_does_not_mutate():
 def test_remove_product_confirmed_calls_mutation_with_correct_gids():
     tools, fc = _build([_manual_collection(), _remove_ok(job_id="888")])
     out = tools["remove_product_from_collection"](
-        handle="vanish", product_id="777", confirm=True,
+        handle="vanish",
+        product_id="777",
+        confirm=True,
     )
     assert out.startswith("Done.")
     assert "Removed product from collection" in out
@@ -267,7 +315,9 @@ def test_remove_product_confirmed_calls_mutation_with_correct_gids():
 def test_remove_product_rejects_smart_collection_without_mutation():
     tools, fc = _build([_smart_collection()])
     out = tools["remove_product_from_collection"](
-        handle="smart-vanish", product_id="777", confirm=True,
+        handle="smart-vanish",
+        product_id="777",
+        confirm=True,
     )
     assert "Error:" in out
     assert "smart collection" in out
@@ -277,7 +327,9 @@ def test_remove_product_rejects_smart_collection_without_mutation():
 def test_remove_product_collection_not_found():
     tools, fc = _build([{"collectionByHandle": None}])
     out = tools["remove_product_from_collection"](
-        handle="missing", product_id="777", confirm=True,
+        handle="missing",
+        product_id="777",
+        confirm=True,
     )
     assert out == "No collection found with handle 'missing'."
 
@@ -285,24 +337,32 @@ def test_remove_product_collection_not_found():
 def test_remove_product_rejects_empty_product_id_without_reading_collection():
     tools, fc = _build([])
     out = tools["remove_product_from_collection"](
-        handle="vanish", product_id="", confirm=True,
+        handle="vanish",
+        product_id="",
+        confirm=True,
     )
     assert out == "Provide product_id."
     assert len(fc.calls) == 0
 
 
 def test_remove_product_surfaces_user_errors():
-    tools, fc = _build([
-        _manual_collection(),
-        {"collectionRemoveProducts": {
-            "job": None,
-            "userErrors": [
-                {"field": ["productIds", "0"], "message": "Product not in collection"},
-            ],
-        }},
-    ])
+    tools, fc = _build(
+        [
+            _manual_collection(),
+            {
+                "collectionRemoveProducts": {
+                    "job": None,
+                    "userErrors": [
+                        {"field": ["productIds", "0"], "message": "Product not in collection"},
+                    ],
+                }
+            },
+        ]
+    )
     out = tools["remove_product_from_collection"](
-        handle="vanish", product_id="777", confirm=True,
+        handle="vanish",
+        product_id="777",
+        confirm=True,
     )
     assert out.startswith("Error:")
     assert "Product not in collection" in out
@@ -326,6 +386,7 @@ def _job_status(job_id, done):
 
 class RaisingFakeClient:
     """FakeClient variant where some responses are exceptions to be raised."""
+
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = []
@@ -342,13 +403,17 @@ class RaisingFakeClient:
 
 def test_add_product_polls_job_when_initial_done_false_and_flips_true(fake_poll_clock):
     # Sequence: resolve-collection → mutation (done=false) → poll (done=true)
-    tools, fc = _build([
-        _manual_collection(),
-        _add_ok(job_id="999", done=False),
-        _job_status("999", True),
-    ])
+    tools, fc = _build(
+        [
+            _manual_collection(),
+            _add_ok(job_id="999", done=False),
+            _job_status("999", True),
+        ]
+    )
     out = tools["add_product_to_collection"](
-        handle="vanish", product_id="777", confirm=True,
+        handle="vanish",
+        product_id="777",
+        confirm=True,
     )
     assert "Job        : 999 (done=True after" in out, out
     assert len(fc.calls) == 3
@@ -360,13 +425,17 @@ def test_add_product_polling_times_out_when_done_stays_false(fake_poll_clock):
     # 1 collection read + 1 mutation + up to 11 poll calls (10s / 1s intervals).
     # We pre-load more than that so no "unexpected extra" is triggered.
     poll_responses = [_job_status("999", False)] * 20
-    tools, fc = _build([
-        _manual_collection(),
-        _add_ok(job_id="999", done=False),
-        *poll_responses,
-    ])
+    tools, fc = _build(
+        [
+            _manual_collection(),
+            _add_ok(job_id="999", done=False),
+            *poll_responses,
+        ]
+    )
     out = tools["add_product_to_collection"](
-        handle="vanish", product_id="777", confirm=True,
+        handle="vanish",
+        product_id="777",
+        confirm=True,
     )
     assert "still running server-side after 10s timeout" in out, out
     assert "verify via get_collection" in out, out
@@ -377,28 +446,36 @@ def test_add_product_polling_times_out_when_done_stays_false(fake_poll_clock):
 def test_add_product_polling_transport_error_surfaces_poll_failed_message(fake_poll_clock):
     # Replace the default FakeClient with one that raises on every poll.
     srv = CapturingServer()
-    fc = RaisingFakeClient([
-        _manual_collection(),
-        _add_ok(job_id="999", done=False),
-        *([RuntimeError("upstream 503")] * 20),
-    ])
+    fc = RaisingFakeClient(
+        [
+            _manual_collection(),
+            _add_ok(job_id="999", done=False),
+            *([RuntimeError("upstream 503")] * 20),
+        ]
+    )
     collections.register(srv, fc)
     out = srv.tools["add_product_to_collection"](
-        handle="vanish", product_id="777", confirm=True,
+        handle="vanish",
+        product_id="777",
+        confirm=True,
     )
     assert "poll failed: upstream 503" in out, out
     assert "underlying write succeeded" in out, out
 
 
 def test_remove_product_polls_and_reports_elapsed_when_job_completes(fake_poll_clock):
-    tools, fc = _build([
-        _manual_collection(),
-        _remove_ok(job_id="888", done=False),
-        _job_status("888", False),
-        _job_status("888", True),
-    ])
+    tools, fc = _build(
+        [
+            _manual_collection(),
+            _remove_ok(job_id="888", done=False),
+            _job_status("888", False),
+            _job_status("888", True),
+        ]
+    )
     out = tools["remove_product_from_collection"](
-        handle="vanish", product_id="777", confirm=True,
+        handle="vanish",
+        product_id="777",
+        confirm=True,
     )
     assert "Job        : 888 (done=True after" in out, out
     assert out.count("JobStatus") == 0  # user-facing text shouldn't leak the query name
@@ -411,7 +488,9 @@ def test_remove_product_polls_and_reports_elapsed_when_job_completes(fake_poll_c
 def test_initial_done_true_does_not_poll():
     tools, fc = _build([_manual_collection(), _add_ok(job_id="123", done=True)])
     out = tools["add_product_to_collection"](
-        handle="vanish", product_id="777", confirm=True,
+        handle="vanish",
+        product_id="777",
+        confirm=True,
     )
     assert "Job        : 123 (done=True)" in out, out
     # Exactly 2 calls — no poll issued.
@@ -421,18 +500,27 @@ def test_initial_done_true_does_not_poll():
 
 # --- update_collection ---
 
+
 def _collection_update_ok():
-    return {"collectionUpdate": {
-        "collection": {"id": "gid://shopify/Collection/123", "title": "new", "handle": "vanish"},
-        "userErrors": [],
-    }}
+    return {
+        "collectionUpdate": {
+            "collection": {
+                "id": "gid://shopify/Collection/123",
+                "title": "new",
+                "handle": "vanish",
+            },
+            "userErrors": [],
+        }
+    }
 
 
 def _collection_update_err(field, message):
-    return {"collectionUpdate": {
-        "collection": None,
-        "userErrors": [{"field": field, "message": message}],
-    }}
+    return {
+        "collectionUpdate": {
+            "collection": None,
+            "userErrors": [{"field": field, "message": message}],
+        }
+    }
 
 
 def test_update_collection_requires_title_or_description_no_read():
@@ -455,7 +543,9 @@ def test_update_collection_handle_not_found():
 def test_update_collection_preview_does_not_mutate():
     tools, fc = _build([_manual_collection(handle="vanish", title="Vanish")])
     out = tools["update_collection"](
-        handle="vanish", new_title="New Title", new_description="<p>new</p>",
+        handle="vanish",
+        new_title="New Title",
+        new_description="<p>new</p>",
     )
     assert "PREVIEW" in out
     assert "Vanish" in out and "New Title" in out
@@ -465,12 +555,16 @@ def test_update_collection_preview_does_not_mutate():
 
 
 def test_update_collection_confirm_title_only_sends_only_title_field():
-    tools, fc = _build([
-        _manual_collection(handle="vanish", title="Vanish"),
-        _collection_update_ok(),
-    ])
+    tools, fc = _build(
+        [
+            _manual_collection(handle="vanish", title="Vanish"),
+            _collection_update_ok(),
+        ]
+    )
     out = tools["update_collection"](
-        handle="vanish", new_title="Renamed", confirm=True,
+        handle="vanish",
+        new_title="Renamed",
+        confirm=True,
     )
     assert out.startswith("Done.")
     # Mutation call: input must carry id + title only — description absent.
@@ -482,12 +576,16 @@ def test_update_collection_confirm_title_only_sends_only_title_field():
 
 
 def test_update_collection_confirm_description_only_sends_only_description_field():
-    tools, fc = _build([
-        _manual_collection(handle="vanish", title="Vanish"),
-        _collection_update_ok(),
-    ])
+    tools, fc = _build(
+        [
+            _manual_collection(handle="vanish", title="Vanish"),
+            _collection_update_ok(),
+        ]
+    )
     tools["update_collection"](
-        handle="vanish", new_description="<p>rewritten</p>", confirm=True,
+        handle="vanish",
+        new_description="<p>rewritten</p>",
+        confirm=True,
     )
     _, vars_ = fc.calls[1]
     assert vars_["input"]["descriptionHtml"] == "<p>rewritten</p>"
@@ -495,12 +593,16 @@ def test_update_collection_confirm_description_only_sends_only_description_field
 
 
 def test_update_collection_user_errors_surfaced():
-    tools, fc = _build([
-        _manual_collection(handle="vanish", title="Vanish"),
-        _collection_update_err("title", "too long"),
-    ])
+    tools, fc = _build(
+        [
+            _manual_collection(handle="vanish", title="Vanish"),
+            _collection_update_err("title", "too long"),
+        ]
+    )
     out = tools["update_collection"](
-        handle="vanish", new_title="X" * 500, confirm=True,
+        handle="vanish",
+        new_title="X" * 500,
+        confirm=True,
     )
     assert out.startswith("Error:")
     assert "title: too long" in out

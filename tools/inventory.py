@@ -5,16 +5,17 @@ update_inventory requires confirm=True.
 """
 
 from mcp.server.fastmcp import FastMCP
+
 from shopify_client import (
     ShopifyClient,
     extract_user_errors,
     format_user_errors,
-    to_gid,
     from_gid,
+    to_gid,
     with_confirm_hint,
 )
-from tools._log import log_write
 from tools._filters import filter_variant_targets
+from tools._log import log_write
 
 # GET_PRODUCT_INVENTORY fetches `variants(first: 50)` — Shopify returns up to
 # this many variants per request and silently truncates the rest. When a read
@@ -111,7 +112,7 @@ def _variant_label(v: dict) -> str:
     return v.get("title") or f"variant {from_gid(v.get('id', ''))}"
 
 
-def _pair_prefix(variant: dict, level: dict, loc_gid: str) -> str:
+def _pair_prefix(variant: dict, level: dict, loc_gid: str | None) -> str:
     """Render the leading identity segment of a (variant, location) pair line."""
     loc = level.get("location") or {}
     loc_name = loc.get("name") or f"id {from_gid(loc_gid or '')}"
@@ -168,7 +169,9 @@ def register(server: FastMCP, client: ShopifyClient):
         # Shopify returns `{"inventoryItem": null}` (deleted / wrong id), the
         # default isn't used and we'd crash on a None.get() chain. Same shape
         # elsewhere in this module — see get_inventory above.
-        data = client.execute(GET_INVENTORY_ITEM, {"id": to_gid("InventoryItem", inventory_item_id)})
+        data = client.execute(
+            GET_INVENTORY_ITEM, {"id": to_gid("InventoryItem", inventory_item_id)}
+        )
         inv_item = data.get("inventoryItem") or {}
         levels = (inv_item.get("inventoryLevels") or {}).get("nodes", [])
         location_gid = to_gid("Location", location_id)
@@ -189,18 +192,21 @@ def register(server: FastMCP, client: ShopifyClient):
         if not confirm:
             return with_confirm_hint(preview)
 
-        result = client.execute(SET_INVENTORY, {
-            "input": {
-                "reason": "correction",
-                "setQuantities": [
-                    {
-                        "inventoryItemId": to_gid("InventoryItem", inventory_item_id),
-                        "locationId": location_gid,
-                        "quantity": quantity,
-                    }
-                ],
-            }
-        })
+        result = client.execute(
+            SET_INVENTORY,
+            {
+                "input": {
+                    "reason": "correction",
+                    "setQuantities": [
+                        {
+                            "inventoryItemId": to_gid("InventoryItem", inventory_item_id),
+                            "locationId": location_gid,
+                            "quantity": quantity,
+                        }
+                    ],
+                }
+            },
+        )
         err = format_user_errors(result, "inventorySetOnHandQuantities")
         if err:
             return err
@@ -215,7 +221,7 @@ def register(server: FastMCP, client: ShopifyClient):
     def update_variant_inventory_tracking(
         product_id: str,
         tracked: bool,
-        variant_ids: list[str] = None,
+        variant_ids: list[str] | None = None,
         confirm: bool = False,
     ) -> str:
         """
@@ -254,20 +260,25 @@ def register(server: FastMCP, client: ShopifyClient):
                 f"inventory_item: {from_gid(inv_item.get('id', ''))} — {suffix}"
             )
 
-        change_lines = "\n".join(
-            _variant_line(
-                v,
-                f"{_tracked_display((v.get('inventoryItem') or {}).get('tracked'))} → {tracked}",
+        change_lines = (
+            "\n".join(
+                _variant_line(
+                    v,
+                    f"{_tracked_display((v.get('inventoryItem') or {}).get('tracked'))} → {tracked}",
+                )
+                for v in to_change
             )
-            for v in to_change
-        ) or "    (none)"
-        unchanged_lines = "\n".join(
-            _variant_line(v, f"already tracked={tracked}") for v in unchanged
-        ) or "    (none)"
+            or "    (none)"
+        )
+        unchanged_lines = (
+            "\n".join(_variant_line(v, f"already tracked={tracked}") for v in unchanged)
+            or "    (none)"
+        )
         unresolved_block = (
-            "\n  Unresolved variant ids:\n" +
-            "\n".join(f"    • {vid}" for vid in unresolved)
-        ) if unresolved else ""
+            ("\n  Unresolved variant ids:\n" + "\n".join(f"    • {vid}" for vid in unresolved))
+            if unresolved
+            else ""
+        )
 
         preview = (
             f"PREVIEW — Variant inventory tracking update\n"
@@ -286,10 +297,12 @@ def register(server: FastMCP, client: ShopifyClient):
         for v in to_change:
             inv_item_gid = (v.get("inventoryItem") or {}).get("id")
             if not inv_item_gid:
-                failed.append({
-                    "variant": _variant_label(v),
-                    "error": "variant has no inventoryItem id",
-                })
+                failed.append(
+                    {
+                        "variant": _variant_label(v),
+                        "error": "variant has no inventoryItem id",
+                    }
+                )
                 continue
             # Isolate transport errors per variant so a mid-loop failure doesn't
             # abort the batch — prior successes must still be reported and
@@ -300,28 +313,27 @@ def register(server: FastMCP, client: ShopifyClient):
                     {"id": inv_item_gid, "input": {"tracked": tracked}},
                 )
             except Exception as e:
-                failed.append({
-                    "variant": _variant_label(v),
-                    "error": f"transport error: {e}",
-                })
+                failed.append(
+                    {
+                        "variant": _variant_label(v),
+                        "error": f"transport error: {e}",
+                    }
+                )
                 continue
             user_errors = extract_user_errors(result, "inventoryItemUpdate")
             if user_errors:
-                msgs = "; ".join(
-                    f"{e.get('field')}: {e.get('message')}" for e in user_errors
-                )
+                msgs = "; ".join(f"{e.get('field')}: {e.get('message')}" for e in user_errors)
                 failed.append({"variant": _variant_label(v), "error": msgs})
             else:
                 changed.append(v)
 
-        changed_lines = "\n".join(
-            _variant_line(v, f"tracked={tracked}") for v in changed
-        ) or "    (none)"
+        changed_lines = (
+            "\n".join(_variant_line(v, f"tracked={tracked}") for v in changed) or "    (none)"
+        )
         failed_block = ""
         if failed:
-            failed_block = (
-                f"\n  Failed ({len(failed)}):\n" +
-                "\n".join(f"    • {f['variant']}: {f['error']}" for f in failed)
+            failed_block = f"\n  Failed ({len(failed)}):\n" + "\n".join(
+                f"    • {f['variant']}: {f['error']}" for f in failed
             )
 
         log_write(
@@ -346,8 +358,8 @@ def register(server: FastMCP, client: ShopifyClient):
     def update_variant_inventory_quantity(
         product_id: str,
         quantity: int,
-        location_id: str = None,
-        variant_ids: list[str] = None,
+        location_id: str | None = None,
+        variant_ids: list[str] | None = None,
         confirm: bool = False,
     ) -> str:
         """
@@ -367,9 +379,13 @@ def register(server: FastMCP, client: ShopifyClient):
         variants = (product.get("variants") or {}).get("nodes", []) or []
         title = product.get("title", "")
         at_cap_warning = (
-            f"  WARNING: variant read hit the {_VARIANTS_PAGE_CAP}-variant page "
-            f"cap — additional variants (if any) are not covered by this call."
-        ) if len(variants) >= _VARIANTS_PAGE_CAP else ""
+            (
+                f"  WARNING: variant read hit the {_VARIANTS_PAGE_CAP}-variant page "
+                f"cap — additional variants (if any) are not covered by this call."
+            )
+            if len(variants) >= _VARIANTS_PAGE_CAP
+            else ""
+        )
 
         targets, unresolved_variants = filter_variant_targets(variant_ids, variants)
 
@@ -422,26 +438,35 @@ def register(server: FastMCP, client: ShopifyClient):
                 f"(not found on any of the targeted variants)"
             )
 
-        write_lines = "\n".join(
-            f"{_pair_prefix(v, lv, loc)} — {_current_display(cur)} → {quantity}"
-            for v, lv, cur, loc in to_write
-        ) or "    (none)"
-        unchanged_lines = "\n".join(
-            f"{_pair_prefix(v, lv, loc)} — already at {quantity}"
-            for v, lv, cur, loc in unchanged
-        ) or "    (none)"
+        write_lines = (
+            "\n".join(
+                f"{_pair_prefix(v, lv, loc)} — {_current_display(cur)} → {quantity}"
+                for v, lv, cur, loc in to_write
+            )
+            or "    (none)"
+        )
+        unchanged_lines = (
+            "\n".join(
+                f"{_pair_prefix(v, lv, loc)} — already at {quantity}"
+                for v, lv, cur, loc in unchanged
+            )
+            or "    (none)"
+        )
         skipped_block = ""
         if skipped:
             skipped_lines = "\n".join(
-                f"{_pair_prefix(v, lv, loc)} — "
-                f"missing inventoryItem.id or location.id, not written"
+                f"{_pair_prefix(v, lv, loc)} — missing inventoryItem.id or location.id, not written"
                 for v, lv, _cur, loc in skipped
             )
             skipped_block = f"\n  Skipped ({len(skipped)}):\n{skipped_lines}"
         unresolved_variants_block = (
-            "\n  Unresolved variant ids:\n" +
-            "\n".join(f"    • {vid}" for vid in unresolved_variants)
-        ) if unresolved_variants else ""
+            (
+                "\n  Unresolved variant ids:\n"
+                + "\n".join(f"    • {vid}" for vid in unresolved_variants)
+            )
+            if unresolved_variants
+            else ""
+        )
         warning_block = f"\n{at_cap_warning}" if at_cap_warning else ""
 
         target_loc_label = location_id or "all locations"
@@ -497,12 +522,15 @@ def register(server: FastMCP, client: ShopifyClient):
             for v, _lv, _cur, loc_gid in to_write
         ]
 
-        result = client.execute(SET_INVENTORY, {
-            "input": {
-                "reason": "correction",
-                "setQuantities": set_quantities,
-            }
-        })
+        result = client.execute(
+            SET_INVENTORY,
+            {
+                "input": {
+                    "reason": "correction",
+                    "setQuantities": set_quantities,
+                }
+            },
+        )
         err = format_user_errors(result, "inventorySetOnHandQuantities")
         if err:
             return err

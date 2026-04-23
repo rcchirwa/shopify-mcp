@@ -13,7 +13,6 @@ Usage:
 import os
 
 import pytest
-
 from gql.transport.exceptions import TransportQueryError, TransportServerError
 
 from shopify_client import (
@@ -29,6 +28,7 @@ from shopify_client import (
 
 class _StubGqlClient:
     """Stand-in for gql.Client — returns a scripted value or raises."""
+
     def __init__(self, result=None, exc=None):
         self._result = result
         self._exc = exc
@@ -48,12 +48,14 @@ def _make_client(result=None, exc=None):
 
 # ---------- normal dict response passes through ----------
 
+
 def test_execute_returns_dict_unchanged():
     client = _make_client(result={"products": {"nodes": []}})
     assert client.execute("query { __typename }") == {"products": {"nodes": []}}
 
 
 # ---------- non-dict responses raise clear RuntimeError ----------
+
 
 def test_execute_raises_clear_error_on_string_response():
     client = _make_client(result="Unauthorized: missing read_products scope")
@@ -67,13 +69,13 @@ def test_execute_raises_clear_error_on_string_response():
 
 def test_execute_raises_clear_error_on_none_response():
     client = _make_client(result=None)
-    with pytest.raises(RuntimeError, match="non-dict response.*type=NoneType"):
+    with pytest.raises(RuntimeError, match=r"non-dict response.*type=NoneType"):
         client.execute("query { __typename }")
 
 
 def test_execute_raises_clear_error_on_list_response():
     client = _make_client(result=[{"unexpected": "shape"}])
-    with pytest.raises(RuntimeError, match="non-dict response.*type=list"):
+    with pytest.raises(RuntimeError, match=r"non-dict response.*type=list"):
         client.execute("query { __typename }")
 
 
@@ -89,6 +91,7 @@ def test_execute_truncates_large_non_dict_preview():
 
 
 # ---------- transport exception path still works (regression for 98c9bed) ----------
+
 
 def test_execute_formats_transport_query_error_with_string_errors():
     err = TransportQueryError("boom", errors="raw string error body")
@@ -107,11 +110,12 @@ def test_execute_formats_transport_query_error_with_dict_errors():
 def test_execute_wraps_transport_server_error():
     err = TransportServerError("503 Service Unavailable")
     client = _make_client(exc=err)
-    with pytest.raises(RuntimeError, match="Shopify HTTP error:.*503"):
+    with pytest.raises(RuntimeError, match=r"Shopify HTTP error:.*503"):
         client.execute("query { __typename }")
 
 
 # ---------- _format_errors helper shapes ----------
+
 
 def test_format_errors_handles_none():
     assert _format_errors(None) == "(no error details)"
@@ -134,6 +138,7 @@ def test_format_errors_handles_non_list_non_str_shape():
 
 
 # ---------- _mask_token helper ----------
+
 
 def test_mask_token_preserves_shpat_prefix_and_last4():
     # Full-length Shopify admin token: shpat_ + 32 hex = 38 chars.
@@ -163,6 +168,7 @@ def test_mask_token_empty_or_none():
 
 # ---------- from_gid helper ----------
 
+
 def test_from_gid_extracts_trailing_numeric_id():
     assert from_gid("gid://shopify/Product/123") == "123"
 
@@ -180,6 +186,7 @@ def test_from_gid_tolerates_empty_string():
 
 # ---------- with_confirm_hint helper ----------
 
+
 def test_with_confirm_hint_appends_exact_contract_string():
     # The tail is asserted verbatim by tool-level tests (test_inventory_offline,
     # test_discounts_offline). Pin it here too so drift is caught at the source.
@@ -193,6 +200,7 @@ def test_with_confirm_hint_on_empty_preview():
 
 
 # ---------- .env loading: override=True + script-relative path ----------
+
 
 def test_init_env_override_wins_over_process_env(tmp_path, monkeypatch, capsys):
     """.env on disk must win over stale env vars injected by the launcher."""
@@ -288,13 +296,12 @@ def test_format_user_errors_mutation_slot_is_none_returns_none():
 def test_format_user_errors_alt_error_key():
     # priceRuleCreate uses priceRuleUserErrors instead of userErrors.
     result = {
-        "priceRuleCreate": {
-            "priceRuleUserErrors": [{"field": "value", "message": "out of range"}]
-        }
+        "priceRuleCreate": {"priceRuleUserErrors": [{"field": "value", "message": "out of range"}]}
     }
-    assert format_user_errors(
-        result, "priceRuleCreate", error_key="priceRuleUserErrors"
-    ) == "Error: value: out of range"
+    assert (
+        format_user_errors(result, "priceRuleCreate", error_key="priceRuleUserErrors")
+        == "Error: value: out of range"
+    )
 
 
 def test_format_user_errors_custom_prefix():
@@ -303,9 +310,12 @@ def test_format_user_errors_custom_prefix():
             "userErrors": [{"field": "code", "message": "already exists"}]
         }
     }
-    assert format_user_errors(
-        result, "priceRuleDiscountCodeCreate", prefix="Error attaching discount code"
-    ) == "Error attaching discount code: code: already exists"
+    assert (
+        format_user_errors(
+            result, "priceRuleDiscountCodeCreate", prefix="Error attaching discount code"
+        )
+        == "Error attaching discount code: code: already exists"
+    )
 
 
 def test_format_user_errors_tolerates_missing_field_or_message():
@@ -337,17 +347,11 @@ def test_extract_user_errors_null_mutation_returns_empty_list():
 
 def test_extract_user_errors_null_list_returns_empty_list():
     # Mutation returned, userErrors slot is explicit null rather than [].
-    assert extract_user_errors(
-        {"productUpdate": {"userErrors": None}}, "productUpdate"
-    ) == []
+    assert extract_user_errors({"productUpdate": {"userErrors": None}}, "productUpdate") == []
 
 
 def test_extract_user_errors_alt_error_key():
-    result = {
-        "publishablePublish": {
-            "mediaUserErrors": [{"field": "media", "message": "bad"}]
-        }
-    }
-    assert extract_user_errors(
-        result, "publishablePublish", error_key="mediaUserErrors"
-    ) == [{"field": "media", "message": "bad"}]
+    result = {"publishablePublish": {"mediaUserErrors": [{"field": "media", "message": "bad"}]}}
+    assert extract_user_errors(result, "publishablePublish", error_key="mediaUserErrors") == [
+        {"field": "media", "message": "bad"}
+    ]

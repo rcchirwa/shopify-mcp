@@ -9,7 +9,6 @@ The en dash separator is: –  (U+2013, not a hyphen)
 
 import re
 
-
 VALID_PREFIXES = ("All or Nothing | ", "Vanish | ")
 EN_DASH_SEPARATOR = " – "
 BANNED_PARENT_BRAND = "Global Streetwear Syndicate"
@@ -27,15 +26,10 @@ def validate_title(title: str) -> list[str]:
         # validate_title_diff can classify the same violation across two
         # different titles as `pre_existing` rather than a pair of
         # `introduced` + `fixed` entries.
-        warnings.append(
-            "Title must start with 'All or Nothing | ' or 'Vanish | '."
-        )
+        warnings.append("Title must start with 'All or Nothing | ' or 'Vanish | '.")
 
     if BANNED_PARENT_BRAND in title:
-        warnings.append(
-            f"Title must never contain the parent brand name "
-            f"'{BANNED_PARENT_BRAND}'."
-        )
+        warnings.append(f"Title must never contain the parent brand name '{BANNED_PARENT_BRAND}'.")
 
     if EN_DASH_SEPARATOR not in title:
         warnings.append(
@@ -110,8 +104,7 @@ def format_validation_diff(old_title: str, new_title: str) -> str:
 
     if not introduced and pre_existing:
         lines.append(
-            "  Note: this edit doesn't introduce new issues; "
-            "pre-existing violations remain."
+            "  Note: this edit doesn't introduce new issues; pre-existing violations remain."
         )
 
     if introduced:
@@ -119,9 +112,7 @@ def format_validation_diff(old_title: str, new_title: str) -> str:
         for issue in introduced:
             lines.append(f"    • {issue}")
     if pre_existing:
-        lines.append(
-            f"  Pre-existing ({len(pre_existing)} — not introduced by this edit):"
-        )
+        lines.append(f"  Pre-existing ({len(pre_existing)} — not introduced by this edit):")
         for issue in pre_existing:
             lines.append(f"    • {issue}")
     if fixed:

@@ -8,15 +8,16 @@ All credentials loaded from .env — never hardcoded here.
 """
 
 from mcp.server.fastmcp import FastMCP
-from shopify_client import ShopifyClient
-import tools.products as products_module
-import tools.inventory as inventory_module
+
 import tools.collections as collections_module
 import tools.discounts as discounts_module
+import tools.inventory as inventory_module
+import tools.media as media_module
 import tools.orders as orders_module
+import tools.products as products_module
 import tools.publications as publications_module
 import tools.webhooks as webhooks_module
-import tools.media as media_module
+from shopify_client import ShopifyClient
 
 
 def create_server() -> FastMCP:

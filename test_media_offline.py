@@ -16,26 +16,23 @@ import socket
 from unittest.mock import patch
 
 import pytest
+import requests as _requests
 
+from _testing import CapturingServer, FakeClient
 from tools import media
 from tools.media import (
+    GET_MEDIA_STATUS,
+    GET_PRODUCT_MEDIA,
+    PRODUCT_CREATE_MEDIA,
+    PRODUCT_REORDER_MEDIA,
+    STAGED_UPLOADS_CREATE,
     _as_product_gid,
     _download_image,
     _format_bytes,
     _reject_if_private_host,
     _render_media_list,
     _upload_bytes_to_target,
-    GET_PRODUCT_MEDIA,
-    GET_MEDIA_STATUS,
-    STAGED_UPLOADS_CREATE,
-    PRODUCT_CREATE_MEDIA,
-    PRODUCT_REORDER_MEDIA,
-    PRODUCT_UPDATE_MEDIA,
-    PRODUCT_DELETE_MEDIA,
 )
-from _testing import CapturingServer, FakeClient
-import requests as _requests
-
 
 PRODUCT_GID = "gid://shopify/Product/123"
 MEDIA_A = "gid://shopify/MediaImage/111"
@@ -76,29 +73,40 @@ def _media_node(mid, alt="", status="READY", kind="IMAGE", preview_url=None):
 
 
 def _product_media_read(nodes, pid="123", title="Hoodie", has_next=False):
-    return {"product": {
-        "id": f"gid://shopify/Product/{pid}",
-        "title": title,
-        "media": {"nodes": nodes, "pageInfo": {"hasNextPage": has_next}},
-    }}
+    return {
+        "product": {
+            "id": f"gid://shopify/Product/{pid}",
+            "title": title,
+            "media": {"nodes": nodes, "pageInfo": {"hasNextPage": has_next}},
+        }
+    }
 
 
 def _node_media_status(mid, status="READY", preview_url=None):
     """Response shape for the GET_MEDIA_STATUS poll query (node(id))."""
-    return {"node": {
-        "id": mid,
-        "status": status,
-        "preview": {"image": {"url": preview_url or f"https://cdn.shopify.com/{mid}.jpg"}},
-    }}
+    return {
+        "node": {
+            "id": mid,
+            "status": status,
+            "preview": {"image": {"url": preview_url or f"https://cdn.shopify.com/{mid}.jpg"}},
+        }
+    }
 
 
 # ---------- list_product_media ----------
 
+
 def test_list_product_media_formats_output():
-    tools, fc = _build([_product_media_read([
-        _media_node(MEDIA_A, alt="front"),
-        _media_node(MEDIA_B, alt=""),
-    ])])
+    tools, fc = _build(
+        [
+            _product_media_read(
+                [
+                    _media_node(MEDIA_A, alt="front"),
+                    _media_node(MEDIA_B, alt=""),
+                ]
+            )
+        ]
+    )
     out = tools["list_product_media"](product_id="123")
     assert "Media for product 123" in out
     assert "2 item(s)" in out
@@ -124,9 +132,14 @@ def test_list_product_media_product_not_found():
 
 def test_list_product_media_warns_at_page_cap():
     """hasNextPage=True surfaces a truncation warning."""
-    tools, fc = _build([_product_media_read(
-        [_media_node(MEDIA_A)], has_next=True,
-    )])
+    tools, fc = _build(
+        [
+            _product_media_read(
+                [_media_node(MEDIA_A)],
+                has_next=True,
+            )
+        ]
+    )
     out = tools["list_product_media"](product_id="123")
     assert "WARNING" in out and "100" in out
 
@@ -140,10 +153,13 @@ def test_list_product_media_accepts_full_gid_passthrough():
 
 # ---------- upload_product_image — input validation ----------
 
+
 def test_upload_rejects_non_https_source():
     tools, fc = _build([])
     out = tools["upload_product_image"](
-        product_id="123", source="http://example.com/a.jpg", confirm=True,
+        product_id="123",
+        source="http://example.com/a.jpg",
+        confirm=True,
     )
     assert out.startswith("Error at stage=input:"), out
     assert fc.calls == []
@@ -152,7 +168,9 @@ def test_upload_rejects_non_https_source():
 def test_upload_rejects_local_file_path():
     tools, fc = _build([])
     out = tools["upload_product_image"](
-        product_id="123", source="/tmp/hero.jpg", confirm=True,
+        product_id="123",
+        source="/tmp/hero.jpg",
+        confirm=True,
     )
     assert out.startswith("Error at stage=input:"), out
     assert fc.calls == []
@@ -161,7 +179,9 @@ def test_upload_rejects_local_file_path():
 def test_upload_rejects_missing_source():
     tools, fc = _build([])
     out = tools["upload_product_image"](
-        product_id="123", source="", confirm=True,
+        product_id="123",
+        source="",
+        confirm=True,
     )
     assert out.startswith("Error at stage=input:"), out
     assert fc.calls == []
@@ -180,10 +200,18 @@ def test_upload_rejects_negative_position():
 
 # ---------- upload_product_image — preview ----------
 
+
 def test_upload_preview_mode_only_reads():
-    tools, fc = _build([_product_media_read([
-        _media_node(MEDIA_A), _media_node(MEDIA_B),
-    ])])
+    tools, fc = _build(
+        [
+            _product_media_read(
+                [
+                    _media_node(MEDIA_A),
+                    _media_node(MEDIA_B),
+                ]
+            )
+        ]
+    )
     out = tools["upload_product_image"](
         product_id="123",
         source="https://cdn.example.com/hero.jpg",
@@ -211,41 +239,54 @@ def test_upload_preview_shows_append_when_no_position():
 
 # ---------- upload_product_image — execute happy path ----------
 
-def _staged_ok(url="https://staged.shopify-gcs.example/signed",
-               resource_url="https://shopify-cdn.example/resource"):
-    return {"stagedUploadsCreate": {
-        "stagedTargets": [{
-            "url": url,
-            "resourceUrl": resource_url,
-            "parameters": [
-                {"name": "content_type", "value": "image/jpeg"},
-                {"name": "acl", "value": "private"},
+
+def _staged_ok(
+    url="https://staged.shopify-gcs.example/signed",
+    resource_url="https://shopify-cdn.example/resource",
+):
+    return {
+        "stagedUploadsCreate": {
+            "stagedTargets": [
+                {
+                    "url": url,
+                    "resourceUrl": resource_url,
+                    "parameters": [
+                        {"name": "content_type", "value": "image/jpeg"},
+                        {"name": "acl", "value": "private"},
+                    ],
+                }
             ],
-        }],
-        "userErrors": [],
-    }}
+            "userErrors": [],
+        }
+    }
 
 
 def _create_media_ok(mid=MEDIA_C, alt="", status="PROCESSING", preview_url=None):
-    return {"productCreateMedia": {
-        "media": [_media_node(mid, alt=alt, status=status, preview_url=preview_url)],
-        "mediaUserErrors": [],
-    }}
+    return {
+        "productCreateMedia": {
+            "media": [_media_node(mid, alt=alt, status=status, preview_url=preview_url)],
+            "mediaUserErrors": [],
+        }
+    }
 
 
 def _create_media_err(field, message):
-    return {"productCreateMedia": {
-        "media": [],
-        "mediaUserErrors": [{"field": field, "message": message}],
-    }}
+    return {
+        "productCreateMedia": {
+            "media": [],
+            "mediaUserErrors": [{"field": field, "message": message}],
+        }
+    }
 
 
 def _reorder_ok(done=True, job_id="gid://shopify/Job/j1"):
-    return {"productReorderMedia": {
-        "job": {"id": job_id, "done": done},
-        "mediaUserErrors": [],
-        "userErrors": [],
-    }}
+    return {
+        "productReorderMedia": {
+            "job": {"id": job_id, "done": done},
+            "mediaUserErrors": [],
+            "userErrors": [],
+        }
+    }
 
 
 def _make_http_response(status=200, content=b"fakejpgbytes", content_type="image/jpeg"):
@@ -258,20 +299,25 @@ def _make_http_response(status=200, content=b"fakejpgbytes", content_type="image
 
 def test_upload_execute_happy_path_append():
     """End-to-end: download → stage → attach → poll (READY on first try), no reorder."""
-    tools, fc = _build([
-        _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),  # initial read
-        _staged_ok(),                                                       # stagedUploadsCreate
-        _create_media_ok(mid=MEDIA_C, status="PROCESSING"),                 # productCreateMedia
-        _node_media_status(                                                 # poll (READY)
-            MEDIA_C, status="READY",
-            preview_url="https://cdn.shopify.com/new.jpg",
-        ),
-    ])
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),  # initial read
+            _staged_ok(),  # stagedUploadsCreate
+            _create_media_ok(mid=MEDIA_C, status="PROCESSING"),  # productCreateMedia
+            _node_media_status(  # poll (READY)
+                MEDIA_C,
+                status="READY",
+                preview_url="https://cdn.shopify.com/new.jpg",
+            ),
+        ]
+    )
 
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get", return_value=_make_http_response()), \
-         patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)), \
-         patch("tools.media.time.sleep"):
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media.requests.get", return_value=_make_http_response()),
+        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch("tools.media.time.sleep"),
+    ):
         out = tools["upload_product_image"](
             product_id="123",
             source="https://cdn.example.com/hero.jpg",
@@ -300,27 +346,33 @@ def test_upload_execute_happy_path_append():
     # productCreateMedia passes the resourceUrl from the staged target.
     _, attach_vars = fc.calls[2]
     assert attach_vars["productId"] == PRODUCT_GID
-    assert attach_vars["media"] == [{
-        "alt": "Smoke hero",
-        "mediaContentType": "IMAGE",
-        "originalSource": "https://shopify-cdn.example/resource",
-    }]
+    assert attach_vars["media"] == [
+        {
+            "alt": "Smoke hero",
+            "mediaContentType": "IMAGE",
+            "originalSource": "https://shopify-cdn.example/resource",
+        }
+    ]
 
 
 def test_upload_execute_reorder_when_non_append_position():
     """position=1 with 2 existing media triggers a reorder after attach."""
-    tools, fc = _build([
-        _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
-        _staged_ok(),
-        _create_media_ok(mid=MEDIA_C, status="READY"),
-        _node_media_status(MEDIA_C, status="READY"),
-        _reorder_ok(done=True),
-    ])
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
+            _staged_ok(),
+            _create_media_ok(mid=MEDIA_C, status="READY"),
+            _node_media_status(MEDIA_C, status="READY"),
+            _reorder_ok(done=True),
+        ]
+    )
 
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get", return_value=_make_http_response()), \
-         patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)), \
-         patch("tools.media.time.sleep"):
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media.requests.get", return_value=_make_http_response()),
+        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch("tools.media.time.sleep"),
+    ):
         out = tools["upload_product_image"](
             product_id="123",
             source="https://cdn.example.com/hero.jpg",
@@ -338,17 +390,21 @@ def test_upload_execute_reorder_when_non_append_position():
 
 def test_upload_execute_skips_reorder_when_position_equals_append():
     """position matching current_count + 1 is treated as append — no reorder."""
-    tools, fc = _build([
-        _product_media_read([_media_node(MEDIA_A)]),
-        _staged_ok(),
-        _create_media_ok(mid=MEDIA_C, status="READY"),
-        _node_media_status(MEDIA_C, status="READY"),
-    ])
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A)]),
+            _staged_ok(),
+            _create_media_ok(mid=MEDIA_C, status="READY"),
+            _node_media_status(MEDIA_C, status="READY"),
+        ]
+    )
 
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get", return_value=_make_http_response()), \
-         patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)), \
-         patch("tools.media.time.sleep"):
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media.requests.get", return_value=_make_http_response()),
+        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch("tools.media.time.sleep"),
+    ):
         out = tools["upload_product_image"](
             product_id="123",
             source="https://cdn.example.com/a.jpg",
@@ -358,17 +414,22 @@ def test_upload_execute_skips_reorder_when_position_equals_append():
 
     assert out.startswith("CONFIRMED —"), out
     assert [c[0] for c in fc.calls] == [
-        GET_PRODUCT_MEDIA, STAGED_UPLOADS_CREATE, PRODUCT_CREATE_MEDIA, GET_MEDIA_STATUS,
+        GET_PRODUCT_MEDIA,
+        STAGED_UPLOADS_CREATE,
+        PRODUCT_CREATE_MEDIA,
+        GET_MEDIA_STATUS,
     ]  # no reorder call
 
 
 # ---------- upload_product_image — error surfacing by stage ----------
 
+
 def test_upload_download_http_error_labels_download_stage():
     tools, fc = _build([_product_media_read([])])
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get",
-               return_value=FakeHTTPResponse(status_code=404)):
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media.requests.get", return_value=FakeHTTPResponse(status_code=404)),
+    ):
         out = tools["upload_product_image"](
             product_id="123",
             source="https://cdn.example.com/missing.jpg",
@@ -380,10 +441,17 @@ def test_upload_download_http_error_labels_download_stage():
 
 def test_upload_non_image_content_type_labels_download_stage():
     tools, fc = _build([_product_media_read([])])
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get", return_value=FakeHTTPResponse(
-             status_code=200, content=b"<html>", headers={"Content-Type": "text/html"},
-         )):
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch(
+            "tools.media.requests.get",
+            return_value=FakeHTTPResponse(
+                status_code=200,
+                content=b"<html>",
+                headers={"Content-Type": "text/html"},
+            ),
+        ),
+    ):
         out = tools["upload_product_image"](
             product_id="123",
             source="https://cdn.example.com/page.jpg",
@@ -394,14 +462,18 @@ def test_upload_non_image_content_type_labels_download_stage():
 
 
 def test_upload_attach_user_errors_labelled_attach_stage():
-    tools, fc = _build([
-        _product_media_read([]),
-        _staged_ok(),
-        _create_media_err("media", "unsupported format"),
-    ])
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get", return_value=_make_http_response()), \
-         patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)):
+    tools, fc = _build(
+        [
+            _product_media_read([]),
+            _staged_ok(),
+            _create_media_err("media", "unsupported format"),
+        ]
+    )
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media.requests.get", return_value=_make_http_response()),
+        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+    ):
         out = tools["upload_product_image"](
             product_id="123",
             source="https://cdn.example.com/hero.jpg",
@@ -412,14 +484,19 @@ def test_upload_attach_user_errors_labelled_attach_stage():
 
 
 def test_upload_staged_target_put_failure_labels_stage_upload():
-    tools, fc = _build([
-        _product_media_read([]),
-        _staged_ok(),
-    ])
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get", return_value=_make_http_response()), \
-         patch("tools.media.requests.put",
-               return_value=FakeHTTPResponse(status_code=500, text="oops")):
+    tools, fc = _build(
+        [
+            _product_media_read([]),
+            _staged_ok(),
+        ]
+    )
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media.requests.get", return_value=_make_http_response()),
+        patch(
+            "tools.media.requests.put", return_value=FakeHTTPResponse(status_code=500, text="oops")
+        ),
+    ):
         out = tools["upload_product_image"](
             product_id="123",
             source="https://cdn.example.com/hero.jpg",
@@ -431,35 +508,40 @@ def test_upload_staged_target_put_failure_labels_stage_upload():
 def test_upload_processing_timeout_returns_success_with_note():
     """Poll timing out with status=PROCESSING must return CONFIRMED + note,
     not an error. Storefront renders PROCESSING media in most cases."""
-    tools, fc = _build([
-        _product_media_read([]),
-        _staged_ok(),
-        _create_media_ok(mid=MEDIA_C, status="PROCESSING"),
-        # Poll keeps returning PROCESSING. Give several responses so the loop
-        # can iterate until its budget is exhausted (patched sleep fast-fwds).
-        _node_media_status(MEDIA_C, status="PROCESSING"),
-        _node_media_status(MEDIA_C, status="PROCESSING"),
-        _node_media_status(MEDIA_C, status="PROCESSING"),
-        _node_media_status(MEDIA_C, status="PROCESSING"),
-        _node_media_status(MEDIA_C, status="PROCESSING"),
-        _node_media_status(MEDIA_C, status="PROCESSING"),
-        _node_media_status(MEDIA_C, status="PROCESSING"),
-        _node_media_status(MEDIA_C, status="PROCESSING"),
-        _node_media_status(MEDIA_C, status="PROCESSING"),
-        _node_media_status(MEDIA_C, status="PROCESSING"),
-    ])
+    tools, fc = _build(
+        [
+            _product_media_read([]),
+            _staged_ok(),
+            _create_media_ok(mid=MEDIA_C, status="PROCESSING"),
+            # Poll keeps returning PROCESSING. Give several responses so the loop
+            # can iterate until its budget is exhausted (patched sleep fast-fwds).
+            _node_media_status(MEDIA_C, status="PROCESSING"),
+            _node_media_status(MEDIA_C, status="PROCESSING"),
+            _node_media_status(MEDIA_C, status="PROCESSING"),
+            _node_media_status(MEDIA_C, status="PROCESSING"),
+            _node_media_status(MEDIA_C, status="PROCESSING"),
+            _node_media_status(MEDIA_C, status="PROCESSING"),
+            _node_media_status(MEDIA_C, status="PROCESSING"),
+            _node_media_status(MEDIA_C, status="PROCESSING"),
+            _node_media_status(MEDIA_C, status="PROCESSING"),
+            _node_media_status(MEDIA_C, status="PROCESSING"),
+        ]
+    )
 
     # Advance monotonic by 3s per tick so the timeout (15s) fires after ~5 reads.
     tick = {"t": 0.0}
+
     def fake_monotonic():
         tick["t"] += 3.0
         return tick["t"]
 
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get", return_value=_make_http_response()), \
-         patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)), \
-         patch("tools.media.time.sleep"), \
-         patch("tools.media.time.monotonic", side_effect=fake_monotonic):
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media.requests.get", return_value=_make_http_response()),
+        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch("tools.media.time.sleep"),
+        patch("tools.media.time.monotonic", side_effect=fake_monotonic),
+    ):
         out = tools["upload_product_image"](
             product_id="123",
             source="https://cdn.example.com/hero.jpg",
@@ -472,6 +554,7 @@ def test_upload_processing_timeout_returns_success_with_note():
 
 
 # ---------- reorder_product_media ----------
+
 
 def test_reorder_requires_moves():
     tools, fc = _build([])
@@ -517,10 +600,12 @@ def test_reorder_preview_does_not_execute():
 
 
 def test_reorder_execute_converts_to_zero_indexed_string():
-    tools, fc = _build([
-        _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B), _media_node(MEDIA_C)]),
-        _reorder_ok(done=True),
-    ])
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B), _media_node(MEDIA_C)]),
+            _reorder_ok(done=True),
+        ]
+    )
     out = tools["reorder_product_media"](
         product_id="123",
         moves=[
@@ -538,12 +623,14 @@ def test_reorder_execute_converts_to_zero_indexed_string():
 
 
 def test_reorder_polls_job_when_not_done():
-    tools, fc = _build([
-        _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
-        _reorder_ok(done=False, job_id="gid://shopify/Job/abc"),
-        # poll_job uses JOB_STATUS_QUERY; we return a node with done=True.
-        {"node": {"id": "gid://shopify/Job/abc", "done": True}},
-    ])
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
+            _reorder_ok(done=False, job_id="gid://shopify/Job/abc"),
+            # poll_job uses JOB_STATUS_QUERY; we return a node with done=True.
+            {"node": {"id": "gid://shopify/Job/abc", "done": True}},
+        ]
+    )
     with patch("tools.media.time.sleep"):
         out = tools["reorder_product_media"](
             product_id="123",
@@ -555,14 +642,18 @@ def test_reorder_polls_job_when_not_done():
 
 
 def test_reorder_surfaces_media_user_errors():
-    tools, fc = _build([
-        _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
-        {"productReorderMedia": {
-            "job": None,
-            "mediaUserErrors": [{"field": "moves", "message": "bad position"}],
-            "userErrors": [],
-        }},
-    ])
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
+            {
+                "productReorderMedia": {
+                    "job": None,
+                    "mediaUserErrors": [{"field": "moves", "message": "bad position"}],
+                    "userErrors": [],
+                }
+            },
+        ]
+    )
     out = tools["reorder_product_media"](
         product_id="123",
         moves=[{"id": MEDIA_B, "newPosition": 1}],
@@ -574,10 +665,17 @@ def test_reorder_surfaces_media_user_errors():
 
 # ---------- update_product_media ----------
 
+
 def test_update_media_preview_shows_old_and_new_alt():
-    tools, fc = _build([_product_media_read([
-        _media_node(MEDIA_A, alt="old alt"),
-    ])])
+    tools, fc = _build(
+        [
+            _product_media_read(
+                [
+                    _media_node(MEDIA_A, alt="old alt"),
+                ]
+            )
+        ]
+    )
     out = tools["update_product_media"](
         product_id="123",
         media_id=MEDIA_A,
@@ -590,9 +688,15 @@ def test_update_media_preview_shows_old_and_new_alt():
 
 
 def test_update_media_no_op_detection():
-    tools, fc = _build([_product_media_read([
-        _media_node(MEDIA_A, alt="same"),
-    ])])
+    tools, fc = _build(
+        [
+            _product_media_read(
+                [
+                    _media_node(MEDIA_A, alt="same"),
+                ]
+            )
+        ]
+    )
     out = tools["update_product_media"](
         product_id="123",
         media_id=MEDIA_A,
@@ -615,15 +719,22 @@ def test_update_media_rejects_unattached_media():
 
 
 def test_update_media_execute_mutation_shape():
-    tools, fc = _build([
-        _product_media_read([_media_node(MEDIA_A, alt="")]),
-        {"productUpdateMedia": {
-            "media": [{"id": MEDIA_A, "alt": "new"}],
-            "mediaUserErrors": [],
-        }},
-    ])
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A, alt="")]),
+            {
+                "productUpdateMedia": {
+                    "media": [{"id": MEDIA_A, "alt": "new"}],
+                    "mediaUserErrors": [],
+                }
+            },
+        ]
+    )
     out = tools["update_product_media"](
-        product_id="123", media_id=MEDIA_A, alt="new", confirm=True,
+        product_id="123",
+        media_id=MEDIA_A,
+        alt="new",
+        confirm=True,
     )
     assert out.startswith("CONFIRMED —"), out
     _, vars_ = fc.calls[1]
@@ -634,15 +745,22 @@ def test_update_media_execute_mutation_shape():
 
 
 def test_update_media_user_errors_surfaced():
-    tools, fc = _build([
-        _product_media_read([_media_node(MEDIA_A)]),
-        {"productUpdateMedia": {
-            "media": [],
-            "mediaUserErrors": [{"field": "alt", "message": "too long"}],
-        }},
-    ])
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A)]),
+            {
+                "productUpdateMedia": {
+                    "media": [],
+                    "mediaUserErrors": [{"field": "alt", "message": "too long"}],
+                }
+            },
+        ]
+    )
     out = tools["update_product_media"](
-        product_id="123", media_id=MEDIA_A, alt="x" * 500, confirm=True,
+        product_id="123",
+        media_id=MEDIA_A,
+        alt="x" * 500,
+        confirm=True,
     )
     assert out.startswith("Error at stage=update:"), out
     assert "too long" in out
@@ -650,10 +768,13 @@ def test_update_media_user_errors_surfaced():
 
 # ---------- delete_product_media ----------
 
+
 def test_delete_media_preview_does_not_execute():
     tools, fc = _build([_product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)])])
     out = tools["delete_product_media"](
-        product_id="123", media_ids=[MEDIA_A], confirm=False,
+        product_id="123",
+        media_ids=[MEDIA_A],
+        confirm=False,
     )
     assert out.startswith("PREVIEW —"), out
     assert "confirm=True" in out
@@ -661,16 +782,22 @@ def test_delete_media_preview_does_not_execute():
 
 
 def test_delete_media_happy_path():
-    tools, fc = _build([
-        _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
-        {"productDeleteMedia": {
-            "deletedMediaIds": [MEDIA_A],
-            "product": {"id": PRODUCT_GID},
-            "mediaUserErrors": [],
-        }},
-    ])
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
+            {
+                "productDeleteMedia": {
+                    "deletedMediaIds": [MEDIA_A],
+                    "product": {"id": PRODUCT_GID},
+                    "mediaUserErrors": [],
+                }
+            },
+        ]
+    )
     out = tools["delete_product_media"](
-        product_id="123", media_ids=[MEDIA_A], confirm=True,
+        product_id="123",
+        media_ids=[MEDIA_A],
+        confirm=True,
     )
     assert out.startswith("CONFIRMED —"), out
     assert "Deleted (1)" in out
@@ -680,14 +807,18 @@ def test_delete_media_happy_path():
 
 def test_delete_media_filters_unattached_ids():
     """Ids not on the product are noted and excluded from the mutation."""
-    tools, fc = _build([
-        _product_media_read([_media_node(MEDIA_A)]),
-        {"productDeleteMedia": {
-            "deletedMediaIds": [MEDIA_A],
-            "product": {"id": PRODUCT_GID},
-            "mediaUserErrors": [],
-        }},
-    ])
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A)]),
+            {
+                "productDeleteMedia": {
+                    "deletedMediaIds": [MEDIA_A],
+                    "product": {"id": PRODUCT_GID},
+                    "mediaUserErrors": [],
+                }
+            },
+        ]
+    )
     out = tools["delete_product_media"](
         product_id="123",
         media_ids=[MEDIA_A, "gid://shopify/MediaImage/99999"],
@@ -712,32 +843,44 @@ def test_delete_media_no_matches_is_no_op():
 
 
 def test_delete_media_user_errors_surfaced():
-    tools, fc = _build([
-        _product_media_read([_media_node(MEDIA_A)]),
-        {"productDeleteMedia": {
-            "deletedMediaIds": [],
-            "product": {"id": PRODUCT_GID},
-            "mediaUserErrors": [{"field": "mediaIds", "message": "locked"}],
-        }},
-    ])
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A)]),
+            {
+                "productDeleteMedia": {
+                    "deletedMediaIds": [],
+                    "product": {"id": PRODUCT_GID},
+                    "mediaUserErrors": [{"field": "mediaIds", "message": "locked"}],
+                }
+            },
+        ]
+    )
     out = tools["delete_product_media"](
-        product_id="123", media_ids=[MEDIA_A], confirm=True,
+        product_id="123",
+        media_ids=[MEDIA_A],
+        confirm=True,
     )
     assert out.startswith("Error at stage=delete:"), out
     assert "locked" in out
 
 
 def test_delete_media_dedupes_input_ids():
-    tools, fc = _build([
-        _product_media_read([_media_node(MEDIA_A)]),
-        {"productDeleteMedia": {
-            "deletedMediaIds": [MEDIA_A],
-            "product": {"id": PRODUCT_GID},
-            "mediaUserErrors": [],
-        }},
-    ])
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A)]),
+            {
+                "productDeleteMedia": {
+                    "deletedMediaIds": [MEDIA_A],
+                    "product": {"id": PRODUCT_GID},
+                    "mediaUserErrors": [],
+                }
+            },
+        ]
+    )
     tools["delete_product_media"](
-        product_id="123", media_ids=[MEDIA_A, MEDIA_A, MEDIA_A], confirm=True,
+        product_id="123",
+        media_ids=[MEDIA_A, MEDIA_A, MEDIA_A],
+        confirm=True,
     )
     _, vars_ = fc.calls[1]
     assert vars_["mediaIds"] == [MEDIA_A]
@@ -745,21 +888,26 @@ def test_delete_media_dedupes_input_ids():
 
 # ---------- FAILED processing status ----------
 
+
 def test_upload_failed_processing_returns_error_with_cleanup_hint():
     """Media attached but Shopify marks it FAILED: must return an error, not
     a CONFIRMED success — the media is attached and the operator needs to
     delete it. The error message includes the media_id and a suggested
     delete_product_media call."""
-    tools, fc = _build([
-        _product_media_read([]),                                # initial read
-        _staged_ok(),                                           # stagedUploadsCreate
-        _create_media_ok(mid=MEDIA_C, status="PROCESSING"),     # productCreateMedia
-        _node_media_status(MEDIA_C, status="FAILED"),           # poll: FAILED
-    ])
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get", return_value=_make_http_response()), \
-         patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)), \
-         patch("tools.media.time.sleep"):
+    tools, fc = _build(
+        [
+            _product_media_read([]),  # initial read
+            _staged_ok(),  # stagedUploadsCreate
+            _create_media_ok(mid=MEDIA_C, status="PROCESSING"),  # productCreateMedia
+            _node_media_status(MEDIA_C, status="FAILED"),  # poll: FAILED
+        ]
+    )
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media.requests.get", return_value=_make_http_response()),
+        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch("tools.media.time.sleep"),
+    ):
         out = tools["upload_product_image"](
             product_id="123",
             source="https://cdn.example.com/broken.jpg",
@@ -776,16 +924,20 @@ def test_upload_failed_processing_returns_error_with_cleanup_hint():
 def test_upload_failed_processing_still_reorder_when_position_set():
     """Even when a caller passes position, we short-circuit on FAILED before
     the reorder stage — reorder on a failed media is pointless."""
-    tools, fc = _build([
-        _product_media_read([_media_node(MEDIA_A)]),
-        _staged_ok(),
-        _create_media_ok(mid=MEDIA_C, status="PROCESSING"),
-        _node_media_status(MEDIA_C, status="FAILED"),
-    ])
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get", return_value=_make_http_response()), \
-         patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)), \
-         patch("tools.media.time.sleep"):
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A)]),
+            _staged_ok(),
+            _create_media_ok(mid=MEDIA_C, status="PROCESSING"),
+            _node_media_status(MEDIA_C, status="FAILED"),
+        ]
+    )
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media.requests.get", return_value=_make_http_response()),
+        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch("tools.media.time.sleep"),
+    ):
         out = tools["upload_product_image"](
             product_id="123",
             source="https://cdn.example.com/broken.jpg",
@@ -798,65 +950,73 @@ def test_upload_failed_processing_still_reorder_when_position_set():
 
 # ---------- SSRF defense (_reject_if_private_host) ----------
 
+
 def _resolve_to(*ips):
     """Build a getaddrinfo-shaped return value for the given IPs."""
     return [(socket.AF_INET, 0, 0, "", (ip, 0)) for ip in ips]
 
 
 def test_ssrf_rejects_rfc1918_private():
-    with patch("tools.media.socket.getaddrinfo",
-               return_value=_resolve_to("10.0.0.5")):
-        with pytest.raises(RuntimeError) as exc:
-            _reject_if_private_host("https://internal.corp/hero.jpg")
+    with (
+        patch("tools.media.socket.getaddrinfo", return_value=_resolve_to("10.0.0.5")),
+        pytest.raises(RuntimeError) as exc,
+    ):
+        _reject_if_private_host("https://internal.corp/hero.jpg")
     msg = str(exc.value)
     assert "10.0.0.5" in msg and "SSRF" in msg
 
 
 def test_ssrf_rejects_link_local_imds():
     """169.254.169.254 is the AWS/GCP IMDS endpoint — the textbook SSRF target."""
-    with patch("tools.media.socket.getaddrinfo",
-               return_value=_resolve_to("169.254.169.254")):
-        with pytest.raises(RuntimeError, match=r"169\.254\.169\.254"):
-            _reject_if_private_host("https://metadata.example/token")
+    with (
+        patch("tools.media.socket.getaddrinfo", return_value=_resolve_to("169.254.169.254")),
+        pytest.raises(RuntimeError, match=r"169\.254\.169\.254"),
+    ):
+        _reject_if_private_host("https://metadata.example/token")
 
 
 def test_ssrf_rejects_loopback():
-    with patch("tools.media.socket.getaddrinfo",
-               return_value=_resolve_to("127.0.0.1")):
-        with pytest.raises(RuntimeError):
-            _reject_if_private_host("https://localhost.example/hero.jpg")
+    with (
+        patch("tools.media.socket.getaddrinfo", return_value=_resolve_to("127.0.0.1")),
+        pytest.raises(RuntimeError),
+    ):
+        _reject_if_private_host("https://localhost.example/hero.jpg")
 
 
 def test_ssrf_rejects_any_private_ip_in_multi_record_resolution():
     """If a host resolves to multiple IPs and ANY are private, reject. A
     host that returns a mix of public and private addresses is often a
     rebinding attempt."""
-    with patch("tools.media.socket.getaddrinfo",
-               return_value=_resolve_to("93.184.216.34", "10.0.0.5")):
-        with pytest.raises(RuntimeError, match=r"10\.0\.0\.5"):
-            _reject_if_private_host("https://mixed.example/hero.jpg")
+    with (
+        patch(
+            "tools.media.socket.getaddrinfo", return_value=_resolve_to("93.184.216.34", "10.0.0.5")
+        ),
+        pytest.raises(RuntimeError, match=r"10\.0\.0\.5"),
+    ):
+        _reject_if_private_host("https://mixed.example/hero.jpg")
 
 
 def test_ssrf_accepts_public_ip():
     """example.com's canonical IP — must pass."""
-    with patch("tools.media.socket.getaddrinfo",
-               return_value=_resolve_to("93.184.216.34")):
+    with patch("tools.media.socket.getaddrinfo", return_value=_resolve_to("93.184.216.34")):
         _reject_if_private_host("https://cdn.example.com/hero.jpg")  # no raise
 
 
 def test_ssrf_unresolvable_host_is_rejected():
-    with patch("tools.media.socket.getaddrinfo",
-               side_effect=socket.gaierror("name resolution failed")):
-        with pytest.raises(RuntimeError, match="could not resolve host"):
-            _reject_if_private_host("https://definitely-not-a-real-host.invalid/a.jpg")
+    with (
+        patch(
+            "tools.media.socket.getaddrinfo", side_effect=socket.gaierror("name resolution failed")
+        ),
+        pytest.raises(RuntimeError, match="could not resolve host"),
+    ):
+        _reject_if_private_host("https://definitely-not-a-real-host.invalid/a.jpg")
 
 
 def test_upload_ssrf_private_host_labels_download_stage():
     """End-to-end: an SSRF-private URL is rejected inside `_download_image`,
     which bubbles up to the caller as `Error at stage=download:`."""
     tools, fc = _build([_product_media_read([])])
-    with patch("tools.media.socket.getaddrinfo",
-               return_value=_resolve_to("10.0.0.5")):
+    with patch("tools.media.socket.getaddrinfo", return_value=_resolve_to("10.0.0.5")):
         out = tools["upload_product_image"](
             product_id="123",
             source="https://internal.corp/hero.jpg",
@@ -867,6 +1027,7 @@ def test_upload_ssrf_private_host_labels_download_stage():
 
 
 # ---------- helper-level coverage: _as_product_gid, _format_bytes ----------
+
 
 def test_as_product_gid_empty_string_returns_empty():
     """Guard for empty product_id. Public tools rely on this to short-circuit
@@ -892,9 +1053,17 @@ def test_upload_preview_flags_over_range_position_as_clamped():
     """Shopify silently clamps an out-of-range position. The preview must
     annotate this so the operator isn't surprised when 'position 100' lands
     at position 4."""
-    tools, fc = _build([_product_media_read([
-        _media_node(MEDIA_A), _media_node(MEDIA_B), _media_node(MEDIA_C),
-    ])])
+    tools, fc = _build(
+        [
+            _product_media_read(
+                [
+                    _media_node(MEDIA_A),
+                    _media_node(MEDIA_B),
+                    _media_node(MEDIA_C),
+                ]
+            )
+        ]
+    )
     out = tools["upload_product_image"](
         product_id="123",
         source="https://cdn.example.com/hero.jpg",
@@ -932,6 +1101,7 @@ def test_format_bytes_kb_and_mb_branches():
 
 # ---------- _reject_if_private_host edge shapes ----------
 
+
 def test_reject_if_private_host_no_hostname_raises():
     """A URL with no hostname (e.g. `https:///path`) can't be resolved —
     refuse up front rather than passing through to getaddrinfo with None."""
@@ -961,21 +1131,25 @@ def test_reject_if_private_host_still_rejects_private_ip_after_unparseable_entry
         (socket.AF_INET, 0, 0, "", ("not-an-ip", 0)),
         (socket.AF_INET, 0, 0, "", ("10.0.0.1", 0)),
     ]
-    with patch("tools.media.socket.getaddrinfo", return_value=results):
-        with pytest.raises(RuntimeError) as exc:
-            _reject_if_private_host("https://sneaky.example/a.jpg")
+    with (
+        patch("tools.media.socket.getaddrinfo", return_value=results),
+        pytest.raises(RuntimeError) as exc,
+    ):
+        _reject_if_private_host("https://sneaky.example/a.jpg")
     msg = str(exc.value)
     assert "10.0.0.1" in msg and "SSRF" in msg
 
 
 # ---------- _download_image: request failure, caps, missing content-type ----------
 
+
 def test_download_image_request_exception_wrapped():
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get",
-               side_effect=_requests.ConnectionError("dns timeout")):
-        with pytest.raises(RuntimeError) as exc:
-            _download_image("https://cdn.example.com/a.jpg")
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media.requests.get", side_effect=_requests.ConnectionError("dns timeout")),
+        pytest.raises(RuntimeError) as exc,
+    ):
+        _download_image("https://cdn.example.com/a.jpg")
     msg = str(exc.value)
     assert "request failed" in msg and "dns timeout" in msg
 
@@ -985,15 +1159,18 @@ def test_download_image_content_length_over_cap_rejected_before_streaming():
     before we pull any bytes into memory."""
     headers = {"Content-Length": str(25 * 1024 * 1024), "Content-Type": "image/jpeg"}
     fake = FakeHTTPResponse(status_code=200, content=b"ignored", headers=headers)
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get", return_value=fake):
-        with pytest.raises(RuntimeError, match="exceeds Shopify"):
-            _download_image("https://cdn.example.com/huge.jpg")
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media.requests.get", return_value=fake),
+        pytest.raises(RuntimeError, match="exceeds Shopify"),
+    ):
+        _download_image("https://cdn.example.com/huge.jpg")
 
 
 def test_download_image_empty_chunk_in_stream_is_skipped():
     """iter_content can yield empty bytes between real chunks (keep-alive
     semantics); `if not chunk: continue` must skip without appending."""
+
     class _ChunkedResponse(FakeHTTPResponse):
         def iter_content(self, chunk_size=65536):
             return iter([b"head", b"", b"tail"])
@@ -1002,8 +1179,10 @@ def test_download_image_empty_chunk_in_stream_is_skipped():
         status_code=200,
         headers={"Content-Type": "image/jpeg"},
     )
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get", return_value=resp):
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media.requests.get", return_value=resp),
+    ):
         body, filename, ct = _download_image("https://cdn.example.com/ok.jpg")
     assert body == b"headtail"
     assert ct == "image/jpeg"
@@ -1026,11 +1205,13 @@ def test_download_image_stream_over_cap_rejected():
         content=b"x" * 100,
         headers={"Content-Type": "image/jpeg"},  # no Content-Length
     )
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get", return_value=resp), \
-         patch("tools.media._MAX_IMAGE_BYTES", 10):
-        with pytest.raises(RuntimeError) as exc:
-            _download_image("https://cdn.example.com/big.jpg")
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media.requests.get", return_value=resp),
+        patch("tools.media._MAX_IMAGE_BYTES", 10),
+        pytest.raises(RuntimeError) as exc,
+    ):
+        _download_image("https://cdn.example.com/big.jpg")
     msg = str(exc.value)
     assert "exceeded" in msg
     assert "10 B" in msg, (
@@ -1047,8 +1228,10 @@ def test_download_image_guesses_mime_when_content_type_missing():
         content=b"jpegbytes",
         headers={},  # no Content-Type
     )
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get", return_value=resp):
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media.requests.get", return_value=resp),
+    ):
         _, filename, ct = _download_image("https://cdn.example.com/photo.jpg")
     assert ct == "image/jpeg"
     assert filename == "photo.jpg"
@@ -1056,20 +1239,32 @@ def test_download_image_guesses_mime_when_content_type_missing():
 
 # ---------- _upload_bytes_to_target: request exception ----------
 
+
 def test_upload_bytes_to_target_request_exception_wrapped():
     target = {
         "url": "https://staged.example/signed",
         "parameters": [{"name": "content_type", "value": "image/jpeg"}],
     }
-    with patch("tools.media.requests.put",
-               side_effect=_requests.ConnectionError("socket reset")):
-        with pytest.raises(RuntimeError) as exc:
-            _upload_bytes_to_target(target, b"bytes")
+    with (
+        patch("tools.media.requests.put", side_effect=_requests.ConnectionError("socket reset")),
+        pytest.raises(RuntimeError) as exc,
+    ):
+        _upload_bytes_to_target(target, b"bytes")
     msg = str(exc.value)
     assert "PUT to staged target failed" in msg and "socket reset" in msg
 
 
+def test_upload_bytes_to_target_missing_url_rejected():
+    """stagedUploadsCreate should always return a `url`, but if Shopify
+    drifts and returns a target without one, refuse to call requests.put
+    with None instead of letting it crash with a confusing TypeError."""
+    target = {"parameters": [{"name": "content_type", "value": "image/jpeg"}]}
+    with pytest.raises(RuntimeError, match="staged target missing 'url'"):
+        _upload_bytes_to_target(target, b"bytes")
+
+
 # ---------- _render_media_list: product=None falls through to 'No product found.' ----------
+
 
 def test_render_media_list_none_product_returns_placeholder():
     """Defensive branch — public callers already short-circuit on a None
@@ -1079,26 +1274,32 @@ def test_render_media_list_none_product_returns_placeholder():
 
 # ---------- _poll_media_ready: transient exception during poll must not abort ----------
 
+
 def test_upload_poll_transient_exception_is_swallowed():
     """If client.execute raises during the poll loop (e.g. 502 between reads),
     the loop must keep trying until the budget is exhausted — not crash the
     whole upload after a successful attach."""
-    tools, fc = _build([
-        _product_media_read([]),                            # initial read
-        _staged_ok(),                                       # stage
-        _create_media_ok(mid=MEDIA_C, status="PROCESSING"), # attach
-        # Poll attempts: first raises, next returns READY. The raise must be
-        # absorbed so the retry can succeed.
-        RuntimeError("transient 502"),
-        _node_media_status(
-            MEDIA_C, status="READY",
-            preview_url="https://cdn.shopify.com/ok.jpg",
-        ),
-    ])
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get", return_value=_make_http_response()), \
-         patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)), \
-         patch("tools.media.time.sleep"):
+    tools, fc = _build(
+        [
+            _product_media_read([]),  # initial read
+            _staged_ok(),  # stage
+            _create_media_ok(mid=MEDIA_C, status="PROCESSING"),  # attach
+            # Poll attempts: first raises, next returns READY. The raise must be
+            # absorbed so the retry can succeed.
+            RuntimeError("transient 502"),
+            _node_media_status(
+                MEDIA_C,
+                status="READY",
+                preview_url="https://cdn.shopify.com/ok.jpg",
+            ),
+        ]
+    )
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media.requests.get", return_value=_make_http_response()),
+        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch("tools.media.time.sleep"),
+    ):
         out = tools["upload_product_image"](
             product_id="123",
             source="https://cdn.example.com/hero.jpg",
@@ -1110,6 +1311,7 @@ def test_upload_poll_transient_exception_is_swallowed():
 
 # ---------- Missing-input guards on each tool ----------
 
+
 def test_list_product_media_missing_product_id():
     tools, fc = _build([])
     out = tools["list_product_media"](product_id="")
@@ -1120,7 +1322,9 @@ def test_list_product_media_missing_product_id():
 def test_upload_missing_product_id():
     tools, fc = _build([])
     out = tools["upload_product_image"](
-        product_id="", source="https://cdn.example.com/a.jpg", confirm=True,
+        product_id="",
+        source="https://cdn.example.com/a.jpg",
+        confirm=True,
     )
     assert out.startswith("Error at stage=input:")
     assert "product_id" in out
@@ -1131,7 +1335,9 @@ def test_upload_initial_read_exception_labels_read_stage():
     """If the pre-read fails (scope error, transient), caller sees stage=read."""
     tools, fc = _build([RuntimeError("Access denied for products")])
     out = tools["upload_product_image"](
-        product_id="123", source="https://cdn.example.com/a.jpg", confirm=True,
+        product_id="123",
+        source="https://cdn.example.com/a.jpg",
+        confirm=True,
     )
     assert out.startswith("Error at stage=read:")
     assert "Access denied" in out
@@ -1140,7 +1346,9 @@ def test_upload_initial_read_exception_labels_read_stage():
 def test_upload_product_not_found_reports_clean_error():
     tools, fc = _build([{"product": None}])
     out = tools["upload_product_image"](
-        product_id="nope", source="https://cdn.example.com/a.jpg", confirm=True,
+        product_id="nope",
+        source="https://cdn.example.com/a.jpg",
+        confirm=True,
     )
     assert out == "No product found with id nope."
 
@@ -1169,7 +1377,10 @@ def test_reorder_product_not_found():
 def test_update_media_missing_media_id():
     tools, fc = _build([])
     out = tools["update_product_media"](
-        product_id="123", media_id="", alt="x", confirm=True,
+        product_id="123",
+        media_id="",
+        alt="x",
+        confirm=True,
     )
     assert out == "Error: provide media_id."
     assert fc.calls == []
@@ -1178,7 +1389,10 @@ def test_update_media_missing_media_id():
 def test_update_media_missing_product_id():
     tools, fc = _build([])
     out = tools["update_product_media"](
-        product_id="", media_id=MEDIA_A, alt="x", confirm=True,
+        product_id="",
+        media_id=MEDIA_A,
+        alt="x",
+        confirm=True,
     )
     assert out == "Error: provide product_id."
     assert fc.calls == []
@@ -1187,7 +1401,10 @@ def test_update_media_missing_product_id():
 def test_update_media_product_not_found():
     tools, fc = _build([{"product": None}])
     out = tools["update_product_media"](
-        product_id="nope", media_id=MEDIA_A, alt="x", confirm=True,
+        product_id="nope",
+        media_id=MEDIA_A,
+        alt="x",
+        confirm=True,
     )
     assert out == "No product found with id nope."
 
@@ -1195,7 +1412,9 @@ def test_update_media_product_not_found():
 def test_delete_media_missing_media_ids():
     tools, fc = _build([])
     out = tools["delete_product_media"](
-        product_id="123", media_ids=None, confirm=True,
+        product_id="123",
+        media_ids=None,
+        confirm=True,
     )
     assert out == "Error: media_ids must be a non-empty list."
     assert fc.calls == []
@@ -1204,7 +1423,9 @@ def test_delete_media_missing_media_ids():
 def test_delete_media_missing_product_id():
     tools, fc = _build([])
     out = tools["delete_product_media"](
-        product_id="", media_ids=[MEDIA_A], confirm=True,
+        product_id="",
+        media_ids=[MEDIA_A],
+        confirm=True,
     )
     assert out == "Error: provide product_id."
     assert fc.calls == []
@@ -1213,39 +1434,56 @@ def test_delete_media_missing_product_id():
 def test_delete_media_product_not_found():
     tools, fc = _build([{"product": None}])
     out = tools["delete_product_media"](
-        product_id="nope", media_ids=[MEDIA_A], confirm=True,
+        product_id="nope",
+        media_ids=[MEDIA_A],
+        confirm=True,
     )
     assert out == "No product found with id nope."
 
 
 # ---------- upload_product_image: staged-upload + attach error branches ----------
 
+
 def test_upload_staged_uploads_create_exception_labels_stage_upload():
-    tools, fc = _build([
-        _product_media_read([]),
-        RuntimeError("scope error: write_products missing"),
-    ])
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get", return_value=_make_http_response()):
+    tools, fc = _build(
+        [
+            _product_media_read([]),
+            RuntimeError("scope error: write_products missing"),
+        ]
+    )
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media.requests.get", return_value=_make_http_response()),
+    ):
         out = tools["upload_product_image"](
-            product_id="123", source="https://cdn.example.com/a.jpg", confirm=True,
+            product_id="123",
+            source="https://cdn.example.com/a.jpg",
+            confirm=True,
         )
     assert out.startswith("Error at stage=stage_upload:")
     assert "scope error" in out
 
 
 def test_upload_staged_uploads_user_errors_surfaced():
-    tools, fc = _build([
-        _product_media_read([]),
-        {"stagedUploadsCreate": {
-            "stagedTargets": [],
-            "userErrors": [{"field": "input", "message": "invalid mimeType"}],
-        }},
-    ])
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get", return_value=_make_http_response()):
+    tools, fc = _build(
+        [
+            _product_media_read([]),
+            {
+                "stagedUploadsCreate": {
+                    "stagedTargets": [],
+                    "userErrors": [{"field": "input", "message": "invalid mimeType"}],
+                }
+            },
+        ]
+    )
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media.requests.get", return_value=_make_http_response()),
+    ):
         out = tools["upload_product_image"](
-            product_id="123", source="https://cdn.example.com/a.jpg", confirm=True,
+            product_id="123",
+            source="https://cdn.example.com/a.jpg",
+            confirm=True,
         )
     assert out.startswith("Error at stage=stage_upload:")
     assert "invalid mimeType" in out
@@ -1254,75 +1492,100 @@ def test_upload_staged_uploads_user_errors_surfaced():
 def test_upload_staged_uploads_empty_targets_reported():
     """Payload parses clean but Shopify returns zero stagedTargets — we can't
     PUT bytes anywhere, so surface the stage-specific error."""
-    tools, fc = _build([
-        _product_media_read([]),
-        {"stagedUploadsCreate": {"stagedTargets": [], "userErrors": []}},
-    ])
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get", return_value=_make_http_response()):
+    tools, fc = _build(
+        [
+            _product_media_read([]),
+            {"stagedUploadsCreate": {"stagedTargets": [], "userErrors": []}},
+        ]
+    )
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media.requests.get", return_value=_make_http_response()),
+    ):
         out = tools["upload_product_image"](
-            product_id="123", source="https://cdn.example.com/a.jpg", confirm=True,
+            product_id="123",
+            source="https://cdn.example.com/a.jpg",
+            confirm=True,
         )
     assert out.startswith("Error at stage=stage_upload:")
     assert "stagedTargets" in out
 
 
 def test_upload_product_create_media_exception_labels_attach_stage():
-    tools, fc = _build([
-        _product_media_read([]),
-        _staged_ok(),
-        RuntimeError("upstream 502 on attach"),
-    ])
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get", return_value=_make_http_response()), \
-         patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)):
+    tools, fc = _build(
+        [
+            _product_media_read([]),
+            _staged_ok(),
+            RuntimeError("upstream 502 on attach"),
+        ]
+    )
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media.requests.get", return_value=_make_http_response()),
+        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+    ):
         out = tools["upload_product_image"](
-            product_id="123", source="https://cdn.example.com/a.jpg", confirm=True,
+            product_id="123",
+            source="https://cdn.example.com/a.jpg",
+            confirm=True,
         )
     assert out.startswith("Error at stage=attach:")
     assert "upstream 502" in out
 
 
 def test_upload_attach_returns_empty_media_reported():
-    tools, fc = _build([
-        _product_media_read([]),
-        _staged_ok(),
-        {"productCreateMedia": {"media": [], "mediaUserErrors": []}},
-    ])
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get", return_value=_make_http_response()), \
-         patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)):
+    tools, fc = _build(
+        [
+            _product_media_read([]),
+            _staged_ok(),
+            {"productCreateMedia": {"media": [], "mediaUserErrors": []}},
+        ]
+    )
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media.requests.get", return_value=_make_http_response()),
+        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+    ):
         out = tools["upload_product_image"](
-            product_id="123", source="https://cdn.example.com/a.jpg", confirm=True,
+            product_id="123",
+            source="https://cdn.example.com/a.jpg",
+            confirm=True,
         )
     assert out == "Error at stage=attach: productCreateMedia returned no media."
 
 
 # ---------- upload_product_image: reorder branches during confirmed upload ----------
 
+
 def _reorder_err_mediauser(msg="cannot reorder locked media"):
-    return {"productReorderMedia": {
-        "job": None,
-        "mediaUserErrors": [{"field": "moves", "message": msg}],
-        "userErrors": [],
-    }}
+    return {
+        "productReorderMedia": {
+            "job": None,
+            "mediaUserErrors": [{"field": "moves", "message": msg}],
+            "userErrors": [],
+        }
+    }
 
 
 def test_upload_reorder_exception_appends_failure_note_still_confirms():
     """Reorder is the last stage — a failure here should not erase the fact
     that the media uploaded and attached successfully. Surface a note, not
     an error."""
-    tools, fc = _build([
-        _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
-        _staged_ok(),
-        _create_media_ok(mid=MEDIA_C, status="READY"),
-        _node_media_status(MEDIA_C, status="READY"),
-        RuntimeError("reorder 502"),
-    ])
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get", return_value=_make_http_response()), \
-         patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)), \
-         patch("tools.media.time.sleep"):
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
+            _staged_ok(),
+            _create_media_ok(mid=MEDIA_C, status="READY"),
+            _node_media_status(MEDIA_C, status="READY"),
+            RuntimeError("reorder 502"),
+        ]
+    )
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media.requests.get", return_value=_make_http_response()),
+        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch("tools.media.time.sleep"),
+    ):
         out = tools["upload_product_image"](
             product_id="123",
             source="https://cdn.example.com/a.jpg",
@@ -1335,17 +1598,21 @@ def test_upload_reorder_exception_appends_failure_note_still_confirms():
 
 
 def test_upload_reorder_media_user_errors_append_note():
-    tools, fc = _build([
-        _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
-        _staged_ok(),
-        _create_media_ok(mid=MEDIA_C, status="READY"),
-        _node_media_status(MEDIA_C, status="READY"),
-        _reorder_err_mediauser("bad position"),
-    ])
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get", return_value=_make_http_response()), \
-         patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)), \
-         patch("tools.media.time.sleep"):
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
+            _staged_ok(),
+            _create_media_ok(mid=MEDIA_C, status="READY"),
+            _node_media_status(MEDIA_C, status="READY"),
+            _reorder_err_mediauser("bad position"),
+        ]
+    )
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media.requests.get", return_value=_make_http_response()),
+        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch("tools.media.time.sleep"),
+    ):
         out = tools["upload_product_image"](
             product_id="123",
             source="https://cdn.example.com/a.jpg",
@@ -1361,19 +1628,23 @@ def test_upload_reorder_polls_job_when_not_done():
     """Reorder returning done=False triggers poll_job. This branch matters
     because single-item reorders *usually* complete inline, but the poll
     path must still work the rare time they don't."""
-    tools, fc = _build([
-        _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
-        _staged_ok(),
-        _create_media_ok(mid=MEDIA_C, status="READY"),
-        _node_media_status(MEDIA_C, status="READY"),
-        _reorder_ok(done=False, job_id="gid://shopify/Job/up1"),
-        # poll_job uses JOB_STATUS_QUERY — return done=True quickly.
-        {"node": {"id": "gid://shopify/Job/up1", "done": True}},
-    ])
-    with patch("tools.media._reject_if_private_host", return_value=None), \
-         patch("tools.media.requests.get", return_value=_make_http_response()), \
-         patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)), \
-         patch("tools.media.time.sleep"):
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
+            _staged_ok(),
+            _create_media_ok(mid=MEDIA_C, status="READY"),
+            _node_media_status(MEDIA_C, status="READY"),
+            _reorder_ok(done=False, job_id="gid://shopify/Job/up1"),
+            # poll_job uses JOB_STATUS_QUERY — return done=True quickly.
+            {"node": {"id": "gid://shopify/Job/up1", "done": True}},
+        ]
+    )
+    with (
+        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media.requests.get", return_value=_make_http_response()),
+        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch("tools.media.time.sleep"),
+    ):
         out = tools["upload_product_image"](
             product_id="123",
             source="https://cdn.example.com/a.jpg",
@@ -1387,28 +1658,35 @@ def test_upload_reorder_polls_job_when_not_done():
 
 # ---------- reorder_product_media: job-poll timeout branch ----------
 
+
 def test_reorder_job_timeout_surfaces_timeout_hint():
     """poll_job exhausts its budget with done=False → CONFIRMED body includes
     a 'still running' hint pointing the operator to list_product_media."""
     # Script poll_job responses: always done=False. Patch sleep + monotonic so
     # the budget fires after the second poll without real wall-clock wait.
-    tools, fc = _build([
-        _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
-        _reorder_ok(done=False, job_id="gid://shopify/Job/slow1"),
-        {"node": {"id": "gid://shopify/Job/slow1", "done": False}},
-        {"node": {"id": "gid://shopify/Job/slow1", "done": False}},
-        {"node": {"id": "gid://shopify/Job/slow1", "done": False}},
-        {"node": {"id": "gid://shopify/Job/slow1", "done": False}},
-        {"node": {"id": "gid://shopify/Job/slow1", "done": False}},
-        {"node": {"id": "gid://shopify/Job/slow1", "done": False}},
-    ])
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
+            _reorder_ok(done=False, job_id="gid://shopify/Job/slow1"),
+            {"node": {"id": "gid://shopify/Job/slow1", "done": False}},
+            {"node": {"id": "gid://shopify/Job/slow1", "done": False}},
+            {"node": {"id": "gid://shopify/Job/slow1", "done": False}},
+            {"node": {"id": "gid://shopify/Job/slow1", "done": False}},
+            {"node": {"id": "gid://shopify/Job/slow1", "done": False}},
+            {"node": {"id": "gid://shopify/Job/slow1", "done": False}},
+        ]
+    )
     tick = {"t": 0.0}
+
     def _fake_monotonic():
         tick["t"] += 5.0
         return tick["t"]
+
     # poll_job lives in shopify_client; patch its time there.
-    with patch("shopify_client.time.sleep"), \
-         patch("shopify_client.time.monotonic", side_effect=_fake_monotonic):
+    with (
+        patch("shopify_client.time.sleep"),
+        patch("shopify_client.time.monotonic", side_effect=_fake_monotonic),
+    ):
         out = tools["reorder_product_media"](
             product_id="123",
             moves=[{"id": MEDIA_B, "newPosition": 1}],

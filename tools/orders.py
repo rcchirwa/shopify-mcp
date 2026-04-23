@@ -3,6 +3,7 @@ Order tools — read-only access to Shopify orders.
 """
 
 from mcp.server.fastmcp import FastMCP
+
 from shopify_client import ShopifyClient, from_gid
 
 GET_ORDERS = """
@@ -70,9 +71,7 @@ def register(server: FastMCP, client: ShopifyClient):
             traffic = o.get("referringSite") or o.get("landingSite") or "direct / unknown"
             # `or {}` guards against nulls at any level — Shopify can return
             # totalPriceSet=null on orders still in a pending/edited state.
-            total = (
-                ((o.get("totalPriceSet") or {}).get("shopMoney") or {}).get("amount", "N/A")
-            )
+            total = ((o.get("totalPriceSet") or {}).get("shopMoney") or {}).get("amount", "N/A")
             lines.append(
                 f"  [{from_gid(o['id'])}] {o['name']} — ${total} — {o['createdAt'][:10]}\n"
                 f"    Items: {items}\n"
@@ -84,19 +83,17 @@ def register(server: FastMCP, client: ShopifyClient):
     def get_order(order_id: str) -> str:
         """Get a single order by id."""
         from shopify_client import to_gid
+
         data = client.execute(GET_ORDER_BY_ID, {"id": to_gid("Order", order_id)})
         o = data.get("order")
         if not o:
             return f"Order {order_id} not found."
 
-        total = (
-            ((o.get("totalPriceSet") or {}).get("shopMoney") or {}).get("amount", "N/A")
-        )
+        total = ((o.get("totalPriceSet") or {}).get("shopMoney") or {}).get("amount", "N/A")
 
         def _unit_price(li):
-            return (
-                ((li.get("originalUnitPriceSet") or {}).get("shopMoney") or {})
-                .get("amount", "N/A")
+            return ((li.get("originalUnitPriceSet") or {}).get("shopMoney") or {}).get(
+                "amount", "N/A"
             )
 
         items = "\n".join(

@@ -116,10 +116,20 @@ declared in [pyproject.toml](pyproject.toml). `shopify_client`, `tools`,
 directory, and a `shopify-mcp` console command lands in `.venv/bin/`.
 
 For contributors running the test suite, install with the `dev` extra
-to also pull in `pytest` and `coverage`:
+to also pull in `pytest`, `coverage`, `ruff`, and `mypy`:
 
 ```bash
 pip install -e .[dev]
+```
+
+Run the offline suite, lint, and type-check the same way CI does:
+
+```bash
+coverage run -m pytest test_*_offline.py -v
+coverage report --fail-under=100
+ruff check .
+ruff format --check .   # or `ruff format .` to apply fixes
+mypy
 ```
 
 ### 4. Configure credentials

@@ -20,18 +20,17 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
-
 from mcp.server.fastmcp import FastMCP
+
 from shopify_client import (
     ShopifyClient,
     extract_user_errors,
-    to_gid,
     from_gid,
     poll_job,
+    to_gid,
     with_confirm_hint,
 )
 from tools._log import log_write
-
 
 # Shopify caps product images at 20 MB. Reject earlier than Shopify would to
 # avoid uploading bytes that can't be attached.
@@ -155,6 +154,7 @@ mutation ProductDeleteMedia($productId: ID!, $mediaIds: [ID!]!) {
 
 # --- Helpers -----------------------------------------------------------------
 
+
 def _as_product_gid(pid: str) -> str:
     """Normalize a product_id arg that may arrive as numeric string or full GID.
 
@@ -174,9 +174,7 @@ def _as_product_gid(pid: str) -> str:
 
 
 def _fmt_media_user_errors(errors, stage: str) -> str:
-    msgs = "; ".join(
-        f"{e.get('field') or '(no field)'}: {e.get('message', '')}" for e in errors
-    )
+    msgs = "; ".join(f"{e.get('field') or '(no field)'}: {e.get('message', '')}" for e in errors)
     return f"Error at stage={stage}: {msgs}"
 
 
@@ -184,8 +182,9 @@ def _extract_media_user_errors(result: dict, mutation_key: str) -> list:
     """Extract userErrors from a media mutation, checking mediaUserErrors first
     then falling back to userErrors. productReorderMedia can surface errors
     under either slot depending on the failure mode."""
-    return (extract_user_errors(result, mutation_key, error_key="mediaUserErrors")
-            or extract_user_errors(result, mutation_key))
+    return extract_user_errors(
+        result, mutation_key, error_key="mediaUserErrors"
+    ) or extract_user_errors(result, mutation_key)
 
 
 def _format_bytes(n) -> str:
@@ -232,8 +231,14 @@ def _reject_if_private_host(url: str) -> None:
             ip = ipaddress.ip_address(ip_str)
         except ValueError:
             continue
-        if (ip.is_private or ip.is_loopback or ip.is_link_local
-                or ip.is_multicast or ip.is_reserved or ip.is_unspecified):
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
             raise RuntimeError(
                 f"host {host!r} resolves to non-public IP {ip_str} "
                 f"— blocked to prevent SSRF to internal resources"
@@ -270,9 +275,7 @@ def _download_image(url: str):
             continue
         buf.extend(chunk)
         if len(buf) > _MAX_IMAGE_BYTES:
-            raise RuntimeError(
-                f"source exceeded {_format_bytes(_MAX_IMAGE_BYTES)} during download"
-            )
+            raise RuntimeError(f"source exceeded {_format_bytes(_MAX_IMAGE_BYTES)} during download")
 
     filename = _filename_from_url(url)
     content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
@@ -281,8 +284,7 @@ def _download_image(url: str):
         content_type = (guessed or "").lower()
     if not content_type.startswith("image/"):
         raise RuntimeError(
-            f"unsupported MIME type: {content_type or '(unknown)'} — "
-            f"v1 accepts images only"
+            f"unsupported MIME type: {content_type or '(unknown)'} — v1 accepts images only"
         )
     return bytes(buf), filename, content_type
 
@@ -293,6 +295,8 @@ def _upload_bytes_to_target(target: dict, image_bytes: bytes) -> None:
     Raises RuntimeError on non-2xx. Caller labels the failure stage.
     """
     url = target.get("url")
+    if not url:
+        raise RuntimeError("staged target missing 'url'")
     params = target.get("parameters") or []
     headers = {p["name"]: p["value"] for p in params if p.get("name")}
     try:
@@ -300,10 +304,7 @@ def _upload_bytes_to_target(target: dict, image_bytes: bytes) -> None:
     except requests.RequestException as e:
         raise RuntimeError(f"PUT to staged target failed: {e}") from e
     if resp.status_code >= 400:
-        raise RuntimeError(
-            f"staged target returned HTTP {resp.status_code}: "
-            f"{resp.text[:300]}"
-        )
+        raise RuntimeError(f"staged target returned HTTP {resp.status_code}: {resp.text[:300]}")
 
 
 def _poll_media_ready(client: ShopifyClient, product_gid: str, media_id: str) -> dict:
@@ -331,13 +332,10 @@ def _poll_media_ready(client: ShopifyClient, product_gid: str, media_id: str) ->
             node = data.get("node") or {}
             if node:
                 last["status"] = node.get("status") or "PROCESSING"
-                last["preview_url"] = (
-                    ((node.get("preview") or {}).get("image") or {}).get("url")
-                )
+                last["preview_url"] = ((node.get("preview") or {}).get("image") or {}).get("url")
         except Exception as e:
             print(
-                f"[media] poll warning for {media_id}: "
-                f"{type(e).__name__}: {e}",
+                f"[media] poll warning for {media_id}: {type(e).__name__}: {e}",
                 file=sys.stderr,
             )
 
@@ -357,15 +355,20 @@ def _stage_upload(client: ShopifyClient, filename: str, mime_type: str, size: in
     caller can return it directly.
     """
     try:
-        staged = client.execute(STAGED_UPLOADS_CREATE, {
-            "input": [{
-                "resource": "IMAGE",
-                "filename": filename,
-                "mimeType": mime_type,
-                "httpMethod": "PUT",
-                "fileSize": str(size),
-            }],
-        })
+        staged = client.execute(
+            STAGED_UPLOADS_CREATE,
+            {
+                "input": [
+                    {
+                        "resource": "IMAGE",
+                        "filename": filename,
+                        "mimeType": mime_type,
+                        "httpMethod": "PUT",
+                        "fileSize": str(size),
+                    }
+                ],
+            },
+        )
     except Exception as e:
         return None, f"Error at stage=stage_upload: {e}"
     staged_errors = extract_user_errors(staged, "stagedUploadsCreate")
@@ -384,19 +387,22 @@ def _attach_media(client: ShopifyClient, product_gid: str, alt: str, resource_ur
     error_str is already prefixed with `Error at stage=attach:`.
     """
     try:
-        attach = client.execute(PRODUCT_CREATE_MEDIA, {
-            "productId": product_gid,
-            "media": [{
-                "alt": alt or "",
-                "mediaContentType": "IMAGE",
-                "originalSource": resource_url,
-            }],
-        })
+        attach = client.execute(
+            PRODUCT_CREATE_MEDIA,
+            {
+                "productId": product_gid,
+                "media": [
+                    {
+                        "alt": alt or "",
+                        "mediaContentType": "IMAGE",
+                        "originalSource": resource_url,
+                    }
+                ],
+            },
+        )
     except Exception as e:
         return None, f"Error at stage=attach: {e}"
-    attach_errors = extract_user_errors(
-        attach, "productCreateMedia", error_key="mediaUserErrors"
-    )
+    attach_errors = extract_user_errors(attach, "productCreateMedia", error_key="mediaUserErrors")
     if attach_errors:
         return None, _fmt_media_user_errors(attach_errors, "attach")
     attached = (attach.get("productCreateMedia") or {}).get("media") or []
@@ -422,21 +428,24 @@ def _maybe_reorder_new_media(
     if not position or position == current_count + 1:
         return ""
     try:
-        reorder = client.execute(PRODUCT_REORDER_MEDIA, {
-            "id": product_gid,
-            "moves": [{
-                "id": new_media_id,
-                "newPosition": str(position - 1),
-            }],
-        })
+        reorder = client.execute(
+            PRODUCT_REORDER_MEDIA,
+            {
+                "id": product_gid,
+                "moves": [
+                    {
+                        "id": new_media_id,
+                        "newPosition": str(position - 1),
+                    }
+                ],
+            },
+        )
     except Exception as e:
         return f"\n  Reorder    : FAILED at stage=reorder ({e})"
     rpayload = reorder.get("productReorderMedia", {}) or {}
     rerrs = _extract_media_user_errors(reorder, "productReorderMedia")
     if rerrs:
-        return "\n  " + _fmt_media_user_errors(
-            rerrs, "reorder"
-        ).replace("Error at ", "")
+        return "\n  " + _fmt_media_user_errors(rerrs, "reorder").replace("Error at ", "")
     job = rpayload.get("job") or {}
     job_id = job.get("id")
     initial_done = bool(job.get("done"))
@@ -447,11 +456,7 @@ def _maybe_reorder_new_media(
             f"done={pr['done']} elapsed={pr['elapsed_s']:.1f}s"
             + (" (timed out)" if pr["timed_out"] else "")
         )
-    return (
-        "\n  Reorder    : " +
-        (f"job {from_gid(job_id)} done=True"
-         if job_id else "done inline")
-    )
+    return "\n  Reorder    : " + (f"job {from_gid(job_id)} done=True" if job_id else "done inline")
 
 
 def _render_media_list(product: dict) -> str:
@@ -565,10 +570,7 @@ def register(server: FastMCP, client: ShopifyClient):
                 # Shopify silently clamps out-of-range positions to the end.
                 # Annotate so the operator isn't surprised when the preview
                 # says "position 100" but the image lands at position 4.
-                pos_note += (
-                    f" (exceeds current count — Shopify will clamp to "
-                    f"{current_count + 1})"
-                )
+                pos_note += f" (exceeds current count — Shopify will clamp to {current_count + 1})"
         preview = (
             f"PREVIEW — Upload product image\n"
             f"  Product ID : {product_id}\n"
@@ -635,7 +637,11 @@ def register(server: FastMCP, client: ShopifyClient):
 
         # Stage 6: reorder if the caller asked for a non-append position.
         reorder_note = _maybe_reorder_new_media(
-            client, gid, new_media_id, position, current_count,
+            client,
+            gid,
+            new_media_id,
+            position,
+            current_count,
         )
 
         log_write(
@@ -667,7 +673,7 @@ def register(server: FastMCP, client: ShopifyClient):
     @server.tool()
     def reorder_product_media(
         product_id: str,
-        moves: list[dict] = None,
+        moves: list[dict] | None = None,
         confirm: bool = False,
     ) -> str:
         """
@@ -690,10 +696,7 @@ def register(server: FastMCP, client: ShopifyClient):
             mid = m.get("id") if isinstance(m, dict) else None
             pos = m.get("newPosition") if isinstance(m, dict) else None
             if not mid or not isinstance(pos, int) or pos < 1:
-                return (
-                    f"Error: each move needs id (string) and newPosition "
-                    f"(int >= 1). Got: {m!r}"
-                )
+                return f"Error: each move needs id (string) and newPosition (int >= 1). Got: {m!r}"
             parsed_moves.append({"id": mid, "newPosition": pos})
 
         # Preview: show current order vs proposed, reject unknown ids.
@@ -705,15 +708,15 @@ def register(server: FastMCP, client: ShopifyClient):
         current_ids = [n.get("id") for n in current_nodes]
         unknown = [m["id"] for m in parsed_moves if m["id"] not in current_ids]
         if unknown:
-            return (
-                "Error: these media ids are not attached to the product: "
-                + ", ".join(unknown)
-            )
+            return "Error: these media ids are not attached to the product: " + ", ".join(unknown)
 
-        current_lines = "\n".join(
-            f"    {i + 1}. {n.get('id')}  alt={(n.get('alt') or '')!r}"
-            for i, n in enumerate(current_nodes)
-        ) or "    (none)"
+        current_lines = (
+            "\n".join(
+                f"    {i + 1}. {n.get('id')}  alt={(n.get('alt') or '')!r}"
+                for i, n in enumerate(current_nodes)
+            )
+            or "    (none)"
+        )
         moves_lines = "\n".join(
             f"    • {m['id']} → position {m['newPosition']}" for m in parsed_moves
         )
@@ -730,13 +733,15 @@ def register(server: FastMCP, client: ShopifyClient):
         # string. Convert at the boundary so the caller sees 1-indexed ints
         # everywhere.
         api_moves = [
-            {"id": m["id"], "newPosition": str(m["newPosition"] - 1)}
-            for m in parsed_moves
+            {"id": m["id"], "newPosition": str(m["newPosition"] - 1)} for m in parsed_moves
         ]
-        result = client.execute(PRODUCT_REORDER_MEDIA, {
-            "id": gid,
-            "moves": api_moves,
-        })
+        result = client.execute(
+            PRODUCT_REORDER_MEDIA,
+            {
+                "id": gid,
+                "moves": api_moves,
+            },
+        )
         payload = result.get("productReorderMedia", {}) or {}
         media_errors = _extract_media_user_errors(result, "productReorderMedia")
         if media_errors:
@@ -763,8 +768,7 @@ def register(server: FastMCP, client: ShopifyClient):
                 job_line = f"\n  Job        : {numeric} (done=True)"
             elif poll_result["done"]:
                 job_line = (
-                    f"\n  Job        : {numeric} (done=True after "
-                    f"{poll_result['elapsed_s']:.1f}s)"
+                    f"\n  Job        : {numeric} (done=True after {poll_result['elapsed_s']:.1f}s)"
                 )
             elif poll_result["timed_out"]:
                 job_line = (
@@ -802,9 +806,7 @@ def register(server: FastMCP, client: ShopifyClient):
         nodes = (product.get("media") or {}).get("nodes", []) or []
         target = next((n for n in nodes if n.get("id") == media_id), None)
         if not target:
-            return (
-                f"Error: media {media_id} is not attached to product {product_id}."
-            )
+            return f"Error: media {media_id} is not attached to product {product_id}."
         old_alt = target.get("alt") or ""
         no_op_suffix = "  (no-op — alt unchanged)" if old_alt == alt else ""
         body = (
@@ -817,27 +819,27 @@ def register(server: FastMCP, client: ShopifyClient):
         if not confirm:
             return with_confirm_hint(f"PREVIEW — Update product media alt\n{body}")
 
-        result = client.execute(PRODUCT_UPDATE_MEDIA, {
-            "productId": gid,
-            "media": [{"id": media_id, "alt": alt}],
-        })
-        errors = extract_user_errors(
-            result, "productUpdateMedia", error_key="mediaUserErrors"
+        result = client.execute(
+            PRODUCT_UPDATE_MEDIA,
+            {
+                "productId": gid,
+                "media": [{"id": media_id, "alt": alt}],
+            },
         )
+        errors = extract_user_errors(result, "productUpdateMedia", error_key="mediaUserErrors")
         if errors:
             return _fmt_media_user_errors(errors, "update")
 
         log_write(
             "update_product_media",
-            f"product={product_id} media={media_id} "
-            f"alt_len {len(old_alt)}->{len(alt)}",
+            f"product={product_id} media={media_id} alt_len {len(old_alt)}->{len(alt)}",
         )
         return f"CONFIRMED — Update product media alt\n{body}"
 
     @server.tool()
     def delete_product_media(
         product_id: str,
-        media_ids: list[str] = None,
+        media_ids: list[str] | None = None,
         confirm: bool = False,
     ) -> str:
         """
@@ -875,9 +877,13 @@ def register(server: FastMCP, client: ShopifyClient):
 
         matched_block = "\n".join(_fmt_line(mid) for mid in matched) or "    (none)"
         unmatched_block = (
-            "\n  Not attached (will be skipped by Shopify):\n" +
-            "\n".join(f"    • {mid}" for mid in unmatched)
-        ) if unmatched else ""
+            (
+                "\n  Not attached (will be skipped by Shopify):\n"
+                + "\n".join(f"    • {mid}" for mid in unmatched)
+            )
+            if unmatched
+            else ""
+        )
 
         preview = (
             f"PREVIEW — Delete product media\n"
@@ -901,22 +907,22 @@ def register(server: FastMCP, client: ShopifyClient):
                 f"{unmatched_block}"
             )
 
-        result = client.execute(PRODUCT_DELETE_MEDIA, {
-            "productId": gid,
-            "mediaIds": matched,
-        })
-        payload = result.get("productDeleteMedia", {}) or {}
-        errors = extract_user_errors(
-            result, "productDeleteMedia", error_key="mediaUserErrors"
+        result = client.execute(
+            PRODUCT_DELETE_MEDIA,
+            {
+                "productId": gid,
+                "mediaIds": matched,
+            },
         )
+        payload = result.get("productDeleteMedia", {}) or {}
+        errors = extract_user_errors(result, "productDeleteMedia", error_key="mediaUserErrors")
         if errors:
             return _fmt_media_user_errors(errors, "delete")
         deleted = payload.get("deletedMediaIds") or []
 
         log_write(
             "delete_product_media",
-            f"product={product_id} deleted={len(deleted)} "
-            f"unmatched={len(unmatched)} ids={deleted}",
+            f"product={product_id} deleted={len(deleted)} unmatched={len(unmatched)} ids={deleted}",
         )
         deleted_block = "\n".join(f"    • {mid}" for mid in deleted) or "    (none)"
         return (

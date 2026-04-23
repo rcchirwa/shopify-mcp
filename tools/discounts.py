@@ -5,11 +5,13 @@ create_discount_code requires confirm=True.
 """
 
 from datetime import datetime, timezone
+from typing import Any
+
 from mcp.server.fastmcp import FastMCP
+
 from shopify_client import (
     ShopifyClient,
     format_user_errors,
-    to_gid,
     from_gid,
     with_confirm_hint,
 )
@@ -98,7 +100,7 @@ def register(server: FastMCP, client: ShopifyClient):
         if not confirm:
             return with_confirm_hint(preview)
 
-        price_rule_input = {
+        price_rule_input: dict[str, Any] = {
             "title": title,
             "target": "LINE_ITEM",
             "allocationMethod": "ACROSS",
@@ -123,17 +125,17 @@ def register(server: FastMCP, client: ShopifyClient):
         # priceRule is None when the mutation shape-drifts or userErrors are
         # empty but the server-side commit still failed — guard with `or {}`
         # (same pattern as tools/inventory.py `.get("inventoryItem") or {}`).
-        rule_id = (
-            (rule_result.get("priceRuleCreate") or {})
-            .get("priceRule") or {}
-        ).get("id")
+        rule_id = ((rule_result.get("priceRuleCreate") or {}).get("priceRule") or {}).get("id")
         if not rule_id:
             return "Error: price rule created but no ID returned."
 
-        code_result = client.execute(CREATE_DISCOUNT_CODE, {
-            "priceRuleId": rule_id,
-            "code": code,
-        })
+        code_result = client.execute(
+            CREATE_DISCOUNT_CODE,
+            {
+                "priceRuleId": rule_id,
+                "code": code,
+            },
+        )
         err = format_user_errors(
             code_result,
             "priceRuleDiscountCodeCreate",

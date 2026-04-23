@@ -146,7 +146,9 @@ def test_get_products_with_descriptions():
         products = data.get("products", {}).get("nodes", [])
         for p in products:
             assert "bodyHtml" in p, f"bodyHtml missing for {p.get('handle')}"
-            print(f"  [{from_gid(p['id'])}] {p['title']} — body_html len: {len(p.get('bodyHtml') or '')}")
+            print(
+                f"  [{from_gid(p['id'])}] {p['title']} — body_html len: {len(p.get('bodyHtml') or '')}"
+            )
         print(f"get_products_with_descriptions test PASSED ({len(products)} products).")
     except Exception as e:
         print(f"get_products_with_descriptions test FAILED: {e}")
