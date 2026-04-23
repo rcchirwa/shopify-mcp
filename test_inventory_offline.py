@@ -558,12 +558,7 @@ def test_tracking_variant_missing_inventory_item_id_is_reported_failed():
     """A variant whose inventoryItem has no id can't be mutated — report it
     in the Failed block and keep going. Shape is defensive: Shopify normally
     returns a valid id, but a stale cache or partial response mustn't crash
-    the batch.
-
-    NOTE: uses the missing-key shape (no "id" field) rather than `"id": None`
-    because the None variant currently crashes _variant_line via from_gid(None).
-    Tracked as a follow-up — see memory/project_followup_from_gid_none_crash.md.
-    """
+    the batch."""
     bad_variant = {
         "id": "gid://shopify/ProductVariant/100",
         "title": "S",
@@ -587,6 +582,37 @@ def test_tracking_variant_missing_inventory_item_id_is_reported_failed():
     # Only the good variant triggers a mutation (plus the initial read).
     assert len(fc.calls) == 2
     assert fc.calls[1][1]["id"] == "gid://shopify/InventoryItem/101"
+
+
+def test_tracking_preview_renders_when_inventory_item_id_is_null():
+    """Regression: Shopify can return `inventoryItem: {"id": null, ...}` on a
+    partial or permissions-trimmed response. The preview's `_variant_line`
+    helper calls `from_gid(inv_item.get("id", ""))`, and .get only applies the
+    default for *missing* keys — a present-but-null value flows through. The
+    previous from_gid crashed on None.split(...); the preview must now render
+    cleanly with an empty inventory_item segment."""
+    variant_with_null_inv_id = {
+        "id": "gid://shopify/ProductVariant/100",
+        "title": "NullId",
+        "sku": "NULL",
+        "inventoryItem": {
+            "id": None,
+            "tracked": False,
+            "inventoryLevels": {"nodes": []},
+        },
+    }
+    tools, fc = _build([_product_with_variants([variant_with_null_inv_id])])
+    out = tools["update_variant_inventory_tracking"](
+        product_id="555", tracked=True, confirm=False,
+    )
+    assert "PREVIEW" in out
+    assert "NullId" in out
+    assert "variant_id: 100" in out
+    # The null inventory_item id renders as empty (two spaces between the
+    # label and the ` — ` separator), proving from_gid(None) returned ""
+    # rather than crashing.
+    assert "inventory_item:  — False → True" in out
+    assert len(fc.calls) == 1
 
 
 # ---- update_variant_inventory_quantity ----

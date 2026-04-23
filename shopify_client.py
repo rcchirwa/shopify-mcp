@@ -39,6 +39,12 @@ def to_gid(resource_type: str, numeric_id) -> str:
 
 
 def from_gid(gid: str) -> str:
+    # Tolerate None/empty so callers can pass `obj.get("id")` or
+    # `obj.get("id", "")` without a pre-check — Shopify responses may
+    # return `id: null` on partial/permissions-trimmed fields, and the
+    # dict .get(..., "") default doesn't catch the "key present, value None" case.
+    if not gid:
+        return ""
     return gid.split("/")[-1]
 
 
