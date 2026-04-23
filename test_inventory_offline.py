@@ -576,6 +576,41 @@ def test_tracking_variant_ids_order_is_preserved():
     ]
 
 
+def test_tracking_variant_missing_inventory_item_id_is_reported_failed():
+    """A variant whose inventoryItem has no id can't be mutated — report it
+    in the Failed block and keep going. Shape is defensive: Shopify normally
+    returns a valid id, but a stale cache or partial response mustn't crash
+    the batch.
+
+    NOTE: uses the missing-key shape (no "id" field) rather than `"id": None`
+    because the None variant currently crashes _variant_line via from_gid(None).
+    Tracked as a follow-up — see memory/project_followup_from_gid_none_crash.md.
+    """
+    bad_variant = {
+        "id": "gid://shopify/ProductVariant/100",
+        "title": "S",
+        "sku": "REEF-S",
+        # inventoryItem present but no id key — Shopify normally returns one,
+        # but a partial response (or future schema shift) mustn't crash the batch.
+        "inventoryItem": {"tracked": False, "inventoryLevels": {"nodes": []}},
+    }
+    good_variant = _variant("101", "M", "REEF-M", [], tracked=False)
+    tools, fc = _build([
+        _product_with_variants([bad_variant, good_variant]),
+        _tracked_update_ok("gid://shopify/InventoryItem/101", True),
+    ])
+    out = tools["update_variant_inventory_tracking"](
+        product_id="555", tracked=True, confirm=True,
+    )
+    assert out.startswith("CONFIRMED")
+    assert "Changed (1):" in out
+    assert "Failed (1):" in out
+    assert "variant has no inventoryItem id" in out
+    # Only the good variant triggers a mutation (plus the initial read).
+    assert len(fc.calls) == 2
+    assert fc.calls[1][1]["id"] == "gid://shopify/InventoryItem/101"
+
+
 # ---- update_variant_inventory_quantity ----
 
 def _set_inventory_ok():

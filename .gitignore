@@ -20,6 +20,12 @@ dist/
 build/
 *.egg
 
+# Coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
 # Virtual environment
 .venv/
 venv/
