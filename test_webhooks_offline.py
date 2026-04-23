@@ -20,34 +20,12 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from tools import webhooks
 from tools.webhooks import LIST_WEBHOOKS, CREATE_WEBHOOK, DELETE_WEBHOOK
+from _testing.fake_client import CapturingServer, FakeClient
 
 
 @pytest.fixture(autouse=True)
 def _no_log_write(monkeypatch):
     monkeypatch.setattr(webhooks, "log_write", lambda *a, **k: None)
-
-
-class CapturingServer:
-    def __init__(self):
-        self.tools = {}
-
-    def tool(self):
-        def deco(fn):
-            self.tools[fn.__name__] = fn
-            return fn
-        return deco
-
-
-class FakeClient:
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self.calls = []
-
-    def execute(self, query, variables=None):
-        self.calls.append((query, variables))
-        if not self.responses:
-            raise AssertionError("FakeClient: unexpected extra execute() call")
-        return self.responses.pop(0)
 
 
 def _build(responses):

@@ -20,29 +20,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from tools import orders
 from tools.orders import GET_ORDERS, GET_ORDER_BY_ID
-
-
-class CapturingServer:
-    def __init__(self):
-        self.tools = {}
-
-    def tool(self):
-        def deco(fn):
-            self.tools[fn.__name__] = fn
-            return fn
-        return deco
-
-
-class FakeClient:
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self.calls = []
-
-    def execute(self, query, variables=None):
-        self.calls.append((query, variables))
-        if not self.responses:
-            raise AssertionError("FakeClient: unexpected extra execute() call")
-        return self.responses.pop(0)
+from _testing.fake_client import CapturingServer, FakeClient
 
 
 def _build(responses):

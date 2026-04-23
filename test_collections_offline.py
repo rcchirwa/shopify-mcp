@@ -26,6 +26,7 @@ from tools.collections import (
     UPDATE_COLLECTION,
 )
 from shopify_client import JOB_STATUS_QUERY
+from _testing.fake_client import CapturingServer, FakeClient
 
 
 class _FakeClock:
@@ -61,29 +62,6 @@ def fake_poll_clock(monkeypatch):
 def _no_log_write(monkeypatch):
     """Keep tests from polluting aon_mcp_log.txt."""
     monkeypatch.setattr(collections, "log_write", lambda *a, **k: None)
-
-
-class CapturingServer:
-    def __init__(self):
-        self.tools = {}
-
-    def tool(self):
-        def deco(fn):
-            self.tools[fn.__name__] = fn
-            return fn
-        return deco
-
-
-class FakeClient:
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self.calls = []
-
-    def execute(self, query, variables=None):
-        self.calls.append((query, variables))
-        if not self.responses:
-            raise AssertionError("FakeClient: unexpected extra execute() call")
-        return self.responses.pop(0)
 
 
 def _build(responses):
