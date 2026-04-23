@@ -1,5 +1,6 @@
+# Version bounds: every dep uses `>=floor,<next-major` — caps silent major-release breakage.
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=61,<83"]
 build-backend = "setuptools.build_meta"
 
 [project]
