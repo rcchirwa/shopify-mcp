@@ -22,6 +22,9 @@ from tools.publications import (
     GET_PRODUCT_PUBLICATIONS_BY_HANDLE,
     PUBLISHABLE_PUBLISH,
     PUBLISHABLE_UNPUBLISH,
+    _map_user_error,
+    _split_current,
+    _resolve_product_gid_and_meta,
 )
 
 
@@ -37,6 +40,9 @@ class CapturingServer:
 
 
 class FakeClient:
+    """Scripted responses. An item that is a BaseException instance is raised
+    instead of returned — lets a test assert exception-path handling without
+    a custom client class per case."""
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = []
@@ -45,7 +51,10 @@ class FakeClient:
         self.calls.append((query, variables))
         if not self.responses:
             raise AssertionError("FakeClient: unexpected extra execute() call")
-        return self.responses.pop(0)
+        resp = self.responses.pop(0)
+        if isinstance(resp, BaseException):
+            raise resp
+        return resp
 
 
 def _build(responses):
@@ -561,3 +570,410 @@ def test_unknown_numeric_publication_id_reports_raw_input_in_failure():
     _, vars_put = fc.calls[2]
     assert vars_put["input"] == [{"publicationId": ONLINE["id"]}]
     assert "99999" in out and "not found" in out
+
+
+# ---------- _map_user_error direct coverage ----------
+
+def test_map_user_error_non_integer_index_falls_back_to_raw_path():
+    """Shopify spec says field=['input', <idx>, <key>]. A future shape with a
+    non-numeric index (or a bare scalar like 'input') must not crash — fall
+    back to the joined raw path so the operator still sees the error."""
+    targets = [{"id": "gid://shopify/Publication/1", "name": "Online Store"}]
+    mapped = _map_user_error(
+        {"field": ["input", "NaN", "publicationId"], "message": "boom"},
+        targets,
+    )
+    assert mapped["channel_name"] == "input.NaN.publicationId"
+    assert mapped["error"] == "boom"
+
+
+def test_map_user_error_non_list_field_falls_back_to_stringified():
+    mapped = _map_user_error({"field": "root", "message": "boom"}, [])
+    assert mapped["channel_name"] == "root"
+
+
+def test_map_user_error_empty_field_falls_back_to_unknown():
+    mapped = _map_user_error({"field": [], "message": "boom"}, [])
+    assert mapped["channel_name"] == "(unknown)"
+
+
+# ---------- _split_current: rp with missing publication id ----------
+
+def test_split_current_skips_resourcepublications_without_publication_id():
+    """A resourcePublication with no publication id can't be acted on — skip
+    it instead of inserting a garbage entry into the published set."""
+    rps = [
+        {"publication": {"id": "gid://shopify/Publication/1"}, "isPublished": True},
+        {"publication": {}, "isPublished": True},          # missing id
+        {"publication": None, "isPublished": False},       # missing publication entirely
+    ]
+    pub, not_pub = _split_current(rps)
+    assert pub == {"gid://shopify/Publication/1"}
+    assert not_pub == set()
+
+
+# ---------- _resolve_product_gid_and_meta direct: neither id nor handle ----------
+
+def test_resolve_product_meta_returns_all_none_when_neither_id_nor_handle():
+    """Public tools guard against this upstream, but the helper itself is
+    the single source of truth for 'no identifier' → all-None. Asserted
+    directly since no public path exercises it."""
+    # Client will never be called because neither branch is taken.
+    fc = FakeClient([])
+    result = _resolve_product_gid_and_meta(fc, "", "")
+    assert result == (None, None, None, None)
+    assert fc.calls == []
+
+
+# ---------- get_product_publications: exception paths ----------
+
+def test_get_product_publications_channel_load_failure_surfaces_hint():
+    fc = FakeClient([RuntimeError("Access denied for publications")])
+    srv = CapturingServer()
+    publications.register(srv, fc)
+    out = srv.tools["get_product_publications"](product_id="123")
+    assert "Error loading sales channels" in out
+    assert "Access denied" in out
+    assert "read_publications" in out
+
+
+def test_get_product_publications_product_read_failure_surfaces_hint():
+    tools, fc = _build([
+        _channels_response(),
+        RuntimeError("Shopify GraphQL error: transient"),
+    ])
+    out = tools["get_product_publications"](product_id="123")
+    assert out.startswith("Error:")
+    assert "transient" in out
+    assert "read_publications" in out
+
+
+# ---------- publish_product_to_channels: missing identifier + exception paths ----------
+
+def test_publish_requires_product_id_or_handle():
+    tools, fc = _build([])
+    out = tools["publish_product_to_channels"](
+        channel_names=["Online Store"], confirm=True,
+    )
+    assert out == "Provide either product_id or handle."
+    assert fc.calls == []
+
+
+def test_publish_channel_resolve_exception_surfaces_hint():
+    fc = FakeClient([RuntimeError("Access denied for publications")])
+    srv = CapturingServer()
+    publications.register(srv, fc)
+    out = srv.tools["publish_product_to_channels"](
+        product_id="123", channel_names=["Online Store"], confirm=True,
+    )
+    assert "Error resolving channels" in out
+    assert "read_publications" in out
+
+
+def test_publish_product_read_exception_surfaces_hint():
+    tools, fc = _build([
+        _channels_response(),
+        RuntimeError("transient network"),
+    ])
+    out = tools["publish_product_to_channels"](
+        product_id="123", channel_names=["Online Store"], confirm=True,
+    )
+    assert out.startswith("Error:")
+    assert "transient network" in out
+
+
+def test_publish_product_not_found_reports_clean_error():
+    tools, fc = _build([
+        _channels_response(),
+        {"product": None},
+    ])
+    out = tools["publish_product_to_channels"](
+        product_id="nope", channel_names=["Online Store"], confirm=True,
+    )
+    assert out == "No product found."
+
+
+def test_publish_mutation_exception_surfaces_hint():
+    tools, fc = _build([
+        _channels_response(),
+        _product_pubs(pid="123", published_ids=[], not_published_ids=[1, 2, 3]),
+        RuntimeError("502 Bad Gateway"),
+    ])
+    out = tools["publish_product_to_channels"](
+        product_id="123", channel_names=["Online Store"], confirm=True,
+    )
+    assert out.startswith("Error:")
+    assert "502 Bad Gateway" in out
+
+
+# ---------- unpublish_product_from_channels: gap branches ----------
+
+def test_unpublish_requires_product_id_or_handle():
+    tools, fc = _build([])
+    out = tools["unpublish_product_from_channels"](
+        channel_names=["Online Store"], confirm=True,
+    )
+    assert out == "Provide either product_id or handle."
+    assert fc.calls == []
+
+
+def test_unpublish_channel_resolve_exception_surfaces_hint():
+    fc = FakeClient([RuntimeError("Access denied for publications")])
+    srv = CapturingServer()
+    publications.register(srv, fc)
+    out = srv.tools["unpublish_product_from_channels"](
+        product_id="123", channel_names=["Online Store"], confirm=True,
+    )
+    assert "Error resolving channels" in out
+    assert "read_publications" in out
+
+
+def test_unpublish_rejects_both_channel_names_and_ids():
+    tools, fc = _build([_channels_response()])
+    out = tools["unpublish_product_from_channels"](
+        product_id="123",
+        channel_names=["Online Store"],
+        publication_ids=["gid://shopify/Publication/1"],
+        confirm=True,
+    )
+    assert "not both" in out
+
+
+def test_unpublish_product_read_exception_surfaces_hint():
+    tools, fc = _build([
+        _channels_response(),
+        RuntimeError("transient network"),
+    ])
+    out = tools["unpublish_product_from_channels"](
+        product_id="123", channel_names=["Online Store"], confirm=True,
+    )
+    assert out.startswith("Error:")
+    assert "transient network" in out
+
+
+def test_unpublish_product_not_found_reports_clean_error():
+    tools, fc = _build([
+        _channels_response(),
+        {"product": None},
+    ])
+    out = tools["unpublish_product_from_channels"](
+        product_id="nope", channel_names=["Online Store"], confirm=True,
+    )
+    assert out == "No product found."
+
+
+def test_unpublish_preview_shows_failed_to_resolve_block_when_channel_unknown():
+    """Unknown channel name → preview must surface it under 'Failed to resolve'
+    instead of silently dropping it."""
+    tools, fc = _build([
+        _channels_response(),
+        _channels_response(),  # refresh on miss
+        _product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3]),
+    ])
+    out = tools["unpublish_product_from_channels"](
+        product_id="123",
+        channel_names=["Online Store", "TikTok Shop"],
+        confirm=False,
+    )
+    assert "PREVIEW" in out
+    assert "Failed to resolve" in out
+    assert "TikTok Shop" in out
+
+
+def test_unpublish_mutation_exception_surfaces_hint():
+    tools, fc = _build([
+        _channels_response(),
+        _product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3]),
+        RuntimeError("502 Bad Gateway"),
+    ])
+    out = tools["unpublish_product_from_channels"](
+        product_id="123", channel_names=["Online Store"], confirm=True,
+    )
+    assert out.startswith("Error:")
+    assert "502 Bad Gateway" in out
+
+
+def test_unpublish_user_errors_surface_in_confirmed_body():
+    tools, fc = _build([
+        _channels_response(),
+        _product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3]),
+        {"publishableUnpublish": {
+            "publishable": None,
+            "userErrors": [
+                {"field": ["input", "0", "publicationId"], "message": "not authorized"},
+            ],
+        }},
+    ])
+    out = tools["unpublish_product_from_channels"](
+        product_id="123", channel_names=["Online Store"], confirm=True,
+    )
+    assert out.startswith("CONFIRMED")
+    assert "Failed" in out
+    assert "Online Store" in out[out.index("Failed"):]
+    assert "not authorized" in out
+
+
+def test_unpublish_confirmed_failed_block_rendered_when_unknown_channel():
+    """Unknown channel resolved at preview must carry through to CONFIRMED
+    output — the caller needs to know which channels didn't get touched."""
+    tools, fc = _build([
+        _channels_response(),
+        _channels_response(),  # refresh on miss
+        _product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3]),
+        _unpublish_ok(),
+    ])
+    out = tools["unpublish_product_from_channels"](
+        product_id="123",
+        channel_names=["Online Store", "TikTok Shop"],
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED")
+    assert "Failed" in out
+    assert "TikTok Shop" in out[out.index("Failed"):]
+
+
+# ---------- set_product_publications: gap branches ----------
+
+def test_set_requires_product_id_or_handle():
+    tools, fc = _build([])
+    out = tools["set_product_publications"](
+        channel_names=["Online Store"], confirm=True,
+    )
+    assert out == "Provide either product_id or handle."
+    assert fc.calls == []
+
+
+def test_set_channel_resolve_exception_surfaces_hint():
+    fc = FakeClient([RuntimeError("Access denied for publications")])
+    srv = CapturingServer()
+    publications.register(srv, fc)
+    out = srv.tools["set_product_publications"](
+        product_id="123", channel_names=["Online Store"], confirm=True,
+    )
+    assert "Error resolving channels" in out
+    assert "read_publications" in out
+
+
+def test_set_product_read_exception_surfaces_hint():
+    tools, fc = _build([
+        _channels_response(),
+        RuntimeError("transient network"),
+    ])
+    out = tools["set_product_publications"](
+        product_id="123", channel_names=["Online Store"], confirm=True,
+    )
+    assert out.startswith("Error:")
+    assert "transient network" in out
+
+
+def test_set_product_not_found_reports_clean_error():
+    tools, fc = _build([
+        _channels_response(),
+        {"product": None},
+    ])
+    out = tools["set_product_publications"](
+        product_id="nope", channel_names=["Online Store"], confirm=True,
+    )
+    assert out == "No product found."
+
+
+def test_set_preview_surfaces_failed_to_resolve_for_unknown_channels():
+    tools, fc = _build([
+        _channels_response(),
+        _channels_response(),  # refresh on miss
+        _product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3, 4]),
+    ])
+    out = tools["set_product_publications"](
+        product_id="123",
+        channel_names=["Online Store", "TikTok Shop"],
+        confirm=False,
+    )
+    assert "PREVIEW" in out
+    assert "Failed to resolve" in out
+    assert "TikTok Shop" in out
+
+
+def test_set_publish_mutation_exception_surfaces_publish_specific_hint():
+    """Exceptions during the publish mutation must name the phase ('publish')
+    so the operator knows whether any unpublish ran after it."""
+    tools, fc = _build([
+        _channels_response(),
+        _product_pubs(pid="123", published_ids=[], not_published_ids=[1, 2, 3]),
+        RuntimeError("publish 502"),
+    ])
+    out = tools["set_product_publications"](
+        product_id="123", channel_names=["Online Store"], confirm=True,
+    )
+    assert "Error during publish" in out
+    assert "publish 502" in out
+
+
+def test_set_publish_user_errors_carry_into_apply_failed():
+    tools, fc = _build([
+        _channels_response(),
+        _product_pubs(pid="123", published_ids=[], not_published_ids=[1, 2, 3]),
+        _publish_err("publicationId", "not authorized"),
+    ])
+    out = tools["set_product_publications"](
+        product_id="123", channel_names=["Online Store"], confirm=True,
+    )
+    assert out.startswith("CONFIRMED")
+    assert "Failed" in out
+    assert "not authorized" in out
+
+
+def test_set_unpublish_mutation_exception_surfaces_unpublish_specific_hint():
+    tools, fc = _build([
+        _channels_response(),
+        _product_pubs(pid="123", published_ids=[1, 4], not_published_ids=[2, 3]),
+        _publish_ok(),                 # add (publish) succeeds
+        RuntimeError("unpublish 502"), # remove (unpublish) fails
+    ])
+    out = tools["set_product_publications"](
+        product_id="123",
+        channel_names=["Point of Sale", "Google & YouTube"],
+        confirm=True,
+    )
+    assert "Error during unpublish" in out
+    assert "unpublish 502" in out
+
+
+def test_set_unpublish_user_errors_carry_into_apply_failed():
+    tools, fc = _build([
+        _channels_response(),
+        _product_pubs(pid="123", published_ids=[1, 4], not_published_ids=[2, 3]),
+        _publish_ok(),
+        {"publishableUnpublish": {
+            "publishable": None,
+            "userErrors": [
+                {"field": ["input", "0", "publicationId"], "message": "locked"},
+            ],
+        }},
+    ])
+    out = tools["set_product_publications"](
+        product_id="123",
+        channel_names=["Point of Sale", "Google & YouTube"],
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED")
+    assert "Failed" in out
+    assert "locked" in out
+
+
+def test_set_confirmed_body_renders_failed_block_for_unknown_channel():
+    """set_product_publications must carry resolve-time failures through to
+    the CONFIRMED body, not just the preview."""
+    tools, fc = _build([
+        _channels_response(),
+        _channels_response(),  # refresh on miss
+        _product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3]),
+        _publish_ok(),
+    ])
+    out = tools["set_product_publications"](
+        product_id="123",
+        channel_names=["Online Store", "Shop", "TikTok Shop"],
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED")
+    assert "Failed" in out
+    assert "TikTok Shop" in out[out.index("Failed"):]

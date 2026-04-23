@@ -23,6 +23,7 @@ from tools.collections import (
     GET_COLLECTION_BY_HANDLE,
     ADD_PRODUCTS_TO_COLLECTION,
     REMOVE_PRODUCTS_FROM_COLLECTION,
+    UPDATE_COLLECTION,
 )
 from shopify_client import JOB_STATUS_QUERY
 
@@ -443,3 +444,90 @@ def test_initial_done_true_does_not_poll():
     # Exactly 2 calls — no poll issued.
     assert len(fc.calls) == 2
     assert not any(c[0] == JOB_STATUS_QUERY for c in fc.calls)
+
+
+# --- update_collection ---
+
+def _collection_update_ok():
+    return {"collectionUpdate": {
+        "collection": {"id": "gid://shopify/Collection/123", "title": "new", "handle": "vanish"},
+        "userErrors": [],
+    }}
+
+
+def _collection_update_err(field, message):
+    return {"collectionUpdate": {
+        "collection": None,
+        "userErrors": [{"field": field, "message": message}],
+    }}
+
+
+def test_update_collection_requires_title_or_description_no_read():
+    """Empty inputs short-circuit before any Shopify call."""
+    tools, fc = _build([])
+    out = tools["update_collection"](handle="vanish")
+    assert out == "Provide at least one of new_title or new_description."
+    assert fc.calls == []
+
+
+def test_update_collection_handle_not_found():
+    tools, fc = _build([{"collectionByHandle": None}])
+    out = tools["update_collection"](handle="nope", new_title="X")
+    assert out == "No collection found with handle 'nope'."
+    # Exactly one call: the resolve-by-handle read. No mutation.
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == GET_COLLECTION_BY_HANDLE
+
+
+def test_update_collection_preview_does_not_mutate():
+    tools, fc = _build([_manual_collection(handle="vanish", title="Vanish")])
+    out = tools["update_collection"](
+        handle="vanish", new_title="New Title", new_description="<p>new</p>",
+    )
+    assert "PREVIEW" in out
+    assert "Vanish" in out and "New Title" in out
+    assert "confirm=True" in out
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == GET_COLLECTION_BY_HANDLE
+
+
+def test_update_collection_confirm_title_only_sends_only_title_field():
+    tools, fc = _build([
+        _manual_collection(handle="vanish", title="Vanish"),
+        _collection_update_ok(),
+    ])
+    out = tools["update_collection"](
+        handle="vanish", new_title="Renamed", confirm=True,
+    )
+    assert out.startswith("Done.")
+    # Mutation call: input must carry id + title only — description absent.
+    query, vars_ = fc.calls[1]
+    assert query == UPDATE_COLLECTION
+    assert vars_["input"]["id"] == "gid://shopify/Collection/123"
+    assert vars_["input"]["title"] == "Renamed"
+    assert "descriptionHtml" not in vars_["input"]
+
+
+def test_update_collection_confirm_description_only_sends_only_description_field():
+    tools, fc = _build([
+        _manual_collection(handle="vanish", title="Vanish"),
+        _collection_update_ok(),
+    ])
+    tools["update_collection"](
+        handle="vanish", new_description="<p>rewritten</p>", confirm=True,
+    )
+    _, vars_ = fc.calls[1]
+    assert vars_["input"]["descriptionHtml"] == "<p>rewritten</p>"
+    assert "title" not in vars_["input"]
+
+
+def test_update_collection_user_errors_surfaced():
+    tools, fc = _build([
+        _manual_collection(handle="vanish", title="Vanish"),
+        _collection_update_err("title", "too long"),
+    ])
+    out = tools["update_collection"](
+        handle="vanish", new_title="X" * 500, confirm=True,
+    )
+    assert out.startswith("Error:")
+    assert "title: too long" in out

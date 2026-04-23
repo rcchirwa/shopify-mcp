@@ -121,6 +121,13 @@ def test_format_errors_joins_mixed_list():
     assert _format_errors(errors) == "first; second; 42"
 
 
+def test_format_errors_handles_non_list_non_str_shape():
+    # gql occasionally surfaces errors as a single dict or other scalar
+    # instead of a list — the formatter must stringify rather than crash.
+    assert _format_errors({"message": "solo"}) == "{'message': 'solo'}"
+    assert _format_errors(42) == "42"
+
+
 # ---------- _mask_token helper ----------
 
 def test_mask_token_preserves_shpat_prefix_and_last4():

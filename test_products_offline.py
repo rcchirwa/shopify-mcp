@@ -18,8 +18,10 @@ sys.path.insert(0, os.path.dirname(__file__))
 from tools import products
 from tools.products import (
     GET_PRODUCT_BY_ID,
+    GET_PRODUCT_BY_HANDLE,
     GET_PRODUCT_COLLECTIONS,
     GET_PRODUCT_FULL_BY_ID,
+    GET_PRODUCT_FULL_BY_HANDLE,
     GET_PRODUCT_SEO_BY_ID,
     GET_PRODUCT_VARIANTS_POLICY,
     UPDATE_PRODUCT,
@@ -986,3 +988,254 @@ def test_get_product_collections_no_warning_when_all_on_one_page():
     tools, fc = _build([_product_collections_read("123", "X", nodes, has_next=False)])
     out = tools["get_product_collections"](product_id="123")
     assert "WARNING" not in out
+
+
+# ---------- get_product ----------
+
+def _full_product(pid, title, handle, status="ACTIVE", body="<p>b</p>",
+                  variants=None, tags=None, seo=None,
+                  product_type=None, vendor=None):
+    return {
+        "id": f"gid://shopify/Product/{pid}",
+        "title": title,
+        "handle": handle,
+        "status": status,
+        "bodyHtml": body,
+        "variants": {"nodes": variants or []},
+        "tags": tags or [],
+        "seo": seo or {},
+        "productType": product_type,
+        "vendor": vendor,
+    }
+
+
+def test_get_product_by_id_renders_variants():
+    tools, fc = _build([{"product": _full_product(
+        "123", "Tee", "tee",
+        variants=[{"id": "gid://shopify/ProductVariant/1", "title": "S", "sku": "T-S"}],
+    )}])
+    out = tools["get_product"](product_id="123")
+    assert "ID: 123" in out and "Title: Tee" in out and "Handle: tee" in out
+    assert "SKU: T-S" in out
+    assert fc.calls[0][0] == GET_PRODUCT_BY_ID
+
+
+def test_get_product_by_handle_uses_handle_query():
+    tools, fc = _build([{"productByHandle": _full_product("9", "X", "x")}])
+    out = tools["get_product"](handle="x")
+    assert "Title: X" in out
+    assert fc.calls[0][0] == GET_PRODUCT_BY_HANDLE
+    assert fc.calls[0][1] == {"handle": "x"}
+
+
+def test_get_product_requires_id_or_handle():
+    tools, fc = _build([])
+    out = tools["get_product"]()
+    assert out == "Provide either product_id or handle."
+    assert fc.calls == []
+
+
+def test_get_product_not_found():
+    tools, fc = _build([{"product": None}])
+    out = tools["get_product"](product_id="nope")
+    assert out == "No product found."
+
+
+def test_get_product_variant_sku_falls_back_to_na():
+    tools, fc = _build([{"product": _full_product(
+        "123", "Tee", "tee",
+        variants=[{"id": "gid://shopify/ProductVariant/1", "title": "S"}],
+    )}])
+    out = tools["get_product"](product_id="123")
+    assert "SKU: N/A" in out
+
+
+# ---------- get_product_description ----------
+
+def test_get_product_description_by_id():
+    tools, fc = _build([{"product": _full_product("7", "Tee", "tee", body="<p>hi</p>")}])
+    out = tools["get_product_description"](product_id="7")
+    assert "body_html:\n<p>hi</p>" in out
+    assert fc.calls[0][0] == GET_PRODUCT_BY_ID
+
+
+def test_get_product_description_by_handle():
+    tools, fc = _build([{"productByHandle": _full_product("7", "Tee", "tee", body="<p>h</p>")}])
+    out = tools["get_product_description"](handle="tee")
+    assert "Handle: tee" in out
+    assert fc.calls[0][0] == GET_PRODUCT_BY_HANDLE
+
+
+def test_get_product_description_requires_id_or_handle():
+    tools, fc = _build([])
+    out = tools["get_product_description"]()
+    assert out == "Provide either product_id or handle."
+    assert fc.calls == []
+
+
+def test_get_product_description_not_found():
+    tools, fc = _build([{"product": None}])
+    out = tools["get_product_description"](product_id="nope")
+    assert out == "No product found."
+
+
+def test_get_product_description_empty_body_renders_empty_string():
+    """bodyHtml=None should render as empty — not as the literal 'None'."""
+    tools, fc = _build([{"product": _full_product("7", "Tee", "tee", body=None)}])
+    out = tools["get_product_description"](product_id="7")
+    assert out.endswith("body_html:\n")
+
+
+# ---------- get_product_full ----------
+
+def test_get_product_full_by_id_renders_all_fields():
+    tools, fc = _build([{"product": _full_product(
+        "123", "Hoodie", "hoodie", status="DRAFT",
+        variants=[{"id": "gid://shopify/ProductVariant/1", "title": "S", "sku": "H-S"}],
+        tags=["new", "sale"],
+        seo={"title": "SEO T", "description": "SEO D"},
+        product_type="Apparel",
+        vendor="AON",
+    )}])
+    out = tools["get_product_full"](product_id="123")
+    assert "Title: Hoodie" in out
+    assert "Status: DRAFT" in out
+    assert "Product type: Apparel" in out
+    assert "Vendor: AON" in out
+    assert "Tags: new, sale" in out
+    assert "SEO title: SEO T" in out
+    assert "SEO description: SEO D" in out
+    assert "S — SKU: H-S" in out
+    assert fc.calls[0][0] == GET_PRODUCT_FULL_BY_ID
+
+
+def test_get_product_full_by_handle_uses_handle_query():
+    tools, fc = _build([{"productByHandle": _full_product("9", "X", "x")}])
+    out = tools["get_product_full"](handle="x")
+    assert "Title: X" in out
+    assert fc.calls[0][0] == GET_PRODUCT_FULL_BY_HANDLE
+
+
+def test_get_product_full_requires_id_or_handle():
+    tools, fc = _build([])
+    out = tools["get_product_full"]()
+    assert out == "Provide either product_id or handle."
+
+
+def test_get_product_full_not_found():
+    tools, fc = _build([{"product": None}])
+    out = tools["get_product_full"](product_id="nope")
+    assert out == "No product found."
+
+
+def test_get_product_full_empty_optionals_render_placeholders():
+    tools, fc = _build([{"product": _full_product("7", "T", "t")}])
+    out = tools["get_product_full"](product_id="7")
+    assert "Product type: (none)" in out
+    assert "Vendor: (none)" in out
+    assert "Tags: (none)" in out
+    assert "SEO title: (none)" in out
+    assert "SEO description: (none)" in out
+
+
+# ---------- update_product_description ----------
+
+def test_update_description_preview_shows_old_and_new_excerpts_no_mutation():
+    tools, fc = _build([{"product": {"bodyHtml": "<p>old body</p>"}}])
+    out = tools["update_product_description"](
+        product_id="7", new_description="<p>new body</p>",
+    )
+    assert "PREVIEW" in out
+    assert "old body" in out and "new body" in out
+    assert "confirm=True" in out
+    # Only the pre-read; no mutation
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == GET_PRODUCT_BY_ID
+
+
+def test_update_description_truncates_long_excerpts_with_ellipsis():
+    long_old = "x" * 200
+    long_new = "y" * 200
+    tools, fc = _build([{"product": {"bodyHtml": long_old}}])
+    out = tools["update_product_description"](
+        product_id="7", new_description=long_new,
+    )
+    # Excerpt capped at 120 chars + ellipsis
+    assert "x" * 120 + "..." in out
+    assert "y" * 120 + "..." in out
+
+
+def test_update_description_confirm_sends_update_mutation():
+    tools, fc = _build([
+        {"product": {"bodyHtml": "<p>old</p>"}},
+        _update_ok(pid="7"),
+    ])
+    out = tools["update_product_description"](
+        product_id="7", new_description="<p>new</p>", confirm=True,
+    )
+    assert out.startswith("Done.")
+    query, vars_ = fc.calls[1]
+    assert query == UPDATE_PRODUCT
+    assert vars_["input"] == {
+        "id": "gid://shopify/Product/7",
+        "descriptionHtml": "<p>new</p>",
+    }
+
+
+def test_update_description_user_errors_surfaced():
+    tools, fc = _build([
+        {"product": {"bodyHtml": ""}},
+        _update_err("descriptionHtml", "invalid html"),
+    ])
+    out = tools["update_product_description"](
+        product_id="7", new_description="<script>", confirm=True,
+    )
+    assert out.startswith("Error:")
+    assert "descriptionHtml: invalid html" in out
+
+
+# ---------- not-found branches for update_product_seo / tags(append) / status / policy ----------
+
+def test_update_product_seo_not_found_reports_clean_error():
+    tools, fc = _build([{"product": None}])
+    out = tools["update_product_seo"](
+        product_id="nope", new_seo_title="T", confirm=True,
+    )
+    assert out == "No product found with id nope."
+
+
+def test_update_product_tags_append_not_found_reports_clean_error():
+    """append/remove modes pre-read to compute the diff. If the read returns
+    no product, surface a clean error — don't attempt a mutation against a
+    non-existent id."""
+    tools, fc = _build([{"product": None}])
+    out = tools["update_product_tags"](
+        product_id="nope", mode="append", new_tags=["x"], confirm=True,
+    )
+    assert out == "No product found with id nope."
+    # Only the pre-read ran.
+    assert len(fc.calls) == 1
+
+
+def test_update_product_tags_remove_not_found_reports_clean_error():
+    tools, fc = _build([{"product": None}])
+    out = tools["update_product_tags"](
+        product_id="nope", mode="remove", new_tags=["x"], confirm=True,
+    )
+    assert out == "No product found with id nope."
+
+
+def test_update_product_status_not_found_reports_clean_error():
+    tools, fc = _build([{"product": None}])
+    out = tools["update_product_status"](
+        product_id="nope", new_status="ACTIVE", confirm=True,
+    )
+    assert out == "No product found with id nope."
+
+
+def test_update_variant_inventory_policy_not_found_reports_clean_error():
+    tools, fc = _build([{"product": None}])
+    out = tools["update_variant_inventory_policy"](
+        product_id="nope", new_policy="DENY", confirm=True,
+    )
+    assert out == "No product found with id nope."
