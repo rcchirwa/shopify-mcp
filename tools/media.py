@@ -1,0 +1,828 @@
+"""
+Media tools — list, upload, reorder, update, and delete product media.
+
+All write operations require confirm=True and log to aon_mcp_log.txt.
+
+Upload flow is staged: stagedUploadsCreate -> HTTP PUT to signed target ->
+productCreateMedia attaches the resourceUrl. Per the Shopify 2026-01 spec
+(see https://shopify.dev/docs/apps/build/online-store/product-media),
+image uploads use HTTP PUT with the returned `parameters` applied as headers,
+not multipart form fields — that shape is reserved for video / 3D model uploads,
+which are out of scope for v1.
+"""
+
+import ipaddress
+import mimetypes
+import socket
+import time
+from pathlib import Path
+from urllib.parse import urlparse
+
+import requests
+
+from mcp.server.fastmcp import FastMCP
+from shopify_client import ShopifyClient, to_gid, from_gid, poll_job
+from tools._log import log_write
+
+
+# Shopify caps product images at 20 MB. Reject earlier than Shopify would to
+# avoid uploading bytes that can't be attached.
+_MAX_IMAGE_BYTES = 20 * 1024 * 1024
+
+# Budget for the download step. Large files over slow links blow through this —
+# acceptable for v1, caller can retry.
+_IMAGE_DOWNLOAD_TIMEOUT_S = 30
+
+# Budget for the reorder job poll (same as collections.py — single-item moves
+# complete inline, this is only for jobs that genuinely run async).
+_JOB_POLL_TIMEOUT_S = 10
+
+# Budget for waiting on newly-attached media to leave PROCESSING. Shopify
+# processing regularly exceeds any reasonable synchronous wait; we keep the
+# budget short and return PROCESSING (not an error) on timeout since the
+# storefront renders PROCESSING media in most cases.
+_MEDIA_PROCESSING_POLL_TIMEOUT_S = 15
+_MEDIA_PROCESSING_POLL_INTERVAL_S = 2.0
+
+# Shopify's `media` connection page cap. A product with more than this in one
+# request needs pagination; emit an at-cap warning so operators see the
+# truncation instead of silently missing media.
+_MEDIA_PAGE_CAP = 100
+
+
+# --- GraphQL -----------------------------------------------------------------
+
+GET_PRODUCT_MEDIA = """
+query GetProductMedia($id: ID!) {
+  product(id: $id) {
+    id
+    title
+    media(first: 100) {
+      nodes {
+        id
+        alt
+        mediaContentType
+        status
+        preview { image { url } }
+      }
+      pageInfo { hasNextPage }
+    }
+  }
+}
+"""
+
+STAGED_UPLOADS_CREATE = """
+mutation StagedUploadsCreate($input: [StagedUploadInput!]!) {
+  stagedUploadsCreate(input: $input) {
+    stagedTargets {
+      url
+      resourceUrl
+      parameters { name value }
+    }
+    userErrors { field message }
+  }
+}
+"""
+
+PRODUCT_CREATE_MEDIA = """
+mutation ProductCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
+  productCreateMedia(productId: $productId, media: $media) {
+    media {
+      id
+      alt
+      mediaContentType
+      status
+      preview { image { url } }
+    }
+    mediaUserErrors { field message }
+  }
+}
+"""
+
+PRODUCT_REORDER_MEDIA = """
+mutation ProductReorderMedia($id: ID!, $moves: [MoveInput!]!) {
+  productReorderMedia(id: $id, moves: $moves) {
+    job { id done }
+    mediaUserErrors { field message }
+    userErrors { field message }
+  }
+}
+"""
+
+PRODUCT_UPDATE_MEDIA = """
+mutation ProductUpdateMedia($productId: ID!, $media: [UpdateMediaInput!]!) {
+  productUpdateMedia(productId: $productId, media: $media) {
+    media { id alt }
+    mediaUserErrors { field message }
+  }
+}
+"""
+
+PRODUCT_DELETE_MEDIA = """
+mutation ProductDeleteMedia($productId: ID!, $mediaIds: [ID!]!) {
+  productDeleteMedia(productId: $productId, mediaIds: $mediaIds) {
+    deletedMediaIds
+    product { id }
+    mediaUserErrors { field message }
+  }
+}
+"""
+
+
+# --- Helpers -----------------------------------------------------------------
+
+def _as_product_gid(pid: str) -> str:
+    """Normalize a product_id arg that may arrive as numeric string or full GID."""
+    if not pid:
+        return ""
+    return pid if pid.startswith("gid://") else to_gid("Product", pid)
+
+
+def _fmt_media_user_errors(errors, stage: str) -> str:
+    msgs = "; ".join(
+        f"{e.get('field') or '(no field)'}: {e.get('message', '')}" for e in errors
+    )
+    return f"Error at stage={stage}: {msgs}"
+
+
+def _format_bytes(n) -> str:
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return "? bytes"
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{n / (1024 * 1024):.2f} MB"
+
+
+def _filename_from_url(url: str) -> str:
+    """Extract a filename from a URL path; fall back to a generic name."""
+    path = urlparse(url).path
+    name = Path(path).name
+    return name or "upload.bin"
+
+
+def _reject_if_private_host(url: str) -> None:
+    """Raise RuntimeError if the URL's hostname resolves to a non-public IP
+    (RFC1918 private, loopback, link-local, multicast, reserved, unspecified).
+
+    Bounded SSRF defense: without this, a prompt-injected caller could
+    target 169.254.169.254 (cloud IMDS), 10/8 / 172.16/12 / 192.168/16
+    internals, or localhost via any `https://` URL. The confirm/preview gate
+    and `image/*` MIME filter narrow the exfil surface but don't close it —
+    this closes it at the network boundary. TOCTOU against DNS rebinding
+    is out of scope; that fix requires pinning the resolved IP through the
+    request, which is not worth the complexity for this threat model.
+    """
+    host = urlparse(url).hostname
+    if not host:
+        raise RuntimeError("URL has no hostname")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror as e:
+        raise RuntimeError(f"could not resolve host {host!r}: {e}") from e
+    for info in infos:
+        ip_str = info[4][0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_multicast or ip.is_reserved or ip.is_unspecified):
+            raise RuntimeError(
+                f"host {host!r} resolves to non-public IP {ip_str} "
+                f"— blocked to prevent SSRF to internal resources"
+            )
+
+
+def _download_image(url: str):
+    """Download an image URL and return (bytes, filename, mime_type).
+
+    Raises RuntimeError with a human-readable detail on any failure. Caller is
+    expected to wrap the call and label it as `stage=download` on error.
+    """
+    _reject_if_private_host(url)
+    try:
+        resp = requests.get(url, stream=True, timeout=_IMAGE_DOWNLOAD_TIMEOUT_S)
+    except requests.RequestException as e:
+        raise RuntimeError(f"request failed: {e}") from e
+
+    if resp.status_code >= 400:
+        raise RuntimeError(f"HTTP {resp.status_code} from source URL")
+
+    # Refuse huge files before we pull all bytes into memory. `Content-Length`
+    # is advisory — the streaming loop below enforces the cap again.
+    cl = resp.headers.get("Content-Length")
+    if cl and cl.isdigit() and int(cl) > _MAX_IMAGE_BYTES:
+        raise RuntimeError(
+            f"source is {_format_bytes(cl)} — exceeds Shopify's "
+            f"{_format_bytes(_MAX_IMAGE_BYTES)} image cap"
+        )
+
+    buf = bytearray()
+    for chunk in resp.iter_content(chunk_size=65536):
+        if not chunk:
+            continue
+        buf.extend(chunk)
+        if len(buf) > _MAX_IMAGE_BYTES:
+            raise RuntimeError(
+                f"source exceeded {_format_bytes(_MAX_IMAGE_BYTES)} during download"
+            )
+
+    filename = _filename_from_url(url)
+    content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    if not content_type:
+        guessed, _ = mimetypes.guess_type(filename)
+        content_type = (guessed or "").lower()
+    if not content_type.startswith("image/"):
+        raise RuntimeError(
+            f"unsupported MIME type: {content_type or '(unknown)'} — "
+            f"v1 accepts images only"
+        )
+    return bytes(buf), filename, content_type
+
+
+def _upload_bytes_to_target(target: dict, image_bytes: bytes) -> None:
+    """PUT image bytes to the staged target URL, with parameters as headers.
+
+    Raises RuntimeError on non-2xx. Caller labels the failure stage.
+    """
+    url = target.get("url")
+    params = target.get("parameters") or []
+    headers = {p["name"]: p["value"] for p in params if p.get("name")}
+    try:
+        resp = requests.put(url, data=image_bytes, headers=headers, timeout=60)
+    except requests.RequestException as e:
+        raise RuntimeError(f"PUT to staged target failed: {e}") from e
+    if resp.status_code >= 400:
+        raise RuntimeError(
+            f"staged target returned HTTP {resp.status_code}: "
+            f"{resp.text[:300]}"
+        )
+
+
+def _poll_media_ready(client: ShopifyClient, product_gid: str, media_id: str) -> dict:
+    """Poll product.media until the newly-attached media_id leaves PROCESSING,
+    or the budget is exhausted.
+
+    Returns dict: { status: str, preview_url: str or None, timed_out: bool,
+                    position: int, elapsed_s: float }
+    """
+    start = time.monotonic()
+    last = {"status": "PROCESSING", "preview_url": None, "position": -1}
+    while True:
+        try:
+            data = client.execute(GET_PRODUCT_MEDIA, {"id": product_gid})
+            nodes = (data.get("product") or {}).get("media", {}).get("nodes", []) or []
+            for idx, node in enumerate(nodes):
+                if node.get("id") == media_id:
+                    last["status"] = node.get("status") or "PROCESSING"
+                    last["preview_url"] = (
+                        ((node.get("preview") or {}).get("image") or {}).get("url")
+                    )
+                    last["position"] = idx + 1  # 1-indexed for caller display
+                    break
+        except Exception:
+            # Transient read failures during polling shouldn't abort — we want
+            # to keep trying until the budget is exhausted.
+            pass
+
+        elapsed = time.monotonic() - start
+        if last["status"] in ("READY", "FAILED"):
+            return {**last, "timed_out": False, "elapsed_s": elapsed}
+        if elapsed + _MEDIA_PROCESSING_POLL_INTERVAL_S > _MEDIA_PROCESSING_POLL_TIMEOUT_S:
+            return {**last, "timed_out": True, "elapsed_s": elapsed}
+        time.sleep(_MEDIA_PROCESSING_POLL_INTERVAL_S)
+
+
+def _render_media_list(product: dict) -> str:
+    """Format a product's media list as a string. `product` is the GraphQL node."""
+    if not product:
+        return "No product found."
+    media = product.get("media") or {}
+    nodes = media.get("nodes", []) or []
+    pid = from_gid(product.get("id", ""))
+    header = f"Media for product {pid} ({product.get('title', '')}) — {len(nodes)} item(s):"
+    if not nodes:
+        return header + "\n  (no media)"
+
+    lines = [header]
+    for idx, n in enumerate(nodes, start=1):
+        preview = ((n.get("preview") or {}).get("image") or {}).get("url") or "(no preview)"
+        alt = n.get("alt") or ""
+        kind = n.get("mediaContentType") or "UNKNOWN"
+        status = n.get("status") or "UNKNOWN"
+        lines.append(
+            f"  {idx}. {kind} {n.get('id', '')}  status={status}  alt={alt!r}\n"
+            f"     preview: {preview}"
+        )
+    if (media.get("pageInfo") or {}).get("hasNextPage"):
+        lines.append(
+            f"  WARNING: product has more than {_MEDIA_PAGE_CAP} media items — "
+            f"additional media exist but are not listed here."
+        )
+    return "\n".join(lines)
+
+
+def register(server: FastMCP, client: ShopifyClient):
+
+    @server.tool()
+    def list_product_media(product_id: str) -> str:
+        """
+        List all media (images, videos, 3D models) attached to a product.
+        Returns IDs, content type, status, alt text, and preview URLs in
+        display order. Read-only — no confirm required.
+        """
+        gid = _as_product_gid(product_id)
+        if not gid:
+            return "Error: provide product_id."
+        data = client.execute(GET_PRODUCT_MEDIA, {"id": gid})
+        product = data.get("product")
+        if not product:
+            return f"No product found with id {product_id}."
+        return _render_media_list(product)
+
+    @server.tool()
+    def upload_product_image(
+        product_id: str,
+        source: str,
+        alt: str = "",
+        position: int = 0,
+        confirm: bool = False,
+    ) -> str:
+        """
+        Upload an image from a public https:// URL and attach it to a product.
+        v1 accepts URL sources only; local file paths are rejected.
+
+        position is 1-indexed for caller convenience (1 = featured image).
+        Pass 0 or omit to append to the end.
+
+        On failure the response is prefixed with `Error at stage={name}:` so
+        the caller knows which step of the staged-upload flow broke.
+        Returns a preview unless confirm=True.
+        """
+        if not source:
+            return "Error at stage=input: provide source (a public https:// URL)."
+        parsed = urlparse(source)
+        if parsed.scheme != "https" or not parsed.netloc:
+            return (
+                "Error at stage=input: source must be a public https:// URL "
+                "(v1 does not accept http:// or local file paths)."
+            )
+
+        gid = _as_product_gid(product_id)
+        if not gid:
+            return "Error at stage=input: provide product_id."
+
+        # Read current media for the preview + to compute the append-default
+        # position. Only a single round-trip; acceptable for preview mode.
+        try:
+            current = client.execute(GET_PRODUCT_MEDIA, {"id": gid})
+        except Exception as e:
+            return f"Error at stage=read: {e}"
+        product = current.get("product")
+        if not product:
+            return f"No product found with id {product_id}."
+        current_nodes = (product.get("media") or {}).get("nodes", []) or []
+        current_count = len(current_nodes)
+
+        if position and position < 1:
+            return "Error at stage=input: position must be 1-indexed (>= 1) or 0 to append."
+
+        final_position = position if position else current_count + 1
+        pos_note = (
+            "append to end" if final_position == current_count + 1
+            else (f"position {final_position}"
+                  + (" (featured)" if final_position == 1 else ""))
+        )
+        preview = (
+            f"PREVIEW — Upload product image\n"
+            f"  Product ID : {product_id}\n"
+            f"  Source     : {source}\n"
+            f"  Alt        : {alt!r}\n"
+            f"  Target     : {pos_note}\n"
+            f"  Current    : {current_count} media attached"
+        )
+
+        if not confirm:
+            return preview + "\n\nTo apply, call again with confirm=True."
+
+        # Stage 1: download bytes.
+        try:
+            image_bytes, filename, mime_type = _download_image(source)
+        except Exception as e:
+            return f"Error at stage=download: {e}"
+
+        # Stage 2: create the staged upload target.
+        try:
+            staged = client.execute(STAGED_UPLOADS_CREATE, {
+                "input": [{
+                    "resource": "IMAGE",
+                    "filename": filename,
+                    "mimeType": mime_type,
+                    "httpMethod": "PUT",
+                    "fileSize": str(len(image_bytes)),
+                }],
+            })
+        except Exception as e:
+            return f"Error at stage=stage_upload: {e}"
+        staged_payload = staged.get("stagedUploadsCreate", {}) or {}
+        staged_errors = staged_payload.get("userErrors", []) or []
+        if staged_errors:
+            return _fmt_media_user_errors(staged_errors, "stage_upload")
+        targets = staged_payload.get("stagedTargets", []) or []
+        if not targets:
+            return "Error at stage=stage_upload: no stagedTargets returned."
+        target = targets[0]
+
+        # Stage 3: PUT bytes with parameters as headers.
+        try:
+            _upload_bytes_to_target(target, image_bytes)
+        except Exception as e:
+            return f"Error at stage=stage_upload: {e}"
+
+        # Stage 4: attach via productCreateMedia.
+        resource_url = target.get("resourceUrl")
+        try:
+            attach = client.execute(PRODUCT_CREATE_MEDIA, {
+                "productId": gid,
+                "media": [{
+                    "alt": alt or "",
+                    "mediaContentType": "IMAGE",
+                    "originalSource": resource_url,
+                }],
+            })
+        except Exception as e:
+            return f"Error at stage=attach: {e}"
+        attach_payload = attach.get("productCreateMedia", {}) or {}
+        attach_errors = attach_payload.get("mediaUserErrors", []) or []
+        if attach_errors:
+            return _fmt_media_user_errors(attach_errors, "attach")
+        attached = attach_payload.get("media") or []
+        if not attached:
+            return "Error at stage=attach: productCreateMedia returned no media."
+        new_media = attached[0]
+        new_media_id = new_media.get("id")
+        initial_status = new_media.get("status") or "PROCESSING"
+        initial_preview = ((new_media.get("preview") or {}).get("image") or {}).get("url")
+
+        # Stage 5: poll media processing (short budget; timeout is not fatal).
+        poll = _poll_media_ready(client, gid, new_media_id)
+        final_status = poll["status"]
+        final_preview = poll["preview_url"] or initial_preview
+
+        # Shopify returned FAILED on processing: the media record is attached
+        # to the product but unusable. Skip reorder (pointless) and surface as
+        # an error with the media id so the operator can delete it. Still log
+        # the attach attempt so the write trail is complete.
+        if final_status == "FAILED":
+            log_write(
+                "upload_product_image",
+                f"product={product_id} media={new_media_id} "
+                f"bytes={len(image_bytes)} status=FAILED "
+                f"(media attached but processing failed; caller should delete)",
+            )
+            return (
+                f"Error at stage=process: Shopify marked the media FAILED "
+                f"after processing. It is attached to the product and should "
+                f"be removed.\n"
+                f"  Product ID : {product_id}\n"
+                f"  Media ID   : {new_media_id}\n"
+                f"  Source     : {source}\n"
+                f"  Suggested cleanup: "
+                f"delete_product_media(product_id={product_id!r}, "
+                f"media_ids=[{new_media_id!r}], confirm=True)"
+            )
+
+        # Stage 6: reorder if the caller asked for a non-append position.
+        reorder_note = ""
+        if position and position != current_count + 1:
+            try:
+                reorder = client.execute(PRODUCT_REORDER_MEDIA, {
+                    "id": gid,
+                    "moves": [{
+                        "id": new_media_id,
+                        "newPosition": str(position - 1),
+                    }],
+                })
+            except Exception as e:
+                reorder_note = f"\n  Reorder    : FAILED at stage=reorder ({e})"
+            else:
+                rpayload = reorder.get("productReorderMedia", {}) or {}
+                rerrs = (rpayload.get("mediaUserErrors") or []) \
+                        or (rpayload.get("userErrors") or [])
+                if rerrs:
+                    reorder_note = "\n  " + _fmt_media_user_errors(
+                        rerrs, "reorder"
+                    ).replace("Error at ", "")
+                else:
+                    job = rpayload.get("job") or {}
+                    job_id = job.get("id")
+                    initial_done = bool(job.get("done"))
+                    if job_id and not initial_done:
+                        pr = poll_job(client, job_id, timeout_s=_JOB_POLL_TIMEOUT_S)
+                        reorder_note = (
+                            f"\n  Reorder    : job {from_gid(job_id)} "
+                            f"done={pr['done']} elapsed={pr['elapsed_s']:.1f}s"
+                            + (" (timed out)" if pr["timed_out"] else "")
+                        )
+                    else:
+                        reorder_note = (
+                            f"\n  Reorder    : " +
+                            (f"job {from_gid(job_id)} done=True"
+                             if job_id else "done inline")
+                        )
+
+        log_write(
+            "upload_product_image",
+            f"product={product_id} media={new_media_id} "
+            f"pos={position or current_count + 1} bytes={len(image_bytes)} "
+            f"status={final_status}",
+        )
+
+        processing_note = ""
+        if poll["timed_out"] and final_status == "PROCESSING":
+            processing_note = (
+                f"\n  Note       : media still PROCESSING after "
+                f"{_MEDIA_PROCESSING_POLL_TIMEOUT_S}s — Shopify will finish "
+                f"server-side; storefront renders PROCESSING media in most cases."
+            )
+        return (
+            f"CONFIRMED — Upload product image\n"
+            f"  Product ID : {product_id}\n"
+            f"  Media ID   : {new_media_id}\n"
+            f"  Status     : {final_status}\n"
+            f"  Position   : {pos_note}\n"
+            f"  Bytes      : {_format_bytes(len(image_bytes))} ({mime_type})\n"
+            f"  Preview    : {final_preview or '(not yet available)'}"
+            f"{reorder_note}"
+            f"{processing_note}"
+        )
+
+    @server.tool()
+    def reorder_product_media(
+        product_id: str,
+        moves: list[dict] = None,
+        confirm: bool = False,
+    ) -> str:
+        """
+        Change the display order of media on a product. moves is a list of
+        {"id": "gid://shopify/MediaImage/...", "newPosition": 1} items,
+        where newPosition is 1-indexed (1 = featured). The tool converts to
+        Shopify's 0-indexed string form internally.
+
+        Returns a preview unless confirm=True. Polls the returned job.
+        """
+        if not moves:
+            return "Error: moves must be a non-empty list of {id, newPosition} items."
+        gid = _as_product_gid(product_id)
+        if not gid:
+            return "Error: provide product_id."
+
+        # Normalize + validate inputs before any network call.
+        parsed_moves = []
+        for m in moves:
+            mid = m.get("id") if isinstance(m, dict) else None
+            pos = m.get("newPosition") if isinstance(m, dict) else None
+            if not mid or not isinstance(pos, int) or pos < 1:
+                return (
+                    f"Error: each move needs id (string) and newPosition "
+                    f"(int >= 1). Got: {m!r}"
+                )
+            parsed_moves.append({"id": mid, "newPosition": pos})
+
+        # Preview: show current order vs proposed, reject unknown ids.
+        data = client.execute(GET_PRODUCT_MEDIA, {"id": gid})
+        product = data.get("product")
+        if not product:
+            return f"No product found with id {product_id}."
+        current_nodes = (product.get("media") or {}).get("nodes", []) or []
+        current_ids = [n.get("id") for n in current_nodes]
+        unknown = [m["id"] for m in parsed_moves if m["id"] not in current_ids]
+        if unknown:
+            return (
+                "Error: these media ids are not attached to the product: "
+                + ", ".join(unknown)
+            )
+
+        current_lines = "\n".join(
+            f"    {i + 1}. {n.get('id')}  alt={(n.get('alt') or '')!r}"
+            for i, n in enumerate(current_nodes)
+        ) or "    (none)"
+        moves_lines = "\n".join(
+            f"    • {m['id']} → position {m['newPosition']}" for m in parsed_moves
+        )
+        body = (
+            f"  Product ID : {product_id}\n"
+            f"  Current order ({len(current_nodes)}):\n{current_lines}\n"
+            f"  Moves ({len(parsed_moves)}):\n{moves_lines}"
+        )
+
+        if not confirm:
+            return (
+                f"PREVIEW — Reorder product media\n{body}"
+                f"\n\nTo apply, call again with confirm=True."
+            )
+
+        # Shopify's MoveInput.newPosition is 0-indexed and serialized as a
+        # string. Convert at the boundary so the caller sees 1-indexed ints
+        # everywhere.
+        api_moves = [
+            {"id": m["id"], "newPosition": str(m["newPosition"] - 1)}
+            for m in parsed_moves
+        ]
+        result = client.execute(PRODUCT_REORDER_MEDIA, {
+            "id": gid,
+            "moves": api_moves,
+        })
+        payload = result.get("productReorderMedia", {}) or {}
+        media_errors = (payload.get("mediaUserErrors") or []) \
+                       or (payload.get("userErrors") or [])
+        if media_errors:
+            return _fmt_media_user_errors(media_errors, "reorder")
+
+        job = payload.get("job") or {}
+        job_id = job.get("id")
+        initial_done = bool(job.get("done"))
+        poll_result = None
+        if job_id and not initial_done:
+            poll_result = poll_job(client, job_id, timeout_s=_JOB_POLL_TIMEOUT_S)
+
+        log_write(
+            "reorder_product_media",
+            f"product={product_id} moves={len(parsed_moves)} "
+            f"job={job_id or '(none)'} "
+            f"done={(poll_result['done'] if poll_result else initial_done)}",
+        )
+
+        job_line = ""
+        if job_id:
+            numeric = from_gid(job_id)
+            if poll_result is None:
+                job_line = f"\n  Job        : {numeric} (done=True)"
+            elif poll_result["done"]:
+                job_line = (
+                    f"\n  Job        : {numeric} (done=True after "
+                    f"{poll_result['elapsed_s']:.1f}s)"
+                )
+            elif poll_result["timed_out"]:
+                job_line = (
+                    f"\n  Job        : {numeric} (still running after "
+                    f"{_JOB_POLL_TIMEOUT_S}s timeout — verify via "
+                    f"list_product_media)"
+                )
+        return f"CONFIRMED — Reorder product media\n{body}{job_line}"
+
+    @server.tool()
+    def update_product_media(
+        product_id: str,
+        media_id: str,
+        alt: str,
+        confirm: bool = False,
+    ) -> str:
+        """
+        Update the alt text on an existing piece of product media.
+
+        Scope note: productUpdateMedia only updates alt text and a few other
+        attributes — it does NOT swap the image file. To swap an image, use
+        delete_product_media + upload_product_image. Returns a preview
+        unless confirm=True.
+        """
+        if not media_id:
+            return "Error: provide media_id."
+        gid = _as_product_gid(product_id)
+        if not gid:
+            return "Error: provide product_id."
+
+        data = client.execute(GET_PRODUCT_MEDIA, {"id": gid})
+        product = data.get("product")
+        if not product:
+            return f"No product found with id {product_id}."
+        nodes = (product.get("media") or {}).get("nodes", []) or []
+        target = next((n for n in nodes if n.get("id") == media_id), None)
+        if not target:
+            return (
+                f"Error: media {media_id} is not attached to product {product_id}."
+            )
+        old_alt = target.get("alt") or ""
+        no_op_suffix = "  (no-op — alt unchanged)" if old_alt == alt else ""
+        body = (
+            f"  Product ID : {product_id}\n"
+            f"  Media ID   : {media_id}\n"
+            f"  Old alt    : {old_alt!r}\n"
+            f"  New alt    : {alt!r}{no_op_suffix}"
+        )
+
+        if not confirm:
+            return (
+                f"PREVIEW — Update product media alt\n{body}"
+                f"\n\nTo apply, call again with confirm=True."
+            )
+
+        result = client.execute(PRODUCT_UPDATE_MEDIA, {
+            "productId": gid,
+            "media": [{"id": media_id, "alt": alt}],
+        })
+        payload = result.get("productUpdateMedia", {}) or {}
+        errors = payload.get("mediaUserErrors", []) or []
+        if errors:
+            return _fmt_media_user_errors(errors, "update")
+
+        log_write(
+            "update_product_media",
+            f"product={product_id} media={media_id} "
+            f"alt_len {len(old_alt)}->{len(alt)}",
+        )
+        return f"CONFIRMED — Update product media alt\n{body}"
+
+    @server.tool()
+    def delete_product_media(
+        product_id: str,
+        media_ids: list[str] = None,
+        confirm: bool = False,
+    ) -> str:
+        """
+        Remove media from a product by media ID. Accepts one or more IDs.
+        Returns a preview unless confirm=True.
+        """
+        if not media_ids:
+            return "Error: media_ids must be a non-empty list."
+        gid = _as_product_gid(product_id)
+        if not gid:
+            return "Error: provide product_id."
+
+        data = client.execute(GET_PRODUCT_MEDIA, {"id": gid})
+        product = data.get("product")
+        if not product:
+            return f"No product found with id {product_id}."
+        nodes = (product.get("media") or {}).get("nodes", []) or []
+        current_index = {n.get("id"): n for n in nodes}
+
+        # Match caller-supplied ids to what's actually attached. Dedup while
+        # preserving order to keep the preview stable.
+        seen = set()
+        ordered_ids = []
+        for mid in media_ids:
+            if mid not in seen:
+                seen.add(mid)
+                ordered_ids.append(mid)
+        matched = [mid for mid in ordered_ids if mid in current_index]
+        unmatched = [mid for mid in ordered_ids if mid not in current_index]
+
+        def _fmt_line(mid):
+            n = current_index.get(mid) or {}
+            preview = ((n.get("preview") or {}).get("image") or {}).get("url") or "(no preview)"
+            return f"    • {mid}  alt={(n.get('alt') or '')!r}\n      preview: {preview}"
+
+        matched_block = "\n".join(_fmt_line(mid) for mid in matched) or "    (none)"
+        unmatched_block = (
+            "\n  Not attached (will be skipped by Shopify):\n" +
+            "\n".join(f"    • {mid}" for mid in unmatched)
+        ) if unmatched else ""
+
+        preview = (
+            f"PREVIEW — Delete product media\n"
+            f"  Product ID : {product_id}\n"
+            f"  To delete ({len(matched)}):\n{matched_block}"
+            f"{unmatched_block}"
+        )
+
+        if not confirm:
+            return preview + "\n\nTo apply, call again with confirm=True."
+
+        if not matched:
+            log_write(
+                "delete_product_media",
+                f"product={product_id} deleted=0 unmatched={len(unmatched)}",
+            )
+            return (
+                f"CONFIRMED — Delete product media (no-op)\n"
+                f"  Product ID : {product_id}\n"
+                f"  Nothing to delete — every requested id was unattached."
+                f"{unmatched_block}"
+            )
+
+        result = client.execute(PRODUCT_DELETE_MEDIA, {
+            "productId": gid,
+            "mediaIds": matched,
+        })
+        payload = result.get("productDeleteMedia", {}) or {}
+        errors = payload.get("mediaUserErrors", []) or []
+        if errors:
+            return _fmt_media_user_errors(errors, "delete")
+        deleted = payload.get("deletedMediaIds") or []
+
+        log_write(
+            "delete_product_media",
+            f"product={product_id} deleted={len(deleted)} "
+            f"unmatched={len(unmatched)} ids={deleted}",
+        )
+        deleted_block = "\n".join(f"    • {mid}" for mid in deleted) or "    (none)"
+        return (
+            f"CONFIRMED — Delete product media\n"
+            f"  Product ID : {product_id}\n"
+            f"  Deleted ({len(deleted)}):\n{deleted_block}"
+            f"{unmatched_block}"
+        )

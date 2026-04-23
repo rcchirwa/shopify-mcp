@@ -21,6 +21,17 @@ Enables Claude to read products, check inventory, manage collections, handle dis
 | `get_products_by_collection` | List all products in a collection by handle |
 | `get_product_collections` | List every collection a product belongs to (manual + smart, with type label) |
 
+### Media
+| Tool | Description |
+|------|-------------|
+| `list_product_media` | List all media (images, videos, 3D) attached to a product with IDs, alt text, status, preview URLs (read-only) |
+| `upload_product_image` | Upload an image from a public https:// URL and attach it to a product; optional `position` for featured placement (preview + confirm) |
+| `reorder_product_media` | Change the display order of media on a product; 1-indexed for callers, polls the async job (preview + confirm) |
+| `update_product_media` | Update alt text on an existing piece of product media (preview + confirm) |
+| `delete_product_media` | Remove one or more media items from a product by media ID (preview + confirm) |
+
+Requires `write_files` and `write_products` scopes. Local-file source paths are not accepted in v1 — URL only.
+
 ### Inventory
 | Tool | Description |
 |------|-------------|
@@ -132,6 +143,7 @@ read_discounts
 write_discounts
 read_publications
 write_publications
+write_files
 ```
 
 3. Install the app and copy the **Admin API access token** into your `.env`
@@ -216,7 +228,8 @@ shopify-mcp/
 │   ├── collections.py
 │   ├── discounts.py
 │   ├── orders.py
-│   └── publications.py
+│   ├── publications.py
+│   └── media.py
 ├── validators/
 │   └── naming.py           # AON + Vanish title convention validator
 ├── requirements.txt
