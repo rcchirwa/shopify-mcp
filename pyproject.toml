@@ -35,10 +35,11 @@ py-modules = ["shopify_client", "shopify_mcp"]
 packages = ["tools", "validators", "_testing"]
 
 [tool.pytest.ini_options]
-# test_shopify_mcp.py is a live-store smoke runner, not an offline unit test.
-# It requires SHOPIFY_STORE_URL + SHOPIFY_ACCESS_TOKEN and would fail in CI
-# (and locally without a configured .env). Exclude it from pytest discovery.
-addopts = "--ignore=test_shopify_mcp.py"
+# Live smoke runners that require SHOPIFY_STORE_URL + SHOPIFY_ACCESS_TOKEN.
+# They would fail in CI (and locally without a configured .env), so they are
+# excluded from default pytest discovery. CI runs `pytest test_*_offline.py`
+# explicitly, so this is belt-and-suspenders for local `pytest` invocations.
+addopts = "--ignore=test_shopify_mcp.py --ignore=test_webhooks.py"
 
 [tool.coverage.run]
 # Single source of truth for what coverage measures — consumed by both
