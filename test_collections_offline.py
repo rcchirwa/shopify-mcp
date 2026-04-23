@@ -26,7 +26,7 @@ from tools.collections import (
     UPDATE_COLLECTION,
 )
 from shopify_client import JOB_STATUS_QUERY
-from _testing.fake_client import CapturingServer, FakeClient
+from _testing import CapturingServer, FakeClient
 
 
 class _FakeClock:

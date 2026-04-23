@@ -33,7 +33,7 @@ from tools.products import (
     GET_PRODUCTS_WITH_DESCRIPTIONS,
     GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS,
 )
-from _testing.fake_client import CapturingServer, FakeClient
+from _testing import CapturingServer, FakeClient
 
 
 def _build(responses):

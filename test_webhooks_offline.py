@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from tools import webhooks
 from tools.webhooks import LIST_WEBHOOKS, CREATE_WEBHOOK, DELETE_WEBHOOK
-from _testing.fake_client import CapturingServer, FakeClient
+from _testing import CapturingServer, FakeClient
 
 
 @pytest.fixture(autouse=True)

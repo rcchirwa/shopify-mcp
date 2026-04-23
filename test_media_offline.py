@@ -37,7 +37,7 @@ from tools.media import (
     PRODUCT_UPDATE_MEDIA,
     PRODUCT_DELETE_MEDIA,
 )
-from _testing.fake_client import CapturingServer, FakeClient
+from _testing import CapturingServer, FakeClient
 import requests as _requests
 
 
