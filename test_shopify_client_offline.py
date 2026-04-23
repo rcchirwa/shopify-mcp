@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from gql.transport.exceptions import TransportQueryError, TransportServerError
 
-from shopify_client import ShopifyClient, _format_errors, _mask_token
+from shopify_client import ShopifyClient, _format_errors, _mask_token, from_gid
 
 
 class _StubGqlClient:
@@ -154,6 +154,23 @@ def test_mask_token_short_token_fully_masked():
 def test_mask_token_empty_or_none():
     assert _mask_token("") == "(empty)"
     assert _mask_token(None) == "(empty)"
+
+
+# ---------- from_gid helper ----------
+
+def test_from_gid_extracts_trailing_numeric_id():
+    assert from_gid("gid://shopify/Product/123") == "123"
+
+
+def test_from_gid_tolerates_none():
+    # Shopify can return `id: null` on partial / permissions-trimmed fields,
+    # and callers that do `from_gid(obj.get("id", ""))` still pass None through
+    # because .get only applies the default for missing keys. Must not crash.
+    assert from_gid(None) == ""
+
+
+def test_from_gid_tolerates_empty_string():
+    assert from_gid("") == ""
 
 
 # ---------- .env loading: override=True + script-relative path ----------
