@@ -10,11 +10,6 @@ Usage:
   pytest test_products_offline.py -v
 """
 
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(__file__))
-
 from tools import products
 from tools.products import (
     GET_PRODUCT_BY_ID,

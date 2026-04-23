@@ -10,11 +10,6 @@ Usage:
   pytest test_publications_offline.py -v
 """
 
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(__file__))
-
 from tools import publications
 from tools.publications import (
     LIST_PUBLICATIONS,

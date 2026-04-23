@@ -11,12 +11,7 @@ Usage:
   pytest test_webhooks_offline.py -v
 """
 
-import os
-import sys
-
 import pytest
-
-sys.path.insert(0, os.path.dirname(__file__))
 
 from tools import webhooks
 from tools.webhooks import LIST_WEBHOOKS, CREATE_WEBHOOK, DELETE_WEBHOOK

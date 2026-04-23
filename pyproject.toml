@@ -1,3 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shopify-mcp"
+version = "0.1.0"
+description = "Shopify MCP server — Model Context Protocol tools for Shopify Admin API."
+requires-python = ">=3.10"
+# Runtime deps stay in requirements.txt, dev deps in requirements-dev.txt.
+# This [project] block exists solely to make the repo installable via
+# `pip install -e .` so test files don't need a sys.path prelude to find
+# shopify_client / tools / validators / _testing. Consolidating deps into
+# pyproject.toml is a deliberate follow-up, not this change.
+
+[tool.setuptools]
+py-modules = ["shopify_client", "shopify_mcp"]
+packages = ["tools", "validators", "_testing"]
+
 [tool.pytest.ini_options]
 # test_shopify_mcp.py is a live-store smoke runner, not an offline unit test.
 # It requires SHOPIFY_STORE_URL + SHOPIFY_ACCESS_TOKEN and would fail in CI
