@@ -9,8 +9,13 @@ their contents are driven by rules; direct membership writes have no effect.
 """
 
 from mcp.server.fastmcp import FastMCP
-from shopify_client import ShopifyClient, to_gid, from_gid
+from shopify_client import ShopifyClient, to_gid, from_gid, poll_job
 from tools._log import log_write
+
+# When a membership mutation returns `job.done=false`, poll the job node until
+# it flips or the budget is exhausted. Single-product writes usually come back
+# done-on-first-response; the budget matters for jobs that genuinely run async.
+_JOB_POLL_TIMEOUT_S = 10
 
 GET_COLLECTION_BY_HANDLE = """
 query GetCollectionByHandle($handle: String!) {
@@ -33,9 +38,9 @@ mutation UpdateCollection($input: CollectionInput!) {
 }
 """
 
-# Both membership mutations return an async `job` in 2024-07+. For
-# single-product writes the job typically completes immediately; we surface
-# the job id in the response but do not block on polling.
+# Both membership mutations return an async `job` in 2024-07+. If the initial
+# response has done=false, poll_job() blocks up to _JOB_POLL_TIMEOUT_S so the
+# caller sees a final done state instead of an indeterminate one.
 ADD_PRODUCTS_TO_COLLECTION = """
 mutation AddProductsToCollection($id: ID!, $productIds: [ID!]!) {
   collectionAddProductsV2(id: $id, productIds: $productIds) {
@@ -200,11 +205,45 @@ def register(server: FastMCP, client: ShopifyClient):
 
         job = payload.get("job") or {}
         job_id = job.get("id")
-        log_write(op["tool_name"], f"handle={handle} | product_id={product_id} | job={job_id or '(none)'}")
+        initial_done = bool(job.get("done"))
+
+        # Only poll when the mutation reports the job still running. When
+        # `done=true` is already in the first response (typical for single-
+        # product writes), the extra round-trip is pure overhead.
+        poll_result = None
+        if job_id and not initial_done:
+            poll_result = poll_job(client, job_id, timeout_s=_JOB_POLL_TIMEOUT_S)
+
+        final_done = (poll_result["done"] if poll_result else initial_done)
+        elapsed_s = (poll_result["elapsed_s"] if poll_result else 0.0)
+        poll_error = (poll_result["error"] if poll_result else None)
+        timed_out = bool(poll_result and poll_result["timed_out"])
+
+        log_write(
+            op["tool_name"],
+            f"handle={handle} | product_id={product_id} | "
+            f"job={job_id or '(none)'} done={final_done} "
+            f"elapsed={elapsed_s:.1f}s",
+        )
 
         body = f"Done. {op['past_verb']} product {op['preposition']} collection.\n{preview}"
         if job_id:
-            body += f"\n  Job        : {from_gid(job_id)} (done={job.get('done')})"
+            numeric = from_gid(job_id)
+            if poll_result is None:
+                body += f"\n  Job        : {numeric} (done=True)"
+            elif final_done:
+                body += f"\n  Job        : {numeric} (done=True after {elapsed_s:.1f}s)"
+            elif timed_out and poll_error:
+                body += (
+                    f"\n  Job        : {numeric} (poll failed: {poll_error} — "
+                    f"underlying write succeeded, check server-side for completion)"
+                )
+            elif timed_out:
+                body += (
+                    f"\n  Job        : {numeric} (done=False, still running "
+                    f"server-side after {_JOB_POLL_TIMEOUT_S}s timeout — "
+                    f"operation likely completed, verify via get_collection)"
+                )
         return body
 
     @server.tool()

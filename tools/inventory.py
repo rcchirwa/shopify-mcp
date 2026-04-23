@@ -7,6 +7,12 @@ update_inventory requires confirm=True.
 from mcp.server.fastmcp import FastMCP
 from shopify_client import ShopifyClient, to_gid, from_gid
 from tools._log import log_write
+from tools._filters import filter_variant_targets
+
+# GET_PRODUCT_INVENTORY fetches `variants(first: 50)` — Shopify returns up to
+# this many variants per request and silently truncates the rest. When a read
+# hits this cap we warn the operator so bulk writes don't miss variants.
+_VARIANTS_PAGE_CAP = 50
 
 # 2024-07+ replaced InventoryLevel.available with
 # `quantities(names: [...]) { name quantity }`. The `available` name is the
@@ -96,6 +102,22 @@ def _variant_label(v: dict) -> str:
     # Fall back to the numeric variant id when a variant has no title,
     # so the Failed list stays actionable instead of printing "None".
     return v.get("title") or f"variant {from_gid(v.get('id', ''))}"
+
+
+def _pair_prefix(variant: dict, level: dict, loc_gid: str) -> str:
+    """Render the leading identity segment of a (variant, location) pair line."""
+    loc = level.get("location") or {}
+    loc_name = loc.get("name") or f"id {from_gid(loc_gid or '')}"
+    return (
+        f"    • {variant['title']} @ {loc_name} — "
+        f"variant_id: {from_gid(variant['id'])}, "
+        f"location: {from_gid(loc_gid or '')}"
+    )
+
+
+def _current_display(current):
+    """Preserve 0 as a legit current qty; render missing as 'N/A'."""
+    return "N/A" if current is None else current
 
 
 def register(server: FastMCP, client: ShopifyClient):
@@ -207,27 +229,7 @@ def register(server: FastMCP, client: ShopifyClient):
         variants = (product.get("variants") or {}).get("nodes", []) or []
         title = product.get("title", "")
 
-        unresolved: list[str] = []
-        if variant_ids:
-            # Single pass over caller-supplied ids: preserves caller's order for
-            # both targets and unresolved, and dedupes both sides (a caller that
-            # passes the same id twice shouldn't see it mutated twice, nor
-            # reported twice as unresolved).
-            by_gid = {v["id"]: v for v in variants}
-            targets = []
-            seen_target_gids: set = set()
-            seen_unresolved: set = set()
-            for vid in variant_ids:
-                gid = to_gid("ProductVariant", vid)
-                if gid in by_gid:
-                    if gid not in seen_target_gids:
-                        targets.append(by_gid[gid])
-                        seen_target_gids.add(gid)
-                elif vid not in seen_unresolved:
-                    unresolved.append(vid)
-                    seen_unresolved.add(vid)
-        else:
-            targets = list(variants)
+        targets, unresolved = filter_variant_targets(variant_ids, variants)
 
         # Split into "needs change" and "unchanged" based on current tracked state.
         to_change = []
@@ -333,4 +335,196 @@ def register(server: FastMCP, client: ShopifyClient):
             f"  Unchanged ({len(unchanged)}):\n{unchanged_lines}"
             f"{failed_block}"
             f"{unresolved_block}"
+        )
+
+    @server.tool()
+    def update_variant_inventory_quantity(
+        product_id: str,
+        quantity: int,
+        location_id: str = None,
+        variant_ids: list[str] = None,
+        confirm: bool = False,
+    ) -> str:
+        """
+        Set inventory quantity on product variants at one or more locations.
+        When variant_ids is omitted, applies to every variant of the product.
+        When location_id is omitted, applies to every location each variant
+        has a level at. A single `quantity` is applied to every matched
+        (variant, location) pair via one inventorySetOnHandQuantities call.
+        Returns a preview unless confirm=True.
+        """
+        product_gid = to_gid("Product", product_id)
+        data = client.execute(GET_PRODUCT_INVENTORY, {"id": product_gid})
+        product = data.get("product")
+        if not product:
+            return f"No product found with id {product_id}."
+
+        variants = (product.get("variants") or {}).get("nodes", []) or []
+        title = product.get("title", "")
+        at_cap_warning = (
+            f"  WARNING: variant read hit the {_VARIANTS_PAGE_CAP}-variant page "
+            f"cap — additional variants (if any) are not covered by this call."
+        ) if len(variants) >= _VARIANTS_PAGE_CAP else ""
+
+        targets, unresolved_variants = filter_variant_targets(variant_ids, variants)
+
+        # Build (variant, level) pairs honoring the optional location filter.
+        # `location_resolved_for_any_variant` tracks whether location_id matched
+        # at least one level, so we can warn when the caller's filter misses
+        # every variant.
+        target_location_gid = to_gid("Location", location_id) if location_id else None
+        pairs = []  # list of (variant, level, current_qty, location_gid)
+        location_resolved_for_any_variant = False
+        for v in targets:
+            inv_item = v.get("inventoryItem") or {}
+            levels = (inv_item.get("inventoryLevels") or {}).get("nodes", []) or []
+            for lv in levels:
+                loc_gid = (lv.get("location") or {}).get("id")
+                if target_location_gid and loc_gid != target_location_gid:
+                    continue
+                if target_location_gid:
+                    location_resolved_for_any_variant = True
+                current_qty = _available_qty(lv)
+                pairs.append((v, lv, current_qty, loc_gid))
+
+        # Split pairs into three disjoint buckets:
+        #   to_write  — needs change AND has valid inventoryItem.id + location.id
+        #   skipped   — needs change BUT missing one of those ids (would poison
+        #               the whole setQuantities batch with a Shopify validation
+        #               error, so we drop them before the mutation and report
+        #               them separately)
+        #   unchanged — current qty already matches target
+        # `current_qty is None` is treated as "needs change" — the safer default
+        # than silently skipping, since the caller asked to set a target value.
+        to_write = []
+        skipped = []
+        unchanged = []
+        for pair in pairs:
+            if pair[2] == quantity:
+                unchanged.append(pair)
+                continue
+            v, _lv, _cur, loc_gid = pair
+            inv_item_gid = (v.get("inventoryItem") or {}).get("id")
+            if not inv_item_gid or not loc_gid:
+                skipped.append(pair)
+            else:
+                to_write.append(pair)
+
+        unresolved_location_block = ""
+        if target_location_gid and not location_resolved_for_any_variant and targets:
+            unresolved_location_block = (
+                f"\n  Unresolved location: {location_id} "
+                f"(not found on any of the targeted variants)"
+            )
+
+        write_lines = "\n".join(
+            f"{_pair_prefix(v, lv, loc)} — {_current_display(cur)} → {quantity}"
+            for v, lv, cur, loc in to_write
+        ) or "    (none)"
+        unchanged_lines = "\n".join(
+            f"{_pair_prefix(v, lv, loc)} — already at {quantity}"
+            for v, lv, cur, loc in unchanged
+        ) or "    (none)"
+        skipped_block = ""
+        if skipped:
+            skipped_lines = "\n".join(
+                f"{_pair_prefix(v, lv, loc)} — "
+                f"missing inventoryItem.id or location.id, not written"
+                for v, lv, _cur, loc in skipped
+            )
+            skipped_block = f"\n  Skipped ({len(skipped)}):\n{skipped_lines}"
+        unresolved_variants_block = (
+            "\n  Unresolved variant ids:\n" +
+            "\n".join(f"    • {vid}" for vid in unresolved_variants)
+        ) if unresolved_variants else ""
+        warning_block = f"\n{at_cap_warning}" if at_cap_warning else ""
+
+        target_loc_label = location_id or "all locations"
+        preview = (
+            f"PREVIEW — Variant inventory quantity update\n"
+            f"  Product     : {title} (id: {product_id})\n"
+            f"  Target qty  : {quantity}\n"
+            f"  Target loc  : {target_loc_label}\n"
+            f"  Would change ({len(to_write)}):\n{write_lines}\n"
+            f"  Unchanged ({len(unchanged)}):\n{unchanged_lines}"
+            f"{skipped_block}"
+            f"{unresolved_variants_block}"
+            f"{unresolved_location_block}"
+            f"{warning_block}"
+        )
+
+        if not confirm:
+            return preview + "\n\nTo apply, call again with confirm=True."
+
+        # Fast path: nothing writable. Happens when every pair is already at
+        # the target, or the only pairs needing change all had missing ids.
+        # Return before issuing a mutation with an empty setQuantities array
+        # (Shopify rejects that).
+        if not to_write:
+            log_write(
+                "update_variant_inventory_quantity",
+                f"product={product_id} qty={quantity} location={location_id or 'all'} "
+                f"written=0 unchanged={len(unchanged)} skipped={len(skipped)} "
+                f"unresolved_variants={len(unresolved_variants)}",
+            )
+            return (
+                f"CONFIRMED — Variant inventory quantity update (no-op)\n"
+                f"  Product     : {title} (id: {product_id})\n"
+                f"  Target qty  : {quantity}\n"
+                f"  Target loc  : {target_loc_label}\n"
+                f"  Changed     : (none — nothing writable at target)\n"
+                f"  Unchanged ({len(unchanged)}):\n{unchanged_lines}"
+                f"{skipped_block}"
+                f"{unresolved_variants_block}"
+                f"{unresolved_location_block}"
+                f"{warning_block}"
+            )
+
+        # One round-trip: inventorySetOnHandQuantities accepts an array of
+        # {inventoryItemId, locationId, quantity} entries, so the whole batch
+        # goes through a single mutation call.
+        set_quantities = [
+            {
+                "inventoryItemId": (v.get("inventoryItem") or {})["id"],
+                "locationId": loc_gid,
+                "quantity": quantity,
+            }
+            for v, _lv, _cur, loc_gid in to_write
+        ]
+
+        result = client.execute(SET_INVENTORY, {
+            "input": {
+                "reason": "correction",
+                "setQuantities": set_quantities,
+            }
+        })
+        user_errors = result.get("inventorySetOnHandQuantities", {}).get("userErrors", []) or []
+        if user_errors:
+            msgs = "; ".join(
+                f"{e.get('field')}: {e.get('message')}" for e in user_errors
+            )
+            return f"Error: {msgs}"
+
+        changed_lines = "\n".join(
+            f"{_pair_prefix(v, lv, loc)} — {_current_display(cur)} → {quantity}"
+            for v, lv, cur, loc in to_write
+        )
+
+        log_write(
+            "update_variant_inventory_quantity",
+            f"product={product_id} qty={quantity} location={location_id or 'all'} "
+            f"written={len(to_write)} unchanged={len(unchanged)} skipped={len(skipped)} "
+            f"unresolved_variants={len(unresolved_variants)}",
+        )
+        return (
+            f"CONFIRMED — Variant inventory quantity update\n"
+            f"  Product     : {title} (id: {product_id})\n"
+            f"  Target qty  : {quantity}\n"
+            f"  Target loc  : {target_loc_label}\n"
+            f"  Changed ({len(to_write)}):\n{changed_lines}\n"
+            f"  Unchanged ({len(unchanged)}):\n{unchanged_lines}"
+            f"{skipped_block}"
+            f"{unresolved_variants_block}"
+            f"{unresolved_location_block}"
+            f"{warning_block}"
         )

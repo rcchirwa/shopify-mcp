@@ -110,7 +110,7 @@ Edit `.env`:
 ```
 SHOPIFY_STORE_URL=your-store.myshopify.com
 SHOPIFY_ACCESS_TOKEN=shpat_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
-SHOPIFY_API_VERSION=2024-10
+SHOPIFY_API_VERSION=2026-01
 ```
 
 ### 5. Create the Shopify Custom App
@@ -229,7 +229,7 @@ shopify-mcp/
 
 ## API layer
 
-This project uses the **Shopify Admin GraphQL API** (version `2024-10`).
+This project uses the **Shopify Admin GraphQL API** (version `2026-01`).
 
 Each tool module defines its own GraphQL query or mutation strings at the top of the file. All queries are executed through a single `ShopifyClient.execute(query, variables)` method in `shopify_client.py`, which handles:
 

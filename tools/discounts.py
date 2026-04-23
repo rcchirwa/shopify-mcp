@@ -110,7 +110,13 @@ def register(server: FastMCP, client: ShopifyClient):
             msgs = "; ".join(f"{e['field']}: {e['message']}" for e in pr_errors)
             return f"Error creating price rule: {msgs}"
 
-        rule_id = rule_result.get("priceRuleCreate", {}).get("priceRule", {}).get("id")
+        # priceRule is None when the mutation shape-drifts or userErrors are
+        # empty but the server-side commit still failed — guard with `or {}`
+        # (same pattern as tools/inventory.py `.get("inventoryItem") or {}`).
+        rule_id = (
+            (rule_result.get("priceRuleCreate") or {})
+            .get("priceRule") or {}
+        ).get("id")
         if not rule_id:
             return "Error: price rule created but no ID returned."
 
