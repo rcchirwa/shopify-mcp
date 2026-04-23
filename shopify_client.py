@@ -25,6 +25,12 @@ query JobStatus($id: ID!) {
 }
 """
 
+# Default budget for poll_job(). Single-item Shopify jobs usually come back
+# done-on-first-response; this budget only matters for jobs that genuinely
+# run async. Exposed as a constant so tool modules can cite the same value
+# in user-visible timeout messages without re-declaring it.
+JOB_POLL_TIMEOUT_S = 10
+
 # Pin .env to the repo root (next to this file) so loading is independent of
 # the working directory the MCP process is launched with. Claude Desktop
 # launches subprocesses with CWD=/, which makes the default `load_dotenv()`
@@ -122,7 +128,7 @@ class ShopifyClient:
 def poll_job(
     client: "ShopifyClient",
     job_gid: str,
-    timeout_s: int = 10,
+    timeout_s: int = JOB_POLL_TIMEOUT_S,
     interval_s: float = 1.0,
 ) -> dict:
     """

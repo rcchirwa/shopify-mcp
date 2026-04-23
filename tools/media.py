@@ -21,6 +21,7 @@ import requests
 from mcp.server.fastmcp import FastMCP
 
 from shopify_client import (
+    JOB_POLL_TIMEOUT_S,
     ShopifyClient,
     extract_user_errors,
     from_gid,
@@ -38,10 +39,6 @@ _MAX_IMAGE_BYTES = 20 * 1024 * 1024
 # Budget for the download step. Large files over slow links blow through this —
 # acceptable for v1, caller can retry.
 _IMAGE_DOWNLOAD_TIMEOUT_S = 30
-
-# Budget for the reorder job poll (same as collections.py — single-item moves
-# complete inline, this is only for jobs that genuinely run async).
-_JOB_POLL_TIMEOUT_S = 10
 
 # Budget for waiting on newly-attached media to leave PROCESSING. Shopify
 # processing regularly exceeds any reasonable synchronous wait; we keep the
@@ -410,7 +407,7 @@ def _maybe_reorder_new_media(
     job_id = job.get("id")
     initial_done = bool(job.get("done"))
     if job_id and not initial_done:
-        pr = poll_job(client, job_id, timeout_s=_JOB_POLL_TIMEOUT_S)
+        pr = poll_job(client, job_id, timeout_s=JOB_POLL_TIMEOUT_S)
         return (
             f"\n  Reorder    : job {from_gid(job_id)} "
             f"done={pr['done']} elapsed={pr['elapsed_s']:.1f}s"
@@ -712,7 +709,7 @@ def register(server: FastMCP, client: ShopifyClient):
         initial_done = bool(job.get("done"))
         poll_result = None
         if job_id and not initial_done:
-            poll_result = poll_job(client, job_id, timeout_s=_JOB_POLL_TIMEOUT_S)
+            poll_result = poll_job(client, job_id, timeout_s=JOB_POLL_TIMEOUT_S)
 
         log_write(
             "reorder_product_media",
@@ -733,7 +730,7 @@ def register(server: FastMCP, client: ShopifyClient):
             elif poll_result["timed_out"]:
                 job_line = (
                     f"\n  Job        : {numeric} (still running after "
-                    f"{_JOB_POLL_TIMEOUT_S}s timeout — verify via "
+                    f"{JOB_POLL_TIMEOUT_S}s timeout — verify via "
                     f"list_product_media)"
                 )
         return f"CONFIRMED — Reorder product media\n{body}{job_line}"
