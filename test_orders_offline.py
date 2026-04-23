@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from tools import orders
 from tools.orders import GET_ORDERS, GET_ORDER_BY_ID
-from _testing.fake_client import CapturingServer, FakeClient
+from _testing import CapturingServer, FakeClient
 
 
 def _build(responses):

@@ -25,7 +25,7 @@ from tools.discounts import (
     CREATE_PRICE_RULE,
     CREATE_DISCOUNT_CODE,
 )
-from _testing.fake_client import CapturingServer, FakeClient
+from _testing import CapturingServer, FakeClient
 
 
 @pytest.fixture(autouse=True)

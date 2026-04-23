@@ -26,7 +26,7 @@ from tools.publications import (
     _split_current,
     _resolve_product_gid_and_meta,
 )
-from _testing.fake_client import CapturingServer, FakeClient
+from _testing import CapturingServer, FakeClient
 
 
 def _build(responses):
