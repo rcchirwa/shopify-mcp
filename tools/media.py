@@ -14,6 +14,7 @@ which are out of scope for v1.
 import ipaddress
 import mimetypes
 import socket
+import sys
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -67,6 +68,22 @@ query GetProductMedia($id: ID!) {
       }
       pageInfo { hasNextPage }
     }
+  }
+}
+"""
+
+# Targeted per-media read used by _poll_media_ready. Reading just the one node
+# beats refetching the full media list every tick on media-heavy products.
+# Every media type exposes `status` and `preview`, but only through the
+# per-type inline fragments — `node` itself returns the generic `Node`
+# interface, which has neither field.
+GET_MEDIA_STATUS = """
+query GetMediaStatus($id: ID!) {
+  node(id: $id) {
+    ... on MediaImage { id status preview { image { url } } }
+    ... on Video { id status preview { image { url } } }
+    ... on Model3d { id status preview { image { url } } }
+    ... on ExternalVideo { id status preview { image { url } } }
   }
 }
 """
@@ -132,10 +149,21 @@ mutation ProductDeleteMedia($productId: ID!, $mediaIds: [ID!]!) {
 # --- Helpers -----------------------------------------------------------------
 
 def _as_product_gid(pid: str) -> str:
-    """Normalize a product_id arg that may arrive as numeric string or full GID."""
+    """Normalize a product_id arg that may arrive as numeric string or full GID.
+
+    Returns `""` when the input is missing OR when it's a gid of the wrong
+    type (e.g. `gid://shopify/Order/1`) — defense in depth against a caller
+    accidentally targeting the wrong resource. Numeric ids are wrapped into
+    a Product gid; Product gids pass through unchanged.
+    """
     if not pid:
         return ""
-    return pid if pid.startswith("gid://") else to_gid("Product", pid)
+    if pid.startswith("gid://shopify/Product/"):
+        return pid
+    if pid.startswith("gid://"):
+        # Wrong gid type — refuse rather than letting it reach Shopify.
+        return ""
+    return to_gid("Product", pid)
 
 
 def _fmt_media_user_errors(errors, stage: str) -> str:
@@ -264,30 +292,39 @@ def _upload_bytes_to_target(target: dict, image_bytes: bytes) -> None:
 
 
 def _poll_media_ready(client: ShopifyClient, product_gid: str, media_id: str) -> dict:
-    """Poll product.media until the newly-attached media_id leaves PROCESSING,
-    or the budget is exhausted.
+    """Poll the media node until it leaves PROCESSING or the budget expires.
+
+    Reads just the target node via `node(id)` rather than the whole product
+    media connection — constant-time regardless of how many media the
+    product has. `product_gid` is retained in the signature for future
+    provenance/logging but is no longer needed for the query itself.
 
     Returns dict: { status: str, preview_url: str or None, timed_out: bool,
-                    position: int, elapsed_s: float }
+                    elapsed_s: float }
+
+    Transient read failures during the loop are logged to stderr but don't
+    abort — the whole point of polling is to keep trying until the budget is
+    up. Logging makes a pathological "loop until timeout with no signal"
+    observable instead of silent.
     """
+    del product_gid  # reserved for future provenance/logging
     start = time.monotonic()
-    last = {"status": "PROCESSING", "preview_url": None, "position": -1}
+    last = {"status": "PROCESSING", "preview_url": None}
     while True:
         try:
-            data = client.execute(GET_PRODUCT_MEDIA, {"id": product_gid})
-            nodes = (data.get("product") or {}).get("media", {}).get("nodes", []) or []
-            for idx, node in enumerate(nodes):
-                if node.get("id") == media_id:
-                    last["status"] = node.get("status") or "PROCESSING"
-                    last["preview_url"] = (
-                        ((node.get("preview") or {}).get("image") or {}).get("url")
-                    )
-                    last["position"] = idx + 1  # 1-indexed for caller display
-                    break
-        except Exception:
-            # Transient read failures during polling shouldn't abort — we want
-            # to keep trying until the budget is exhausted.
-            pass
+            data = client.execute(GET_MEDIA_STATUS, {"id": media_id})
+            node = data.get("node") or {}
+            if node:
+                last["status"] = node.get("status") or "PROCESSING"
+                last["preview_url"] = (
+                    ((node.get("preview") or {}).get("image") or {}).get("url")
+                )
+        except Exception as e:
+            print(
+                f"[media] poll warning for {media_id}: "
+                f"{type(e).__name__}: {e}",
+                file=sys.stderr,
+            )
 
         elapsed = time.monotonic() - start
         if last["status"] in ("READY", "FAILED"):
@@ -295,6 +332,112 @@ def _poll_media_ready(client: ShopifyClient, product_gid: str, media_id: str) ->
         if elapsed + _MEDIA_PROCESSING_POLL_INTERVAL_S > _MEDIA_PROCESSING_POLL_TIMEOUT_S:
             return {**last, "timed_out": True, "elapsed_s": elapsed}
         time.sleep(_MEDIA_PROCESSING_POLL_INTERVAL_S)
+
+
+def _stage_upload(client: ShopifyClient, filename: str, mime_type: str, size: int):
+    """Create a stagedUploadsCreate target for a subsequent PUT.
+
+    Returns (target_dict, None) on success, (None, error_str) on failure.
+    error_str is already prefixed with `Error at stage=stage_upload:` so the
+    caller can return it directly.
+    """
+    try:
+        staged = client.execute(STAGED_UPLOADS_CREATE, {
+            "input": [{
+                "resource": "IMAGE",
+                "filename": filename,
+                "mimeType": mime_type,
+                "httpMethod": "PUT",
+                "fileSize": str(size),
+            }],
+        })
+    except Exception as e:
+        return None, f"Error at stage=stage_upload: {e}"
+    staged_payload = staged.get("stagedUploadsCreate", {}) or {}
+    staged_errors = staged_payload.get("userErrors", []) or []
+    if staged_errors:
+        return None, _fmt_media_user_errors(staged_errors, "stage_upload")
+    targets = staged_payload.get("stagedTargets", []) or []
+    if not targets:
+        return None, "Error at stage=stage_upload: no stagedTargets returned."
+    return targets[0], None
+
+
+def _attach_media(client: ShopifyClient, product_gid: str, alt: str, resource_url: str):
+    """Attach a staged image as product media via productCreateMedia.
+
+    Returns (media_node, None) on success, (None, error_str) on failure.
+    error_str is already prefixed with `Error at stage=attach:`.
+    """
+    try:
+        attach = client.execute(PRODUCT_CREATE_MEDIA, {
+            "productId": product_gid,
+            "media": [{
+                "alt": alt or "",
+                "mediaContentType": "IMAGE",
+                "originalSource": resource_url,
+            }],
+        })
+    except Exception as e:
+        return None, f"Error at stage=attach: {e}"
+    attach_payload = attach.get("productCreateMedia", {}) or {}
+    attach_errors = attach_payload.get("mediaUserErrors", []) or []
+    if attach_errors:
+        return None, _fmt_media_user_errors(attach_errors, "attach")
+    attached = attach_payload.get("media") or []
+    if not attached:
+        return None, "Error at stage=attach: productCreateMedia returned no media."
+    return attached[0], None
+
+
+def _maybe_reorder_new_media(
+    client: ShopifyClient,
+    product_gid: str,
+    new_media_id: str,
+    position: int,
+    current_count: int,
+) -> str:
+    """Reorder a just-attached media to the caller-requested position.
+
+    Returns a note string (possibly empty) to append to the CONFIRMED
+    response. A reorder failure is reported as a `Reorder    : FAILED ...`
+    line rather than an outright error — the attach already succeeded and
+    we don't want to erase that.
+    """
+    if not position or position == current_count + 1:
+        return ""
+    try:
+        reorder = client.execute(PRODUCT_REORDER_MEDIA, {
+            "id": product_gid,
+            "moves": [{
+                "id": new_media_id,
+                "newPosition": str(position - 1),
+            }],
+        })
+    except Exception as e:
+        return f"\n  Reorder    : FAILED at stage=reorder ({e})"
+    rpayload = reorder.get("productReorderMedia", {}) or {}
+    rerrs = (rpayload.get("mediaUserErrors") or []) \
+            or (rpayload.get("userErrors") or [])
+    if rerrs:
+        return "\n  " + _fmt_media_user_errors(
+            rerrs, "reorder"
+        ).replace("Error at ", "")
+    job = rpayload.get("job") or {}
+    job_id = job.get("id")
+    initial_done = bool(job.get("done"))
+    if job_id and not initial_done:
+        pr = poll_job(client, job_id, timeout_s=_JOB_POLL_TIMEOUT_S)
+        return (
+            f"\n  Reorder    : job {from_gid(job_id)} "
+            f"done={pr['done']} elapsed={pr['elapsed_s']:.1f}s"
+            + (" (timed out)" if pr["timed_out"] else "")
+        )
+    return (
+        "\n  Reorder    : " +
+        (f"job {from_gid(job_id)} done=True"
+         if job_id else "done inline")
+    )
 
 
 def _render_media_list(product: dict) -> str:
@@ -378,6 +521,12 @@ def register(server: FastMCP, client: ShopifyClient):
 
         # Read current media for the preview + to compute the append-default
         # position. Only a single round-trip; acceptable for preview mode.
+        # Race note: `current_count` captured here is reused to compute the
+        # append-position default within this call. If a concurrent tool
+        # attaches media between this read and the attach below, the
+        # "append to end" default may land one-before-end instead. Not
+        # worth re-reading for this cost — preview accuracy isn't a
+        # correctness guarantee.
         try:
             current = client.execute(GET_PRODUCT_MEDIA, {"id": gid})
         except Exception as e:
@@ -392,11 +541,20 @@ def register(server: FastMCP, client: ShopifyClient):
             return "Error at stage=input: position must be 1-indexed (>= 1) or 0 to append."
 
         final_position = position if position else current_count + 1
-        pos_note = (
-            "append to end" if final_position == current_count + 1
-            else (f"position {final_position}"
-                  + (" (featured)" if final_position == 1 else ""))
-        )
+        if final_position == current_count + 1:
+            pos_note = "append to end"
+        else:
+            pos_note = f"position {final_position}"
+            if final_position == 1:
+                pos_note += " (featured)"
+            elif final_position > current_count + 1:
+                # Shopify silently clamps out-of-range positions to the end.
+                # Annotate so the operator isn't surprised when the preview
+                # says "position 100" but the image lands at position 4.
+                pos_note += (
+                    f" (exceeds current count — Shopify will clamp to "
+                    f"{current_count + 1})"
+                )
         preview = (
             f"PREVIEW — Upload product image\n"
             f"  Product ID : {product_id}\n"
@@ -416,26 +574,9 @@ def register(server: FastMCP, client: ShopifyClient):
             return f"Error at stage=download: {e}"
 
         # Stage 2: create the staged upload target.
-        try:
-            staged = client.execute(STAGED_UPLOADS_CREATE, {
-                "input": [{
-                    "resource": "IMAGE",
-                    "filename": filename,
-                    "mimeType": mime_type,
-                    "httpMethod": "PUT",
-                    "fileSize": str(len(image_bytes)),
-                }],
-            })
-        except Exception as e:
-            return f"Error at stage=stage_upload: {e}"
-        staged_payload = staged.get("stagedUploadsCreate", {}) or {}
-        staged_errors = staged_payload.get("userErrors", []) or []
-        if staged_errors:
-            return _fmt_media_user_errors(staged_errors, "stage_upload")
-        targets = staged_payload.get("stagedTargets", []) or []
-        if not targets:
-            return "Error at stage=stage_upload: no stagedTargets returned."
-        target = targets[0]
+        target, err = _stage_upload(client, filename, mime_type, len(image_bytes))
+        if err:
+            return err
 
         # Stage 3: PUT bytes with parameters as headers.
         try:
@@ -444,28 +585,10 @@ def register(server: FastMCP, client: ShopifyClient):
             return f"Error at stage=stage_upload: {e}"
 
         # Stage 4: attach via productCreateMedia.
-        resource_url = target.get("resourceUrl")
-        try:
-            attach = client.execute(PRODUCT_CREATE_MEDIA, {
-                "productId": gid,
-                "media": [{
-                    "alt": alt or "",
-                    "mediaContentType": "IMAGE",
-                    "originalSource": resource_url,
-                }],
-            })
-        except Exception as e:
-            return f"Error at stage=attach: {e}"
-        attach_payload = attach.get("productCreateMedia", {}) or {}
-        attach_errors = attach_payload.get("mediaUserErrors", []) or []
-        if attach_errors:
-            return _fmt_media_user_errors(attach_errors, "attach")
-        attached = attach_payload.get("media") or []
-        if not attached:
-            return "Error at stage=attach: productCreateMedia returned no media."
-        new_media = attached[0]
+        new_media, err = _attach_media(client, gid, alt, target.get("resourceUrl"))
+        if err:
+            return err
         new_media_id = new_media.get("id")
-        initial_status = new_media.get("status") or "PROCESSING"
         initial_preview = ((new_media.get("preview") or {}).get("image") or {}).get("url")
 
         # Stage 5: poll media processing (short budget; timeout is not fatal).
@@ -497,43 +620,9 @@ def register(server: FastMCP, client: ShopifyClient):
             )
 
         # Stage 6: reorder if the caller asked for a non-append position.
-        reorder_note = ""
-        if position and position != current_count + 1:
-            try:
-                reorder = client.execute(PRODUCT_REORDER_MEDIA, {
-                    "id": gid,
-                    "moves": [{
-                        "id": new_media_id,
-                        "newPosition": str(position - 1),
-                    }],
-                })
-            except Exception as e:
-                reorder_note = f"\n  Reorder    : FAILED at stage=reorder ({e})"
-            else:
-                rpayload = reorder.get("productReorderMedia", {}) or {}
-                rerrs = (rpayload.get("mediaUserErrors") or []) \
-                        or (rpayload.get("userErrors") or [])
-                if rerrs:
-                    reorder_note = "\n  " + _fmt_media_user_errors(
-                        rerrs, "reorder"
-                    ).replace("Error at ", "")
-                else:
-                    job = rpayload.get("job") or {}
-                    job_id = job.get("id")
-                    initial_done = bool(job.get("done"))
-                    if job_id and not initial_done:
-                        pr = poll_job(client, job_id, timeout_s=_JOB_POLL_TIMEOUT_S)
-                        reorder_note = (
-                            f"\n  Reorder    : job {from_gid(job_id)} "
-                            f"done={pr['done']} elapsed={pr['elapsed_s']:.1f}s"
-                            + (" (timed out)" if pr["timed_out"] else "")
-                        )
-                    else:
-                        reorder_note = (
-                            f"\n  Reorder    : " +
-                            (f"job {from_gid(job_id)} done=True"
-                             if job_id else "done inline")
-                        )
+        reorder_note = _maybe_reorder_new_media(
+            client, gid, new_media_id, position, current_count,
+        )
 
         log_write(
             "upload_product_image",
