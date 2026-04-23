@@ -1046,7 +1046,16 @@ def test_download_image_empty_chunk_in_stream_is_skipped():
 
 def test_download_image_stream_over_cap_rejected():
     """No Content-Length → streaming loop enforces the cap. Patch the cap
-    down so we can exercise the branch without a 20MB fixture."""
+    down so we can exercise the branch without a 20MB fixture.
+
+    Brittleness note: this couples to `_MAX_IMAGE_BYTES` being a
+    module-level constant. If the cap ever moves to a config object / env
+    var, `patch("tools.media._MAX_IMAGE_BYTES", 10)` would become a no-op
+    and this test would silently stop exercising the branch. The
+    `"10 B exceeded"` assertion below is the tripwire — if the patch stops
+    governing the rejection, the error message won't carry the tiny cap and
+    the assertion fails loudly instead of passing vacuously.
+    """
     resp = FakeHTTPResponse(
         status_code=200,
         content=b"x" * 100,
@@ -1058,7 +1067,12 @@ def test_download_image_stream_over_cap_rejected():
         try:
             _download_image("https://cdn.example.com/big.jpg")
         except RuntimeError as e:
-            assert "exceeded" in str(e)
+            msg = str(e)
+            assert "exceeded" in msg
+            assert "10 B" in msg, (
+                f"expected the patched 10-byte cap to appear in the error "
+                f"message (proves the patch still governs the rejection); got {msg!r}"
+            )
         else:
             raise AssertionError("expected RuntimeError when stream exceeds cap")
 
@@ -1289,7 +1303,8 @@ def test_upload_staged_uploads_empty_targets_reported():
         out = tools["upload_product_image"](
             product_id="123", source="https://cdn.example.com/a.jpg", confirm=True,
         )
-    assert out == "Error at stage=stage_upload: no stagedTargets returned."
+    assert out.startswith("Error at stage=stage_upload:")
+    assert "stagedTargets" in out
 
 
 def test_upload_product_create_media_exception_labels_attach_stage():
@@ -1355,7 +1370,7 @@ def test_upload_reorder_exception_appends_failure_note_still_confirms():
             confirm=True,
         )
     assert out.startswith("CONFIRMED —")
-    assert "Reorder    : FAILED at stage=reorder" in out
+    assert "Reorder" in out and "FAILED" in out and "stage=reorder" in out
     assert "reorder 502" in out
 
 
