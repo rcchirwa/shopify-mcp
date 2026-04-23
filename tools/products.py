@@ -7,27 +7,29 @@ Write operations require confirm=True and log to aon_mcp_log.txt.
 import re
 
 from mcp.server.fastmcp import FastMCP
+
 from shopify_client import (
     ShopifyClient,
     extract_user_errors,
     format_user_errors,
-    to_gid,
     from_gid,
+    to_gid,
     with_confirm_hint,
 )
-from validators.naming import format_validation_diff
-from validators.seo import SEO_TITLE_MAX_CHARS, SEO_DESCRIPTION_MAX_CHARS
-from tools._log import log_write
 from tools._filters import filter_variant_targets
+from tools._log import log_write
+from validators.naming import format_validation_diff
+from validators.seo import SEO_DESCRIPTION_MAX_CHARS, SEO_TITLE_MAX_CHARS
 
 
 def slugify_shopify_handle(title: str) -> str:
     """Slugify a product title the way Shopify does when auto-generating a handle."""
     s = title.lower()
-    s = re.sub(r'["\u201c\u201d\u2018\u2019\']', '', s)
-    s = re.sub(r'[^a-z0-9\-_]+', '-', s)
-    s = re.sub(r'-+', '-', s)
-    return s.strip('-')
+    s = re.sub(r'["\u201c\u201d\u2018\u2019\']', "", s)
+    s = re.sub(r"[^a-z0-9\-_]+", "-", s)
+    s = re.sub(r"-+", "-", s)
+    return s.strip("-")
+
 
 GET_PRODUCTS = """
 query GetProducts($first: Int!) {
@@ -260,7 +262,8 @@ def register(server: FastMCP, client: ShopifyClient):
         lines = []
         for p in products:
             variants = ", ".join(
-                f"{v['title']} (id:{from_gid(v['id'])})" for v in p.get("variants", {}).get("nodes", [])
+                f"{v['title']} (id:{from_gid(v['id'])})"
+                for v in p.get("variants", {}).get("nodes", [])
             )
             lines.append(
                 f"[{from_gid(p['id'])}] {p['title']} | handle: {p['handle']} | status: {p['status']}\n"
@@ -281,10 +284,10 @@ def register(server: FastMCP, client: ShopifyClient):
             return "Provide either product_id or handle."
 
         if not p:
-            return f"No product found."
+            return "No product found."
 
         variants = "\n".join(
-            f"  • {v['title']} — SKU: {v.get('sku','N/A')} — id: {from_gid(v['id'])}"
+            f"  • {v['title']} — SKU: {v.get('sku', 'N/A')} — id: {from_gid(v['id'])}"
             for v in p.get("variants", {}).get("nodes", [])
         )
         return (
@@ -318,17 +321,12 @@ def register(server: FastMCP, client: ShopifyClient):
         if change_handle:
             target_handle = slugified
             if target_handle == old_handle:
-                handle_block = (
-                    f"  Handle     : UNCHANGED (new slug matches existing: {old_handle})"
-                )
+                handle_block = f"  Handle     : UNCHANGED (new slug matches existing: {old_handle})"
             else:
-                handle_block = (
-                    f"  Old handle : {old_handle}\n"
-                    f"  New handle : {target_handle}"
-                )
+                handle_block = f"  Old handle : {old_handle}\n  New handle : {target_handle}"
         else:
             target_handle = old_handle
-            handle_block = f"  Handle     : UNCHANGED (preserved; change_handle=False)"
+            handle_block = "  Handle     : UNCHANGED (preserved; change_handle=False)"
 
         validation = format_validation_diff(old_title, new_title)
 
@@ -380,9 +378,10 @@ def register(server: FastMCP, client: ShopifyClient):
         if not confirm:
             return with_confirm_hint(preview)
 
-        result = client.execute(UPDATE_PRODUCT, {
-            "input": {"id": to_gid("Product", product_id), "descriptionHtml": new_description}
-        })
+        result = client.execute(
+            UPDATE_PRODUCT,
+            {"input": {"id": to_gid("Product", product_id), "descriptionHtml": new_description}},
+        )
         err = format_user_errors(result, "productUpdate")
         if err:
             return err
@@ -429,12 +428,12 @@ def register(server: FastMCP, client: ShopifyClient):
         old_title_line = old_title if old_title else "(empty)"
         old_desc_line = old_desc if old_desc else "(empty)"
         new_title_line = (
-            f"{new_seo_title} ({len(new_seo_title)} chars)"
-            if new_seo_title else "(unchanged)"
+            f"{new_seo_title} ({len(new_seo_title)} chars)" if new_seo_title else "(unchanged)"
         )
         new_desc_line = (
             f"{new_seo_description} ({len(new_seo_description)} chars)"
-            if new_seo_description else "(unchanged)"
+            if new_seo_description
+            else "(unchanged)"
         )
 
         body = (
@@ -456,32 +455,31 @@ def register(server: FastMCP, client: ShopifyClient):
         if new_seo_description:
             seo_input["description"] = new_seo_description
 
-        result = client.execute(UPDATE_PRODUCT, {
-            "input": {"id": to_gid("Product", product_id), "seo": seo_input}
-        })
+        result = client.execute(
+            UPDATE_PRODUCT, {"input": {"id": to_gid("Product", product_id), "seo": seo_input}}
+        )
         err = format_user_errors(result, "productUpdate")
         if err:
             return err
 
         changed = []
         if new_seo_title:
-            changed.append(
-                f"title: {len(old_title)} chars → {len(new_seo_title)} chars"
-            )
+            changed.append(f"title: {len(old_title)} chars → {len(new_seo_title)} chars")
         if new_seo_description:
-            changed.append(
-                f"description: {len(old_desc)} chars → {len(new_seo_description)} chars"
-            )
+            changed.append(f"description: {len(old_desc)} chars → {len(new_seo_description)} chars")
         log_write("update_product_seo", f"id={product_id} | " + " | ".join(changed))
         return f"CONFIRMED — Product SEO updated\n{body}"
 
     @server.tool()
     def get_products_by_collection(collection_handle: str) -> str:
         """List all products in a collection by collection handle."""
-        data = client.execute(GET_PRODUCTS_BY_COLLECTION, {
-            "handle": collection_handle,
-            "first": 250,
-        })
+        data = client.execute(
+            GET_PRODUCTS_BY_COLLECTION,
+            {
+                "handle": collection_handle,
+                "first": 250,
+            },
+        )
         col = data.get("collectionByHandle")
         if not col:
             return f"No collection found with handle '{collection_handle}'."
@@ -492,7 +490,9 @@ def register(server: FastMCP, client: ShopifyClient):
 
         lines = [f"Products in '{collection_handle}' ({len(products)} total):\n"]
         for p in products:
-            lines.append(f"  [{from_gid(p['id'])}] {p['title']} | handle: {p['handle']} | {p['status']}")
+            lines.append(
+                f"  [{from_gid(p['id'])}] {p['title']} | handle: {p['handle']} | {p['status']}"
+            )
         return "\n".join(lines)
 
     @server.tool()
@@ -526,10 +526,13 @@ def register(server: FastMCP, client: ShopifyClient):
         limit = max(1, min(limit, 250))
 
         if collection_handle:
-            data = client.execute(GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS, {
-                "handle": collection_handle,
-                "first": limit,
-            })
+            data = client.execute(
+                GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS,
+                {
+                    "handle": collection_handle,
+                    "first": limit,
+                },
+            )
             col = data.get("collectionByHandle")
             if not col:
                 return f"No collection found with handle '{collection_handle}'."
@@ -574,7 +577,7 @@ def register(server: FastMCP, client: ShopifyClient):
             return "No product found."
 
         variants = "\n".join(
-            f"  • {v['title']} — SKU: {v.get('sku','N/A')} — id: {from_gid(v['id'])}"
+            f"  • {v['title']} — SKU: {v.get('sku', 'N/A')} — id: {from_gid(v['id'])}"
             for v in p.get("variants", {}).get("nodes", [])
         )
         tags = ", ".join(p.get("tags") or []) or "(none)"
@@ -631,7 +634,7 @@ def register(server: FastMCP, client: ShopifyClient):
     @server.tool()
     def update_product_tags(
         product_id: str,
-        new_tags: list[str] = None,
+        new_tags: list[str] | None = None,
         mode: str = "replace",
         confirm: bool = False,
     ) -> str:
@@ -693,9 +696,7 @@ def register(server: FastMCP, client: ShopifyClient):
         if not confirm:
             return with_confirm_hint(f"PREVIEW — Product tags update\n{body}")
 
-        result = client.execute(UPDATE_PRODUCT_TAGS, {
-            "input": {"id": gid, "tags": target}
-        })
+        result = client.execute(UPDATE_PRODUCT_TAGS, {"input": {"id": gid, "tags": target}})
         err = format_user_errors(result, "productUpdate")
         if err:
             return err
@@ -717,9 +718,7 @@ def register(server: FastMCP, client: ShopifyClient):
         status for the preview. Returns a preview unless confirm=True.
         """
         if new_status not in PRODUCT_STATUS_VALUES:
-            return (
-                f"Error: new_status must be one of {', '.join(PRODUCT_STATUS_VALUES)}."
-            )
+            return f"Error: new_status must be one of {', '.join(PRODUCT_STATUS_VALUES)}."
 
         gid = to_gid("Product", product_id)
         data = client.execute(GET_PRODUCT_BY_ID, {"id": gid})
@@ -738,9 +737,7 @@ def register(server: FastMCP, client: ShopifyClient):
         if not confirm:
             return with_confirm_hint(f"PREVIEW — Product status update\n{body}")
 
-        result = client.execute(UPDATE_PRODUCT_STATUS, {
-            "input": {"id": gid, "status": new_status}
-        })
+        result = client.execute(UPDATE_PRODUCT_STATUS, {"input": {"id": gid, "status": new_status}})
         err = format_user_errors(result, "productUpdate")
         if err:
             return err
@@ -755,7 +752,7 @@ def register(server: FastMCP, client: ShopifyClient):
     def update_variant_inventory_policy(
         product_id: str,
         new_policy: str,
-        variant_ids: list[str] = None,
+        variant_ids: list[str] | None = None,
         confirm: bool = False,
     ) -> str:
         """
@@ -766,9 +763,7 @@ def register(server: FastMCP, client: ShopifyClient):
         and skipped. Returns a preview unless confirm=True.
         """
         if new_policy not in INVENTORY_POLICY_VALUES:
-            return (
-                f"Error: new_policy must be one of {', '.join(INVENTORY_POLICY_VALUES)}."
-            )
+            return f"Error: new_policy must be one of {', '.join(INVENTORY_POLICY_VALUES)}."
 
         product_gid = to_gid("Product", product_id)
         data = client.execute(GET_PRODUCT_VARIANTS_POLICY, {"id": product_gid})
@@ -779,21 +774,29 @@ def register(server: FastMCP, client: ShopifyClient):
         variants = (product.get("variants") or {}).get("nodes", []) or []
         title = product.get("title", "")
         at_cap_warning = (
-            f"  WARNING: variant read hit the {VARIANTS_PAGE_CAP}-variant page "
-            f"cap — additional variants (if any) are not covered by this call."
-        ) if len(variants) >= VARIANTS_PAGE_CAP else ""
+            (
+                f"  WARNING: variant read hit the {VARIANTS_PAGE_CAP}-variant page "
+                f"cap — additional variants (if any) are not covered by this call."
+            )
+            if len(variants) >= VARIANTS_PAGE_CAP
+            else ""
+        )
 
         targets, unresolved = filter_variant_targets(variant_ids, variants)
 
-        target_lines = "\n".join(
-            f"    • {v['title']} — id: {from_gid(v['id'])} — "
-            f"{v.get('inventoryPolicy', '(unknown)')} → {new_policy}"
-            for v in targets
-        ) or "    (none)"
+        target_lines = (
+            "\n".join(
+                f"    • {v['title']} — id: {from_gid(v['id'])} — "
+                f"{v.get('inventoryPolicy', '(unknown)')} → {new_policy}"
+                for v in targets
+            )
+            or "    (none)"
+        )
         unresolved_block = (
-            "\n  Unresolved variant ids:\n" +
-            "\n".join(f"    • {vid}" for vid in unresolved)
-        ) if unresolved else ""
+            ("\n  Unresolved variant ids:\n" + "\n".join(f"    • {vid}" for vid in unresolved))
+            if unresolved
+            else ""
+        )
 
         warning_block = f"\n{at_cap_warning}" if at_cap_warning else ""
         preview = (
@@ -823,13 +826,14 @@ def register(server: FastMCP, client: ShopifyClient):
             )
             return body
 
-        variants_input = [
-            {"id": v["id"], "inventoryPolicy": new_policy} for v in targets
-        ]
-        result = client.execute(UPDATE_PRODUCT_VARIANTS_POLICY, {
-            "productId": product_gid,
-            "variants": variants_input,
-        })
+        variants_input = [{"id": v["id"], "inventoryPolicy": new_policy} for v in targets]
+        result = client.execute(
+            UPDATE_PRODUCT_VARIANTS_POLICY,
+            {
+                "productId": product_gid,
+                "variants": variants_input,
+            },
+        )
         user_errors = extract_user_errors(result, "productVariantsBulkUpdate")
         if user_errors:
             # `field` is a dotted path list on productVariantsBulkUpdate (e.g.
@@ -839,14 +843,18 @@ def register(server: FastMCP, client: ShopifyClient):
             def _fmt(e):
                 field_path = ".".join(str(f) for f in (e.get("field") or []))
                 return f"{field_path or '(no field)'}: {e.get('message', '')}"
+
             msgs = "; ".join(_fmt(e) for e in user_errors)
             return f"Error: {msgs}"
 
         updated = (result.get("productVariantsBulkUpdate") or {}).get("productVariants") or []
-        updated_lines = "\n".join(
-            f"    • id: {from_gid(v['id'])} — inventoryPolicy: {v.get('inventoryPolicy')}"
-            for v in updated
-        ) or "    (none returned)"
+        updated_lines = (
+            "\n".join(
+                f"    • id: {from_gid(v['id'])} — inventoryPolicy: {v.get('inventoryPolicy')}"
+                for v in updated
+            )
+            or "    (none returned)"
+        )
 
         log_write(
             "update_variant_inventory_policy",

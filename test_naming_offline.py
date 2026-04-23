@@ -12,18 +12,18 @@ Usage:
 """
 
 from validators.naming import (
+    format_validation_diff,
+    format_validation_result,
     validate_title,
     validate_title_diff,
-    format_validation_result,
-    format_validation_diff,
 )
-
 
 COMPLIANT_AON = "All or Nothing | Spring Drop – Hoodie"
 COMPLIANT_VANISH = "Vanish | Q1 Drop – Tee"
 
 
 # ---- validate_title ----
+
 
 def test_validate_compliant_aon_title_returns_empty():
     assert validate_title(COMPLIANT_AON) == []
@@ -54,6 +54,7 @@ def test_validate_flags_quoted_words():
 
 
 # ---- validate_title_diff ----
+
 
 def test_diff_compliant_to_compliant_returns_empty_buckets():
     diff = validate_title_diff(COMPLIANT_AON, COMPLIANT_VANISH)
@@ -118,6 +119,7 @@ def test_diff_none_old_with_compliant_new_is_fully_clean():
 
 # ---- format_validation_result ----
 
+
 def test_format_result_compliant_renders_check():
     out = format_validation_result(COMPLIANT_AON)
     assert out.startswith("✓ Title is compliant:")
@@ -131,6 +133,7 @@ def test_format_result_non_compliant_lists_each_issue():
 
 
 # ---- format_validation_diff ----
+
 
 def test_format_diff_compliant_returns_check():
     out = format_validation_diff(COMPLIANT_AON, COMPLIANT_VANISH)

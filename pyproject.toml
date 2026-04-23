@@ -19,6 +19,9 @@ dependencies = [
 dev = [
     "pytest>=7,<9",
     "coverage>=7,<8",
+    "ruff>=0.6,<1",
+    "mypy>=1.11,<2",
+    "types-requests>=2.31,<3",
 ]
 
 [project.scripts]
@@ -43,3 +46,42 @@ addopts = "--ignore=test_shopify_mcp.py"
 # `_testing/` is intentionally excluded: it holds test doubles exercised
 # only through the offline suites, not production code worth gating on.
 source = ["shopify_client", "tools", "validators"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["aon_mcp_log.txt"]
+
+[tool.ruff.lint]
+# E/W: pycodestyle, F: pyflakes, I: isort, UP: pyupgrade,
+# B: bugbear, SIM: simplify, C4: comprehensions, RUF: ruff-specific.
+# E501 (long lines) is off: ruff format already wraps what it can, and
+# literal strings/URLs that exceed the limit shouldn't fail the build.
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "C4", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# B011: asserts are how pytest tests work.
+# RUF059: tests consistently unpack `tools, fc = _build(...)`; `fc` (FakeClient)
+# is inspected in some tests and not others, and keeping the destructure
+# uniform across the suite beats renaming to `_fc` per test.
+"test_*.py" = ["B011", "RUF059"]
+# validators/naming.py and its tests deal with en-dash separators by design,
+# so RUF001/RUF002 (ambiguous-unicode) flagging the en-dashes is noise.
+"validators/naming.py" = ["RUF001", "RUF002"]
+"test_naming_offline.py" = ["RUF001"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+# Permissive baseline. Parameter annotations across the repo are partial,
+# so disallow_untyped_defs would force a large annotation pass before the
+# gate is green. Tighten in a follow-up once signatures are filled in.
+python_version = "3.10"
+files = ["shopify_client.py", "shopify_mcp.py", "tools", "validators", "_testing"]
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true

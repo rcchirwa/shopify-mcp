@@ -11,12 +11,11 @@ Guarantees cleanup: any webhook created by this test is deleted before exit,
 even on failure partway through.
 """
 
-import sys
 import re
+import sys
 
-from shopify_client import ShopifyClient
 import tools.webhooks as webhooks_module
-
+from shopify_client import ShopifyClient
 
 TEST_TOPIC = "ORDERS_CREATE"
 TEST_ENDPOINT = "https://httpbin.org/post"
@@ -37,6 +36,7 @@ class _Capture:
         def deco(fn):
             self.tools[fn.__name__] = fn
             return fn
+
         return deco
 
 
@@ -78,9 +78,7 @@ def main():
     needs_cleanup = False
     try:
         print("Step 3 — register_webhook confirm=True")
-        created = register_webhook(
-            topic=TEST_TOPIC, endpoint_url=TEST_ENDPOINT, confirm=True
-        )
+        created = register_webhook(topic=TEST_TOPIC, endpoint_url=TEST_ENDPOINT, confirm=True)
         if not created.startswith("Done."):
             _fail("Step 3", f"expected 'Done.' prefix:\n{created}")
         sub_id = _extract_subscription_id(created)

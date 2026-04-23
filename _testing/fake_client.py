@@ -25,6 +25,7 @@ class CapturingServer:
         def deco(fn):
             self.tools[fn.__name__] = fn
             return fn
+
         return deco
 
 

@@ -15,15 +15,15 @@ import re
 
 import pytest
 
+from _testing import CapturingServer, FakeClient
 from tools import inventory
 from tools.inventory import (
-    GET_PRODUCT_INVENTORY,
     GET_INVENTORY_ITEM,
+    GET_PRODUCT_INVENTORY,
     SET_INVENTORY,
     UPDATE_INVENTORY_ITEM_TRACKED,
     _available_qty,
 )
-from _testing import CapturingServer, FakeClient
 
 
 @pytest.fixture(autouse=True)
@@ -40,6 +40,7 @@ def _build(responses):
 
 
 # ---- Fixture builders ----
+
 
 def _level(available, location_gid="gid://shopify/Location/9"):
     """Build an InventoryLevel node in the 2024-07+ `quantities` shape."""
@@ -74,15 +75,18 @@ def _variant(vid, title, sku, levels, tracked=True):
 
 # ---- _available_qty helper ----
 
+
 def test_available_qty_returns_quantity_for_available_name():
     assert _available_qty({"quantities": [{"name": "available", "quantity": 7}]}) == 7
 
 
 def test_available_qty_ignores_other_names():
-    level = {"quantities": [
-        {"name": "on_hand", "quantity": 10},
-        {"name": "available", "quantity": 3},
-    ]}
+    level = {
+        "quantities": [
+            {"name": "on_hand", "quantity": 10},
+            {"name": "available", "quantity": 3},
+        ]
+    }
     assert _available_qty(level) == 3
 
 
@@ -98,11 +102,18 @@ def test_available_qty_returns_none_on_empty_or_missing_quantities():
 
 # ---- get_inventory ----
 
+
 def test_get_inventory_renders_variant_lines_with_available_quantity():
-    tools, fc = _build([_product_with_variants([
-        _variant("100", "Small", "REEF-S", [_level(12)]),
-        _variant("101", "Medium", "REEF-M", [_level(0)]),
-    ])])
+    tools, fc = _build(
+        [
+            _product_with_variants(
+                [
+                    _variant("100", "Small", "REEF-S", [_level(12)]),
+                    _variant("101", "Medium", "REEF-M", [_level(0)]),
+                ]
+            )
+        ]
+    )
     out = tools["get_inventory"](product_id="555")
     assert "Luminous Reef Tee" in out
     assert "Small" in out and "available: 12" in out
@@ -115,21 +126,40 @@ def test_get_inventory_renders_variant_lines_with_available_quantity():
 
 
 def test_get_inventory_falls_back_to_na_when_no_levels():
-    tools, fc = _build([_product_with_variants([
-        _variant("200", "OneSize", "ONE", []),
-    ])])
+    tools, fc = _build(
+        [
+            _product_with_variants(
+                [
+                    _variant("200", "OneSize", "ONE", []),
+                ]
+            )
+        ]
+    )
     out = tools["get_inventory"](product_id="555")
     assert "available: N/A" in out
 
 
 def test_get_inventory_falls_back_to_na_when_available_name_missing():
     """Defensive: if Shopify returns a level without an 'available' entry, render N/A, not crash."""
-    tools, fc = _build([_product_with_variants([
-        _variant("300", "Weird", "W", [{
-            "quantities": [{"name": "on_hand", "quantity": 5}],
-            "location": {"id": "gid://shopify/Location/9", "name": "Main"},
-        }]),
-    ])])
+    tools, fc = _build(
+        [
+            _product_with_variants(
+                [
+                    _variant(
+                        "300",
+                        "Weird",
+                        "W",
+                        [
+                            {
+                                "quantities": [{"name": "on_hand", "quantity": 5}],
+                                "location": {"id": "gid://shopify/Location/9", "name": "Main"},
+                            }
+                        ],
+                    ),
+                ]
+            )
+        ]
+    )
     out = tools["get_inventory"](product_id="555")
     assert "available: N/A" in out
 
@@ -138,28 +168,36 @@ def test_get_inventory_handles_null_nested_fields_without_crashing():
     """Defensive: if Shopify returns null for variants / inventoryItem /
     inventoryLevels on a valid product (e.g. inventory tracking disabled),
     render gracefully instead of crashing on a None.get() chain."""
-    tools, fc = _build([{"product": {
-        "title": "Tracking Off",
-        "variants": {"nodes": [
-            # Variant with inventory tracking disabled → inventoryItem is null
+    tools, fc = _build(
+        [
             {
-                "id": "gid://shopify/ProductVariant/500",
-                "title": "NoTrack",
-                "sku": "NOTRACK",
-                "inventoryItem": None,
-            },
-            # Variant where inventoryLevels itself is null
-            {
-                "id": "gid://shopify/ProductVariant/501",
-                "title": "NullLevels",
-                "sku": "NULL",
-                "inventoryItem": {
-                    "id": "gid://shopify/InventoryItem/501",
-                    "inventoryLevels": None,
-                },
-            },
-        ]},
-    }}])
+                "product": {
+                    "title": "Tracking Off",
+                    "variants": {
+                        "nodes": [
+                            # Variant with inventory tracking disabled → inventoryItem is null
+                            {
+                                "id": "gid://shopify/ProductVariant/500",
+                                "title": "NoTrack",
+                                "sku": "NOTRACK",
+                                "inventoryItem": None,
+                            },
+                            # Variant where inventoryLevels itself is null
+                            {
+                                "id": "gid://shopify/ProductVariant/501",
+                                "title": "NullLevels",
+                                "sku": "NULL",
+                                "inventoryItem": {
+                                    "id": "gid://shopify/InventoryItem/501",
+                                    "inventoryLevels": None,
+                                },
+                            },
+                        ]
+                    },
+                }
+            }
+        ]
+    )
     out = tools["get_inventory"](product_id="555")
     assert "Tracking Off" in out
     assert "NoTrack" in out and "available: N/A" in out
@@ -174,13 +212,18 @@ def test_get_inventory_returns_not_found_on_missing_product():
 
 # ---- update_inventory ----
 
+
 def _inventory_item_response(available, location_id="9"):
     return {
         "inventoryItem": {
-            "inventoryLevels": {"nodes": [{
-                "quantities": [{"name": "available", "quantity": available}],
-                "location": {"id": f"gid://shopify/Location/{location_id}"},
-            }]}
+            "inventoryLevels": {
+                "nodes": [
+                    {
+                        "quantities": [{"name": "available", "quantity": available}],
+                        "location": {"id": f"gid://shopify/Location/{location_id}"},
+                    }
+                ]
+            }
         }
     }
 
@@ -188,7 +231,10 @@ def _inventory_item_response(available, location_id="9"):
 def test_update_inventory_preview_shows_current_qty_from_quantities_and_does_not_mutate():
     tools, fc = _build([_inventory_item_response(available=5)])
     out = tools["update_inventory"](
-        inventory_item_id="42", location_id="9", quantity=0, confirm=False,
+        inventory_item_id="42",
+        location_id="9",
+        quantity=0,
+        confirm=False,
     )
     assert "PREVIEW" in out
     assert "Current quantity  : 5" in out
@@ -203,21 +249,31 @@ def test_update_inventory_preview_unknown_when_no_matching_location():
     # Inventory item response has location 9 but we ask about location 77
     tools, fc = _build([_inventory_item_response(available=5, location_id="9")])
     out = tools["update_inventory"](
-        inventory_item_id="42", location_id="77", quantity=3, confirm=False,
+        inventory_item_id="42",
+        location_id="77",
+        quantity=3,
+        confirm=False,
     )
     assert "Current quantity  : unknown" in out
 
 
 def test_update_inventory_confirmed_calls_set_inventory_with_correct_gids():
-    tools, fc = _build([
-        _inventory_item_response(available=5),
-        {"inventorySetOnHandQuantities": {
-            "inventoryAdjustmentGroup": {"createdAt": "2026-04-22T00:00:00Z"},
-            "userErrors": [],
-        }},
-    ])
+    tools, fc = _build(
+        [
+            _inventory_item_response(available=5),
+            {
+                "inventorySetOnHandQuantities": {
+                    "inventoryAdjustmentGroup": {"createdAt": "2026-04-22T00:00:00Z"},
+                    "userErrors": [],
+                }
+            },
+        ]
+    )
     out = tools["update_inventory"](
-        inventory_item_id="42", location_id="9", quantity=0, confirm=True,
+        inventory_item_id="42",
+        location_id="9",
+        quantity=0,
+        confirm=True,
     )
     assert out.startswith("Done.")
     # Second call was the mutation
@@ -226,11 +282,13 @@ def test_update_inventory_confirmed_calls_set_inventory_with_correct_gids():
     assert mutation_vars == {
         "input": {
             "reason": "correction",
-            "setQuantities": [{
-                "inventoryItemId": "gid://shopify/InventoryItem/42",
-                "locationId": "gid://shopify/Location/9",
-                "quantity": 0,
-            }],
+            "setQuantities": [
+                {
+                    "inventoryItemId": "gid://shopify/InventoryItem/42",
+                    "locationId": "gid://shopify/Location/9",
+                    "quantity": 0,
+                }
+            ],
         }
     }
 
@@ -241,7 +299,10 @@ def test_update_inventory_handles_missing_inventory_item_without_crashing():
     'unknown' rather than crash on a None.get() chain."""
     tools, fc = _build([{"inventoryItem": None}])
     out = tools["update_inventory"](
-        inventory_item_id="999999", location_id="9", quantity=5, confirm=False,
+        inventory_item_id="999999",
+        location_id="9",
+        quantity=5,
+        confirm=False,
     )
     assert "PREVIEW" in out
     assert "Current quantity  : unknown" in out
@@ -249,18 +310,27 @@ def test_update_inventory_handles_missing_inventory_item_without_crashing():
 
 
 def test_update_inventory_surfaces_user_errors_as_error_string():
-    tools, fc = _build([
-        _inventory_item_response(available=5),
-        {"inventorySetOnHandQuantities": {
-            "inventoryAdjustmentGroup": None,
-            "userErrors": [
-                {"field": ["input", "setQuantities", "0", "quantity"],
-                 "message": "Quantity must be non-negative"},
-            ],
-        }},
-    ])
+    tools, fc = _build(
+        [
+            _inventory_item_response(available=5),
+            {
+                "inventorySetOnHandQuantities": {
+                    "inventoryAdjustmentGroup": None,
+                    "userErrors": [
+                        {
+                            "field": ["input", "setQuantities", "0", "quantity"],
+                            "message": "Quantity must be non-negative",
+                        },
+                    ],
+                }
+            },
+        ]
+    )
     out = tools["update_inventory"](
-        inventory_item_id="42", location_id="9", quantity=-1, confirm=True,
+        inventory_item_id="42",
+        location_id="9",
+        quantity=-1,
+        confirm=True,
     )
     assert out.startswith("Error:")
     assert "Quantity must be non-negative" in out
@@ -268,24 +338,31 @@ def test_update_inventory_surfaces_user_errors_as_error_string():
 
 # ---- update_variant_inventory_tracking ----
 
+
 def _tracked_update_ok(inv_item_gid, tracked):
-    return {"inventoryItemUpdate": {
-        "inventoryItem": {"id": inv_item_gid, "tracked": tracked},
-        "userErrors": [],
-    }}
+    return {
+        "inventoryItemUpdate": {
+            "inventoryItem": {"id": inv_item_gid, "tracked": tracked},
+            "userErrors": [],
+        }
+    }
 
 
 def _tracked_update_err(field, message):
-    return {"inventoryItemUpdate": {
-        "inventoryItem": None,
-        "userErrors": [{"field": field, "message": message}],
-    }}
+    return {
+        "inventoryItemUpdate": {
+            "inventoryItem": None,
+            "userErrors": [{"field": field, "message": message}],
+        }
+    }
 
 
 def test_tracking_product_not_found():
     tools, fc = _build([{"product": None}])
     out = tools["update_variant_inventory_tracking"](
-        product_id="999", tracked=True, confirm=True,
+        product_id="999",
+        tracked=True,
+        confirm=True,
     )
     assert out == "No product found with id 999."
     assert len(fc.calls) == 1, "no mutation should run on missing product"
@@ -300,7 +377,9 @@ def test_tracking_preview_lists_all_variants_when_ids_omitted():
     ]
     tools, fc = _build([_product_with_variants(variants)])
     out = tools["update_variant_inventory_tracking"](
-        product_id="555", tracked=True, confirm=False,
+        product_id="555",
+        tracked=True,
+        confirm=False,
     )
     assert "PREVIEW" in out
     assert "Target  : tracked=True" in out
@@ -317,13 +396,17 @@ def test_tracking_confirm_issues_one_mutation_per_changed_variant():
         _variant("100", "S", "REEF-S", [], tracked=False),
         _variant("101", "M", "REEF-M", [], tracked=False),
     ]
-    tools, fc = _build([
-        _product_with_variants(variants),
-        _tracked_update_ok("gid://shopify/InventoryItem/100", True),
-        _tracked_update_ok("gid://shopify/InventoryItem/101", True),
-    ])
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            _tracked_update_ok("gid://shopify/InventoryItem/100", True),
+            _tracked_update_ok("gid://shopify/InventoryItem/101", True),
+        ]
+    )
     out = tools["update_variant_inventory_tracking"](
-        product_id="555", tracked=True, confirm=True,
+        product_id="555",
+        tracked=True,
+        confirm=True,
     )
     assert out.startswith("CONFIRMED")
     assert "Changed (2):" in out
@@ -343,15 +426,19 @@ def test_tracking_unchanged_variants_get_no_mutation():
     """Variants already at the target state are reported as unchanged; no
     mutation is issued for them. Saves API calls on repeat runs."""
     variants = [
-        _variant("100", "S", "REEF-S", [], tracked=True),   # already at target
+        _variant("100", "S", "REEF-S", [], tracked=True),  # already at target
         _variant("101", "M", "REEF-M", [], tracked=False),  # needs change
     ]
-    tools, fc = _build([
-        _product_with_variants(variants),
-        _tracked_update_ok("gid://shopify/InventoryItem/101", True),
-    ])
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            _tracked_update_ok("gid://shopify/InventoryItem/101", True),
+        ]
+    )
     out = tools["update_variant_inventory_tracking"](
-        product_id="555", tracked=True, confirm=True,
+        product_id="555",
+        tracked=True,
+        confirm=True,
     )
     assert "Changed (1):" in out
     assert "Unchanged (1):" in out
@@ -367,7 +454,9 @@ def test_tracking_all_already_at_target_issues_no_mutations():
     ]
     tools, fc = _build([_product_with_variants(variants)])
     out = tools["update_variant_inventory_tracking"](
-        product_id="555", tracked=True, confirm=True,
+        product_id="555",
+        tracked=True,
+        confirm=True,
     )
     assert out.startswith("CONFIRMED")
     assert "Changed (0):" in out
@@ -384,10 +473,12 @@ def test_tracking_variant_ids_filter_applies():
         _variant("101", "M", "REEF-M", [], tracked=False),
         _variant("102", "L", "REEF-L", [], tracked=False),
     ]
-    tools, fc = _build([
-        _product_with_variants(variants),
-        _tracked_update_ok("gid://shopify/InventoryItem/100", True),
-    ])
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            _tracked_update_ok("gid://shopify/InventoryItem/100", True),
+        ]
+    )
     out = tools["update_variant_inventory_tracking"](
         product_id="555",
         tracked=True,
@@ -409,13 +500,17 @@ def test_tracking_partial_failure_reports_per_variant():
         _variant("100", "S", "REEF-S", [], tracked=False),
         _variant("101", "M", "REEF-M", [], tracked=False),
     ]
-    tools, fc = _build([
-        _product_with_variants(variants),
-        _tracked_update_ok("gid://shopify/InventoryItem/100", True),
-        _tracked_update_err("inventoryItemId", "locked by another process"),
-    ])
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            _tracked_update_ok("gid://shopify/InventoryItem/100", True),
+            _tracked_update_err("inventoryItemId", "locked by another process"),
+        ]
+    )
     out = tools["update_variant_inventory_tracking"](
-        product_id="555", tracked=True, confirm=True,
+        product_id="555",
+        tracked=True,
+        confirm=True,
     )
     assert out.startswith("CONFIRMED")
     assert "Changed (1):" in out
@@ -428,7 +523,9 @@ def test_tracking_preview_only_issues_exactly_one_execute_call():
     variants = [_variant("100", "S", "REEF-S", [], tracked=False)]
     tools, fc = _build([_product_with_variants(variants)])
     tools["update_variant_inventory_tracking"](
-        product_id="555", tracked=True, confirm=False,
+        product_id="555",
+        tracked=True,
+        confirm=False,
     )
     assert len(fc.calls) == 1
     assert fc.calls[0][0] == GET_PRODUCT_INVENTORY
@@ -438,7 +535,9 @@ def test_tracking_product_with_no_variants_issues_no_mutations():
     """Product exists but has zero variants — confirm is a clean no-op."""
     tools, fc = _build([_product_with_variants([])])
     out = tools["update_variant_inventory_tracking"](
-        product_id="555", tracked=True, confirm=True,
+        product_id="555",
+        tracked=True,
+        confirm=True,
     )
     assert out.startswith("CONFIRMED")
     assert "Changed (0):" in out
@@ -460,6 +559,7 @@ def test_tracking_transport_error_mid_loop_does_not_abort_batch():
     class FlakyFakeClient:
         def __init__(self):
             self.calls = []
+
         def execute(self, query, variables=None):
             self.calls.append((query, variables))
             if len(self.calls) == 1:
@@ -474,7 +574,9 @@ def test_tracking_transport_error_mid_loop_does_not_abort_batch():
     fc = FlakyFakeClient()
     inventory.register(srv, fc)
     out = srv.tools["update_variant_inventory_tracking"](
-        product_id="555", tracked=True, confirm=True,
+        product_id="555",
+        tracked=True,
+        confirm=True,
     )
     assert out.startswith("CONFIRMED"), out
     assert "Changed (2):" in out
@@ -488,10 +590,12 @@ def test_tracking_unresolved_variant_ids_are_deduped():
     """A caller that supplies the same unknown id twice should see it reported
     once, not twice. Mirrors the dedup behavior in update_variant_inventory_policy."""
     variants = [_variant("100", "S", "REEF-S", [], tracked=False)]
-    tools, fc = _build([
-        _product_with_variants(variants),
-        _tracked_update_ok("gid://shopify/InventoryItem/100", True),
-    ])
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            _tracked_update_ok("gid://shopify/InventoryItem/100", True),
+        ]
+    )
     out = tools["update_variant_inventory_tracking"](
         product_id="555",
         tracked=True,
@@ -507,10 +611,12 @@ def test_tracking_unresolved_variant_ids_are_deduped():
 def test_tracking_duplicate_known_variant_ids_are_deduped():
     """A caller that supplies the same known id twice must not mutate it twice."""
     variants = [_variant("100", "S", "REEF-S", [], tracked=False)]
-    tools, fc = _build([
-        _product_with_variants(variants),
-        _tracked_update_ok("gid://shopify/InventoryItem/100", True),
-    ])
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            _tracked_update_ok("gid://shopify/InventoryItem/100", True),
+        ]
+    )
     tools["update_variant_inventory_tracking"](
         product_id="555",
         tracked=True,
@@ -530,12 +636,14 @@ def test_tracking_variant_ids_order_is_preserved():
         _variant("101", "M", "REEF-M", [], tracked=False),
         _variant("102", "L", "REEF-L", [], tracked=False),
     ]
-    tools, fc = _build([
-        _product_with_variants(variants),
-        _tracked_update_ok("gid://shopify/InventoryItem/102", True),
-        _tracked_update_ok("gid://shopify/InventoryItem/100", True),
-        _tracked_update_ok("gid://shopify/InventoryItem/101", True),
-    ])
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            _tracked_update_ok("gid://shopify/InventoryItem/102", True),
+            _tracked_update_ok("gid://shopify/InventoryItem/100", True),
+            _tracked_update_ok("gid://shopify/InventoryItem/101", True),
+        ]
+    )
     tools["update_variant_inventory_tracking"](
         product_id="555",
         tracked=True,
@@ -564,12 +672,16 @@ def test_tracking_variant_missing_inventory_item_id_is_reported_failed():
         "inventoryItem": {"tracked": False, "inventoryLevels": {"nodes": []}},
     }
     good_variant = _variant("101", "M", "REEF-M", [], tracked=False)
-    tools, fc = _build([
-        _product_with_variants([bad_variant, good_variant]),
-        _tracked_update_ok("gid://shopify/InventoryItem/101", True),
-    ])
+    tools, fc = _build(
+        [
+            _product_with_variants([bad_variant, good_variant]),
+            _tracked_update_ok("gid://shopify/InventoryItem/101", True),
+        ]
+    )
     out = tools["update_variant_inventory_tracking"](
-        product_id="555", tracked=True, confirm=True,
+        product_id="555",
+        tracked=True,
+        confirm=True,
     )
     assert out.startswith("CONFIRMED")
     assert "Changed (1):" in out
@@ -599,7 +711,9 @@ def test_tracking_preview_renders_when_inventory_item_id_is_null():
     }
     tools, fc = _build([_product_with_variants([variant_with_null_inv_id])])
     out = tools["update_variant_inventory_tracking"](
-        product_id="555", tracked=True, confirm=False,
+        product_id="555",
+        tracked=True,
+        confirm=False,
     )
     assert "PREVIEW" in out
     assert "NullId" in out
@@ -613,24 +727,31 @@ def test_tracking_preview_renders_when_inventory_item_id_is_null():
 
 # ---- update_variant_inventory_quantity ----
 
+
 def _set_inventory_ok():
-    return {"inventorySetOnHandQuantities": {
-        "inventoryAdjustmentGroup": {"createdAt": "2026-04-22T00:00:00Z"},
-        "userErrors": [],
-    }}
+    return {
+        "inventorySetOnHandQuantities": {
+            "inventoryAdjustmentGroup": {"createdAt": "2026-04-22T00:00:00Z"},
+            "userErrors": [],
+        }
+    }
 
 
 def _set_inventory_err(field, message):
-    return {"inventorySetOnHandQuantities": {
-        "inventoryAdjustmentGroup": None,
-        "userErrors": [{"field": field, "message": message}],
-    }}
+    return {
+        "inventorySetOnHandQuantities": {
+            "inventoryAdjustmentGroup": None,
+            "userErrors": [{"field": field, "message": message}],
+        }
+    }
 
 
 def test_quantity_product_not_found():
     tools, fc = _build([{"product": None}])
     out = tools["update_variant_inventory_quantity"](
-        product_id="999", quantity=0, confirm=True,
+        product_id="999",
+        quantity=0,
+        confirm=True,
     )
     assert out == "No product found with id 999."
     assert len(fc.calls) == 1
@@ -643,7 +764,9 @@ def test_quantity_preview_lists_all_variant_location_pairs_when_filters_omitted(
     ]
     tools, fc = _build([_product_with_variants(variants)])
     out = tools["update_variant_inventory_quantity"](
-        product_id="555", quantity=0, confirm=False,
+        product_id="555",
+        quantity=0,
+        confirm=False,
     )
     assert "PREVIEW" in out
     assert "Target qty  : 0" in out
@@ -659,12 +782,16 @@ def test_quantity_confirm_issues_single_batch_set_inventory_call():
         _variant("100", "S", "REEF-S", [_level(5, "gid://shopify/Location/9")]),
         _variant("101", "M", "REEF-M", [_level(3, "gid://shopify/Location/9")]),
     ]
-    tools, fc = _build([
-        _product_with_variants(variants),
-        _set_inventory_ok(),
-    ])
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            _set_inventory_ok(),
+        ]
+    )
     out = tools["update_variant_inventory_quantity"](
-        product_id="555", quantity=0, confirm=True,
+        product_id="555",
+        quantity=0,
+        confirm=True,
     )
     assert out.startswith("CONFIRMED")
     assert "Changed (2):" in out
@@ -690,12 +817,16 @@ def test_quantity_unchanged_pairs_skip_mutation():
         _variant("100", "S", "REEF-S", [_level(0, "gid://shopify/Location/9")]),  # already 0
         _variant("101", "M", "REEF-M", [_level(3, "gid://shopify/Location/9")]),
     ]
-    tools, fc = _build([
-        _product_with_variants(variants),
-        _set_inventory_ok(),
-    ])
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            _set_inventory_ok(),
+        ]
+    )
     out = tools["update_variant_inventory_quantity"](
-        product_id="555", quantity=0, confirm=True,
+        product_id="555",
+        quantity=0,
+        confirm=True,
     )
     assert "Changed (1):" in out
     assert "Unchanged (1):" in out
@@ -713,7 +844,9 @@ def test_quantity_all_already_at_target_issues_no_mutation():
     ]
     tools, fc = _build([_product_with_variants(variants)])
     out = tools["update_variant_inventory_quantity"](
-        product_id="555", quantity=0, confirm=True,
+        product_id="555",
+        quantity=0,
+        confirm=True,
     )
     assert "no-op" in out
     assert "Changed     : (none" in out
@@ -723,17 +856,27 @@ def test_quantity_all_already_at_target_issues_no_mutation():
 def test_quantity_location_filter_narrows_to_one_location():
     """With location_id set, only levels at that location are considered."""
     variants = [
-        _variant("100", "S", "REEF-S", [
-            _level(5, "gid://shopify/Location/9"),
-            _level(2, "gid://shopify/Location/77"),
-        ]),
+        _variant(
+            "100",
+            "S",
+            "REEF-S",
+            [
+                _level(5, "gid://shopify/Location/9"),
+                _level(2, "gid://shopify/Location/77"),
+            ],
+        ),
     ]
-    tools, fc = _build([
-        _product_with_variants(variants),
-        _set_inventory_ok(),
-    ])
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            _set_inventory_ok(),
+        ]
+    )
     tools["update_variant_inventory_quantity"](
-        product_id="555", quantity=0, location_id="9", confirm=True,
+        product_id="555",
+        quantity=0,
+        location_id="9",
+        confirm=True,
     )
     set_qtys = fc.calls[1][1]["input"]["setQuantities"]
     assert len(set_qtys) == 1
@@ -748,7 +891,10 @@ def test_quantity_unresolved_location_block_when_filter_matches_nothing():
     ]
     tools, fc = _build([_product_with_variants(variants)])
     out = tools["update_variant_inventory_quantity"](
-        product_id="555", quantity=0, location_id="9999", confirm=False,
+        product_id="555",
+        quantity=0,
+        location_id="9999",
+        confirm=False,
     )
     assert "Unresolved location: 9999" in out
     assert "Would change (0):" in out
@@ -759,12 +905,17 @@ def test_quantity_variant_ids_filter_applies_and_unresolved_ids_surface():
         _variant("100", "S", "REEF-S", [_level(5, "gid://shopify/Location/9")]),
         _variant("101", "M", "REEF-M", [_level(3, "gid://shopify/Location/9")]),
     ]
-    tools, fc = _build([
-        _product_with_variants(variants),
-        _set_inventory_ok(),
-    ])
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            _set_inventory_ok(),
+        ]
+    )
     out = tools["update_variant_inventory_quantity"](
-        product_id="555", quantity=0, variant_ids=["100", "999"], confirm=True,
+        product_id="555",
+        quantity=0,
+        variant_ids=["100", "999"],
+        confirm=True,
     )
     assert "Changed (1):" in out
     assert "Unresolved variant ids:" in out
@@ -778,15 +929,19 @@ def test_quantity_surfaces_user_errors_as_error_string():
     variants = [
         _variant("100", "S", "REEF-S", [_level(5, "gid://shopify/Location/9")]),
     ]
-    tools, fc = _build([
-        _product_with_variants(variants),
-        _set_inventory_err(
-            ["input", "setQuantities", "0", "quantity"],
-            "Quantity must be non-negative",
-        ),
-    ])
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            _set_inventory_err(
+                ["input", "setQuantities", "0", "quantity"],
+                "Quantity must be non-negative",
+            ),
+        ]
+    )
     out = tools["update_variant_inventory_quantity"](
-        product_id="555", quantity=-1, confirm=True,
+        product_id="555",
+        quantity=-1,
+        confirm=True,
     )
     assert out.startswith("Error:")
     assert "Quantity must be non-negative" in out
@@ -799,12 +954,16 @@ def test_quantity_variant_with_no_levels_contributes_no_pair():
         _variant("100", "S", "REEF-S", []),  # no levels at all
         _variant("101", "M", "REEF-M", [_level(3, "gid://shopify/Location/9")]),
     ]
-    tools, fc = _build([
-        _product_with_variants(variants),
-        _set_inventory_ok(),
-    ])
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            _set_inventory_ok(),
+        ]
+    )
     out = tools["update_variant_inventory_quantity"](
-        product_id="555", quantity=0, confirm=True,
+        product_id="555",
+        quantity=0,
+        confirm=True,
     )
     # Only variant 101 contributes a pair.
     assert "Changed (1):" in out
@@ -816,17 +975,26 @@ def test_quantity_variant_with_no_levels_contributes_no_pair():
 def test_quantity_multi_location_default_touches_every_variant_location_pair():
     """location_id omitted + variant with 2 levels → both pairs in the batch."""
     variants = [
-        _variant("100", "S", "REEF-S", [
-            _level(5, "gid://shopify/Location/9"),
-            _level(2, "gid://shopify/Location/77"),
-        ]),
+        _variant(
+            "100",
+            "S",
+            "REEF-S",
+            [
+                _level(5, "gid://shopify/Location/9"),
+                _level(2, "gid://shopify/Location/77"),
+            ],
+        ),
     ]
-    tools, fc = _build([
-        _product_with_variants(variants),
-        _set_inventory_ok(),
-    ])
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            _set_inventory_ok(),
+        ]
+    )
     tools["update_variant_inventory_quantity"](
-        product_id="555", quantity=0, confirm=True,
+        product_id="555",
+        quantity=0,
+        confirm=True,
     )
     set_qtys = fc.calls[1][1]["input"]["setQuantities"]
     assert len(set_qtys) == 2
@@ -842,7 +1010,9 @@ def test_quantity_preview_only_issues_the_read():
     ]
     tools, fc = _build([_product_with_variants(variants)])
     tools["update_variant_inventory_quantity"](
-        product_id="555", quantity=0, confirm=False,
+        product_id="555",
+        quantity=0,
+        confirm=False,
     )
     assert len(fc.calls) == 1
     assert fc.calls[0][0] == GET_PRODUCT_INVENTORY
@@ -863,12 +1033,16 @@ def test_quantity_variant_with_missing_inventory_item_id_is_skipped_not_batched(
             "inventoryItem": None,
         },
     ]
-    tools, fc = _build([
-        _product_with_variants(variants),
-        _set_inventory_ok(),
-    ])
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            _set_inventory_ok(),
+        ]
+    )
     out = tools["update_variant_inventory_quantity"](
-        product_id="555", quantity=0, confirm=True,
+        product_id="555",
+        quantity=0,
+        confirm=True,
     )
     # Accounting must be accurate: Changed reflects only written pairs.
     assert "Changed (1):" in out
@@ -895,19 +1069,27 @@ def test_quantity_skipped_pair_when_location_id_is_null_on_level():
             "inventoryItem": {
                 "id": "gid://shopify/InventoryItem/101",
                 "tracked": True,
-                "inventoryLevels": {"nodes": [{
-                    "quantities": [{"name": "available", "quantity": 3}],
-                    "location": None,
-                }]},
+                "inventoryLevels": {
+                    "nodes": [
+                        {
+                            "quantities": [{"name": "available", "quantity": 3}],
+                            "location": None,
+                        }
+                    ]
+                },
             },
         },
     ]
-    tools, fc = _build([
-        _product_with_variants(variants),
-        _set_inventory_ok(),
-    ])
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            _set_inventory_ok(),
+        ]
+    )
     out = tools["update_variant_inventory_quantity"](
-        product_id="555", quantity=0, confirm=True,
+        product_id="555",
+        quantity=0,
+        confirm=True,
     )
     assert "Changed (1):" in out
     assert "Skipped (1):" in out

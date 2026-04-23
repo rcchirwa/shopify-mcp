@@ -9,12 +9,13 @@ their contents are driven by rules; direct membership writes have no effect.
 """
 
 from mcp.server.fastmcp import FastMCP
+
 from shopify_client import (
     ShopifyClient,
     format_user_errors,
-    to_gid,
     from_gid,
     poll_job,
+    to_gid,
     with_confirm_hint,
 )
 from tools._log import log_write
@@ -131,14 +132,14 @@ def register(server: FastMCP, client: ShopifyClient):
         if not new_title and not new_description:
             return "Provide at least one of new_title or new_description."
 
-        col_type, col = _resolve_collection(client, handle)
+        _col_type, col = _resolve_collection(client, handle)
         if not col:
             return f"No collection found with handle '{handle}'."
 
         col_id = col["id"]
 
         preview_lines = [
-            f"PREVIEW — Collection update",
+            "PREVIEW — Collection update",
             f"  Handle : {handle}",
             f"  ID     : {from_gid(col_id)}",
         ]
@@ -164,7 +165,9 @@ def register(server: FastMCP, client: ShopifyClient):
         if err:
             return err
 
-        log_write("update_collection", f"handle={handle} | changes: {[k for k in inp if k != 'id']}")
+        log_write(
+            "update_collection", f"handle={handle} | changes: {[k for k in inp if k != 'id']}"
+        )
         return f"Done. {preview}"
 
     def _membership_mutation(direction: str, handle: str, product_id: str, confirm: bool) -> str:
@@ -219,9 +222,9 @@ def register(server: FastMCP, client: ShopifyClient):
         if job_id and not initial_done:
             poll_result = poll_job(client, job_id, timeout_s=_JOB_POLL_TIMEOUT_S)
 
-        final_done = (poll_result["done"] if poll_result else initial_done)
-        elapsed_s = (poll_result["elapsed_s"] if poll_result else 0.0)
-        poll_error = (poll_result["error"] if poll_result else None)
+        final_done = poll_result["done"] if poll_result else initial_done
+        elapsed_s = poll_result["elapsed_s"] if poll_result else 0.0
+        poll_error = poll_result["error"] if poll_result else None
         timed_out = bool(poll_result and poll_result["timed_out"])
 
         log_write(

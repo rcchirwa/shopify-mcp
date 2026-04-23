@@ -6,15 +6,15 @@ Write operations require confirm=True and log to aon_mcp_log.txt.
 """
 
 from mcp.server.fastmcp import FastMCP
+
 from shopify_client import (
     ShopifyClient,
     format_user_errors,
-    to_gid,
     from_gid,
+    to_gid,
     with_confirm_hint,
 )
 from tools._log import log_write
-
 
 LIST_WEBHOOKS = """
 query ListWebhooks($first: Int!) {
@@ -136,10 +136,7 @@ def register(server: FastMCP, client: ShopifyClient):
             f"id={numeric_id} | topic={topic} | endpoint={endpoint_url} | format={message_format}",
         )
 
-        return (
-            f"Done. {preview}\n"
-            f"  Subscription ID : {numeric_id}"
-        )
+        return f"Done. {preview}\n  Subscription ID : {numeric_id}"
 
     @server.tool()
     def delete_webhook(subscription_id: str, confirm: bool = False) -> str:
@@ -150,10 +147,7 @@ def register(server: FastMCP, client: ShopifyClient):
         Returns a preview unless confirm=True.
         """
         numeric_id = from_gid(subscription_id)
-        preview = (
-            f"PREVIEW — Delete webhook\n"
-            f"  Subscription ID : {numeric_id}"
-        )
+        preview = f"PREVIEW — Delete webhook\n  Subscription ID : {numeric_id}"
         if not confirm:
             return with_confirm_hint(preview)
 
@@ -168,7 +162,7 @@ def register(server: FastMCP, client: ShopifyClient):
 
         deleted_gid = payload.get("deletedWebhookSubscriptionId")
         if not deleted_gid:
-            return f"Error: delete mutation returned no deletedWebhookSubscriptionId"
+            return "Error: delete mutation returned no deletedWebhookSubscriptionId"
 
         log_write("delete_webhook", f"id={numeric_id}")
         return f"Done. {preview}"

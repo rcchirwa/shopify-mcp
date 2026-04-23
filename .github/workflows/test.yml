@@ -33,3 +33,21 @@ jobs:
         # `--fail-under=100` exits non-zero if TOTAL drops below 100%, failing
         # the job so a PR that adds uncovered lines can't land on main.
         run: coverage report -m --fail-under=100
+
+  # Separate job from offline-tests so a lint failure and a coverage failure
+  # show up as distinct red checks in the PR UI instead of one tangled log.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -e .[dev]
+      - name: Ruff lint
+        run: ruff check .
+      - name: Ruff format check
+        run: ruff format --check .
+      - name: Mypy
+        run: mypy

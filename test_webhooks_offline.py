@@ -13,9 +13,9 @@ Usage:
 
 import pytest
 
-from tools import webhooks
-from tools.webhooks import LIST_WEBHOOKS, CREATE_WEBHOOK, DELETE_WEBHOOK
 from _testing import CapturingServer, FakeClient
+from tools import webhooks
+from tools.webhooks import CREATE_WEBHOOK, DELETE_WEBHOOK, LIST_WEBHOOKS
 
 
 @pytest.fixture(autouse=True)
@@ -48,6 +48,7 @@ def _node(sub_id="42", topic="ORDERS_CREATE", endpoint=_DEFAULT_ENDPOINT):
 
 
 # ---------- list_webhooks ----------
+
 
 def test_list_webhooks_empty():
     tools, fc = _build([{"webhookSubscriptions": {"nodes": []}}])
@@ -90,6 +91,7 @@ def test_list_webhooks_clamps_limit_to_250():
 
 # ---------- register_webhook ----------
 
+
 def test_register_preview_does_not_mutate():
     tools, fc = _build([])
     out = tools["register_webhook"](
@@ -105,20 +107,24 @@ def test_register_preview_does_not_mutate():
 
 
 def test_register_confirmed_submits_create():
-    tools, fc = _build([{
-        "webhookSubscriptionCreate": {
-            "webhookSubscription": {
-                "id": "gid://shopify/WebhookSubscription/42",
-                "topic": "ORDERS_CREATE",
-                "format": "JSON",
-                "endpoint": {
-                    "__typename": "WebhookHttpEndpoint",
-                    "callbackUrl": "https://example.com/hook",
-                },
-            },
-            "userErrors": [],
-        }
-    }])
+    tools, fc = _build(
+        [
+            {
+                "webhookSubscriptionCreate": {
+                    "webhookSubscription": {
+                        "id": "gid://shopify/WebhookSubscription/42",
+                        "topic": "ORDERS_CREATE",
+                        "format": "JSON",
+                        "endpoint": {
+                            "__typename": "WebhookHttpEndpoint",
+                            "callbackUrl": "https://example.com/hook",
+                        },
+                    },
+                    "userErrors": [],
+                }
+            }
+        ]
+    )
     out = tools["register_webhook"](
         topic="ORDERS_CREATE",
         endpoint_url="https://example.com/hook",
@@ -138,14 +144,21 @@ def test_register_confirmed_submits_create():
 
 
 def test_register_confirmed_surfaces_user_errors():
-    tools, fc = _build([{
-        "webhookSubscriptionCreate": {
-            "webhookSubscription": None,
-            "userErrors": [
-                {"field": ["webhookSubscription", "callbackUrl"], "message": "must be https"},
-            ],
-        }
-    }])
+    tools, fc = _build(
+        [
+            {
+                "webhookSubscriptionCreate": {
+                    "webhookSubscription": None,
+                    "userErrors": [
+                        {
+                            "field": ["webhookSubscription", "callbackUrl"],
+                            "message": "must be https",
+                        },
+                    ],
+                }
+            }
+        ]
+    )
     out = tools["register_webhook"](
         topic="ORDERS_CREATE",
         endpoint_url="http://insecure.example.com/hook",
@@ -156,20 +169,24 @@ def test_register_confirmed_surfaces_user_errors():
 
 
 def test_register_forwards_xml_format():
-    tools, fc = _build([{
-        "webhookSubscriptionCreate": {
-            "webhookSubscription": {
-                "id": "gid://shopify/WebhookSubscription/99",
-                "topic": "ORDERS_CREATE",
-                "format": "XML",
-                "endpoint": {
-                    "__typename": "WebhookHttpEndpoint",
-                    "callbackUrl": "https://example.com/hook",
-                },
-            },
-            "userErrors": [],
-        }
-    }])
+    tools, fc = _build(
+        [
+            {
+                "webhookSubscriptionCreate": {
+                    "webhookSubscription": {
+                        "id": "gid://shopify/WebhookSubscription/99",
+                        "topic": "ORDERS_CREATE",
+                        "format": "XML",
+                        "endpoint": {
+                            "__typename": "WebhookHttpEndpoint",
+                            "callbackUrl": "https://example.com/hook",
+                        },
+                    },
+                    "userErrors": [],
+                }
+            }
+        ]
+    )
     tools["register_webhook"](
         topic="ORDERS_CREATE",
         endpoint_url="https://example.com/hook",
@@ -181,6 +198,7 @@ def test_register_forwards_xml_format():
 
 
 # ---------- delete_webhook ----------
+
 
 def test_delete_preview_numeric_id_no_mutation():
     tools, fc = _build([])
@@ -201,12 +219,16 @@ def test_delete_preview_accepts_full_gid():
 
 
 def test_delete_confirmed_submits_mutation_with_gid():
-    tools, fc = _build([{
-        "webhookSubscriptionDelete": {
-            "deletedWebhookSubscriptionId": "gid://shopify/WebhookSubscription/123",
-            "userErrors": [],
-        }
-    }])
+    tools, fc = _build(
+        [
+            {
+                "webhookSubscriptionDelete": {
+                    "deletedWebhookSubscriptionId": "gid://shopify/WebhookSubscription/123",
+                    "userErrors": [],
+                }
+            }
+        ]
+    )
     out = tools["delete_webhook"](subscription_id="123", confirm=True)
     assert out.startswith("Done.")
     query, variables = fc.calls[0]
@@ -215,12 +237,16 @@ def test_delete_confirmed_submits_mutation_with_gid():
 
 
 def test_delete_confirmed_with_full_gid_input_sends_canonical_gid():
-    tools, fc = _build([{
-        "webhookSubscriptionDelete": {
-            "deletedWebhookSubscriptionId": "gid://shopify/WebhookSubscription/123",
-            "userErrors": [],
-        }
-    }])
+    tools, fc = _build(
+        [
+            {
+                "webhookSubscriptionDelete": {
+                    "deletedWebhookSubscriptionId": "gid://shopify/WebhookSubscription/123",
+                    "userErrors": [],
+                }
+            }
+        ]
+    )
     tools["delete_webhook"](
         subscription_id="gid://shopify/WebhookSubscription/123",
         confirm=True,
@@ -231,24 +257,32 @@ def test_delete_confirmed_with_full_gid_input_sends_canonical_gid():
 
 
 def test_delete_confirmed_surfaces_user_errors():
-    tools, fc = _build([{
-        "webhookSubscriptionDelete": {
-            "deletedWebhookSubscriptionId": None,
-            "userErrors": [{"field": ["id"], "message": "not found"}],
-        }
-    }])
+    tools, fc = _build(
+        [
+            {
+                "webhookSubscriptionDelete": {
+                    "deletedWebhookSubscriptionId": None,
+                    "userErrors": [{"field": ["id"], "message": "not found"}],
+                }
+            }
+        ]
+    )
     out = tools["delete_webhook"](subscription_id="123", confirm=True)
     assert out.startswith("Error:")
     assert "not found" in out
 
 
 def test_delete_confirmed_missing_id_and_no_errors_is_error():
-    tools, fc = _build([{
-        "webhookSubscriptionDelete": {
-            "deletedWebhookSubscriptionId": None,
-            "userErrors": [],
-        }
-    }])
+    tools, fc = _build(
+        [
+            {
+                "webhookSubscriptionDelete": {
+                    "deletedWebhookSubscriptionId": None,
+                    "userErrors": [],
+                }
+            }
+        ]
+    )
     out = tools["delete_webhook"](subscription_id="123", confirm=True)
     assert "Error" in out
     assert "deletedWebhookSubscriptionId" in out

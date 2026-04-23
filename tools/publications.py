@@ -10,15 +10,15 @@ Write operations require confirm=True and log to aon_mcp_log.txt.
 """
 
 from mcp.server.fastmcp import FastMCP
+
 from shopify_client import (
     ShopifyClient,
     extract_user_errors,
-    to_gid,
     from_gid,
+    to_gid,
     with_confirm_hint,
 )
 from tools._log import log_write
-
 
 LIST_PUBLICATIONS = """
 query ListPublications($first: Int!) {
@@ -140,10 +140,12 @@ def _resolve_ids(client: ShopifyClient, cache: dict, pub_ids: list) -> tuple:
         if node:
             resolved.append(node)
         else:
-            failed.append({
-                "channel_name": pid_str,
-                "error": "publication id not found on this store",
-            })
+            failed.append(
+                {
+                    "channel_name": pid_str,
+                    "error": "publication id not found on this store",
+                }
+            )
     return resolved, failed
 
 
@@ -202,7 +204,7 @@ def _split_current(rps: list) -> tuple:
     return published, not_published
 
 
-def _render_channel_lines(nodes: list, extra_key: str = None) -> str:
+def _render_channel_lines(nodes: list, extra_key: str | None = None) -> str:
     if not nodes:
         return "  (none)"
     lines = []
@@ -246,9 +248,7 @@ def register(server: FastMCP, client: ShopifyClient):
             return f"Error loading sales channels: {e}\n{SCOPE_HINT}"
 
         try:
-            gid, title, prod_handle, rps = _resolve_product_gid_and_meta(
-                client, product_id, handle
-            )
+            gid, title, prod_handle, rps = _resolve_product_gid_and_meta(client, product_id, handle)
         except Exception as e:
             return f"Error: {e}\n{SCOPE_HINT}"
 
@@ -262,17 +262,18 @@ def register(server: FastMCP, client: ShopifyClient):
         for pid in published_ids:
             rp = by_id.get(pid, {})
             pub = rp.get("publication") or {}
-            published_nodes.append({
-                "id": pub.get("id"),
-                "name": pub.get("name"),
-                "publishDate": rp.get("publishDate"),
-            })
+            published_nodes.append(
+                {
+                    "id": pub.get("id"),
+                    "name": pub.get("name"),
+                    "publishDate": rp.get("publishDate"),
+                }
+            )
 
         all_ids = set(channel_cache["by_id"].keys())
         not_published_ids = all_ids - published_ids
         not_published_nodes = [
-            {"id": pid, "name": channel_cache["by_id"][pid]["name"]}
-            for pid in not_published_ids
+            {"id": pid, "name": channel_cache["by_id"][pid]["name"]} for pid in not_published_ids
         ]
 
         return (
@@ -299,8 +300,8 @@ def register(server: FastMCP, client: ShopifyClient):
     def publish_product_to_channels(
         product_id: str = "",
         handle: str = "",
-        channel_names: list[str] = None,
-        publication_ids: list[str] = None,
+        channel_names: list[str] | None = None,
+        publication_ids: list[str] | None = None,
         confirm: bool = False,
     ) -> str:
         """
@@ -321,9 +322,7 @@ def register(server: FastMCP, client: ShopifyClient):
             return "Error: " + "; ".join(f.get("error", "") for f in failed)
 
         try:
-            gid, title, prod_handle, rps = _resolve_product_gid_and_meta(
-                client, product_id, handle
-            )
+            gid, title, prod_handle, rps = _resolve_product_gid_and_meta(client, product_id, handle)
         except Exception as e:
             return f"Error: {e}\n{SCOPE_HINT}"
         if not gid:
@@ -340,9 +339,8 @@ def register(server: FastMCP, client: ShopifyClient):
             f"  Already published (unchanged):\n{_render_channel_lines(unchanged)}"
         )
         if failed:
-            preview += (
-                f"\n  Failed to resolve:\n" +
-                "\n".join(f"  • {f.get('channel_name', '?')}: {f.get('error')}" for f in failed)
+            preview += "\n  Failed to resolve:\n" + "\n".join(
+                f"  • {f.get('channel_name', '?')}: {f.get('error')}" for f in failed
             )
 
         if not confirm:
@@ -376,12 +374,8 @@ def register(server: FastMCP, client: ShopifyClient):
             f"  Unchanged:\n{_render_channel_lines(unchanged)}"
         )
         if apply_failed:
-            body += (
-                f"\n  Failed:\n" +
-                "\n".join(
-                    f"  • {f.get('channel_name', '?')}: {f.get('error')}"
-                    for f in apply_failed
-                )
+            body += "\n  Failed:\n" + "\n".join(
+                f"  • {f.get('channel_name', '?')}: {f.get('error')}" for f in apply_failed
             )
         return body
 
@@ -389,8 +383,8 @@ def register(server: FastMCP, client: ShopifyClient):
     def unpublish_product_from_channels(
         product_id: str = "",
         handle: str = "",
-        channel_names: list[str] = None,
-        publication_ids: list[str] = None,
+        channel_names: list[str] | None = None,
+        publication_ids: list[str] | None = None,
         confirm: bool = False,
     ) -> str:
         """
@@ -411,9 +405,7 @@ def register(server: FastMCP, client: ShopifyClient):
             return "Error: " + "; ".join(f.get("error", "") for f in failed)
 
         try:
-            gid, title, prod_handle, rps = _resolve_product_gid_and_meta(
-                client, product_id, handle
-            )
+            gid, title, prod_handle, rps = _resolve_product_gid_and_meta(client, product_id, handle)
         except Exception as e:
             return f"Error: {e}\n{SCOPE_HINT}"
         if not gid:
@@ -430,9 +422,8 @@ def register(server: FastMCP, client: ShopifyClient):
             f"  Not currently published (unchanged):\n{_render_channel_lines(unchanged)}"
         )
         if failed:
-            preview += (
-                f"\n  Failed to resolve:\n" +
-                "\n".join(f"  • {f.get('channel_name', '?')}: {f.get('error')}" for f in failed)
+            preview += "\n  Failed to resolve:\n" + "\n".join(
+                f"  • {f.get('channel_name', '?')}: {f.get('error')}" for f in failed
             )
 
         if not confirm:
@@ -466,12 +457,8 @@ def register(server: FastMCP, client: ShopifyClient):
             f"  Unchanged:\n{_render_channel_lines(unchanged)}"
         )
         if apply_failed:
-            body += (
-                f"\n  Failed:\n" +
-                "\n".join(
-                    f"  • {f.get('channel_name', '?')}: {f.get('error')}"
-                    for f in apply_failed
-                )
+            body += "\n  Failed:\n" + "\n".join(
+                f"  • {f.get('channel_name', '?')}: {f.get('error')}" for f in apply_failed
             )
         return body
 
@@ -479,7 +466,7 @@ def register(server: FastMCP, client: ShopifyClient):
     def set_product_publications(
         product_id: str = "",
         handle: str = "",
-        channel_names: list[str] = None,
+        channel_names: list[str] | None = None,
         confirm: bool = False,
     ) -> str:
         """
@@ -498,9 +485,7 @@ def register(server: FastMCP, client: ShopifyClient):
             return f"Error resolving channels: {e}\n{SCOPE_HINT}"
 
         try:
-            gid, title, prod_handle, rps = _resolve_product_gid_and_meta(
-                client, product_id, handle
-            )
+            gid, title, prod_handle, rps = _resolve_product_gid_and_meta(client, product_id, handle)
         except Exception as e:
             return f"Error: {e}\n{SCOPE_HINT}"
         if not gid:
@@ -529,9 +514,8 @@ def register(server: FastMCP, client: ShopifyClient):
             f"  Unchanged:\n{_render_channel_lines(unchanged_nodes)}"
         )
         if failed:
-            preview += (
-                f"\n  Failed to resolve:\n" +
-                "\n".join(f"  • {f.get('channel_name', '?')}: {f.get('error')}" for f in failed)
+            preview += "\n  Failed to resolve:\n" + "\n".join(
+                f"  • {f.get('channel_name', '?')}: {f.get('error')}" for f in failed
             )
 
         if not confirm:
@@ -582,11 +566,7 @@ def register(server: FastMCP, client: ShopifyClient):
             f"  Unchanged:\n{_render_channel_lines(unchanged_nodes)}"
         )
         if apply_failed:
-            body += (
-                f"\n  Failed:\n" +
-                "\n".join(
-                    f"  • {f.get('channel_name', '?')}: {f.get('error')}"
-                    for f in apply_failed
-                )
+            body += "\n  Failed:\n" + "\n".join(
+                f"  • {f.get('channel_name', '?')}: {f.get('error')}" for f in apply_failed
             )
         return body
