@@ -975,6 +975,28 @@ def test_reject_if_private_host_skips_unparseable_ip_entries():
         _reject_if_private_host("https://example.com/a.jpg")  # must not raise
 
 
+def test_reject_if_private_host_still_rejects_private_ip_after_unparseable_entry():
+    """Regression guard for the loop semantics: the unparseable branch must
+    `continue` to the next entry, not `break`/`return`. If someone refactors
+    the try/except and short-circuits after the first garbage IP, a private
+    IP listed AFTER it would silently slip through — exactly the SSRF
+    defense this function exists to provide."""
+    results = [
+        (socket.AF_INET, 0, 0, "", ("not-an-ip", 0)),
+        (socket.AF_INET, 0, 0, "", ("10.0.0.1", 0)),
+    ]
+    with patch("tools.media.socket.getaddrinfo", return_value=results):
+        try:
+            _reject_if_private_host("https://sneaky.example/a.jpg")
+        except RuntimeError as e:
+            assert "10.0.0.1" in str(e) and "SSRF" in str(e)
+        else:
+            raise AssertionError(
+                "expected RuntimeError — private IP after unparseable entry "
+                "must still trip the SSRF guard"
+            )
+
+
 # ---------- _download_image: request failure, caps, missing content-type ----------
 
 def test_download_image_request_exception_wrapped():
