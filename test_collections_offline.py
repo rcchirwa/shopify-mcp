@@ -24,6 +24,36 @@ from tools.collections import (
     ADD_PRODUCTS_TO_COLLECTION,
     REMOVE_PRODUCTS_FROM_COLLECTION,
 )
+from shopify_client import JOB_STATUS_QUERY
+
+
+class _FakeClock:
+    """Drives time.monotonic forward by `interval_s` per call, so poll_job
+    reaches its 10s budget deterministically without real sleep. `baseline`
+    is captured at fixture setup so `monotonic()` starts at 0 and advances
+    predictably regardless of actual wall-clock time."""
+    def __init__(self, step=1.0):
+        self.t = 0.0
+        self.step = step
+
+    def monotonic(self):
+        # Advance AFTER reading so the first call returns 0.0 (matches
+        # poll_job's `start = time.monotonic()` capturing baseline).
+        now = self.t
+        self.t += self.step
+        return now
+
+
+@pytest.fixture
+def fake_poll_clock(monkeypatch):
+    """Skip real sleeping and fake time.monotonic inside shopify_client.poll_job
+    so timeout/failure branches are fast and deterministic. Opt-in: apply by
+    adding `fake_poll_clock` to a test's signature. Not autouse — future tests
+    that need wall-clock timing mustn't silently pick up the fake."""
+    import shopify_client
+    clock = _FakeClock(step=1.0)
+    monkeypatch.setattr(shopify_client.time, "sleep", lambda s: None)
+    monkeypatch.setattr(shopify_client.time, "monotonic", clock.monotonic)
 
 
 @pytest.fixture(autouse=True)
@@ -116,7 +146,7 @@ def test_get_collection_empty_description_shown_as_placeholder():
 #
 # The response fixtures below (`_add_ok`, `_remove_ok`) reflect the
 # collectionAddProductsV2 / collectionRemoveProducts payload shapes
-# documented in the Shopify Admin API 2024-10 schema:
+# documented in the Shopify Admin API 2026-01 schema (shape unchanged since 2024-07):
 #
 #   collectionAddProductsV2: { job: Job, userErrors: [CollectionAddProductsV2UserError!]! }
 #   collectionRemoveProducts: { job: Job, userErrors: [UserError!]! }
@@ -302,3 +332,114 @@ def test_remove_product_surfaces_user_errors():
     )
     assert out.startswith("Error:")
     assert "Product not in collection" in out
+
+
+# --- job polling branches ---
+#
+# Covers the three outcomes of the 10s fixed-timeout poll_job helper when the
+# mutation returns `done=false`:
+#   1. poll flips to done=true within budget
+#   2. budget exhausted, done still false (timeout)
+#   3. every poll raises a transport error (poll_failed)
+#
+# The initial-done=true path is already covered by the *_confirmed_calls_*
+# tests above (which get back `Job : 999 (done=True)` with no extra polls).
+
+
+def _job_status(job_id, done):
+    return {"node": {"id": f"gid://shopify/Job/{job_id}", "done": done}}
+
+
+class RaisingFakeClient:
+    """FakeClient variant where some responses are exceptions to be raised."""
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def execute(self, query, variables=None):
+        self.calls.append((query, variables))
+        if not self.responses:
+            raise AssertionError("RaisingFakeClient: unexpected extra execute() call")
+        r = self.responses.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+
+def test_add_product_polls_job_when_initial_done_false_and_flips_true(fake_poll_clock):
+    # Sequence: resolve-collection → mutation (done=false) → poll (done=true)
+    tools, fc = _build([
+        _manual_collection(),
+        _add_ok(job_id="999", done=False),
+        _job_status("999", True),
+    ])
+    out = tools["add_product_to_collection"](
+        handle="vanish", product_id="777", confirm=True,
+    )
+    assert "Job        : 999 (done=True after" in out, out
+    assert len(fc.calls) == 3
+    assert fc.calls[2][0] == JOB_STATUS_QUERY
+    assert fc.calls[2][1] == {"id": "gid://shopify/Job/999"}
+
+
+def test_add_product_polling_times_out_when_done_stays_false(fake_poll_clock):
+    # 1 collection read + 1 mutation + up to 11 poll calls (10s / 1s intervals).
+    # We pre-load more than that so no "unexpected extra" is triggered.
+    poll_responses = [_job_status("999", False)] * 20
+    tools, fc = _build([
+        _manual_collection(),
+        _add_ok(job_id="999", done=False),
+        *poll_responses,
+    ])
+    out = tools["add_product_to_collection"](
+        handle="vanish", product_id="777", confirm=True,
+    )
+    assert "still running server-side after 10s timeout" in out, out
+    assert "verify via get_collection" in out, out
+    # At least one poll was issued.
+    assert any(c[0] == JOB_STATUS_QUERY for c in fc.calls)
+
+
+def test_add_product_polling_transport_error_surfaces_poll_failed_message(fake_poll_clock):
+    # Replace the default FakeClient with one that raises on every poll.
+    srv = CapturingServer()
+    fc = RaisingFakeClient([
+        _manual_collection(),
+        _add_ok(job_id="999", done=False),
+        *([RuntimeError("upstream 503")] * 20),
+    ])
+    collections.register(srv, fc)
+    out = srv.tools["add_product_to_collection"](
+        handle="vanish", product_id="777", confirm=True,
+    )
+    assert "poll failed: upstream 503" in out, out
+    assert "underlying write succeeded" in out, out
+
+
+def test_remove_product_polls_and_reports_elapsed_when_job_completes(fake_poll_clock):
+    tools, fc = _build([
+        _manual_collection(),
+        _remove_ok(job_id="888", done=False),
+        _job_status("888", False),
+        _job_status("888", True),
+    ])
+    out = tools["remove_product_from_collection"](
+        handle="vanish", product_id="777", confirm=True,
+    )
+    assert "Job        : 888 (done=True after" in out, out
+    assert out.count("JobStatus") == 0  # user-facing text shouldn't leak the query name
+    # Two poll calls: the first returned done=false, the second done=true.
+    poll_calls = [c for c in fc.calls if c[0] == JOB_STATUS_QUERY]
+    assert len(poll_calls) == 2
+    assert all(c[1] == {"id": "gid://shopify/Job/888"} for c in poll_calls)
+
+
+def test_initial_done_true_does_not_poll():
+    tools, fc = _build([_manual_collection(), _add_ok(job_id="123", done=True)])
+    out = tools["add_product_to_collection"](
+        handle="vanish", product_id="777", confirm=True,
+    )
+    assert "Job        : 123 (done=True)" in out, out
+    # Exactly 2 calls — no poll issued.
+    assert len(fc.calls) == 2
+    assert not any(c[0] == JOB_STATUS_QUERY for c in fc.calls)

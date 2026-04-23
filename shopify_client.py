@@ -5,11 +5,25 @@ Loads credentials from .env — never hardcode secrets here.
 
 import os
 import sys
+import time
 from pathlib import Path
 from dotenv import load_dotenv
 from gql import gql, Client
 from gql.transport.requests import RequestsHTTPTransport
 from gql.transport.exceptions import TransportServerError, TransportQueryError
+
+
+# Some Shopify mutations (collectionAddProductsV2, collectionRemoveProducts, …)
+# return a Job node rather than completing inline. `node(id)` lets us resolve
+# any gid to its underlying type; the inline `... on Job` fragment exposes
+# `done`, which flips to `true` once the server-side work has finished.
+JOB_STATUS_QUERY = """
+query JobStatus($id: ID!) {
+  node(id: $id) {
+    ... on Job { id done }
+  }
+}
+"""
 
 # Pin .env to the repo root (next to this file) so loading is independent of
 # the working directory the MCP process is launched with. Claude Desktop
@@ -44,10 +58,12 @@ class ShopifyClient:
         load_dotenv(dotenv_path=_ENV_PATH, override=True)
         store_url = os.getenv("SHOPIFY_STORE_URL")
         access_token = os.getenv("SHOPIFY_ACCESS_TOKEN")
-        # 2024-10: current stable. `InventoryLevel.available` was removed in
-        # 2024-07 in favor of `quantities(names: ["available"])`, so older
-        # pins will fail the inventory queries.
-        api_version = os.getenv("SHOPIFY_API_VERSION", "2024-10")
+        # 2026-01: current stable, one release behind the edge. Every mutation
+        # and query we use has a response shape unchanged since 2024-07 (where
+        # `InventoryLevel.available` was removed in favor of
+        # `quantities(names: ["available"])`), so older pins will fail the
+        # inventory queries.
+        api_version = os.getenv("SHOPIFY_API_VERSION", "2026-01")
 
         if not store_url or not access_token:
             raise ValueError(
@@ -95,6 +111,60 @@ class ShopifyClient:
                 f"(type={type(result).__name__}): {preview}"
             )
         return result
+
+
+def poll_job(
+    client: "ShopifyClient",
+    job_gid: str,
+    timeout_s: int = 10,
+    interval_s: float = 1.0,
+) -> dict:
+    """
+    Poll a Shopify Job node until `done=true` or the budget is exhausted.
+
+    Returns a dict with keys:
+      - id: str            — the job gid (echoed for logging)
+      - done: bool         — final observed `done` value (False on timeout)
+      - elapsed_s: float   — wall-clock time spent polling
+      - timed_out: bool    — True iff the budget was exhausted before done
+      - error: str or None — transport error from the last failed poll
+
+    Does NOT raise. The underlying mutation has already succeeded by the time
+    the caller invokes this — polling is strictly informational.
+    """
+    start = time.monotonic()
+    last_error: str = None
+    last_done: bool = False
+    while True:
+        try:
+            result = client.execute(JOB_STATUS_QUERY, {"id": job_gid})
+            node = (result or {}).get("node") or {}
+            last_done = bool(node.get("done"))
+            last_error = None
+        except Exception as e:
+            # Reset done on failure so a stale True from a prior iteration
+            # can't combine with a later failed poll to misreport success.
+            last_done = False
+            last_error = str(e)
+
+        elapsed = time.monotonic() - start
+        if last_done:
+            return {
+                "id": job_gid,
+                "done": True,
+                "elapsed_s": elapsed,
+                "timed_out": False,
+                "error": None,
+            }
+        if elapsed + interval_s > timeout_s:
+            return {
+                "id": job_gid,
+                "done": False,
+                "elapsed_s": elapsed,
+                "timed_out": True,
+                "error": last_error,
+            }
+        time.sleep(interval_s)
 
 
 def _format_errors(errors) -> str:

@@ -8,8 +8,9 @@ import re
 
 from mcp.server.fastmcp import FastMCP
 from shopify_client import ShopifyClient, to_gid, from_gid
-from validators.naming import format_validation_result
+from validators.naming import format_validation_diff
 from tools._log import log_write
+from tools._filters import filter_variant_targets
 
 # SEO field length thresholds — above these, Google's SERP is likely to truncate.
 # Sources: typical SERP pixel budget translates to ~70 chars for title and
@@ -327,7 +328,7 @@ def register(server: FastMCP, client: ShopifyClient):
             target_handle = old_handle
             handle_block = f"  Handle     : UNCHANGED (preserved; change_handle=False)"
 
-        validation = format_validation_result(new_title)
+        validation = format_validation_diff(old_title, new_title)
 
         preview = (
             f"PREVIEW — Product title update\n"
@@ -794,20 +795,7 @@ def register(server: FastMCP, client: ShopifyClient):
             f"cap — additional variants (if any) are not covered by this call."
         ) if len(variants) >= VARIANTS_PAGE_CAP else ""
 
-        unresolved: list[str] = []
-        if variant_ids:
-            requested_gids = {to_gid("ProductVariant", vid) for vid in variant_ids}
-            by_gid = {v["id"]: v for v in variants}
-            targets = [by_gid[g] for g in requested_gids if g in by_gid]
-            seen = set()
-            unresolved = []
-            for vid in variant_ids:
-                if to_gid("ProductVariant", vid) in by_gid or vid in seen:
-                    continue
-                seen.add(vid)
-                unresolved.append(vid)
-        else:
-            targets = list(variants)
+        targets, unresolved = filter_variant_targets(variant_ids, variants)
 
         target_lines = "\n".join(
             f"    • {v['title']} — id: {from_gid(v['id'])} — "

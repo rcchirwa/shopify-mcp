@@ -574,3 +574,310 @@ def test_tracking_variant_ids_order_is_preserved():
         "gid://shopify/InventoryItem/100",
         "gid://shopify/InventoryItem/101",
     ]
+
+
+# ---- update_variant_inventory_quantity ----
+
+def _set_inventory_ok():
+    return {"inventorySetOnHandQuantities": {
+        "inventoryAdjustmentGroup": {"createdAt": "2026-04-22T00:00:00Z"},
+        "userErrors": [],
+    }}
+
+
+def _set_inventory_err(field, message):
+    return {"inventorySetOnHandQuantities": {
+        "inventoryAdjustmentGroup": None,
+        "userErrors": [{"field": field, "message": message}],
+    }}
+
+
+def test_quantity_product_not_found():
+    tools, fc = _build([{"product": None}])
+    out = tools["update_variant_inventory_quantity"](
+        product_id="999", quantity=0, confirm=True,
+    )
+    assert out == "No product found with id 999."
+    assert len(fc.calls) == 1
+
+
+def test_quantity_preview_lists_all_variant_location_pairs_when_filters_omitted():
+    variants = [
+        _variant("100", "S", "REEF-S", [_level(5, "gid://shopify/Location/9")]),
+        _variant("101", "M", "REEF-M", [_level(3, "gid://shopify/Location/9")]),
+    ]
+    tools, fc = _build([_product_with_variants(variants)])
+    out = tools["update_variant_inventory_quantity"](
+        product_id="555", quantity=0, confirm=False,
+    )
+    assert "PREVIEW" in out
+    assert "Target qty  : 0" in out
+    assert "Target loc  : all locations" in out
+    assert "Would change (2):" in out
+    assert "5 → 0" in out and "3 → 0" in out
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == GET_PRODUCT_INVENTORY
+
+
+def test_quantity_confirm_issues_single_batch_set_inventory_call():
+    variants = [
+        _variant("100", "S", "REEF-S", [_level(5, "gid://shopify/Location/9")]),
+        _variant("101", "M", "REEF-M", [_level(3, "gid://shopify/Location/9")]),
+    ]
+    tools, fc = _build([
+        _product_with_variants(variants),
+        _set_inventory_ok(),
+    ])
+    out = tools["update_variant_inventory_quantity"](
+        product_id="555", quantity=0, confirm=True,
+    )
+    assert out.startswith("CONFIRMED")
+    assert "Changed (2):" in out
+    # Exactly one mutation call (one read + one SET).
+    assert len(fc.calls) == 2
+    query, vars_ = fc.calls[1]
+    assert query == SET_INVENTORY
+    assert vars_["input"]["reason"] == "correction"
+    set_qtys = vars_["input"]["setQuantities"]
+    assert len(set_qtys) == 2
+    assert {q["inventoryItemId"] for q in set_qtys} == {
+        "gid://shopify/InventoryItem/100",
+        "gid://shopify/InventoryItem/101",
+    }
+    assert all(q["quantity"] == 0 for q in set_qtys)
+    assert all(q["locationId"] == "gid://shopify/Location/9" for q in set_qtys)
+
+
+def test_quantity_unchanged_pairs_skip_mutation():
+    """Variants already at target qty are reported as unchanged and excluded
+    from the setQuantities batch."""
+    variants = [
+        _variant("100", "S", "REEF-S", [_level(0, "gid://shopify/Location/9")]),  # already 0
+        _variant("101", "M", "REEF-M", [_level(3, "gid://shopify/Location/9")]),
+    ]
+    tools, fc = _build([
+        _product_with_variants(variants),
+        _set_inventory_ok(),
+    ])
+    out = tools["update_variant_inventory_quantity"](
+        product_id="555", quantity=0, confirm=True,
+    )
+    assert "Changed (1):" in out
+    assert "Unchanged (1):" in out
+    set_qtys = fc.calls[1][1]["input"]["setQuantities"]
+    assert len(set_qtys) == 1
+    assert set_qtys[0]["inventoryItemId"] == "gid://shopify/InventoryItem/101"
+
+
+def test_quantity_all_already_at_target_issues_no_mutation():
+    """confirm=True with nothing to change reports CONFIRMED no-op without
+    issuing an empty setQuantities batch (Shopify would reject that)."""
+    variants = [
+        _variant("100", "S", "REEF-S", [_level(0, "gid://shopify/Location/9")]),
+        _variant("101", "M", "REEF-M", [_level(0, "gid://shopify/Location/9")]),
+    ]
+    tools, fc = _build([_product_with_variants(variants)])
+    out = tools["update_variant_inventory_quantity"](
+        product_id="555", quantity=0, confirm=True,
+    )
+    assert "no-op" in out
+    assert "Changed     : (none" in out
+    assert len(fc.calls) == 1
+
+
+def test_quantity_location_filter_narrows_to_one_location():
+    """With location_id set, only levels at that location are considered."""
+    variants = [
+        _variant("100", "S", "REEF-S", [
+            _level(5, "gid://shopify/Location/9"),
+            _level(2, "gid://shopify/Location/77"),
+        ]),
+    ]
+    tools, fc = _build([
+        _product_with_variants(variants),
+        _set_inventory_ok(),
+    ])
+    tools["update_variant_inventory_quantity"](
+        product_id="555", quantity=0, location_id="9", confirm=True,
+    )
+    set_qtys = fc.calls[1][1]["input"]["setQuantities"]
+    assert len(set_qtys) == 1
+    assert set_qtys[0]["locationId"] == "gid://shopify/Location/9"
+
+
+def test_quantity_unresolved_location_block_when_filter_matches_nothing():
+    """If the caller filters to a location that exists on no variant, the
+    preview surfaces an Unresolved location note so they don't silently no-op."""
+    variants = [
+        _variant("100", "S", "REEF-S", [_level(5, "gid://shopify/Location/9")]),
+    ]
+    tools, fc = _build([_product_with_variants(variants)])
+    out = tools["update_variant_inventory_quantity"](
+        product_id="555", quantity=0, location_id="9999", confirm=False,
+    )
+    assert "Unresolved location: 9999" in out
+    assert "Would change (0):" in out
+
+
+def test_quantity_variant_ids_filter_applies_and_unresolved_ids_surface():
+    variants = [
+        _variant("100", "S", "REEF-S", [_level(5, "gid://shopify/Location/9")]),
+        _variant("101", "M", "REEF-M", [_level(3, "gid://shopify/Location/9")]),
+    ]
+    tools, fc = _build([
+        _product_with_variants(variants),
+        _set_inventory_ok(),
+    ])
+    out = tools["update_variant_inventory_quantity"](
+        product_id="555", quantity=0, variant_ids=["100", "999"], confirm=True,
+    )
+    assert "Changed (1):" in out
+    assert "Unresolved variant ids:" in out
+    assert "999" in out
+    set_qtys = fc.calls[1][1]["input"]["setQuantities"]
+    assert len(set_qtys) == 1
+    assert set_qtys[0]["inventoryItemId"] == "gid://shopify/InventoryItem/100"
+
+
+def test_quantity_surfaces_user_errors_as_error_string():
+    variants = [
+        _variant("100", "S", "REEF-S", [_level(5, "gid://shopify/Location/9")]),
+    ]
+    tools, fc = _build([
+        _product_with_variants(variants),
+        _set_inventory_err(
+            ["input", "setQuantities", "0", "quantity"],
+            "Quantity must be non-negative",
+        ),
+    ])
+    out = tools["update_variant_inventory_quantity"](
+        product_id="555", quantity=-1, confirm=True,
+    )
+    assert out.startswith("Error:")
+    assert "Quantity must be non-negative" in out
+
+
+def test_quantity_variant_with_no_levels_contributes_no_pair():
+    """A variant with inventoryLevels=[] has no (variant, location) pair, so
+    it's not in `to_change` nor `unchanged` — just silently absent."""
+    variants = [
+        _variant("100", "S", "REEF-S", []),  # no levels at all
+        _variant("101", "M", "REEF-M", [_level(3, "gid://shopify/Location/9")]),
+    ]
+    tools, fc = _build([
+        _product_with_variants(variants),
+        _set_inventory_ok(),
+    ])
+    out = tools["update_variant_inventory_quantity"](
+        product_id="555", quantity=0, confirm=True,
+    )
+    # Only variant 101 contributes a pair.
+    assert "Changed (1):" in out
+    set_qtys = fc.calls[1][1]["input"]["setQuantities"]
+    assert len(set_qtys) == 1
+    assert set_qtys[0]["inventoryItemId"] == "gid://shopify/InventoryItem/101"
+
+
+def test_quantity_multi_location_default_touches_every_variant_location_pair():
+    """location_id omitted + variant with 2 levels → both pairs in the batch."""
+    variants = [
+        _variant("100", "S", "REEF-S", [
+            _level(5, "gid://shopify/Location/9"),
+            _level(2, "gid://shopify/Location/77"),
+        ]),
+    ]
+    tools, fc = _build([
+        _product_with_variants(variants),
+        _set_inventory_ok(),
+    ])
+    tools["update_variant_inventory_quantity"](
+        product_id="555", quantity=0, confirm=True,
+    )
+    set_qtys = fc.calls[1][1]["input"]["setQuantities"]
+    assert len(set_qtys) == 2
+    assert {q["locationId"] for q in set_qtys} == {
+        "gid://shopify/Location/9",
+        "gid://shopify/Location/77",
+    }
+
+
+def test_quantity_preview_only_issues_the_read():
+    variants = [
+        _variant("100", "S", "REEF-S", [_level(5, "gid://shopify/Location/9")]),
+    ]
+    tools, fc = _build([_product_with_variants(variants)])
+    tools["update_variant_inventory_quantity"](
+        product_id="555", quantity=0, confirm=False,
+    )
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == GET_PRODUCT_INVENTORY
+
+
+def test_quantity_variant_with_missing_inventory_item_id_is_skipped_not_batched():
+    """A pair with a null inventoryItem.id (inventory tracking disabled) would
+    poison the whole setQuantities batch. It must be reported as Skipped and
+    excluded from the mutation, while the healthy pairs still go through."""
+    variants = [
+        # Healthy variant — should be written
+        _variant("100", "S", "REEF-S", [_level(5, "gid://shopify/Location/9")]),
+        # Variant with inventory tracking disabled (inventoryItem=None)
+        {
+            "id": "gid://shopify/ProductVariant/101",
+            "title": "Broken",
+            "sku": "BRK",
+            "inventoryItem": None,
+        },
+    ]
+    tools, fc = _build([
+        _product_with_variants(variants),
+        _set_inventory_ok(),
+    ])
+    out = tools["update_variant_inventory_quantity"](
+        product_id="555", quantity=0, confirm=True,
+    )
+    # Accounting must be accurate: Changed reflects only written pairs.
+    assert "Changed (1):" in out
+    # The null-inv-item variant doesn't have a location level pair in the read
+    # output (because its inventoryItem is None → no inventoryLevels to
+    # iterate), so it doesn't appear as Skipped either — it just never makes it
+    # into `pairs`. Healthy variant still gets written.
+    set_qtys = fc.calls[1][1]["input"]["setQuantities"]
+    assert len(set_qtys) == 1
+    assert set_qtys[0]["inventoryItemId"] == "gid://shopify/InventoryItem/100"
+
+
+def test_quantity_skipped_pair_when_location_id_is_null_on_level():
+    """If a level has location=None (shouldn't happen in practice), the pair
+    is moved to Skipped and excluded from the batch — neither silently dropped
+    nor allowed to poison the batch with a null locationId."""
+    variants = [
+        _variant("100", "S", "REEF-S", [_level(5, "gid://shopify/Location/9")]),
+        # Variant whose level has no location (pathological shape)
+        {
+            "id": "gid://shopify/ProductVariant/101",
+            "title": "Broken",
+            "sku": "BRK",
+            "inventoryItem": {
+                "id": "gid://shopify/InventoryItem/101",
+                "tracked": True,
+                "inventoryLevels": {"nodes": [{
+                    "quantities": [{"name": "available", "quantity": 3}],
+                    "location": None,
+                }]},
+            },
+        },
+    ]
+    tools, fc = _build([
+        _product_with_variants(variants),
+        _set_inventory_ok(),
+    ])
+    out = tools["update_variant_inventory_quantity"](
+        product_id="555", quantity=0, confirm=True,
+    )
+    assert "Changed (1):" in out
+    assert "Skipped (1):" in out
+    assert "missing inventoryItem.id or location.id" in out
+    # Only the healthy variant is in the batch
+    set_qtys = fc.calls[1][1]["input"]["setQuantities"]
+    assert len(set_qtys) == 1
+    assert set_qtys[0]["inventoryItemId"] == "gid://shopify/InventoryItem/100"

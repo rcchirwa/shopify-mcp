@@ -68,7 +68,11 @@ def register(server: FastMCP, client: ShopifyClient):
                 f"{li['name']} x{li['quantity']}" for li in o.get("lineItems", {}).get("nodes", [])
             )
             traffic = o.get("referringSite") or o.get("landingSite") or "direct / unknown"
-            total = o.get("totalPriceSet", {}).get("shopMoney", {}).get("amount", "N/A")
+            # `or {}` guards against nulls at any level — Shopify can return
+            # totalPriceSet=null on orders still in a pending/edited state.
+            total = (
+                ((o.get("totalPriceSet") or {}).get("shopMoney") or {}).get("amount", "N/A")
+            )
             lines.append(
                 f"  [{from_gid(o['id'])}] {o['name']} — ${total} — {o['createdAt'][:10]}\n"
                 f"    Items: {items}\n"
@@ -85,10 +89,19 @@ def register(server: FastMCP, client: ShopifyClient):
         if not o:
             return f"Order {order_id} not found."
 
-        total = o.get("totalPriceSet", {}).get("shopMoney", {}).get("amount", "N/A")
+        total = (
+            ((o.get("totalPriceSet") or {}).get("shopMoney") or {}).get("amount", "N/A")
+        )
+
+        def _unit_price(li):
+            return (
+                ((li.get("originalUnitPriceSet") or {}).get("shopMoney") or {})
+                .get("amount", "N/A")
+            )
+
         items = "\n".join(
-            f"  • {li['name']} x{li['quantity']} — ${li.get('originalUnitPriceSet', {}).get('shopMoney', {}).get('amount', 'N/A')}"
-            for li in o.get("lineItems", {}).get("nodes", [])
+            f"  • {li['name']} x{li['quantity']} — ${_unit_price(li)}"
+            for li in (o.get("lineItems") or {}).get("nodes", []) or []
         )
         return (
             f"Order: {o['name']} (id: {from_gid(o['id'])})\n"
