@@ -35,6 +35,7 @@ from tools.media import (
     PRODUCT_UPDATE_MEDIA,
     PRODUCT_DELETE_MEDIA,
 )
+from _testing.fake_client import CapturingServer, FakeClient
 import requests as _requests
 
 
@@ -42,35 +43,6 @@ PRODUCT_GID = "gid://shopify/Product/123"
 MEDIA_A = "gid://shopify/MediaImage/111"
 MEDIA_B = "gid://shopify/MediaImage/222"
 MEDIA_C = "gid://shopify/MediaImage/333"
-
-
-class CapturingServer:
-    """Stand-in for FastMCP that records decorated tool functions."""
-    def __init__(self):
-        self.tools = {}
-
-    def tool(self):
-        def deco(fn):
-            self.tools[fn.__name__] = fn
-            return fn
-        return deco
-
-
-class FakeClient:
-    """Scripted responses for client.execute(). Supports an optional
-    per-call exception hook so tests can simulate network failures."""
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self.calls = []
-
-    def execute(self, query, variables=None):
-        self.calls.append((query, variables))
-        if not self.responses:
-            raise AssertionError("FakeClient: unexpected extra execute() call")
-        item = self.responses.pop(0)
-        if isinstance(item, Exception):
-            raise item
-        return item
 
 
 class FakeHTTPResponse:

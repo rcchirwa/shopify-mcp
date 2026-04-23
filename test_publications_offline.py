@@ -26,35 +26,7 @@ from tools.publications import (
     _split_current,
     _resolve_product_gid_and_meta,
 )
-
-
-class CapturingServer:
-    def __init__(self):
-        self.tools = {}
-
-    def tool(self):
-        def deco(fn):
-            self.tools[fn.__name__] = fn
-            return fn
-        return deco
-
-
-class FakeClient:
-    """Scripted responses. An item that is a BaseException instance is raised
-    instead of returned — lets a test assert exception-path handling without
-    a custom client class per case."""
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self.calls = []
-
-    def execute(self, query, variables=None):
-        self.calls.append((query, variables))
-        if not self.responses:
-            raise AssertionError("FakeClient: unexpected extra execute() call")
-        resp = self.responses.pop(0)
-        if isinstance(resp, BaseException):
-            raise resp
-        return resp
+from _testing.fake_client import CapturingServer, FakeClient
 
 
 def _build(responses):
