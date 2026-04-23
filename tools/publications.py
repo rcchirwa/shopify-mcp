@@ -10,7 +10,13 @@ Write operations require confirm=True and log to aon_mcp_log.txt.
 """
 
 from mcp.server.fastmcp import FastMCP
-from shopify_client import ShopifyClient, extract_user_errors, to_gid, from_gid
+from shopify_client import (
+    ShopifyClient,
+    extract_user_errors,
+    to_gid,
+    from_gid,
+    with_confirm_hint,
+)
 from tools._log import log_write
 
 
@@ -340,7 +346,7 @@ def register(server: FastMCP, client: ShopifyClient):
             )
 
         if not confirm:
-            return preview + "\n\nTo apply, call again with confirm=True."
+            return with_confirm_hint(preview)
 
         now_published = []
         apply_failed = list(failed)
@@ -430,7 +436,7 @@ def register(server: FastMCP, client: ShopifyClient):
             )
 
         if not confirm:
-            return preview + "\n\nTo apply, call again with confirm=True."
+            return with_confirm_hint(preview)
 
         now_unpublished = []
         apply_failed = list(failed)
@@ -529,7 +535,7 @@ def register(server: FastMCP, client: ShopifyClient):
             )
 
         if not confirm:
-            return preview + "\n\nTo apply, call again with confirm=True."
+            return with_confirm_hint(preview)
 
         apply_failed = list(failed)
         added_applied = []

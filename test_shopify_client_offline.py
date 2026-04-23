@@ -23,6 +23,7 @@ from shopify_client import (
     extract_user_errors,
     format_user_errors,
     from_gid,
+    with_confirm_hint,
 )
 
 
@@ -175,6 +176,20 @@ def test_from_gid_tolerates_none():
 
 def test_from_gid_tolerates_empty_string():
     assert from_gid("") == ""
+
+
+# ---------- with_confirm_hint helper ----------
+
+def test_with_confirm_hint_appends_exact_contract_string():
+    # The tail is asserted verbatim by tool-level tests (test_inventory_offline,
+    # test_discounts_offline). Pin it here too so drift is caught at the source.
+    assert with_confirm_hint("PREVIEW — Something") == (
+        "PREVIEW — Something\n\nTo apply, call again with confirm=True."
+    )
+
+
+def test_with_confirm_hint_on_empty_preview():
+    assert with_confirm_hint("") == "\n\nTo apply, call again with confirm=True."
 
 
 # ---------- .env loading: override=True + script-relative path ----------
