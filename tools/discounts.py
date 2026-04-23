@@ -6,7 +6,13 @@ create_discount_code requires confirm=True.
 
 from datetime import datetime, timezone
 from mcp.server.fastmcp import FastMCP
-from shopify_client import ShopifyClient, format_user_errors, to_gid, from_gid
+from shopify_client import (
+    ShopifyClient,
+    format_user_errors,
+    to_gid,
+    from_gid,
+    with_confirm_hint,
+)
 from tools._log import log_write
 
 GET_PRICE_RULES = """
@@ -90,7 +96,7 @@ def register(server: FastMCP, client: ShopifyClient):
         )
 
         if not confirm:
-            return preview + "\n\nTo apply, call again with confirm=True."
+            return with_confirm_hint(preview)
 
         price_rule_input = {
             "title": title,

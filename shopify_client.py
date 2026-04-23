@@ -48,6 +48,11 @@ def from_gid(gid: str) -> str:
     return gid.split("/")[-1]
 
 
+def with_confirm_hint(preview: str) -> str:
+    """Append the confirm hint used by every write-tool preview branch."""
+    return preview + "\n\nTo apply, call again with confirm=True."
+
+
 def _mask_token(token: str) -> str:
     """Mask an access token for logging: preserve prefix + last 4 chars."""
     if not token:

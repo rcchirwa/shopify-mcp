@@ -13,6 +13,7 @@ from shopify_client import (
     format_user_errors,
     to_gid,
     from_gid,
+    with_confirm_hint,
 )
 from validators.naming import format_validation_diff
 from tools._log import log_write
@@ -346,7 +347,7 @@ def register(server: FastMCP, client: ShopifyClient):
         )
 
         if not confirm:
-            return preview + "\n\nTo apply, call again with confirm=True."
+            return with_confirm_hint(preview)
 
         inp = {"id": to_gid("Product", product_id), "title": new_title, "handle": target_handle}
 
@@ -382,7 +383,7 @@ def register(server: FastMCP, client: ShopifyClient):
         )
 
         if not confirm:
-            return preview + "\n\nTo apply, call again with confirm=True."
+            return with_confirm_hint(preview)
 
         result = client.execute(UPDATE_PRODUCT, {
             "input": {"id": to_gid("Product", product_id), "descriptionHtml": new_description}
@@ -452,10 +453,7 @@ def register(server: FastMCP, client: ShopifyClient):
             body += "\n\nWarnings:\n" + "\n".join(f"  • {w}" for w in warnings)
 
         if not confirm:
-            return (
-                f"PREVIEW — Product SEO update\n{body}"
-                f"\n\nTo apply, call again with confirm=True."
-            )
+            return with_confirm_hint(f"PREVIEW — Product SEO update\n{body}")
 
         seo_input = {}
         if new_seo_title:
@@ -698,10 +696,7 @@ def register(server: FastMCP, client: ShopifyClient):
             )
 
         if not confirm:
-            return (
-                f"PREVIEW — Product tags update\n{body}"
-                f"\n\nTo apply, call again with confirm=True."
-            )
+            return with_confirm_hint(f"PREVIEW — Product tags update\n{body}")
 
         result = client.execute(UPDATE_PRODUCT_TAGS, {
             "input": {"id": gid, "tags": target}
@@ -746,10 +741,7 @@ def register(server: FastMCP, client: ShopifyClient):
         )
 
         if not confirm:
-            return (
-                f"PREVIEW — Product status update\n{body}"
-                f"\n\nTo apply, call again with confirm=True."
-            )
+            return with_confirm_hint(f"PREVIEW — Product status update\n{body}")
 
         result = client.execute(UPDATE_PRODUCT_STATUS, {
             "input": {"id": gid, "status": new_status}
@@ -819,7 +811,7 @@ def register(server: FastMCP, client: ShopifyClient):
         )
 
         if not confirm:
-            return preview + "\n\nTo apply, call again with confirm=True."
+            return with_confirm_hint(preview)
 
         if not targets:
             body = (

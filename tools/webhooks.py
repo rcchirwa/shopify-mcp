@@ -6,7 +6,13 @@ Write operations require confirm=True and log to aon_mcp_log.txt.
 """
 
 from mcp.server.fastmcp import FastMCP
-from shopify_client import ShopifyClient, format_user_errors, to_gid, from_gid
+from shopify_client import (
+    ShopifyClient,
+    format_user_errors,
+    to_gid,
+    from_gid,
+    with_confirm_hint,
+)
 from tools._log import log_write
 
 
@@ -106,7 +112,7 @@ def register(server: FastMCP, client: ShopifyClient):
             f"  Format   : {message_format}"
         )
         if not confirm:
-            return preview + "\n\nTo apply, call again with confirm=True."
+            return with_confirm_hint(preview)
 
         variables = {
             "topic": topic,
@@ -149,7 +155,7 @@ def register(server: FastMCP, client: ShopifyClient):
             f"  Subscription ID : {numeric_id}"
         )
         if not confirm:
-            return preview + "\n\nTo apply, call again with confirm=True."
+            return with_confirm_hint(preview)
 
         result = client.execute(
             DELETE_WEBHOOK,

@@ -28,6 +28,7 @@ from shopify_client import (
     to_gid,
     from_gid,
     poll_job,
+    with_confirm_hint,
 )
 from tools._log import log_write
 
@@ -578,7 +579,7 @@ def register(server: FastMCP, client: ShopifyClient):
         )
 
         if not confirm:
-            return preview + "\n\nTo apply, call again with confirm=True."
+            return with_confirm_hint(preview)
 
         # Stage 1: download bytes.
         try:
@@ -723,10 +724,7 @@ def register(server: FastMCP, client: ShopifyClient):
         )
 
         if not confirm:
-            return (
-                f"PREVIEW — Reorder product media\n{body}"
-                f"\n\nTo apply, call again with confirm=True."
-            )
+            return with_confirm_hint(f"PREVIEW — Reorder product media\n{body}")
 
         # Shopify's MoveInput.newPosition is 0-indexed and serialized as a
         # string. Convert at the boundary so the caller sees 1-indexed ints
@@ -817,10 +815,7 @@ def register(server: FastMCP, client: ShopifyClient):
         )
 
         if not confirm:
-            return (
-                f"PREVIEW — Update product media alt\n{body}"
-                f"\n\nTo apply, call again with confirm=True."
-            )
+            return with_confirm_hint(f"PREVIEW — Update product media alt\n{body}")
 
         result = client.execute(PRODUCT_UPDATE_MEDIA, {
             "productId": gid,
@@ -892,7 +887,7 @@ def register(server: FastMCP, client: ShopifyClient):
         )
 
         if not confirm:
-            return preview + "\n\nTo apply, call again with confirm=True."
+            return with_confirm_hint(preview)
 
         if not matched:
             log_write(

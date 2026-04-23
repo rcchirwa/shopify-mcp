@@ -9,7 +9,14 @@ their contents are driven by rules; direct membership writes have no effect.
 """
 
 from mcp.server.fastmcp import FastMCP
-from shopify_client import ShopifyClient, format_user_errors, to_gid, from_gid, poll_job
+from shopify_client import (
+    ShopifyClient,
+    format_user_errors,
+    to_gid,
+    from_gid,
+    poll_job,
+    with_confirm_hint,
+)
 from tools._log import log_write
 
 # When a membership mutation returns `job.done=false`, poll the job node until
@@ -144,7 +151,7 @@ def register(server: FastMCP, client: ShopifyClient):
         preview = "\n".join(preview_lines)
 
         if not confirm:
-            return preview + "\n\nTo apply, call again with confirm=True."
+            return with_confirm_hint(preview)
 
         inp = {"id": col_id}
         if new_title:
@@ -190,7 +197,7 @@ def register(server: FastMCP, client: ShopifyClient):
         )
 
         if not confirm:
-            return preview + "\n\nTo apply, call again with confirm=True."
+            return with_confirm_hint(preview)
 
         result = client.execute(
             op["mutation"],

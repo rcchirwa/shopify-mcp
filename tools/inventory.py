@@ -11,6 +11,7 @@ from shopify_client import (
     format_user_errors,
     to_gid,
     from_gid,
+    with_confirm_hint,
 )
 from tools._log import log_write
 from tools._filters import filter_variant_targets
@@ -186,7 +187,7 @@ def register(server: FastMCP, client: ShopifyClient):
         )
 
         if not confirm:
-            return preview + "\n\nTo apply, call again with confirm=True."
+            return with_confirm_hint(preview)
 
         result = client.execute(SET_INVENTORY, {
             "input": {
@@ -278,7 +279,7 @@ def register(server: FastMCP, client: ShopifyClient):
         )
 
         if not confirm:
-            return preview + "\n\nTo apply, call again with confirm=True."
+            return with_confirm_hint(preview)
 
         changed = []
         failed = []
@@ -458,7 +459,7 @@ def register(server: FastMCP, client: ShopifyClient):
         )
 
         if not confirm:
-            return preview + "\n\nTo apply, call again with confirm=True."
+            return with_confirm_hint(preview)
 
         # Fast path: nothing writable. Happens when every pair is already at
         # the target, or the only pairs needing change all had missing ids.
