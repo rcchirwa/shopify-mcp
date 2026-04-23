@@ -17,6 +17,8 @@ import socket
 import sys
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(__file__))
 
 from tools import media
@@ -808,35 +810,25 @@ def _resolve_to(*ips):
 def test_ssrf_rejects_rfc1918_private():
     with patch("tools.media.socket.getaddrinfo",
                return_value=_resolve_to("10.0.0.5")):
-        try:
+        with pytest.raises(RuntimeError) as exc:
             _reject_if_private_host("https://internal.corp/hero.jpg")
-        except RuntimeError as e:
-            assert "10.0.0.5" in str(e) and "SSRF" in str(e)
-        else:
-            raise AssertionError("expected RuntimeError for RFC1918 host")
+    msg = str(exc.value)
+    assert "10.0.0.5" in msg and "SSRF" in msg
 
 
 def test_ssrf_rejects_link_local_imds():
     """169.254.169.254 is the AWS/GCP IMDS endpoint — the textbook SSRF target."""
     with patch("tools.media.socket.getaddrinfo",
                return_value=_resolve_to("169.254.169.254")):
-        try:
+        with pytest.raises(RuntimeError, match=r"169\.254\.169\.254"):
             _reject_if_private_host("https://metadata.example/token")
-        except RuntimeError as e:
-            assert "169.254.169.254" in str(e)
-        else:
-            raise AssertionError("expected RuntimeError for link-local host")
 
 
 def test_ssrf_rejects_loopback():
     with patch("tools.media.socket.getaddrinfo",
                return_value=_resolve_to("127.0.0.1")):
-        try:
+        with pytest.raises(RuntimeError):
             _reject_if_private_host("https://localhost.example/hero.jpg")
-        except RuntimeError:
-            pass
-        else:
-            raise AssertionError("expected RuntimeError for loopback host")
 
 
 def test_ssrf_rejects_any_private_ip_in_multi_record_resolution():
@@ -845,12 +837,8 @@ def test_ssrf_rejects_any_private_ip_in_multi_record_resolution():
     rebinding attempt."""
     with patch("tools.media.socket.getaddrinfo",
                return_value=_resolve_to("93.184.216.34", "10.0.0.5")):
-        try:
+        with pytest.raises(RuntimeError, match=r"10\.0\.0\.5"):
             _reject_if_private_host("https://mixed.example/hero.jpg")
-        except RuntimeError as e:
-            assert "10.0.0.5" in str(e)
-        else:
-            raise AssertionError("expected RuntimeError when any resolved IP is private")
 
 
 def test_ssrf_accepts_public_ip():
@@ -863,12 +851,8 @@ def test_ssrf_accepts_public_ip():
 def test_ssrf_unresolvable_host_is_rejected():
     with patch("tools.media.socket.getaddrinfo",
                side_effect=socket.gaierror("name resolution failed")):
-        try:
+        with pytest.raises(RuntimeError, match="could not resolve host"):
             _reject_if_private_host("https://definitely-not-a-real-host.invalid/a.jpg")
-        except RuntimeError as e:
-            assert "could not resolve host" in str(e)
-        else:
-            raise AssertionError("expected RuntimeError on DNS failure")
 
 
 def test_upload_ssrf_private_host_labels_download_stage():
@@ -955,12 +939,8 @@ def test_format_bytes_kb_and_mb_branches():
 def test_reject_if_private_host_no_hostname_raises():
     """A URL with no hostname (e.g. `https:///path`) can't be resolved —
     refuse up front rather than passing through to getaddrinfo with None."""
-    try:
+    with pytest.raises(RuntimeError, match="no hostname"):
         _reject_if_private_host("https:///no-host")
-    except RuntimeError as e:
-        assert "no hostname" in str(e)
-    else:
-        raise AssertionError("expected RuntimeError for URL with no hostname")
 
 
 def test_reject_if_private_host_skips_unparseable_ip_entries():
@@ -986,15 +966,10 @@ def test_reject_if_private_host_still_rejects_private_ip_after_unparseable_entry
         (socket.AF_INET, 0, 0, "", ("10.0.0.1", 0)),
     ]
     with patch("tools.media.socket.getaddrinfo", return_value=results):
-        try:
+        with pytest.raises(RuntimeError) as exc:
             _reject_if_private_host("https://sneaky.example/a.jpg")
-        except RuntimeError as e:
-            assert "10.0.0.1" in str(e) and "SSRF" in str(e)
-        else:
-            raise AssertionError(
-                "expected RuntimeError — private IP after unparseable entry "
-                "must still trip the SSRF guard"
-            )
+    msg = str(exc.value)
+    assert "10.0.0.1" in msg and "SSRF" in msg
 
 
 # ---------- _download_image: request failure, caps, missing content-type ----------
@@ -1003,12 +978,10 @@ def test_download_image_request_exception_wrapped():
     with patch("tools.media._reject_if_private_host", return_value=None), \
          patch("tools.media.requests.get",
                side_effect=_requests.ConnectionError("dns timeout")):
-        try:
+        with pytest.raises(RuntimeError) as exc:
             _download_image("https://cdn.example.com/a.jpg")
-        except RuntimeError as e:
-            assert "request failed" in str(e) and "dns timeout" in str(e)
-        else:
-            raise AssertionError("expected RuntimeError on requests.get failure")
+    msg = str(exc.value)
+    assert "request failed" in msg and "dns timeout" in msg
 
 
 def test_download_image_content_length_over_cap_rejected_before_streaming():
@@ -1018,12 +991,8 @@ def test_download_image_content_length_over_cap_rejected_before_streaming():
     fake = FakeHTTPResponse(status_code=200, content=b"ignored", headers=headers)
     with patch("tools.media._reject_if_private_host", return_value=None), \
          patch("tools.media.requests.get", return_value=fake):
-        try:
+        with pytest.raises(RuntimeError, match="exceeds Shopify"):
             _download_image("https://cdn.example.com/huge.jpg")
-        except RuntimeError as e:
-            assert "exceeds Shopify" in str(e)
-        else:
-            raise AssertionError("expected RuntimeError for oversize Content-Length")
 
 
 def test_download_image_empty_chunk_in_stream_is_skipped():
@@ -1064,17 +1033,14 @@ def test_download_image_stream_over_cap_rejected():
     with patch("tools.media._reject_if_private_host", return_value=None), \
          patch("tools.media.requests.get", return_value=resp), \
          patch("tools.media._MAX_IMAGE_BYTES", 10):
-        try:
+        with pytest.raises(RuntimeError) as exc:
             _download_image("https://cdn.example.com/big.jpg")
-        except RuntimeError as e:
-            msg = str(e)
-            assert "exceeded" in msg
-            assert "10 B" in msg, (
-                f"expected the patched 10-byte cap to appear in the error "
-                f"message (proves the patch still governs the rejection); got {msg!r}"
-            )
-        else:
-            raise AssertionError("expected RuntimeError when stream exceeds cap")
+    msg = str(exc.value)
+    assert "exceeded" in msg
+    assert "10 B" in msg, (
+        f"expected the patched 10-byte cap to appear in the error "
+        f"message (proves the patch still governs the rejection); got {msg!r}"
+    )
 
 
 def test_download_image_guesses_mime_when_content_type_missing():
@@ -1101,12 +1067,10 @@ def test_upload_bytes_to_target_request_exception_wrapped():
     }
     with patch("tools.media.requests.put",
                side_effect=_requests.ConnectionError("socket reset")):
-        try:
+        with pytest.raises(RuntimeError) as exc:
             _upload_bytes_to_target(target, b"bytes")
-        except RuntimeError as e:
-            assert "PUT to staged target failed" in str(e) and "socket reset" in str(e)
-        else:
-            raise AssertionError("expected RuntimeError on requests.put failure")
+    msg = str(exc.value)
+    assert "PUT to staged target failed" in msg and "socket reset" in msg
 
 
 # ---------- _render_media_list: product=None falls through to 'No product found.' ----------
