@@ -1,7 +1,7 @@
 """
 URL safety helpers shared across URL-accepting tools.
 
-Currently provides the SSRF guard used by `tools.media._download_image`.
+Currently provides the SSRF guard used by `tools.media._upload._download_image`.
 Any new tool that accepts a caller-supplied URL and dereferences it
 server-side MUST call `_reject_if_private_host` before issuing the request.
 """

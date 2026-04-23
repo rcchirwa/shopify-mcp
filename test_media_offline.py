@@ -1,5 +1,5 @@
 """
-Offline unit tests for tools/media.py.
+Offline unit tests for tools/media/.
 
 Uses a fake client to exercise read-path response unwrap, write-path
 preview/confirm branches, and error-surfacing at each upload stage without
@@ -312,10 +312,10 @@ def test_upload_execute_happy_path_append():
     )
 
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
-        patch("tools.media.requests.get", return_value=_make_http_response()),
-        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
-        patch("tools.media.time.sleep"),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
+        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch("tools.media._upload.time.sleep"),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -367,10 +367,10 @@ def test_upload_execute_reorder_when_non_append_position():
     )
 
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
-        patch("tools.media.requests.get", return_value=_make_http_response()),
-        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
-        patch("tools.media.time.sleep"),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
+        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch("tools.media._upload.time.sleep"),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -399,10 +399,10 @@ def test_upload_execute_skips_reorder_when_position_equals_append():
     )
 
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
-        patch("tools.media.requests.get", return_value=_make_http_response()),
-        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
-        patch("tools.media.time.sleep"),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
+        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch("tools.media._upload.time.sleep"),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -426,8 +426,8 @@ def test_upload_execute_skips_reorder_when_position_equals_append():
 def test_upload_download_http_error_labels_download_stage():
     tools, fc = _build([_product_media_read([])])
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
-        patch("tools.media.requests.get", return_value=FakeHTTPResponse(status_code=404)),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=FakeHTTPResponse(status_code=404)),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -441,9 +441,9 @@ def test_upload_download_http_error_labels_download_stage():
 def test_upload_non_image_content_type_labels_download_stage():
     tools, fc = _build([_product_media_read([])])
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
         patch(
-            "tools.media.requests.get",
+            "tools.media._upload.requests.get",
             return_value=FakeHTTPResponse(
                 status_code=200,
                 content=b"<html>",
@@ -469,9 +469,9 @@ def test_upload_attach_user_errors_labelled_attach_stage():
         ]
     )
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
-        patch("tools.media.requests.get", return_value=_make_http_response()),
-        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
+        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -490,10 +490,10 @@ def test_upload_staged_target_put_failure_labels_stage_upload():
         ]
     )
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
-        patch("tools.media.requests.get", return_value=_make_http_response()),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
         patch(
-            "tools.media.requests.put", return_value=FakeHTTPResponse(status_code=500, text="oops")
+            "tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=500, text="oops")
         ),
     ):
         out = tools["upload_product_image"](
@@ -535,11 +535,11 @@ def test_upload_processing_timeout_returns_success_with_note():
         return tick["t"]
 
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
-        patch("tools.media.requests.get", return_value=_make_http_response()),
-        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
-        patch("tools.media.time.sleep"),
-        patch("tools.media.time.monotonic", side_effect=fake_monotonic),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
+        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch("tools.media._upload.time.sleep"),
+        patch("tools.media._upload.time.monotonic", side_effect=fake_monotonic),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -630,7 +630,7 @@ def test_reorder_polls_job_when_not_done():
             {"node": {"id": "gid://shopify/Job/abc", "done": True}},
         ]
     )
-    with patch("tools.media.time.sleep"):
+    with patch("tools.media._upload.time.sleep"):
         out = tools["reorder_product_media"](
             product_id="123",
             moves=[{"id": MEDIA_B, "newPosition": 1}],
@@ -902,10 +902,10 @@ def test_upload_failed_processing_returns_error_with_cleanup_hint():
         ]
     )
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
-        patch("tools.media.requests.get", return_value=_make_http_response()),
-        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
-        patch("tools.media.time.sleep"),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
+        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch("tools.media._upload.time.sleep"),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -932,10 +932,10 @@ def test_upload_failed_processing_still_reorder_when_position_set():
         ]
     )
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
-        patch("tools.media.requests.get", return_value=_make_http_response()),
-        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
-        patch("tools.media.time.sleep"),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
+        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch("tools.media._upload.time.sleep"),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -1049,8 +1049,8 @@ def test_format_bytes_kb_and_mb_branches():
 
 def test_download_image_request_exception_wrapped():
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
-        patch("tools.media.requests.get", side_effect=_requests.ConnectionError("dns timeout")),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", side_effect=_requests.ConnectionError("dns timeout")),
         pytest.raises(RuntimeError) as exc,
     ):
         _download_image("https://cdn.example.com/a.jpg")
@@ -1064,8 +1064,8 @@ def test_download_image_content_length_over_cap_rejected_before_streaming():
     headers = {"Content-Length": str(25 * 1024 * 1024), "Content-Type": "image/jpeg"}
     fake = FakeHTTPResponse(status_code=200, content=b"ignored", headers=headers)
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
-        patch("tools.media.requests.get", return_value=fake),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=fake),
         pytest.raises(RuntimeError, match="exceeds Shopify"),
     ):
         _download_image("https://cdn.example.com/huge.jpg")
@@ -1084,8 +1084,8 @@ def test_download_image_empty_chunk_in_stream_is_skipped():
         headers={"Content-Type": "image/jpeg"},
     )
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
-        patch("tools.media.requests.get", return_value=resp),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=resp),
     ):
         body, filename, ct = _download_image("https://cdn.example.com/ok.jpg")
     assert body == b"headtail"
@@ -1098,7 +1098,7 @@ def test_download_image_stream_over_cap_rejected():
 
     Brittleness note: this couples to `_MAX_IMAGE_BYTES` being a
     module-level constant. If the cap ever moves to a config object / env
-    var, `patch("tools.media._MAX_IMAGE_BYTES", 10)` would become a no-op
+    var, `patch("tools.media._upload._MAX_IMAGE_BYTES", 10)` would become a no-op
     and this test would silently stop exercising the branch. The
     `"10 B exceeded"` assertion below is the tripwire — if the patch stops
     governing the rejection, the error message won't carry the tiny cap and
@@ -1110,9 +1110,9 @@ def test_download_image_stream_over_cap_rejected():
         headers={"Content-Type": "image/jpeg"},  # no Content-Length
     )
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
-        patch("tools.media.requests.get", return_value=resp),
-        patch("tools.media._MAX_IMAGE_BYTES", 10),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=resp),
+        patch("tools.media._upload._MAX_IMAGE_BYTES", 10),
         pytest.raises(RuntimeError) as exc,
     ):
         _download_image("https://cdn.example.com/big.jpg")
@@ -1133,8 +1133,8 @@ def test_download_image_guesses_mime_when_content_type_missing():
         headers={},  # no Content-Type
     )
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
-        patch("tools.media.requests.get", return_value=resp),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=resp),
     ):
         _, filename, ct = _download_image("https://cdn.example.com/photo.jpg")
     assert ct == "image/jpeg"
@@ -1150,7 +1150,7 @@ def test_upload_bytes_to_target_request_exception_wrapped():
         "parameters": [{"name": "content_type", "value": "image/jpeg"}],
     }
     with (
-        patch("tools.media.requests.put", side_effect=_requests.ConnectionError("socket reset")),
+        patch("tools.media._upload.requests.put", side_effect=_requests.ConnectionError("socket reset")),
         pytest.raises(RuntimeError) as exc,
     ):
         _upload_bytes_to_target(target, b"bytes")
@@ -1199,10 +1199,10 @@ def test_upload_poll_transient_exception_is_swallowed():
         ]
     )
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
-        patch("tools.media.requests.get", return_value=_make_http_response()),
-        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
-        patch("tools.media.time.sleep"),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
+        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch("tools.media._upload.time.sleep"),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -1356,8 +1356,8 @@ def test_upload_staged_uploads_create_exception_labels_stage_upload():
         ]
     )
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
-        patch("tools.media.requests.get", return_value=_make_http_response()),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -1381,8 +1381,8 @@ def test_upload_staged_uploads_user_errors_surfaced():
         ]
     )
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
-        patch("tools.media.requests.get", return_value=_make_http_response()),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -1403,8 +1403,8 @@ def test_upload_staged_uploads_empty_targets_reported():
         ]
     )
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
-        patch("tools.media.requests.get", return_value=_make_http_response()),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -1424,9 +1424,9 @@ def test_upload_product_create_media_exception_labels_attach_stage():
         ]
     )
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
-        patch("tools.media.requests.get", return_value=_make_http_response()),
-        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
+        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -1446,9 +1446,9 @@ def test_upload_attach_returns_empty_media_reported():
         ]
     )
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
-        patch("tools.media.requests.get", return_value=_make_http_response()),
-        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
+        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -1485,10 +1485,10 @@ def test_upload_reorder_exception_appends_failure_note_still_confirms():
         ]
     )
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
-        patch("tools.media.requests.get", return_value=_make_http_response()),
-        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
-        patch("tools.media.time.sleep"),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
+        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch("tools.media._upload.time.sleep"),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -1512,10 +1512,10 @@ def test_upload_reorder_media_user_errors_append_note():
         ]
     )
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
-        patch("tools.media.requests.get", return_value=_make_http_response()),
-        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
-        patch("tools.media.time.sleep"),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
+        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch("tools.media._upload.time.sleep"),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -1544,10 +1544,10 @@ def test_upload_reorder_polls_job_when_not_done():
         ]
     )
     with (
-        patch("tools.media._reject_if_private_host", return_value=None),
-        patch("tools.media.requests.get", return_value=_make_http_response()),
-        patch("tools.media.requests.put", return_value=FakeHTTPResponse(status_code=200)),
-        patch("tools.media.time.sleep"),
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
+        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch("tools.media._upload.time.sleep"),
     ):
         out = tools["upload_product_image"](
             product_id="123",
