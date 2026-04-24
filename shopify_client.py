@@ -223,6 +223,26 @@ def extract_user_errors(
     return (result.get(mutation_key) or {}).get(error_key) or []
 
 
+def format_user_errors_joined(
+    result: dict,
+    mutation_key: str,
+    *,
+    error_key: str = "userErrors",
+) -> str | None:
+    """
+    Join a mutation's userErrors as 'field: message; field: message', or None if absent.
+
+    Like `format_user_errors`, but without the canonical 'Error: ' prefix.
+    Use when the output is embedded inside another sentence or report row
+    where the prefix reads awkwardly — e.g. per-variant failure bullets in
+    a bulk-op summary (rendered as `• {variant}: {error}`).
+    """
+    errors = extract_user_errors(result, mutation_key, error_key=error_key)
+    if not errors:
+        return None
+    return "; ".join(f"{e.get('field')}: {e.get('message')}" for e in errors)
+
+
 def format_user_errors(
     result: dict,
     mutation_key: str,
@@ -239,8 +259,7 @@ def format_user_errors(
     - `error_key` overrides the default `userErrors` slot.
     - `prefix` customizes the leading token (e.g. 'Error creating price rule').
     """
-    errors = extract_user_errors(result, mutation_key, error_key=error_key)
-    if not errors:
+    msgs = format_user_errors_joined(result, mutation_key, error_key=error_key)
+    if msgs is None:
         return None
-    msgs = "; ".join(f"{e.get('field')}: {e.get('message')}" for e in errors)
     return f"{prefix}: {msgs}"
