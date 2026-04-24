@@ -2,10 +2,15 @@
 Shared filtering helpers used by multiple tool modules.
 """
 
+from typing import Any
+
 from shopify_client import to_gid
 
 
-def filter_variant_targets(variant_ids, variants):
+def filter_variant_targets(
+    variant_ids: list[str] | None,
+    variants: list[dict[str, Any]] | None,
+) -> tuple[list[dict[str, Any]], list[str]]:
     """
     Resolve caller-supplied `variant_ids` against a product's `variants` list.
     Single pass preserves caller order on both sides and dedupes both sides.

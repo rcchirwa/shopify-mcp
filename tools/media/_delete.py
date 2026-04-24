@@ -8,7 +8,7 @@ from tools.media._common import _as_product_gid, _fmt_media_user_errors
 from tools.media._graphql import GET_PRODUCT_MEDIA, PRODUCT_DELETE_MEDIA
 
 
-def register(server: FastMCP, client: ShopifyClient):
+def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def delete_product_media(
         product_id: str,
@@ -43,7 +43,7 @@ def register(server: FastMCP, client: ShopifyClient):
         matched = [mid for mid in ordered_ids if mid in current_index]
         unmatched = [mid for mid in ordered_ids if mid not in current_index]
 
-        def _fmt_line(mid):
+        def _fmt_line(mid: str) -> str:
             n = current_index.get(mid) or {}
             preview = ((n.get("preview") or {}).get("image") or {}).get("url") or "(no preview)"
             return f"    • {mid}  alt={(n.get('alt') or '')!r}\n      preview: {preview}"

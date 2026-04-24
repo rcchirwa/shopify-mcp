@@ -36,7 +36,7 @@ def create_server() -> FastMCP:
     return server
 
 
-def main():
+def main() -> None:
     server = create_server()
     server.run(transport="stdio")
 

@@ -18,7 +18,7 @@ from tools.media._common import (
 from tools.media._graphql import GET_PRODUCT_MEDIA, PRODUCT_REORDER_MEDIA
 
 
-def register(server: FastMCP, client: ShopifyClient):
+def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def reorder_product_media(
         product_id: str,

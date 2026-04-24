@@ -8,7 +8,7 @@ from tools.media._common import _as_product_gid, _fmt_media_user_errors
 from tools.media._graphql import GET_PRODUCT_MEDIA, PRODUCT_UPDATE_MEDIA
 
 
-def register(server: FastMCP, client: ShopifyClient):
+def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def update_product_media(
         product_id: str,

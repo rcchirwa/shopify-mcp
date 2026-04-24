@@ -4,6 +4,8 @@ Inventory tools — read and set inventory levels.
 update_inventory requires confirm=True.
 """
 
+from typing import Any
+
 from mcp.server.fastmcp import FastMCP
 
 from shopify_client import (
@@ -89,7 +91,7 @@ mutation SetInventory($input: InventorySetOnHandQuantitiesInput!) {
 """
 
 
-def _available_qty(level: dict):
+def _available_qty(level: dict[str, Any]) -> int | None:
     """Extract the 'available' quantity from an InventoryLevel's quantities
     array (2024-07+ shape). Returns the integer quantity, or None if the
     `available` name wasn't returned."""
@@ -99,7 +101,7 @@ def _available_qty(level: dict):
     return None
 
 
-def _tracked_display(current):
+def _tracked_display(current: bool | None) -> bool | str:
     # Shopify omits `tracked` on variants without an InventoryItem; render
     # that as "unset" so the preview reads "unset → True" instead of the
     # literal "None → True".
@@ -123,12 +125,12 @@ def _pair_prefix(variant: dict, level: dict, loc_gid: str | None) -> str:
     )
 
 
-def _current_display(current):
+def _current_display(current: int | None) -> int | str:
     """Preserve 0 as a legit current qty; render missing as 'N/A'."""
     return "N/A" if current is None else current
 
 
-def register(server: FastMCP, client: ShopifyClient):
+def register(server: FastMCP, client: ShopifyClient) -> None:
 
     @server.tool()
     def get_inventory(product_id: str) -> str:
@@ -145,7 +147,7 @@ def register(server: FastMCP, client: ShopifyClient):
             inv_item = variant.get("inventoryItem") or {}
             levels = (inv_item.get("inventoryLevels") or {}).get("nodes", []) or []
             # Preserve 0 as a legit qty — only fall back to "N/A" on missing.
-            qty = _available_qty(levels[0]) if levels else None
+            qty: int | str | None = _available_qty(levels[0]) if levels else None
             if qty is None:
                 qty = "N/A"
             lines.append(
@@ -177,7 +179,7 @@ def register(server: FastMCP, client: ShopifyClient):
         location_gid = to_gid("Location", location_id)
         matching = [lv for lv in levels if lv.get("location", {}).get("id") == location_gid]
         # Preserve 0 as a legit current qty — only fall back to "unknown" on missing.
-        current_qty = _available_qty(matching[0]) if matching else None
+        current_qty: int | str | None = _available_qty(matching[0]) if matching else None
         if current_qty is None:
             current_qty = "unknown"
 
@@ -253,7 +255,7 @@ def register(server: FastMCP, client: ShopifyClient):
             else:
                 to_change.append(v)
 
-        def _variant_line(v, suffix):
+        def _variant_line(v: dict[str, Any], suffix: str) -> str:
             inv_item = v.get("inventoryItem") or {}
             return (
                 f"    • {v['title']} — variant_id: {from_gid(v['id'])}, "

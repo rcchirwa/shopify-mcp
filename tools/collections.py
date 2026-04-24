@@ -8,6 +8,8 @@ Smart (rule-based) collections are rejected by the membership tools because
 their contents are driven by rules; direct membership writes have no effect.
 """
 
+from typing import Any
+
 from mcp.server.fastmcp import FastMCP
 
 from shopify_client import (
@@ -86,7 +88,9 @@ _MEMBERSHIP_OPS = {
 }
 
 
-def _resolve_collection(client: ShopifyClient, handle: str):
+def _resolve_collection(
+    client: ShopifyClient, handle: str
+) -> tuple[str | None, dict[str, Any] | None]:
     """Returns (collection_type, collection) tuple or (None, None)."""
     data = client.execute(GET_COLLECTION_BY_HANDLE, {"handle": handle})
     col = data.get("collectionByHandle")
@@ -96,7 +100,7 @@ def _resolve_collection(client: ShopifyClient, handle: str):
     return col_type, col
 
 
-def register(server: FastMCP, client: ShopifyClient):
+def register(server: FastMCP, client: ShopifyClient) -> None:
 
     @server.tool()
     def get_collection(handle: str) -> str:

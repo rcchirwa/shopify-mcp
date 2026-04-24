@@ -14,15 +14,18 @@ copy used the narrower `Exception`; the wider check subsumes both so no
 test's behavior changes.
 """
 
+from collections.abc import Callable, Iterable
+from typing import Any
+
 
 class CapturingServer:
     """Stand-in for FastMCP that records decorated tool functions."""
 
-    def __init__(self):
-        self.tools = {}
+    def __init__(self) -> None:
+        self.tools: dict[str, Callable[..., Any]] = {}
 
-    def tool(self):
-        def deco(fn):
+    def tool(self) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        def deco(fn: Callable[..., Any]) -> Callable[..., Any]:
             self.tools[fn.__name__] = fn
             return fn
 
@@ -37,11 +40,11 @@ class FakeClient:
     exception-path handling in write-path tools.
     """
 
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self.calls = []
+    def __init__(self, responses: Iterable[Any]) -> None:
+        self.responses: list[Any] = list(responses)
+        self.calls: list[tuple[str, dict[str, Any] | None]] = []
 
-    def execute(self, query, variables=None):
+    def execute(self, query: str, variables: dict[str, Any] | None = None) -> Any:
         self.calls.append((query, variables))
         if not self.responses:
             raise AssertionError("FakeClient: unexpected extra execute() call")

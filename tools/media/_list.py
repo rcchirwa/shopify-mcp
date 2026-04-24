@@ -1,5 +1,7 @@
 """`list_product_media` — read-only listing of a product's media."""
 
+from typing import Any
+
 from mcp.server.fastmcp import FastMCP
 
 from shopify_client import ShopifyClient, from_gid
@@ -8,7 +10,7 @@ from tools.media._constants import _MEDIA_PAGE_CAP
 from tools.media._graphql import GET_PRODUCT_MEDIA
 
 
-def _render_media_list(product: dict) -> str:
+def _render_media_list(product: dict[str, Any]) -> str:
     """Format a product's media list as a string. `product` is the GraphQL node."""
     if not product:
         return "No product found."
@@ -37,7 +39,7 @@ def _render_media_list(product: dict) -> str:
     return "\n".join(lines)
 
 
-def register(server: FastMCP, client: ShopifyClient):
+def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def list_product_media(product_id: str) -> str:
         """

@@ -51,7 +51,7 @@ mutation CreateDiscountCode($priceRuleId: ID!, $code: String!) {
 """
 
 
-def register(server: FastMCP, client: ShopifyClient):
+def register(server: FastMCP, client: ShopifyClient) -> None:
 
     @server.tool()
     def get_discount_codes() -> str:

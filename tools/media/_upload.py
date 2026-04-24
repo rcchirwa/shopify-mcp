@@ -12,6 +12,7 @@ import mimetypes
 import sys
 import time
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 import requests
@@ -47,7 +48,7 @@ from tools.media._graphql import (
 )
 
 
-def _format_bytes(n) -> str:
+def _format_bytes(n: Any) -> str:
     try:
         n = int(n)
     except (TypeError, ValueError):
@@ -66,7 +67,7 @@ def _filename_from_url(url: str) -> str:
     return name or "upload.bin"
 
 
-def _download_image(url: str):
+def _download_image(url: str) -> tuple[bytes, str, str]:
     """Download an image URL and return (bytes, filename, mime_type).
 
     Raises RuntimeError with a human-readable detail on any failure. Caller is
@@ -168,7 +169,9 @@ def _poll_media_ready(client: ShopifyClient, product_gid: str, media_id: str) ->
         time.sleep(_MEDIA_PROCESSING_POLL_INTERVAL_S)
 
 
-def _stage_upload(client: ShopifyClient, filename: str, mime_type: str, size: int):
+def _stage_upload(
+    client: ShopifyClient, filename: str, mime_type: str, size: int
+) -> tuple[dict[str, Any] | None, str | None]:
     """Create a stagedUploadsCreate target for a subsequent PUT.
 
     Returns (target_dict, None) on success, (None, error_str) on failure.
@@ -201,7 +204,9 @@ def _stage_upload(client: ShopifyClient, filename: str, mime_type: str, size: in
     return targets[0], None
 
 
-def _attach_media(client: ShopifyClient, product_gid: str, alt: str, resource_url: str):
+def _attach_media(
+    client: ShopifyClient, product_gid: str, alt: str, resource_url: str
+) -> tuple[dict[str, Any] | None, str | None]:
     """Attach a staged image as product media via productCreateMedia.
 
     Returns (media_node, None) on success, (None, error_str) on failure.
@@ -280,7 +285,7 @@ def _maybe_reorder_new_media(
     return "\n  Reorder    : " + (f"job {from_gid(job_id)} done=True" if job_id else "done inline")
 
 
-def register(server: FastMCP, client: ShopifyClient):
+def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def upload_product_image(
         product_id: str,
@@ -368,6 +373,7 @@ def register(server: FastMCP, client: ShopifyClient):
         target, err = _stage_upload(client, filename, mime_type, len(image_bytes))
         if err:
             return err
+        assert target is not None  # _stage_upload: (None, err) xor (target, None)
 
         # Stage 3: PUT bytes with parameters as headers.
         try:
@@ -376,10 +382,14 @@ def register(server: FastMCP, client: ShopifyClient):
             return f"Error at stage=stage_upload: {e}"
 
         # Stage 4: attach via productCreateMedia.
-        new_media, err = _attach_media(client, gid, alt, target.get("resourceUrl"))
+        resource_url = target.get("resourceUrl")
+        assert resource_url, "stagedUploadsCreate success implies resourceUrl is set"
+        new_media, err = _attach_media(client, gid, alt, resource_url)
         if err:
             return err
+        assert new_media is not None
         new_media_id = new_media.get("id")
+        assert new_media_id, "productCreateMedia success implies media id is set"
         initial_preview = ((new_media.get("preview") or {}).get("image") or {}).get("url")
 
         # Stage 5: poll media processing (short budget; timeout is not fatal).

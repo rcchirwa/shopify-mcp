@@ -29,7 +29,7 @@ from tools.media._upload import (  # noqa: F401
 )
 
 
-def register(server: FastMCP, client: ShopifyClient):
+def register(server: FastMCP, client: ShopifyClient) -> None:
     """Register all media tools on the server."""
     _list.register(server, client)
     _upload.register(server, client)

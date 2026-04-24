@@ -5,6 +5,7 @@ Write operations require confirm=True and log to aon_mcp_log.txt.
 """
 
 import re
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -250,7 +251,7 @@ INVENTORY_POLICY_VALUES = ("DENY", "CONTINUE")
 TAG_MODES = ("replace", "append", "remove")
 
 
-def register(server: FastMCP, client: ShopifyClient):
+def register(server: FastMCP, client: ShopifyClient) -> None:
 
     @server.tool()
     def get_products() -> str:
@@ -840,7 +841,7 @@ def register(server: FastMCP, client: ShopifyClient):
             # ["variants", "0", "inventoryPolicy"]) — unlike simple scalar-field
             # mutations — so format_user_errors' stringify-field logic won't
             # render it readably. Keep the local formatter.
-            def _fmt(e):
+            def _fmt(e: dict[str, Any]) -> str:
                 field_path = ".".join(str(f) for f in (e.get("field") or []))
                 return f"{field_path or '(no field)'}: {e.get('message', '')}"
 

@@ -1,5 +1,7 @@
 """Helpers shared across multiple media tools."""
 
+from typing import Any
+
 from shopify_client import extract_user_errors, to_gid
 
 
@@ -21,7 +23,7 @@ def _as_product_gid(pid: str) -> str:
     return to_gid("Product", pid)
 
 
-def _fmt_media_user_errors(errors, stage: str) -> str:
+def _fmt_media_user_errors(errors: list[dict[str, Any]], stage: str) -> str:
     msgs = "; ".join(f"{e.get('field') or '(no field)'}: {e.get('message', '')}" for e in errors)
     return f"Error at stage={stage}: {msgs}"
 
