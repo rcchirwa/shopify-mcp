@@ -21,6 +21,7 @@ from shopify_client import (
     _mask_token,
     extract_user_errors,
     format_user_errors,
+    format_user_errors_joined,
     from_gid,
     with_confirm_hint,
 )
@@ -323,6 +324,59 @@ def test_format_user_errors_tolerates_missing_field_or_message():
     # response shape yields "None: None" rather than a KeyError.
     result = {"productUpdate": {"userErrors": [{}]}}
     assert format_user_errors(result, "productUpdate") == "Error: None: None"
+
+
+# ---------------------------------------------------------------------------
+# format_user_errors_joined
+# ---------------------------------------------------------------------------
+
+
+def test_format_user_errors_joined_happy_path():
+    # Same payload as format_user_errors — but no "Error: " prefix. Used by
+    # bulk-op summaries that embed the formatted string inside a bullet row.
+    result = {
+        "productUpdate": {
+            "userErrors": [
+                {"field": "title", "message": "can't be blank"},
+                {"field": "handle", "message": "already taken"},
+            ]
+        }
+    }
+    assert format_user_errors_joined(result, "productUpdate") == (
+        "title: can't be blank; handle: already taken"
+    )
+
+
+def test_format_user_errors_joined_no_errors_returns_none():
+    assert format_user_errors_joined({"productUpdate": {"userErrors": []}}, "productUpdate") is None
+
+
+def test_format_user_errors_joined_missing_mutation_key_returns_none():
+    assert format_user_errors_joined({}, "productUpdate") is None
+
+
+def test_format_user_errors_joined_missing_user_errors_slot_returns_none():
+    # Mutation returned, but the userErrors key was omitted entirely.
+    assert format_user_errors_joined({"productUpdate": {}}, "productUpdate") is None
+
+
+def test_format_user_errors_joined_mutation_slot_is_none_returns_none():
+    assert format_user_errors_joined({"productUpdate": None}, "productUpdate") is None
+
+
+def test_format_user_errors_joined_alt_error_key():
+    result = {
+        "priceRuleCreate": {"priceRuleUserErrors": [{"field": "value", "message": "out of range"}]}
+    }
+    assert (
+        format_user_errors_joined(result, "priceRuleCreate", error_key="priceRuleUserErrors")
+        == "value: out of range"
+    )
+
+
+def test_format_user_errors_joined_tolerates_missing_field_or_message():
+    result: dict = {"productUpdate": {"userErrors": [{}]}}
+    assert format_user_errors_joined(result, "productUpdate") == "None: None"
 
 
 # ---------------------------------------------------------------------------

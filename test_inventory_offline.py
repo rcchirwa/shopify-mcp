@@ -515,7 +515,9 @@ def test_tracking_partial_failure_reports_per_variant():
     assert out.startswith("CONFIRMED")
     assert "Changed (1):" in out
     assert "Failed (1):" in out
-    assert "locked by another process" in out
+    # Full 'field: message' shape — locks in format_user_errors_joined output
+    # so a regression in the helper surfaces here.
+    assert "inventoryItemId: locked by another process" in out
 
 
 def test_tracking_preview_only_issues_exactly_one_execute_call():

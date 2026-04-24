@@ -8,8 +8,8 @@ from mcp.server.fastmcp import FastMCP
 
 from shopify_client import (
     ShopifyClient,
-    extract_user_errors,
     format_user_errors,
+    format_user_errors_joined,
     from_gid,
     to_gid,
     with_confirm_hint,
@@ -320,9 +320,8 @@ def register(server: FastMCP, client: ShopifyClient):
                     }
                 )
                 continue
-            user_errors = extract_user_errors(result, "inventoryItemUpdate")
-            if user_errors:
-                msgs = "; ".join(f"{e.get('field')}: {e.get('message')}" for e in user_errors)
+            msgs = format_user_errors_joined(result, "inventoryItemUpdate")
+            if msgs:
                 failed.append({"variant": _variant_label(v), "error": msgs})
             else:
                 changed.append(v)
