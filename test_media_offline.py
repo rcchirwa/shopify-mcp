@@ -20,18 +20,16 @@ import requests as _requests
 
 from _testing import CapturingServer, FakeClient
 from tools import media
-from tools.media import (
+from tools.media._common import _as_product_gid
+from tools.media._graphql import (
     GET_MEDIA_STATUS,
     GET_PRODUCT_MEDIA,
     PRODUCT_CREATE_MEDIA,
     PRODUCT_REORDER_MEDIA,
     STAGED_UPLOADS_CREATE,
-    _as_product_gid,
-    _download_image,
-    _format_bytes,
-    _render_media_list,
-    _upload_bytes_to_target,
 )
+from tools.media._list import _render_media_list
+from tools.media._upload import _download_image, _format_bytes, _upload_bytes_to_target
 
 PRODUCT_GID = "gid://shopify/Product/123"
 MEDIA_A = "gid://shopify/MediaImage/111"
