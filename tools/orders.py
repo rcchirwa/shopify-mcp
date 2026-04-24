@@ -2,6 +2,8 @@
 Order tools — read-only access to Shopify orders.
 """
 
+from typing import Any
+
 from mcp.server.fastmcp import FastMCP
 
 from shopify_client import ShopifyClient, from_gid
@@ -49,7 +51,7 @@ query GetOrderById($id: ID!) {
 """
 
 
-def register(server: FastMCP, client: ShopifyClient):
+def register(server: FastMCP, client: ShopifyClient) -> None:
 
     @server.tool()
     def get_orders(limit: int = 20) -> str:
@@ -91,7 +93,7 @@ def register(server: FastMCP, client: ShopifyClient):
 
         total = ((o.get("totalPriceSet") or {}).get("shopMoney") or {}).get("amount", "N/A")
 
-        def _unit_price(li):
+        def _unit_price(li: dict[str, Any]) -> str:
             return ((li.get("originalUnitPriceSet") or {}).get("shopMoney") or {}).get(
                 "amount", "N/A"
             )

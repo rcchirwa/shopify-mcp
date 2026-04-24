@@ -7,6 +7,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 from gql import Client, gql
@@ -40,7 +41,7 @@ JOB_POLL_TIMEOUT_S = 10
 _ENV_PATH = Path(__file__).resolve().parent / ".env"
 
 
-def to_gid(resource_type: str, numeric_id) -> str:
+def to_gid(resource_type: str, numeric_id: int | str) -> str:
     return f"gid://shopify/{resource_type}/{numeric_id}"
 
 
@@ -71,7 +72,7 @@ def _mask_token(token: str) -> str:
 
 
 class ShopifyClient:
-    def __init__(self):
+    def __init__(self) -> None:
         load_dotenv(dotenv_path=_ENV_PATH, override=True)
         store_url = os.getenv("SHOPIFY_STORE_URL")
         access_token = os.getenv("SHOPIFY_ACCESS_TOKEN")
@@ -179,7 +180,7 @@ def poll_job(
         time.sleep(interval_s)
 
 
-def _format_errors(errors) -> str:
+def _format_errors(errors: Any) -> str:
     # `TransportQueryError.errors` is typed Optional[List[Any]] in gql 4.0 — in
     # practice it can be a list of dicts, a list of GraphQLError objects, a
     # list of strings, a single string, or None. Earlier versions of this
@@ -195,7 +196,7 @@ def _format_errors(errors) -> str:
     return "; ".join(_format_one_error(err) for err in errors)
 
 
-def _format_one_error(err) -> str:
+def _format_one_error(err: Any) -> str:
     if isinstance(err, dict):
         return err.get("message") or str(err)
     if isinstance(err, str):

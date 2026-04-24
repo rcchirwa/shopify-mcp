@@ -665,12 +665,13 @@ def test_split_current_skips_resourcepublications_without_publication_id():
 
 def test_resolve_product_meta_returns_all_none_when_neither_id_nor_handle():
     """Public tools guard against this upstream, but the helper itself is
-    the single source of truth for 'no identifier' → all-None. Asserted
-    directly since no public path exercises it."""
+    the single source of truth for 'no identifier' → all-None for the
+    identifier slots, [] for rps. Asserted directly since no public path
+    exercises it."""
     # Client will never be called because neither branch is taken.
     fc = FakeClient([])
     result = _resolve_product_gid_and_meta(fc, "", "")
-    assert result == (None, None, None, None)
+    assert result == (None, None, None, [])
     assert fc.calls == []
 
 

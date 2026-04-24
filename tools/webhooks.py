@@ -67,7 +67,7 @@ def _endpoint_url(endpoint: dict) -> str:
     return endpoint.get("callbackUrl") or f"({endpoint.get('__typename', 'unknown')})"
 
 
-def register(server: FastMCP, client: ShopifyClient):
+def register(server: FastMCP, client: ShopifyClient) -> None:
 
     @server.tool()
     def list_webhooks(limit: int = 50) -> str:

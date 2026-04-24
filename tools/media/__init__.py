@@ -11,7 +11,7 @@ from shopify_client import ShopifyClient
 from tools.media import _delete, _list, _reorder, _update, _upload
 
 
-def register(server: FastMCP, client: ShopifyClient):
+def register(server: FastMCP, client: ShopifyClient) -> None:
     """Register all media tools on the server."""
     _list.register(server, client)
     _upload.register(server, client)

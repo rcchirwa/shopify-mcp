@@ -76,12 +76,15 @@ ignore = ["E501"]
 quote-style = "double"
 
 [tool.mypy]
-# Permissive baseline. Parameter annotations across the repo are partial,
-# so disallow_untyped_defs would force a large annotation pass before the
-# gate is green. Tighten in a follow-up once signatures are filled in.
+# Gate: every def in the `files` list below must have complete param + return
+# annotations. Added tools should carry types from the first commit — mypy will
+# reject the PR otherwise.
 python_version = "3.10"
 files = ["shopify_client.py", "shopify_mcp.py", "tools", "validators", "_testing"]
 ignore_missing_imports = true
+disallow_untyped_defs = true
+# Belt-and-suspenders: if anyone later bypasses the gate with
+# `# type: ignore[no-untyped-def]` on a specific def, the body still gets checked.
 check_untyped_defs = true
 warn_unused_ignores = true
 warn_redundant_casts = true

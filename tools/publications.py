@@ -9,6 +9,9 @@ it must be reinstalled on the store.
 Write operations require confirm=True and log to aon_mcp_log.txt.
 """
 
+from collections.abc import Iterable
+from typing import Any
+
 from mcp.server.fastmcp import FastMCP
 
 from shopify_client import (
@@ -167,8 +170,11 @@ def _map_user_error(user_error: dict, targets: list) -> dict:
     return {"channel_name": raw or "(unknown)", "error": message}
 
 
-def _resolve_product_gid_and_meta(client: ShopifyClient, product_id: str, handle: str):
-    """Returns (gid, title, handle, current_published_nodes) or (None, ...)."""
+def _resolve_product_gid_and_meta(
+    client: ShopifyClient, product_id: str, handle: str
+) -> tuple[str | None, str | None, str | None, list[dict[str, Any]]]:
+    """Returns (gid, title, handle, current_published_nodes); first three
+    are None when no product was resolved, rps is always a list."""
     if product_id:
         data = client.execute(
             GET_PRODUCT_PUBLICATIONS_BY_ID,
@@ -182,14 +188,14 @@ def _resolve_product_gid_and_meta(client: ShopifyClient, product_id: str, handle
         )
         p = data.get("productByHandle")
     else:
-        return None, None, None, None
+        return None, None, None, []
     if not p:
-        return None, None, None, None
+        return None, None, None, []
     rps = (p.get("resourcePublications") or {}).get("nodes", []) or []
     return p["id"], p["title"], p["handle"], rps
 
 
-def _split_current(rps: list) -> tuple:
+def _split_current(rps: list[dict[str, Any]]) -> tuple[set[str], set[str]]:
     """Split resourcePublications into (published_set, unpublished_set) of publication_ids."""
     published = set()
     not_published = set()
@@ -216,8 +222,8 @@ def _render_channel_lines(nodes: list, extra_key: str | None = None) -> str:
     return "\n".join(lines)
 
 
-def register(server: FastMCP, client: ShopifyClient):
-    channel_cache: dict = {}
+def register(server: FastMCP, client: ShopifyClient) -> None:
+    channel_cache: dict[str, Any] = {}
 
     @server.tool()
     def list_sales_channels() -> str:
@@ -286,7 +292,9 @@ def register(server: FastMCP, client: ShopifyClient):
             f"{_render_channel_lines(not_published_nodes)}"
         )
 
-    def _resolve_target_nodes(channel_names: list, publication_ids: list):
+    def _resolve_target_nodes(
+        channel_names: list[str], publication_ids: list[str]
+    ) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
         """Returns (targets: list[node], failed: list[dict])."""
         if channel_names and publication_ids:
             return None, [{"error": "provide channel_names OR publication_ids, not both"}]
@@ -499,7 +507,7 @@ def register(server: FastMCP, client: ShopifyClient):
         remove_ids = published_ids - desired_ids
         unchanged_ids = desired_ids & published_ids
 
-        def _nodes_for(ids):
+        def _nodes_for(ids: Iterable[str]) -> list[dict[str, Any]]:
             return [channel_cache["by_id"][i] for i in ids if i in channel_cache["by_id"]]
 
         added_nodes = _nodes_for(add_ids)
