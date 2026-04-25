@@ -9,6 +9,10 @@ COLLABORATION_REPORT.md
 COLLABORATION_REPORT_GRAPHQL.md
 CLAUDE.md
 
+# Personal accomplishment-export artifacts (weekly date-suffixed files)
+ACCOMPLISHMENTS_*.md
+accomplishments_*.html
+
 # Python
 __pycache__/
 *.py[cod]
