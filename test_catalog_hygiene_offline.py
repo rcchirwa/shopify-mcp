@@ -35,14 +35,19 @@ from tools.catalog_hygiene import (
 
 
 @pytest.fixture(autouse=True)
-def _no_log_write(monkeypatch):
+def _no_log_write(request, monkeypatch):
     """Keep tests from polluting aon_mcp_log.txt.
 
     `tools.catalog_hygiene` does `from tools._log import log_write`, so the
     callable lives at the `tools.catalog_hygiene.log_write` attribute. Patch
     the call-site module (not `tools._log`) or the binding won't intercept.
     Shared by 9.3 (update_product_pricing) and 9.1 (update_product_category).
+
+    Scoped to tool-invoking tests — the Wave 0 contract tests (which only
+    call `register()`) skip the patch since `log_write` is never reached.
     """
+    if request.node.name.startswith("test_register_"):
+        return
     monkeypatch.setattr(catalog_hygiene, "log_write", lambda *_a, **_kw: None)
 
 
@@ -1123,8 +1128,6 @@ def _extract_json_tail(output: str) -> dict:
     return json.loads(output[start:end])
 
 
-
-
 def test_update_product_category_numeric_id_resolved_to_gid_before_mutation():
     tools, fc = _build(
         [
@@ -1654,9 +1657,11 @@ def test_update_product_category_transport_error_on_taxonomy_search_surfaces_str
         category="sweatshirt",
         confirm=True,
     )
-    assert "Taxonomy search failed" in out
+    # Header annotates exception type so UX disambiguates transport vs logic failures.
+    assert "Taxonomy search failed (RuntimeError)" in out
     body = _extract_json_tail(out)
     assert body["ok"] is False
+    assert body["errors"][0]["stage"] == "category-resolve"
     assert "502" in body["errors"][0]["message"]
     # Product read + mutation must NOT have been attempted.
     assert len(fc.calls) == 1
@@ -1671,9 +1676,10 @@ def test_update_product_category_transport_error_on_handle_lookup_surfaces_struc
         category="sweatshirt",
         confirm=True,
     )
-    assert "Handle lookup failed" in out
+    assert "Handle lookup failed (RuntimeError)" in out
     body = _extract_json_tail(out)
     assert body["ok"] is False
+    assert body["errors"][0]["stage"] == "product-resolve"
     assert "503" in body["errors"][0]["message"]
     # Taxonomy + product read + mutation must NOT have been attempted.
     assert len(fc.calls) == 1

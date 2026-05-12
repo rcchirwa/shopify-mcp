@@ -354,7 +354,7 @@ def _resolve_product_gid(
     try:
         data = client.execute(GET_PRODUCT_BY_HANDLE_MIN, {"handle": stripped})
     except Exception as e:
-        return None, f"Handle lookup failed: {e}"
+        return None, f"Handle lookup failed ({type(e).__name__}): {e}"
     product = (data or {}).get("productByHandle")
     if not product:
         return None, f"No product found with handle {stripped!r}."
@@ -394,7 +394,7 @@ def _resolve_taxonomy_category(
     try:
         data = client.execute(TAXONOMY_SEARCH, {"search": stripped})
     except Exception as e:
-        return None, [], f"Taxonomy search failed: {e}"
+        return None, [], f"Taxonomy search failed ({type(e).__name__}): {e}"
     nodes = ((data or {}).get("taxonomy") or {}).get("categories", {}).get("nodes") or []
     leaves = [n for n in nodes if n.get("isLeaf")]
     if not leaves:
@@ -770,7 +770,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                     ok=False,
                     product=None,
                     alternates=[],
-                    errors=[{"message": prod_err or "product resolve failed"}],
+                    errors=[
+                        {
+                            "message": prod_err or "product resolve failed",
+                            "stage": "product-resolve",
+                        }
+                    ],
                     preview=not confirm,
                 ),
                 confirm_hint=False,
@@ -785,7 +790,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                     ok=False,
                     product=None,
                     alternates=alternates,
-                    errors=[{"message": cat_err or "category resolve failed"}],
+                    errors=[
+                        {
+                            "message": cat_err or "category resolve failed",
+                            "stage": "category-resolve",
+                        }
+                    ],
                     preview=not confirm,
                 ),
                 confirm_hint=False,
@@ -799,7 +809,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             current_data = client.execute(GET_PRODUCT_CATEGORY, {"id": product_gid})
         except Exception as e:
             return _format_payload(
-                f"Error — update_product_category\n  Failed to read current product: {e}",
+                f"Error — update_product_category\n"
+                f"  Failed to read current product ({type(e).__name__}): {e}",
                 _build_payload(
                     ok=False,
                     product=None,
@@ -887,7 +898,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
         except Exception as e:
             return _format_payload(
-                f"Error — update_product_category\n  Mutation failed: {e}",
+                f"Error — update_product_category\n  Mutation failed ({type(e).__name__}): {e}",
                 _build_payload(
                     ok=False,
                     product=None,
