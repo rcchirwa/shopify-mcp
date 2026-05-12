@@ -29,10 +29,14 @@ from tools import catalog_hygiene
 from tools.catalog_hygiene import (
     GET_PRODUCT_BY_HANDLE_MIN,
     GET_PRODUCT_CATEGORY,
+    GET_PRODUCT_TYPE,
+    GET_PRODUCT_TYPE_BY_HANDLE,
     GET_PRODUCT_VENDOR,
     GET_PRODUCT_VENDOR_BY_HANDLE,
+    PRODUCT_TYPE_MAX_LEN,
     TAXONOMY_SEARCH,
     UPDATE_PRODUCT_CATEGORY,
+    UPDATE_PRODUCT_TYPE,
     UPDATE_PRODUCT_VENDOR,
     VENDOR_MAX_LEN,
 )
@@ -136,6 +140,7 @@ def test_register_adds_expected_tools():
         "update_product_pricing",
         "update_product_category",
         "update_product_vendor",
+        "update_product_type",
         "update_variant_image_binding",
     }
     assert fc.calls == []
@@ -2377,6 +2382,494 @@ def test_vendor_text_non_empty_returns_value():
 
     assert _vendor_text("Nike") == "Nike"
     assert _vendor_text("  Nike  ") == "  Nike  "
+
+
+# =============================================================================
+# Story 9.4 — update_product_type
+# =============================================================================
+#
+# Near-twin of Story 9.2 (update_product_vendor). Semantic deltas pinned here:
+#   - Empty / whitespace-only product_type is VALID — clears the field. The
+#     vendor twin rejects these as errors.
+#   - None is REJECTED (signature requires str; this is a runtime guard).
+#     The vendor twin accepts None as its canonical "clear" path.
+#   - Wire form for clear is `productType: ""` (Shopify treats "" as cleared
+#     for this field); vendor's wire form for clear is `vendor: null`.
+
+
+# ---------- Helpers — Story 9.4 (update_product_type) ----------
+
+
+def _type_read(pid="123", product_type="Old Type", title="Tee"):
+    return {
+        "product": {
+            "id": f"gid://shopify/Product/{pid}",
+            "title": title,
+            "productType": product_type,
+        }
+    }
+
+
+def _type_read_by_handle(pid="123", product_type="Old Type", title="Tee"):
+    return {
+        "productByHandle": {
+            "id": f"gid://shopify/Product/{pid}",
+            "title": title,
+            "productType": product_type,
+        }
+    }
+
+
+def _type_update_ok(pid="123", product_type="Crewneck Sweatshirt"):
+    return {
+        "productUpdate": {
+            "product": {"id": f"gid://shopify/Product/{pid}", "productType": product_type},
+            "userErrors": [],
+        }
+    }
+
+
+def _type_update_user_err(field, message):
+    return {
+        "productUpdate": {
+            "product": None,
+            "userErrors": [{"field": field, "message": message}],
+        }
+    }
+
+
+# ---------- productId resolution ----------
+
+
+def test_update_product_type_numeric_id_resolved():
+    tools, fc = _build(
+        [
+            _type_read(pid="5234567890", product_type="Old"),
+            _type_update_ok(pid="5234567890", product_type="Crewneck Sweatshirt"),
+        ]
+    )
+    out = tools["update_product_type"](
+        product_id="5234567890",
+        product_type="Crewneck Sweatshirt",
+        confirm=True,
+    )
+    assert fc.calls[0][0] == GET_PRODUCT_TYPE
+    assert fc.calls[0][1] == {"id": "gid://shopify/Product/5234567890"}
+    assert fc.calls[1][0] == UPDATE_PRODUCT_TYPE
+    assert fc.calls[1][1] == {
+        "product": {
+            "id": "gid://shopify/Product/5234567890",
+            "productType": "Crewneck Sweatshirt",
+        }
+    }
+    payload = _extract_json(out)
+    assert payload["ok"] is True
+    assert payload["preview"] is False
+    assert payload["product"]["id"] == "gid://shopify/Product/5234567890"
+    assert payload["product"]["productType"] == "Crewneck Sweatshirt"
+    assert payload["errors"] == []
+    assert out.startswith("Done.")
+
+
+def test_update_product_type_gid_passthrough():
+    gid = "gid://shopify/Product/7777"
+    tools, fc = _build([_type_read(pid="7777", product_type="Old"), _type_update_ok(pid="7777")])
+    out = tools["update_product_type"](
+        product_id=gid, product_type="Crewneck Sweatshirt", confirm=True
+    )
+    assert fc.calls[0][1] == {"id": gid}
+    assert fc.calls[1][1]["product"]["id"] == gid
+    payload = _extract_json(out)
+    assert payload["ok"] is True
+    assert payload["product"]["id"] == gid
+
+
+def test_update_product_type_handle_resolved():
+    tools, fc = _build(
+        [_type_read_by_handle(pid="42", product_type="Old"), _type_update_ok(pid="42")]
+    )
+    out = tools["update_product_type"](
+        product_id="cool-tee", product_type="Crewneck Sweatshirt", confirm=True
+    )
+    assert fc.calls[0][0] == GET_PRODUCT_TYPE_BY_HANDLE
+    assert fc.calls[0][1] == {"handle": "cool-tee"}
+    assert fc.calls[1][1]["product"]["id"] == "gid://shopify/Product/42"
+    payload = _extract_json(out)
+    assert payload["ok"] is True
+    assert payload["product"]["id"] == "gid://shopify/Product/42"
+
+
+def test_update_product_type_handle_not_found():
+    tools, fc = _build([{"productByHandle": None}])
+    out = tools["update_product_type"](
+        product_id="nope-handle", product_type="Crewneck Sweatshirt", confirm=True
+    )
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == GET_PRODUCT_TYPE_BY_HANDLE
+    assert "no product found" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+    assert payload["errors"]
+    assert payload["preview"] is False
+
+
+def test_update_product_type_handle_not_found_dry_run():
+    # Symmetric to ..._handle_not_found but with confirm=False. Pins that the
+    # not-found error path emits preview=False regardless of confirm.
+    tools, fc = _build([{"productByHandle": None}])
+    out = tools["update_product_type"](
+        product_id="nope-handle", product_type="Crewneck Sweatshirt", confirm=False
+    )
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == GET_PRODUCT_TYPE_BY_HANDLE
+    assert "no product found" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+    assert payload["preview"] is False
+    assert payload["errors"][0]["stage"] == "product-resolve"
+    assert UPDATE_PRODUCT_TYPE not in [c[0] for c in fc.calls]
+
+
+def test_update_product_type_numeric_id_not_found():
+    tools, fc = _build([{"product": None}])
+    out = tools["update_product_type"](
+        product_id="999999", product_type="Crewneck Sweatshirt", confirm=False
+    )
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == GET_PRODUCT_TYPE
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+    assert payload["preview"] is False
+    assert payload["errors"][0]["stage"] == "product-resolve"
+
+
+def test_update_product_type_resolve_exception_surfaces_as_error():
+    tools, fc = _build([RuntimeError("transport boom")])
+    out = tools["update_product_type"](
+        product_id="123", product_type="Crewneck Sweatshirt", confirm=True
+    )
+    assert len(fc.calls) == 1
+    assert "Error resolving product_id (RuntimeError)" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+    assert payload["errors"] == [{"message": "transport boom", "stage": "product-resolve"}]
+
+
+def test_update_product_type_empty_product_id_fast_fails_without_network():
+    tools, fc = _build([])
+    out = tools["update_product_type"](
+        product_id="", product_type="Crewneck Sweatshirt", confirm=True
+    )
+    assert fc.calls == []
+    assert "product_id must be a non-empty string" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+    assert payload["errors"][0]["stage"] == "product-resolve"
+
+
+def test_update_product_type_empty_gid_body_fast_fails_without_network():
+    tools, fc = _build([])
+    out = tools["update_product_type"](
+        product_id="gid://shopify/Product/",
+        product_type="Crewneck Sweatshirt",
+        confirm=True,
+    )
+    assert fc.calls == []
+    assert "Empty product GID body" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+    assert payload["errors"][0]["stage"] == "product-resolve"
+
+
+# ---------- productType validation ----------
+
+
+def test_update_product_type_rejects_none():
+    # None is not a valid clear path — caller must pass ''. Defense-in-depth
+    # for runtime callers that bypass the `str` type hint.
+    tools, fc = _build([])
+    out = tools["update_product_type"](product_id="123", product_type=None, confirm=True)
+    assert fc.calls == [], "None product_type must short-circuit before any Shopify call"
+    assert "Error:" in out
+    assert "required" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+    assert payload["errors"][0]["field"] == "product_type"
+    assert payload["errors"][0]["stage"] == "validation"
+
+
+def test_update_product_type_rejects_over_255_chars():
+    tools, fc = _build([])
+    long_type = "a" * (PRODUCT_TYPE_MAX_LEN + 1)
+    out = tools["update_product_type"](product_id="123", product_type=long_type, confirm=True)
+    assert fc.calls == [], ">255-char product_type must reject before any Shopify call"
+    assert f"{PRODUCT_TYPE_MAX_LEN}" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+    assert payload["preview"] is False
+
+
+def test_update_product_type_accepts_exact_255_chars():
+    product_type = "a" * PRODUCT_TYPE_MAX_LEN
+    tools, fc = _build(
+        [
+            _type_read(pid="55", product_type="Old"),
+            _type_update_ok(pid="55", product_type=product_type),
+        ]
+    )
+    out = tools["update_product_type"](product_id="55", product_type=product_type, confirm=True)
+    assert fc.calls[1][0] == UPDATE_PRODUCT_TYPE
+    assert fc.calls[1][1]["product"]["productType"] == product_type
+    payload = _extract_json(out)
+    assert payload["ok"] is True
+    assert payload["product"]["productType"] == product_type
+
+
+def test_update_product_type_trims_whitespace():
+    tools, fc = _build(
+        [
+            _type_read(pid="33", product_type="Old"),
+            _type_update_ok(pid="33", product_type="Crewneck"),
+        ]
+    )
+    out = tools["update_product_type"](product_id="33", product_type="  Crewneck  ", confirm=True)
+    sent = fc.calls[1][1]["product"]["productType"]
+    assert sent == "Crewneck", f"expected trimmed 'Crewneck', got {sent!r}"
+    payload = _extract_json(out)
+    assert payload["product"]["productType"] == "Crewneck"
+
+
+# ---------- clearing semantics ----------
+
+
+def test_update_product_type_empty_string_clears_the_field():
+    # Inverse of vendor: empty string is VALID and clears the field. Wire form
+    # is `productType: ""` (Shopify treats this as cleared for productType).
+    tools, fc = _build(
+        [
+            _type_read(pid="88", product_type="Crewneck"),
+            {
+                "productUpdate": {
+                    "product": {"id": "gid://shopify/Product/88", "productType": ""},
+                    "userErrors": [],
+                }
+            },
+        ]
+    )
+    out = tools["update_product_type"](product_id="88", product_type="", confirm=True)
+    assert fc.calls[1][1]["product"]["productType"] == ""
+    assert "(cleared)" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is True
+    assert payload["product"]["productType"] == ""
+
+
+def test_update_product_type_whitespace_only_clears_the_field():
+    # Whitespace-only trims to "" — also a valid clear, NOT a validation error.
+    tools, fc = _build(
+        [
+            _type_read(pid="88", product_type="Crewneck"),
+            {
+                "productUpdate": {
+                    "product": {"id": "gid://shopify/Product/88", "productType": ""},
+                    "userErrors": [],
+                }
+            },
+        ]
+    )
+    out = tools["update_product_type"](product_id="88", product_type="   ", confirm=True)
+    assert fc.calls[1][1]["product"]["productType"] == ""
+    assert "(cleared)" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is True
+    assert payload["product"]["productType"] == ""
+
+
+# ---------- dry-run / preview ----------
+
+
+def test_update_product_type_dry_run_no_mutation():
+    tools, fc = _build([_type_read(pid="123", product_type="Old")])
+    out = tools["update_product_type"](product_id="123", product_type="Crewneck", confirm=False)
+    assert out.startswith("PREVIEW —"), out
+    assert "Reply with confirm=True" in out
+    assert len(fc.calls) == 1, "preview must not issue UPDATE_PRODUCT_TYPE"
+    assert fc.calls[0][0] == GET_PRODUCT_TYPE
+    payload = _extract_json(out)
+    assert payload["preview"] is True
+    assert payload["ok"] is True
+    assert payload["product"]["productType"] == "Crewneck"
+
+
+# ---------- idempotency ----------
+
+
+def test_update_product_type_idempotent_when_already_set():
+    tools, fc = _build([_type_read(pid="123", product_type="Crewneck")])
+    out = tools["update_product_type"](product_id="123", product_type="Crewneck", confirm=True)
+    assert len(fc.calls) == 1, "idempotent path must skip the mutation"
+    assert "no-op" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is True
+    assert payload["preview"] is False
+    assert payload["product"]["productType"] == "Crewneck"
+
+
+def test_update_product_type_idempotent_when_both_empty():
+    # Current is "" (or null), target is "" — clear-when-already-clear is a no-op.
+    tools, fc = _build([_type_read(pid="123", product_type="")])
+    out = tools["update_product_type"](product_id="123", product_type="", confirm=True)
+    assert len(fc.calls) == 1
+    assert "no-op" in out
+    assert "(cleared)" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is True
+    assert payload["preview"] is False
+    assert payload["product"]["productType"] == ""
+
+
+def test_update_product_type_idempotent_when_current_null_target_empty():
+    # Shopify may return productType: null for a never-set field. Target is ""
+    # — both normalize to "", so this is a no-op.
+    tools, fc = _build([_type_read(pid="123", product_type=None)])
+    out = tools["update_product_type"](product_id="123", product_type="", confirm=True)
+    assert len(fc.calls) == 1
+    assert "no-op" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is True
+    assert payload["preview"] is False
+
+
+def test_update_product_type_idempotent_when_current_whitespace_target_empty():
+    # Current is whitespace, target is empty — both normalize to "".
+    tools, fc = _build([_type_read(pid="123", product_type="   ")])
+    out = tools["update_product_type"](product_id="123", product_type="", confirm=True)
+    assert len(fc.calls) == 1
+    payload = _extract_json(out)
+    assert payload["ok"] is True
+    assert payload["preview"] is False
+
+
+# ---------- error surfacing ----------
+
+
+def test_update_product_type_user_errors_surface_in_output():
+    tools, fc = _build(
+        [
+            _type_read(pid="123", product_type="Old"),
+            _type_update_user_err("productType", "productType is too long"),
+        ]
+    )
+    out = tools["update_product_type"](product_id="123", product_type="Crewneck", confirm=True)
+    assert fc.calls[1][0] == UPDATE_PRODUCT_TYPE
+    assert "productType is too long" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+    assert payload["errors"] == [{"field": "productType", "message": "productType is too long"}]
+    assert payload["preview"] is False
+
+
+def test_update_product_type_mutation_exception_surfaced():
+    tools, fc = _build([_type_read(pid="123", product_type="Old"), RuntimeError("HTTP 503")])
+    out = tools["update_product_type"](product_id="123", product_type="Crewneck", confirm=True)
+    assert "Error calling productUpdate (RuntimeError)" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+    assert payload["errors"] == [{"message": "HTTP 503", "stage": "product-update"}]
+
+
+# ---------- JSON tail contract ----------
+
+
+def test_update_product_type_returns_json_tail_block():
+    tools, _fc = _build(
+        [
+            _type_read(pid="123", product_type="Old"),
+            _type_update_ok(pid="123", product_type="Crewneck"),
+        ]
+    )
+    out = tools["update_product_type"](product_id="123", product_type="Crewneck", confirm=True)
+    assert "```json\n" in out
+    payload = _extract_json(out)
+    assert set(payload.keys()) == {"ok", "product", "errors", "preview"}
+    assert set(payload["product"].keys()) == {"id", "productType"}
+
+
+def test_update_product_type_post_mutation_value_echoed():
+    # If Shopify normalizes the productType (e.g. trims further), the JSON tail
+    # MUST reflect what Shopify stored, not what we sent.
+    tools, _fc = _build(
+        [
+            _type_read(pid="123", product_type="Old"),
+            _type_update_ok(pid="123", product_type="CrewneckNormalized"),
+        ]
+    )
+    out = tools["update_product_type"](product_id="123", product_type="Crewneck", confirm=True)
+    payload = _extract_json(out)
+    assert payload["product"]["productType"] == "CrewneckNormalized"
+
+
+def test_update_product_type_post_mutation_missing_field_falls_back():
+    # Defensive: if Shopify's response omits productType, the tail keeps the
+    # value we sent so the JSON shape stays consistent.
+    tools, _fc = _build(
+        [
+            _type_read(pid="123", product_type="Old"),
+            {
+                "productUpdate": {
+                    "product": {"id": "gid://shopify/Product/123"},
+                    "userErrors": [],
+                }
+            },
+        ]
+    )
+    out = tools["update_product_type"](product_id="123", product_type="Crewneck", confirm=True)
+    payload = _extract_json(out)
+    assert payload["product"]["productType"] == "Crewneck"
+
+
+def test_update_product_type_post_mutation_null_value_normalized_to_empty():
+    # When Shopify echoes productType: null (clear succeeded), the tail must
+    # show "" rather than null — keeps the type contract (always a string).
+    tools, _fc = _build(
+        [
+            _type_read(pid="123", product_type="Old"),
+            {
+                "productUpdate": {
+                    "product": {
+                        "id": "gid://shopify/Product/123",
+                        "productType": None,
+                    },
+                    "userErrors": [],
+                }
+            },
+        ]
+    )
+    out = tools["update_product_type"](product_id="123", product_type="", confirm=True)
+    payload = _extract_json(out)
+    assert payload["product"]["productType"] == ""
+
+
+# ---------- _type_text unit tests ----------
+
+
+def test_type_text_empty_string_returns_cleared():
+    from tools.catalog_hygiene import _type_text
+
+    assert _type_text("") == "(cleared)"
+
+
+def test_type_text_whitespace_only_returns_cleared():
+    from tools.catalog_hygiene import _type_text
+
+    assert _type_text("   ") == "(cleared)"
+
+
+def test_type_text_non_empty_returns_value():
+    from tools.catalog_hygiene import _type_text
+
+    assert _type_text("Crewneck") == "Crewneck"
+    assert _type_text("  Crewneck  ") == "  Crewneck  "
 
 
 # =============================================================================

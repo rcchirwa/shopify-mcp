@@ -36,6 +36,7 @@ Requires `write_files` and `write_products` scopes. Local-file source paths are 
 ### Catalog hygiene
 | Tool | Description |
 |------|-------------|
+| `update_product_type` | Set or clear a product's legacy free-text `productType` field via `productUpdate`; accepts numeric ID / GID / handle; empty or whitespace input clears the field (Shopify treats `""` as cleared) (preview + confirm; head + JSON tail per the Epic 9 amendment) |
 | `update_variant_image_binding` | Bind existing product media to one or more variants; resolves `variantId` (numeric / GID / SKU), rejects media GIDs not on the product, treats already-bound media as idempotent no-op, appends only the delta via `productVariantAppendMedia` (preview + confirm; head + JSON tail per the Epic 9 amendment) |
 
 ### Inventory

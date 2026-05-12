@@ -131,6 +131,51 @@ mutation productUpdate($product: ProductUpdateInput!) {
 VENDOR_MAX_LEN = 255
 
 # ---------------------------------------------------------------------------
+# GraphQL — Story 9.4 (update_product_type)
+# ---------------------------------------------------------------------------
+
+# Narrow read for the productType field — mirror of GET_PRODUCT_VENDOR. Kept
+# separate from the vendor query so a future API-version bump on either field
+# doesn't have to untangle them.
+GET_PRODUCT_TYPE = """
+query GetProductType($id: ID!) {
+  product(id: $id) {
+    id
+    title
+    productType
+  }
+}
+"""
+
+# Handle-form resolver — only fired when product_id is non-numeric and non-GID.
+GET_PRODUCT_TYPE_BY_HANDLE = """
+query GetProductTypeByHandle($handle: String!) {
+  productByHandle(handle: $handle) {
+    id
+    title
+    productType
+  }
+}
+"""
+
+# ProductUpdateInput shape — same input variable as the vendor mutation. Per
+# spec, clearing productType is wire-encoded as `productType: ""` (Shopify
+# treats empty string as cleared for this field, unlike vendor where null is
+# the clear path).
+UPDATE_PRODUCT_TYPE = """
+mutation productUpdate($product: ProductUpdateInput!) {
+  productUpdate(product: $product) {
+    product { id productType }
+    userErrors { field message }
+  }
+}
+"""
+
+# Same 255-char cap that vendor enforces. Shopify rejects longer values; we
+# pre-empt with a structured tool error.
+PRODUCT_TYPE_MAX_LEN = 255
+
+# ---------------------------------------------------------------------------
 # GraphQL — Story 9.1 (update_product_category)
 # ---------------------------------------------------------------------------
 
@@ -722,6 +767,88 @@ def _format_vendor_payload(
 def _vendor_text(vendor: str | None) -> str:
     """Human-readable vendor display: None or empty/whitespace → '(cleared)'."""
     return "(cleared)" if not (vendor and vendor.strip()) else vendor
+
+
+def _resolve_product_id_for_type(client: ShopifyClient, product_id: str) -> tuple[str | None, dict]:
+    """Resolve a numeric/GID/handle product_id to (product_gid, product_snapshot).
+
+    Twin of `_resolve_product_id` but queries the productType field instead of
+    vendor. Kept separate (rather than parameterizing the vendor helper) so the
+    already-shipped Story 9.2 code path stays untouched.
+    """
+    if not isinstance(product_id, str) or not product_id.strip():
+        raise ValueError("product_id must be a non-empty string")
+    stripped = product_id.strip()
+
+    if stripped.startswith(_PRODUCT_GID_PREFIX):
+        if not stripped[len(_PRODUCT_GID_PREFIX) :]:
+            raise ValueError(f"Empty product GID body: {stripped!r}")
+        gid = stripped
+    elif stripped.isdigit():
+        gid = to_gid("Product", stripped)
+    else:
+        # Handle path — separate query.
+        data = client.execute(GET_PRODUCT_TYPE_BY_HANDLE, {"handle": stripped})
+        product = (data or {}).get("productByHandle") or {}
+        if not product:
+            return None, {}
+        return product.get("id"), product
+
+    # Numeric / GID path shares the same query.
+    data = client.execute(GET_PRODUCT_TYPE, {"id": gid})
+    product = (data or {}).get("product") or {}
+    if not product:
+        return None, {}
+    return product.get("id") or gid, product
+
+
+def _normalize_product_type(product_type: str | None) -> tuple[str, str | None]:
+    """Validate + normalize a productType input.
+
+    Returns `(normalized, error_message)`. Unlike vendor:
+      - empty / whitespace input is VALID — it clears the field. The
+        normalized value is "" (not None) so the mutation wire-form sends
+        `productType: ""` per the spec.
+      - None is rejected — productType is a required field per AC #2; this
+        guard is defense-in-depth for callers that bypass the type hint.
+      - Length > 255 → error.
+    """
+    if product_type is None:
+        return "", "Error: product_type is required (pass '' to clear the field)."
+    trimmed = product_type.strip()
+    if len(trimmed) > PRODUCT_TYPE_MAX_LEN:
+        return (
+            "",
+            f"Error: product_type exceeds {PRODUCT_TYPE_MAX_LEN}-char limit (got {len(trimmed)}).",
+        )
+    return trimmed, None
+
+
+def _format_type_payload(
+    product_gid: str,
+    product_type: str,
+    *,
+    ok: bool,
+    preview: bool,
+    errors: list,
+) -> str:
+    """Serialize the JSON tail block for update_product_type.
+
+    Twin of `_format_vendor_payload`; differs only in the `product` shape
+    (`productType` instead of `vendor`).
+    """
+    payload = {
+        "ok": ok,
+        "product": {"id": product_gid, "productType": product_type},
+        "errors": errors,
+        "preview": preview,
+    }
+    return "```json\n" + json.dumps(payload) + "\n```"
+
+
+def _type_text(product_type: str) -> str:
+    """Human-readable productType display: empty/whitespace → '(cleared)'."""
+    return "(cleared)" if not product_type.strip() else product_type
 
 
 def register(server: FastMCP, client: ShopifyClient) -> None:
@@ -1334,6 +1461,180 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             + _format_vendor_payload(
                 product_gid=product_gid,
                 vendor=final_vendor,
+                ok=True,
+                preview=False,
+                errors=[],
+            )
+        )
+
+    @server.tool()
+    def update_product_type(
+        product_id: str,
+        product_type: str,
+        confirm: bool = False,
+    ) -> str:
+        """
+        Set or clear a product's legacy free-text productType.
+
+        Args:
+            product_id: Numeric ID, GID, or handle.
+            product_type: New productType (trimmed, ≤ 255 chars). Empty string
+                or whitespace-only clears the field — Shopify treats `""` as
+                cleared for productType (distinct from vendor, where `null`
+                is the clear path).
+            confirm: When False (default) returns a preview without calling
+                productUpdate. When True executes the mutation.
+
+        Distinct from category (Story 9.1) — both fields coexist on the
+        product. Themes, Liquid templates, and smart-collection rules still
+        key off productType, which is why this tool exists alongside the
+        Standard Taxonomy category tool.
+
+        Returns a human-readable preview/confirmation block followed by a
+        fenced ```json``` block carrying `{ok, product{id, productType}, errors, preview}`.
+        """
+        new_type, type_err = _normalize_product_type(product_type)
+        if type_err:
+            return f"{type_err}\n\n" + _format_type_payload(
+                product_gid="",
+                product_type="",
+                ok=False,
+                preview=False,
+                errors=[
+                    {
+                        "field": "product_type",
+                        "message": type_err.removeprefix("Error: "),
+                        "stage": "validation",
+                    }
+                ],
+            )
+
+        try:
+            product_gid, product = _resolve_product_id_for_type(client, product_id)
+        except Exception as exc:
+            msg = f"Error resolving product_id ({type(exc).__name__}): {exc}"
+            return f"{msg}\n\n" + _format_type_payload(
+                product_gid="",
+                product_type=new_type,
+                ok=False,
+                preview=False,
+                errors=[{"message": str(exc), "stage": "product-resolve"}],
+            )
+
+        if not product_gid:
+            msg = f"Error: no product found for {product_id!r}."
+            return f"{msg}\n\n" + _format_type_payload(
+                product_gid="",
+                product_type=new_type,
+                ok=False,
+                preview=False,
+                errors=[
+                    {
+                        "message": msg.removeprefix("Error: "),
+                        "stage": "product-resolve",
+                    }
+                ],
+            )
+
+        # Idempotency: normalize current value the same way the input was
+        # normalized (trim → "" for any falsy / whitespace state), so a clear
+        # against an already-cleared field is a no-op.
+        old_type = product.get("productType")
+        current_norm = (old_type or "").strip()
+        if current_norm == new_type:
+            text = (
+                f"Done. Update product type (no-op, already set)\n"
+                f"  Product ID   : {from_gid(product_gid)}\n"
+                f"  Product type : {_type_text(new_type)}\n"
+            )
+            return (
+                text
+                + "\n"
+                + _format_type_payload(
+                    product_gid=product_gid,
+                    product_type=new_type,
+                    ok=True,
+                    preview=False,
+                    errors=[],
+                )
+            )
+
+        header_text = "Done." if confirm else "PREVIEW —"
+        body = (
+            f"{header_text} Update product type\n"
+            f"  Product ID   : {from_gid(product_gid)}\n"
+            f"  Old type     : {_type_text(current_norm)}\n"
+            f"  New type     : {_type_text(new_type)}\n"
+        )
+
+        if not confirm:
+            text = body + "\n\nReply with confirm=True to execute.\n"
+            return (
+                text
+                + "\n"
+                + _format_type_payload(
+                    product_gid=product_gid,
+                    product_type=new_type,
+                    ok=True,
+                    preview=True,
+                    errors=[],
+                )
+            )
+
+        try:
+            result = client.execute(
+                UPDATE_PRODUCT_TYPE,
+                {"product": {"id": product_gid, "productType": new_type}},
+            )
+        except Exception as exc:
+            msg = f"Error calling productUpdate ({type(exc).__name__}): {exc}"
+            return f"{msg}\n\n" + _format_type_payload(
+                product_gid=product_gid,
+                product_type=new_type,
+                ok=False,
+                preview=False,
+                errors=[{"message": str(exc), "stage": "product-update"}],
+            )
+
+        type_user_errors = extract_user_errors(result, "productUpdate")
+        if type_user_errors:
+            err_summary = "; ".join(
+                f"{e.get('field')}: {e.get('message')}" for e in type_user_errors
+            )
+            text = f"Error: productUpdate userErrors: {err_summary}\n"
+            return (
+                text
+                + "\n"
+                + _format_type_payload(
+                    product_gid=product_gid,
+                    product_type=new_type,
+                    ok=False,
+                    preview=False,
+                    errors=type_user_errors,
+                )
+            )
+
+        # Post-mutation snapshot — prefer Shopify's echoed value so a
+        # null-coerced productType flows back unchanged in the JSON tail.
+        updated_product = (result.get("productUpdate") or {}).get("product") or {}
+        final_type = (
+            updated_product.get("productType") or ""
+            if "productType" in updated_product
+            else new_type
+        )
+
+        log_write(
+            "update_product_type",
+            f"id={from_gid(product_gid)} | "
+            f"'{_type_text(current_norm)}' → '{_type_text(final_type)}'",
+        )
+
+        return (
+            body
+            + "\n"
+            + _format_type_payload(
+                product_gid=product_gid,
+                product_type=final_type,
                 ok=True,
                 preview=False,
                 errors=[],
