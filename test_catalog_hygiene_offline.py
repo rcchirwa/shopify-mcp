@@ -29,8 +29,12 @@ from tools import catalog_hygiene
 from tools.catalog_hygiene import (
     GET_PRODUCT_BY_HANDLE_MIN,
     GET_PRODUCT_CATEGORY,
+    GET_PRODUCT_VENDOR,
+    GET_PRODUCT_VENDOR_BY_HANDLE,
     TAXONOMY_SEARCH,
     UPDATE_PRODUCT_CATEGORY,
+    UPDATE_PRODUCT_VENDOR,
+    VENDOR_MAX_LEN,
 )
 
 
@@ -123,12 +127,16 @@ def test_register_is_callable_and_returns_none():
 
 
 def test_register_adds_expected_tools():
-    # Pins the current tool set. Future Stories 9.2/9.4-9.7 will grow this;
+    # Pins the current tool set. Future Stories 9.4-9.7 will grow this;
     # update the assertion alongside each one.
     srv = CapturingServer()
     fc = FakeClient([])
     catalog_hygiene.register(srv, fc)
-    assert set(srv.tools.keys()) == {"update_product_pricing", "update_product_category"}
+    assert set(srv.tools.keys()) == {
+        "update_product_pricing",
+        "update_product_category",
+        "update_product_vendor",
+    }
     assert fc.calls == []
 
 
@@ -1951,3 +1959,373 @@ def test_update_product_category_post_update_product_node_null_yields_none_snaps
     body = _extract_json_tail(out)
     assert body["ok"] is True
     assert body["product"] is None
+
+
+# ---------- Helpers — Story 9.2 (update_product_vendor) ----------
+
+
+def _vendor_read(pid="123", vendor="Nike", title="Tee"):
+    return {
+        "product": {
+            "id": f"gid://shopify/Product/{pid}",
+            "title": title,
+            "vendor": vendor,
+        }
+    }
+
+
+def _vendor_read_by_handle(pid="123", vendor="Nike", title="Tee"):
+    return {
+        "productByHandle": {
+            "id": f"gid://shopify/Product/{pid}",
+            "title": title,
+            "vendor": vendor,
+        }
+    }
+
+
+def _update_ok(pid="123", vendor="Vanish"):
+    return {
+        "productUpdate": {
+            "product": {"id": f"gid://shopify/Product/{pid}", "vendor": vendor},
+            "userErrors": [],
+        }
+    }
+
+
+def _update_user_err(field, message):
+    return {
+        "productUpdate": {
+            "product": None,
+            "userErrors": [{"field": field, "message": message}],
+        }
+    }
+
+
+def _extract_json(output):
+    """Pull the fenced ```json ...``` block out of a tool return value."""
+    head = output.index("```json\n") + len("```json\n")
+    tail = output.index("\n```", head)
+    return json.loads(output[head:tail])
+
+
+# ---------- productId resolution ----------
+
+
+def test_update_product_vendor_numeric_id_resolved():
+    tools, fc = _build(
+        [
+            _vendor_read(pid="5234567890", vendor="Nike"),
+            _update_ok(pid="5234567890", vendor="Vanish"),
+        ]
+    )
+    out = tools["update_product_vendor"](product_id="5234567890", vendor="Vanish", confirm=True)
+    assert fc.calls[0][0] == GET_PRODUCT_VENDOR
+    assert fc.calls[0][1] == {"id": "gid://shopify/Product/5234567890"}
+    assert fc.calls[1][0] == UPDATE_PRODUCT_VENDOR
+    assert fc.calls[1][1] == {
+        "product": {"id": "gid://shopify/Product/5234567890", "vendor": "Vanish"}
+    }
+    payload = _extract_json(out)
+    assert payload["ok"] is True
+    assert payload["preview"] is False
+    assert payload["product"]["id"] == "gid://shopify/Product/5234567890"
+    assert payload["product"]["vendor"] == "Vanish"
+    assert payload["errors"] == []
+    assert out.startswith("Done.")
+
+
+def test_update_product_vendor_gid_passthrough():
+    gid = "gid://shopify/Product/7777"
+    tools, fc = _build([_vendor_read(pid="7777", vendor="Old"), _update_ok(pid="7777")])
+    out = tools["update_product_vendor"](product_id=gid, vendor="Vanish", confirm=True)
+    assert fc.calls[0][1] == {"id": gid}
+    assert fc.calls[1][1]["product"]["id"] == gid
+    payload = _extract_json(out)
+    assert payload["ok"] is True
+    assert payload["product"]["id"] == gid
+
+
+def test_update_product_vendor_handle_resolved():
+    tools, fc = _build([_vendor_read_by_handle(pid="42", vendor="Old"), _update_ok(pid="42")])
+    out = tools["update_product_vendor"](product_id="cool-tee", vendor="Vanish", confirm=True)
+    assert fc.calls[0][0] == GET_PRODUCT_VENDOR_BY_HANDLE
+    assert fc.calls[0][1] == {"handle": "cool-tee"}
+    assert fc.calls[1][1]["product"]["id"] == "gid://shopify/Product/42"
+    payload = _extract_json(out)
+    assert payload["ok"] is True
+    assert payload["product"]["id"] == "gid://shopify/Product/42"
+
+
+def test_update_product_vendor_handle_not_found():
+    # productByHandle returns null when there is no matching product. The tool
+    # must surface this as a structured error without ever calling productUpdate.
+    tools, fc = _build([{"productByHandle": None}])
+    out = tools["update_product_vendor"](product_id="nope-handle", vendor="Vanish", confirm=True)
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == GET_PRODUCT_VENDOR_BY_HANDLE
+    assert "no product found" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+    assert payload["errors"]
+    assert payload["preview"] is False
+
+
+def test_update_product_vendor_numeric_id_not_found():
+    # GET_PRODUCT_VENDOR returns null when the numeric/GID id doesn't exist.
+    tools, fc = _build([{"product": None}])
+    out = tools["update_product_vendor"](product_id="999999", vendor="Vanish", confirm=False)
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == GET_PRODUCT_VENDOR
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+    # preview=False on every error path — "preview" means "this is what would
+    # happen if you confirmed"; on a not-found error nothing would happen.
+    assert payload["preview"] is False
+    assert payload["errors"][0]["stage"] == "product-resolve"
+
+
+def test_update_product_vendor_resolve_exception_surfaces_as_error():
+    tools, fc = _build([RuntimeError("transport boom")])
+    out = tools["update_product_vendor"](product_id="123", vendor="Vanish", confirm=True)
+    assert len(fc.calls) == 1
+    # Header annotates exception type so transport vs logic failures disambiguate.
+    assert "Error resolving product_id (RuntimeError)" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+    assert payload["errors"] == [{"message": "transport boom", "stage": "product-resolve"}]
+
+
+def test_update_product_vendor_empty_product_id_fast_fails_without_network():
+    # Empty product_id must short-circuit at the resolver guard before any
+    # Shopify call (matches Story 9.1's `_resolve_product_gid` behavior).
+    tools, fc = _build([])
+    out = tools["update_product_vendor"](product_id="", vendor="Vanish", confirm=True)
+    assert fc.calls == []
+    assert "product_id must be a non-empty string" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+    assert payload["errors"][0]["stage"] == "product-resolve"
+
+
+def test_update_product_vendor_empty_gid_body_fast_fails_without_network():
+    # `gid://shopify/Product/` (empty body after prefix) is malformed — error
+    # before any Shopify call rather than letting the read return null.
+    tools, fc = _build([])
+    out = tools["update_product_vendor"](
+        product_id="gid://shopify/Product/",
+        vendor="Vanish",
+        confirm=True,
+    )
+    assert fc.calls == []
+    assert "Empty product GID body" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+    assert payload["errors"][0]["stage"] == "product-resolve"
+
+
+# ---------- vendor validation ----------
+
+
+def test_update_product_vendor_rejects_empty_string():
+    tools, fc = _build([])
+    out = tools["update_product_vendor"](product_id="123", vendor="", confirm=True)
+    assert fc.calls == [], "empty vendor must short-circuit before any Shopify call"
+    assert "Error:" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+    assert payload["errors"][0]["field"] == "vendor"
+    assert payload["errors"][0]["stage"] == "validation"
+
+
+def test_update_product_vendor_rejects_whitespace_only():
+    tools, fc = _build([])
+    out = tools["update_product_vendor"](product_id="123", vendor="   ", confirm=True)
+    assert fc.calls == []
+    assert "Error:" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+
+
+def test_update_product_vendor_rejects_over_255_chars():
+    tools, fc = _build([])
+    long_vendor = "a" * (VENDOR_MAX_LEN + 1)
+    out = tools["update_product_vendor"](product_id="123", vendor=long_vendor, confirm=True)
+    assert fc.calls == [], ">255-char vendor must reject before any Shopify call"
+    assert f"{VENDOR_MAX_LEN}" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+
+
+def test_update_product_vendor_accepts_exact_255_chars():
+    vendor = "a" * VENDOR_MAX_LEN
+    tools, fc = _build([_vendor_read(pid="55", vendor="Old"), _update_ok(pid="55", vendor=vendor)])
+    out = tools["update_product_vendor"](product_id="55", vendor=vendor, confirm=True)
+    assert fc.calls[1][0] == UPDATE_PRODUCT_VENDOR
+    assert fc.calls[1][1]["product"]["vendor"] == vendor
+    payload = _extract_json(out)
+    assert payload["ok"] is True
+    assert payload["product"]["vendor"] == vendor
+
+
+def test_update_product_vendor_trims_whitespace():
+    tools, fc = _build(
+        [_vendor_read(pid="33", vendor="Old"), _update_ok(pid="33", vendor="Vanish")]
+    )
+    out = tools["update_product_vendor"](product_id="33", vendor="  Vanish  ", confirm=True)
+    sent = fc.calls[1][1]["product"]["vendor"]
+    assert sent == "Vanish", f"expected trimmed 'Vanish', got {sent!r}"
+    payload = _extract_json(out)
+    assert payload["product"]["vendor"] == "Vanish"
+
+
+# ---------- clearing semantics ----------
+
+
+def test_update_product_vendor_clear_with_none():
+    # vendor=None ⇒ Shopify gets vendor: null AND text shows "(cleared)".
+    tools, fc = _build(
+        [
+            _vendor_read(pid="88", vendor="Nike"),
+            {
+                "productUpdate": {
+                    "product": {"id": "gid://shopify/Product/88", "vendor": None},
+                    "userErrors": [],
+                }
+            },
+        ]
+    )
+    out = tools["update_product_vendor"](product_id="88", vendor=None, confirm=True)
+    assert fc.calls[1][1]["product"]["vendor"] is None
+    assert "(cleared)" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is True
+    assert payload["product"]["vendor"] is None
+
+
+# ---------- dry-run / preview ----------
+
+
+def test_update_product_vendor_dry_run_no_mutation():
+    tools, fc = _build([_vendor_read(pid="123", vendor="Nike")])
+    out = tools["update_product_vendor"](product_id="123", vendor="Vanish", confirm=False)
+    assert out.startswith("PREVIEW —"), out
+    assert "Reply with confirm=True" in out
+    assert len(fc.calls) == 1, "preview must not issue UPDATE_PRODUCT_VENDOR"
+    assert fc.calls[0][0] == GET_PRODUCT_VENDOR
+    payload = _extract_json(out)
+    assert payload["preview"] is True
+    assert payload["ok"] is True
+    assert payload["product"]["vendor"] == "Vanish"
+
+
+# ---------- idempotency ----------
+
+
+def test_update_product_vendor_idempotent_when_already_set():
+    # Current vendor already equals target → no mutation call, ok=True.
+    tools, fc = _build([_vendor_read(pid="123", vendor="Vanish")])
+    out = tools["update_product_vendor"](product_id="123", vendor="Vanish", confirm=True)
+    assert len(fc.calls) == 1, "idempotent path must skip the mutation"
+    assert "no-op" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is True
+    assert payload["preview"] is False
+    assert payload["product"]["vendor"] == "Vanish"
+
+
+def test_update_product_vendor_idempotent_when_both_empty():
+    # Current vendor is null, target is null (clear-when-already-clear).
+    tools, fc = _build([_vendor_read(pid="123", vendor=None)])
+    out = tools["update_product_vendor"](product_id="123", vendor=None, confirm=True)
+    assert len(fc.calls) == 1
+    assert "no-op" in out
+    assert "(cleared)" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is True
+    assert payload["product"]["vendor"] is None
+
+
+def test_update_product_vendor_idempotent_when_current_whitespace_target_none():
+    # Current vendor is whitespace-only, target is null — both normalize to None.
+    tools, fc = _build([_vendor_read(pid="123", vendor="   ")])
+    out = tools["update_product_vendor"](product_id="123", vendor=None, confirm=True)
+    assert len(fc.calls) == 1
+    payload = _extract_json(out)
+    assert payload["ok"] is True
+
+
+# ---------- error surfacing ----------
+
+
+def test_update_product_vendor_user_errors_surface_in_output():
+    tools, fc = _build(
+        [
+            _vendor_read(pid="123", vendor="Old"),
+            _update_user_err("vendor", "Vendor is too long"),
+        ]
+    )
+    out = tools["update_product_vendor"](product_id="123", vendor="Vanish", confirm=True)
+    assert fc.calls[1][0] == UPDATE_PRODUCT_VENDOR
+    assert "Vendor is too long" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+    assert payload["errors"] == [{"field": "vendor", "message": "Vendor is too long"}]
+    assert payload["preview"] is False
+
+
+def test_update_product_vendor_mutation_exception_surfaced():
+    tools, fc = _build([_vendor_read(pid="123", vendor="Old"), RuntimeError("HTTP 503")])
+    out = tools["update_product_vendor"](product_id="123", vendor="Vanish", confirm=True)
+    assert "Error calling productUpdate (RuntimeError)" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+    assert payload["errors"] == [{"message": "HTTP 503", "stage": "product-update"}]
+
+
+# ---------- JSON tail contract ----------
+
+
+def test_update_product_vendor_returns_json_tail_block():
+    tools, _fc = _build(
+        [_vendor_read(pid="123", vendor="Old"), _update_ok(pid="123", vendor="Vanish")]
+    )
+    out = tools["update_product_vendor"](product_id="123", vendor="Vanish", confirm=True)
+    assert "```json\n" in out
+    payload = _extract_json(out)
+    # All four spec-required keys, none missing.
+    assert set(payload.keys()) == {"ok", "product", "errors", "preview"}
+    assert set(payload["product"].keys()) == {"id", "vendor"}
+
+
+def test_update_product_vendor_post_mutation_vendor_echoed():
+    # If Shopify normalizes the vendor (e.g. trims further), the JSON tail
+    # MUST reflect what Shopify stored, not what we sent.
+    tools, _fc = _build(
+        [
+            _vendor_read(pid="123", vendor="Old"),
+            _update_ok(pid="123", vendor="VanishNormalized"),
+        ]
+    )
+    out = tools["update_product_vendor"](product_id="123", vendor="Vanish", confirm=True)
+    payload = _extract_json(out)
+    assert payload["product"]["vendor"] == "VanishNormalized"
+
+
+def test_update_product_vendor_post_mutation_missing_vendor_field_falls_back():
+    # Defensive: if Shopify's response omits `vendor`, the tail keeps the
+    # value we sent so the JSON shape stays consistent.
+    tools, _fc = _build(
+        [
+            _vendor_read(pid="123", vendor="Old"),
+            {
+                "productUpdate": {
+                    "product": {"id": "gid://shopify/Product/123"},
+                    "userErrors": [],
+                }
+            },
+        ]
+    )
+    out = tools["update_product_vendor"](product_id="123", vendor="Vanish", confirm=True)
+    payload = _extract_json(out)
+    assert payload["product"]["vendor"] == "Vanish"

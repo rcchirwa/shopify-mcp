@@ -73,6 +73,53 @@ mutation UpdateProductVariantsPricing(
 """
 
 # ---------------------------------------------------------------------------
+# GraphQL — Story 9.2 (update_product_vendor)
+# ---------------------------------------------------------------------------
+
+# Vendor lookup is intentionally lighter than the products.py GET_PRODUCT_BY_ID
+# query — only the fields needed for the preview text and the idempotency
+# check. Cuts the read-path cost roughly in half vs. reusing the heavier query.
+GET_PRODUCT_VENDOR = """
+query GetProductVendor($id: ID!) {
+  product(id: $id) {
+    id
+    title
+    vendor
+  }
+}
+"""
+
+# Handle-form resolver: only fired when the caller passes a non-numeric,
+# non-GID identifier. Returns the GID + the same vendor/title fields so the
+# preview path doesn't need a second round-trip after resolution.
+GET_PRODUCT_VENDOR_BY_HANDLE = """
+query GetProductVendorByHandle($handle: String!) {
+  productByHandle(handle: $handle) {
+    id
+    title
+    vendor
+  }
+}
+"""
+
+# Per spec: ProductUpdateInput (not the older `input: ProductInput!` shape used
+# in tools/products.py). Documented in shopify-aon-mcp-catalog-tools-spec.md
+# §"Tool 2 — Underlying Shopify GraphQL".
+UPDATE_PRODUCT_VENDOR = """
+mutation productUpdate($product: ProductUpdateInput!) {
+  productUpdate(product: $product) {
+    product { id vendor }
+    userErrors { field message }
+  }
+}
+"""
+
+# Shopify rejects vendor strings longer than 255 characters; enforce the cap
+# client-side so the userError comes back as a structured tool error rather
+# than a Shopify userError with a less descriptive message.
+VENDOR_MAX_LEN = 255
+
+# ---------------------------------------------------------------------------
 # GraphQL — Story 9.1 (update_product_category)
 # ---------------------------------------------------------------------------
 
@@ -493,6 +540,91 @@ def _shape_product_snapshot(product_node: dict[str, Any] | None) -> dict[str, An
             "name": category.get("name"),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Helpers — Story 9.2 (update_product_vendor)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_product_id(client: ShopifyClient, product_id: str) -> tuple[str | None, dict]:
+    """Resolve a numeric/GID/handle product_id to (product_gid, product_snapshot).
+
+    Returns (None, {}) if no product was found for a handle/numeric/GID lookup
+    so callers can produce a clean "not found" error. Raises ValueError on
+    obvious-garbage inputs (empty string, empty GID body) so the caller's
+    try/except wrapper can surface them as a structured error WITHOUT issuing
+    a wasted Shopify call — mirrors Story 9.1's `_resolve_product_gid` guards.
+    """
+    if not isinstance(product_id, str) or not product_id.strip():
+        raise ValueError("product_id must be a non-empty string")
+    stripped = product_id.strip()
+    if stripped.startswith(_PRODUCT_GID_PREFIX) and not stripped[len(_PRODUCT_GID_PREFIX) :]:
+        raise ValueError(f"Empty product GID body: {stripped!r}")
+
+    if stripped.startswith(_PRODUCT_GID_PREFIX) or stripped.isdigit():
+        gid = stripped if stripped.startswith(_PRODUCT_GID_PREFIX) else to_gid("Product", stripped)
+        data = client.execute(GET_PRODUCT_VENDOR, {"id": gid})
+        product = (data or {}).get("product") or {}
+        if not product:
+            return None, {}
+        return product.get("id") or gid, product
+
+    data = client.execute(GET_PRODUCT_VENDOR_BY_HANDLE, {"handle": stripped})
+    product = (data or {}).get("productByHandle") or {}
+    if not product:
+        return None, {}
+    return product.get("id"), product
+
+
+def _normalize_vendor(vendor: str | None) -> tuple[str | None, str | None]:
+    """Validate + normalize a vendor input.
+
+    Returns `(normalized_vendor, error_message)`:
+      - normalized_vendor is None when the caller wants to clear the vendor
+        (vendor=None) — the mutation should send `vendor: null`.
+      - normalized_vendor is a trimmed non-empty string on the happy path.
+      - error_message is non-None when input was empty/whitespace/too-long;
+        normalized_vendor is then meaningless and callers must short-circuit.
+    """
+    if vendor is None:
+        return None, None
+    trimmed = vendor.strip()
+    if not trimmed:
+        return None, "Error: vendor must be a non-empty string (use vendor=None to clear)."
+    if len(trimmed) > VENDOR_MAX_LEN:
+        return None, f"Error: vendor exceeds {VENDOR_MAX_LEN}-char limit (got {len(trimmed)})."
+    return trimmed, None
+
+
+def _format_vendor_payload(
+    product_gid: str,
+    vendor: str | None,
+    *,
+    ok: bool,
+    preview: bool,
+    errors: list,
+) -> str:
+    """Serialize the JSON tail block for update_product_vendor.
+
+    Distinct from 9.3's `_render` (head + tail) and 9.1's `_format_payload`
+    (different signature) — this helper returns ONLY the fenced JSON block,
+    leaving the caller to compose the human-readable head. The dedicated
+    name dodges the collision with 9.1's `_format_payload` now that both
+    tools share `tools/catalog_hygiene.py`.
+    """
+    payload = {
+        "ok": ok,
+        "product": {"id": product_gid, "vendor": vendor},
+        "errors": errors,
+        "preview": preview,
+    }
+    return "```json\n" + json.dumps(payload) + "\n```"
+
+
+def _vendor_text(vendor: str | None) -> str:
+    """Human-readable vendor display: None → '(cleared)'."""
+    return "(cleared)" if vendor is None else vendor
 
 
 def register(server: FastMCP, client: ShopifyClient) -> None:
@@ -942,4 +1074,171 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"Done. Update product category\n{header_body}",
             payload,
             confirm_hint=False,
+        )
+
+    @server.tool()
+    def update_product_vendor(
+        product_id: str,
+        vendor: str | None = None,
+        confirm: bool = False,
+    ) -> str:
+        """
+        Set or clear a product's vendor (brand).
+
+        Args:
+            product_id: Numeric ID, GID, or handle.
+            vendor: New vendor name (trimmed, ≤ 255 chars). Pass None to clear.
+            confirm: When False (default) returns a preview without calling
+                productUpdate. When True executes the mutation.
+
+        Returns a human-readable preview/confirmation block followed by a
+        fenced ```json``` block carrying `{ok, product{id, vendor}, errors, preview}`.
+        Empty / whitespace-only / >255-char vendor inputs are rejected before
+        any Shopify call is issued.
+        """
+        new_vendor, vendor_err = _normalize_vendor(vendor)
+        if vendor_err:
+            return f"{vendor_err}\n\n" + _format_vendor_payload(
+                product_gid="",
+                vendor=None,
+                ok=False,
+                preview=False,
+                errors=[
+                    {
+                        "field": "vendor",
+                        "message": vendor_err.removeprefix("Error: "),
+                        "stage": "validation",
+                    }
+                ],
+            )
+
+        try:
+            product_gid, product = _resolve_product_id(client, product_id)
+        except Exception as exc:
+            msg = f"Error resolving product_id ({type(exc).__name__}): {exc}"
+            return f"{msg}\n\n" + _format_vendor_payload(
+                product_gid="",
+                vendor=new_vendor,
+                ok=False,
+                preview=False,
+                errors=[{"message": str(exc), "stage": "product-resolve"}],
+            )
+
+        if not product_gid:
+            msg = f"Error: no product found for {product_id!r}."
+            return f"{msg}\n\n" + _format_vendor_payload(
+                product_gid="",
+                vendor=new_vendor,
+                ok=False,
+                preview=False,
+                errors=[
+                    {
+                        "message": msg.removeprefix("Error: "),
+                        "stage": "product-resolve",
+                    }
+                ],
+            )
+
+        old_vendor = product.get("vendor")
+        # Idempotency: treat (None vs empty-string vendor) as equivalent so a
+        # clear-when-already-empty doesn't issue a no-op mutation.
+        current_norm = (old_vendor or "").strip() or None
+        if current_norm == new_vendor:
+            text = (
+                f"Done. Update product vendor (no-op, already set)\n"
+                f"  Product ID : {from_gid(product_gid)}\n"
+                f"  Vendor     : {_vendor_text(new_vendor)}\n"
+            )
+            return (
+                text
+                + "\n"
+                + _format_vendor_payload(
+                    product_gid=product_gid,
+                    vendor=new_vendor,
+                    ok=True,
+                    preview=False,
+                    errors=[],
+                )
+            )
+
+        header_text = "Done." if confirm else "PREVIEW —"
+        body = (
+            f"{header_text} Update product vendor\n"
+            f"  Product ID : {from_gid(product_gid)}\n"
+            f"  Old vendor : {_vendor_text(current_norm)}\n"
+            f"  New vendor : {_vendor_text(new_vendor)}\n"
+        )
+
+        if not confirm:
+            text = body + "\n\nReply with confirm=True to execute.\n"
+            return (
+                text
+                + "\n"
+                + _format_vendor_payload(
+                    product_gid=product_gid,
+                    vendor=new_vendor,
+                    ok=True,
+                    preview=True,
+                    errors=[],
+                )
+            )
+
+        try:
+            result = client.execute(
+                UPDATE_PRODUCT_VENDOR,
+                {"product": {"id": product_gid, "vendor": new_vendor}},
+            )
+        except Exception as exc:
+            msg = f"Error calling productUpdate ({type(exc).__name__}): {exc}"
+            return f"{msg}\n\n" + _format_vendor_payload(
+                product_gid=product_gid,
+                vendor=new_vendor,
+                ok=False,
+                preview=False,
+                errors=[{"message": str(exc), "stage": "product-update"}],
+            )
+
+        vendor_user_errors = extract_user_errors(result, "productUpdate")
+        if vendor_user_errors:
+            err_summary = "; ".join(
+                f"{e.get('field')}: {e.get('message')}" for e in vendor_user_errors
+            )
+            text = f"Error: productUpdate userErrors: {err_summary}\n"
+            return (
+                text
+                + "\n"
+                + _format_vendor_payload(
+                    product_gid=product_gid,
+                    vendor=new_vendor,
+                    ok=False,
+                    preview=False,
+                    errors=vendor_user_errors,
+                )
+            )
+
+        # Post-mutation snapshot — prefer Shopify's echoed value so a stripped /
+        # null-coerced vendor flows back in the JSON tail unchanged.
+        updated_vendor_product = (result.get("productUpdate") or {}).get("product") or {}
+        final_vendor = (
+            updated_vendor_product.get("vendor")
+            if "vendor" in updated_vendor_product
+            else new_vendor
+        )
+
+        log_write(
+            "update_product_vendor",
+            f"id={from_gid(product_gid)} | "
+            f"'{_vendor_text(current_norm)}' → '{_vendor_text(final_vendor)}'",
+        )
+
+        return (
+            body
+            + "\n"
+            + _format_vendor_payload(
+                product_gid=product_gid,
+                vendor=final_vendor,
+                ok=True,
+                preview=False,
+                errors=[],
+            )
         )
