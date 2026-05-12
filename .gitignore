@@ -9,9 +9,14 @@ COLLABORATION_REPORT.md
 COLLABORATION_REPORT_GRAPHQL.md
 CLAUDE.md
 
+# Personal context files — local-only notes and reference material
+context/
+
 # Personal accomplishment-export artifacts (weekly date-suffixed files)
 ACCOMPLISHMENTS_*.md
 accomplishments_*.html
+accomplishments_*.svg
+accomplishments_*.png
 
 # Personal dump folder — non-MCP files that shouldn't be checked in.
 # Anything dropped here is automatically excluded from git.
