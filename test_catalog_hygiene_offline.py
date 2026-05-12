@@ -21,6 +21,7 @@ Usage:
 
 import json
 import re
+from typing import Any
 
 import pytest
 
@@ -3261,6 +3262,54 @@ def test_s96_resolves_sku_against_combined_query_variants_no_extra_fetch():
     assert fc.calls[1][0] == PRODUCT_VARIANT_APPEND_MEDIA
     # Mutation uses the RESOLVED gid, not the SKU string.
     assert fc.calls[1][1]["variantMedia"][0]["variantId"] == _S96_VARIANT_A
+
+
+def test_s96_combined_query_variants_flow_through_to_resolver(monkeypatch):
+    """Pin the resolver-of-record contract.
+
+    The renamed `..._no_extra_fetch` test asserts on the call count (2 vs 3)
+    and the resolved GID landing in the mutation, which is sufficient
+    behavioral evidence today. This test goes further and pins WHICH resolver
+    is called and WHAT it's called with — specifically that the variants list
+    flows from the combined query straight into
+    `resolve_variant_ids_with_variants` without an interceding fetch.
+
+    A future refactor that swapped the enabler for a fresh fetch would still
+    pass the count-based test (same number of `client.execute` calls if the
+    refactor happens to balance) but would fail this one.
+    """
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1],
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+    )
+    mutation = _s96_mutation_response(
+        productVariants=[(_S96_VARIANT_A, [(_S96_MEDIA_1, "", None)])]
+    )
+
+    captured: dict[str, Any] = {}
+    original = catalog_hygiene.resolve_variant_ids_with_variants
+
+    def _spy(
+        variant_ids: list[str], variants: list[dict[str, Any]], *, product_gid: str
+    ) -> list[str]:
+        captured["variant_ids"] = list(variant_ids)
+        captured["variants"] = list(variants)
+        captured["product_gid"] = product_gid
+        return original(variant_ids, variants, product_gid=product_gid)
+
+    monkeypatch.setattr(catalog_hygiene, "resolve_variant_ids_with_variants", _spy)
+
+    tools, fc = _build([combined, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": "SKU-A", "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    assert "CONFIRMED" in out
+    # Resolver received the variants list straight from the combined query.
+    assert captured["product_gid"] == _S96_PRODUCT_GID
+    assert captured["variant_ids"] == ["SKU-A"]
+    assert captured["variants"] == [{"id": _S96_VARIANT_A, "sku": "SKU-A", "media": {"nodes": []}}]
 
 
 # ---------- idempotent no-op (AC #6) ----------
