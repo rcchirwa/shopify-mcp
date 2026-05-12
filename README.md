@@ -18,6 +18,7 @@ Enables Claude to read products, check inventory, manage collections, handle dis
 | `update_product_tags` | Update product tags — replace / append / remove modes (preview + confirm) |
 | `update_product_status` | Transition product status — ACTIVE / DRAFT / ARCHIVED (preview + confirm) |
 | `update_variant_inventory_policy` | Set variant inventoryPolicy — DENY / CONTINUE (preview + confirm; defaults to all variants) |
+| `update_product_pricing` | Bulk update variant `price` / `compareAtPrice` via `productVariantsBulkUpdate`; resolves variant IDs from numeric / GID / SKU (preview + confirm) |
 | `get_products_by_collection` | List all products in a collection by handle |
 | `get_product_collections` | List every collection a product belongs to (manual + smart, with type label) |
 
