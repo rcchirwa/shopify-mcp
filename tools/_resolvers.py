@@ -42,7 +42,7 @@ def _classify_no_fetch(stripped: str) -> str | None:
     Raises ValueError when the input is a malformed variant GID.
     """
     if stripped.startswith(_VARIANT_GID_PREFIX):
-        if not stripped[len(_VARIANT_GID_PREFIX):]:
+        if not stripped[len(_VARIANT_GID_PREFIX) :]:
             raise ValueError(f"Malformed variant GID (empty tail): {stripped!r}")
         return stripped
     if stripped.isdigit():
@@ -97,9 +97,7 @@ def resolve_variant_ids_to_gids(
             continue
         matches = sku_index.get(stripped, [])
         if not matches:
-            raise ValueError(
-                f"No variant on product {product_gid} with SKU {stripped!r}"
-            )
+            raise ValueError(f"No variant on product {product_gid} with SKU {stripped!r}")
         if len(matches) > 1:
             gids = ", ".join(matches)
             raise ValueError(

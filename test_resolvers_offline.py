@@ -27,11 +27,7 @@ def _variants_response(*variants: tuple[str, str]) -> dict:
     return {
         "product": {
             "id": PRODUCT_GID,
-            "variants": {
-                "nodes": [
-                    {"id": gid, "sku": sku} for gid, sku in variants
-                ]
-            },
+            "variants": {"nodes": [{"id": gid, "sku": sku} for gid, sku in variants]},
         }
     }
 

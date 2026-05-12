@@ -1,5 +1,5 @@
 """
-Catalog-hygiene tools — Epic 9 (Stories 9.1–9.7).
+Catalog-hygiene tools — Epic 9 (Stories 9.1-9.7).
 
 Wave 0 (this file at story-open): empty `register()` skeleton + the convention
 contract below. Each Wave 1/2 story plugs its tool function into `register()`
@@ -22,7 +22,7 @@ from shopify_client import ShopifyClient
 def register(server: FastMCP, client: ShopifyClient) -> None:
     """Register catalog-hygiene tools on the MCP server.
 
-    Stories 9.1–9.7 each add one `@server.tool()` function to this body.
+    Stories 9.1-9.7 each add one `@server.tool()` function to this body.
     """
-    _ = server  # Wave 0 ships the skeleton only; tools land in Stories 9.1–9.7.
+    _ = server  # Wave 0 ships the skeleton only; tools land in Stories 9.1-9.7.
     _ = client

@@ -602,13 +602,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if options_nodes:
             option_lines: list[str] = []
             for opt in options_nodes:
-                option_lines.append(
-                    f"  • {opt.get('name', '')} — id: {opt.get('id', '')}"
-                )
+                option_lines.append(f"  • {opt.get('name', '')} — id: {opt.get('id', '')}")
                 for ov in opt.get("optionValues") or []:
-                    option_lines.append(
-                        f"      - {ov.get('name', '')} — id: {ov.get('id', '')}"
-                    )
+                    option_lines.append(f"      - {ov.get('name', '')} — id: {ov.get('id', '')}")
             options_block = "\n".join(option_lines)
         else:
             options_block = "  (none)"
