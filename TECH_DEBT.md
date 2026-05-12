@@ -8,17 +8,27 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
-## 2026-05-12 — Story 9.6 follow-ups
+## 2026-05-12 — Story 9.6 follow-ups (updated 2026-05-12 post-PR #52)
 
-Items surfaced during code review of Story 9.6 (`update_variant_image_binding`). Not yet triaged against the active priority list — score columns are estimates. Pending next full re-audit. The in-code module docstring at `tools/catalog_hygiene.py` references these IDs.
+Items surfaced during code review of Story 9.6 (`update_variant_image_binding`) and the PR #52 follow-up review. Not yet triaged against the active priority list — score columns are estimates. Pending next full re-audit. The in-code module docstring at `tools/catalog_hygiene.py` references the active IDs.
+
+### Active
 
 | # | Item | Where | Score |
 |---|------|-------|-------|
 | T-9.6-handle | **Product-ID handle resolution missing** — `_as_product_gid` accepts numeric ID and Product GID only. The Epic 9 spec's AC #1 lists product handles as a valid input form across all 7 tools. Fix path: add a `handle → GID` resolver alongside `_as_product_gid` (the existing `productByHandle` query in `tools/products.py` already does the lookup); apply uniformly across catalog-hygiene tools. Trigger: the first Story 9.x where a merchant asks "why can't I pass the handle?" | `tools/media/_common.py:8`, all catalog-hygiene callers | 12 |
+| T-9.6-unknown-variant | **Unknown numeric/GID variantIds slip past resolution into the mutation** — both `resolve_variant_ids_with_variants` (now used) and `resolve_variant_ids_to_gids` (previously) short-circuit numeric/GID inputs without verifying the variant exists on the product. Story 9.6's flow then falls through to `productVariantAppendMedia`, where Shopify rejects via userError — instead of failing fast with a structured tool-side error. Story 9.3's `update_product_pricing` already catches this: after resolution it iterates `resolved_gids` against the pre-fetched variants and collects `unknown_gids` for a clean tool-side error (see `tools/catalog_hygiene.py` `update_product_pricing` body). Fix path: mirror that check in `update_variant_image_binding` between Step 3 (resolve) and Step 5 (delta). Trigger: a caller passes a variant ID belonging to a different product and the Shopify userError reads worse than a tool-side rejection would. Pre-existing in #50; not introduced by #52. | `tools/catalog_hygiene.py:update_variant_image_binding` | 10 (watch) |
 | T-9.6-media-cap | **`media(first: 100)` silent truncation** — `update_variant_image_binding` validates input mediaIds against the first 100 product-media nodes only; a valid media GID past that window would be falsely rejected as not-on-product. Matches the existing cap in `tools/media/_graphql.py:GET_PRODUCT_MEDIA`. Fix path: paginate, or surface a "first-100-only" warning when `pageInfo.hasNextPage` is true. Trigger: a real product hits >100 media. | `tools/catalog_hygiene.py`, `tools/media/_graphql.py` | 6 (watch) |
-| T-9.6-rt | **Worst-case 3 round-trips when SKUs are supplied** — `resolve_variant_ids_to_gids` does its own variants fetch, then the combined query refetches variants for the media+SKU index. Collapse by doing inline SKU lookup against the combined query's `variants.nodes` (mirror Story 9.3's `resolve_variant_ids_with_variants` pattern) and dropping the resolver call for this tool. Trigger: live-smoke latency complaints from agents using `update_variant_image_binding` with SKU inputs. | `tools/catalog_hygiene.py` | 4 (watch) |
+| T-9.6-resolver-orphan | **Story 9.0's `resolve_variant_ids_to_gids` / `resolve_variant_id_to_gid` now have no production callers** — confirmed via `grep -rn "resolve_variant_ids_to_gids" tools/ validators/ shopify_client.py` (no matches outside `tools/_resolvers.py` itself). Story 9.3 and Story 9.6 both use `resolve_variant_ids_with_variants`. The fetching resolver is exercised only by `test_resolvers_offline.py`. Don't remove in #52 — it's a public helper and future stories may want the fetch-on-its-own variant. But flag for a quick cleanup PR if no caller materializes by Story 9.7. | `tools/_resolvers.py` | 4 (note) |
+| T-9.6-error-msg-shift | **Product-not-found message changed in PR #52** — pre-swap, SKU lookup against a missing product surfaced the resolver's `ValueError("Product not found: <gid>")`; post-swap, the combined query's null `product` produces `"No product found with id <product_id>"` (echoes the user's raw input rather than the resolved GID). Functionally equivalent and probably more helpful for debugging, but a behavioral shift to track in case any downstream string-matching consumer relied on the old form. No action expected — note-only for trend-watch. | `tools/catalog_hygiene.py:update_variant_image_binding` | 2 (note) |
 
-No item lands above the active priority list. All three are deferred-pending-trigger.
+### Closed
+
+| # | Item | How it closed |
+|---|------|---------------|
+| T-9.6-rt | ~~Worst-case 3 round-trips when SKUs are supplied~~ | [#52](https://github.com/rcchirwa/shopify-mcp/pull/52) — switched to Story 9.3's `resolve_variant_ids_with_variants` enabler. Variant resolution now runs in-memory against the combined query's `variants.nodes`, collapsing SKU-input round-trips from 3 to 2 (combined + mutation). |
+
+No active item lands above the priority list. T-9.6-handle and T-9.6-unknown-variant are the highest scored; both are pre-existing (predate #52) and deferred-pending-trigger.
 
 ---
 

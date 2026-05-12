@@ -21,6 +21,7 @@ Usage:
 
 import json
 import re
+from typing import Any
 
 import pytest
 
@@ -2876,7 +2877,6 @@ def test_type_text_non_empty_returns_value():
 # Story 9.6 — update_variant_image_binding
 # =============================================================================
 
-from tools._resolvers import GET_PRODUCT_VARIANTS_FOR_RESOLVE  # noqa: E402
 from tools.catalog_hygiene import (  # noqa: E402
     GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA,
     PRODUCT_VARIANT_APPEND_MEDIA,
@@ -3073,13 +3073,14 @@ def test_s96_non_string_media_gid_rejected():
 
 
 def test_s96_resolver_value_error_returned_as_error():
-    fc_resp = {
-        "product": {
-            "id": _S96_PRODUCT_GID,
-            "variants": {"nodes": [{"id": _S96_VARIANT_A, "sku": "OTHER"}]},
-        }
-    }
-    tools, fc = _build([fc_resp])
+    # Resolution now runs in-memory against the combined query's variants list
+    # (Story 9.3's `resolve_variant_ids_with_variants` enabler). An unknown SKU
+    # surfaces the resolver's ValueError without a second fetch.
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1],
+        variants=[(_S96_VARIANT_A, "OTHER", [])],
+    )
+    tools, fc = _build([combined])
     out = tools["update_variant_image_binding"](
         product_id=_S96_PRODUCT_GID,
         variant_media=[{"variantId": "MISSING-SKU", "mediaIds": [_S96_MEDIA_1]}],
@@ -3087,7 +3088,7 @@ def test_s96_resolver_value_error_returned_as_error():
     assert out.startswith("Error:")
     assert "MISSING-SKU" in out
     assert len(fc.calls) == 1
-    assert fc.calls[0][0] == GET_PRODUCT_VARIANTS_FOR_RESOLVE
+    assert fc.calls[0][0] == GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA
 
 
 def test_s96_product_not_found_message():
@@ -3238,13 +3239,10 @@ def test_s96_numeric_variant_id_is_coerced_to_gid_without_extra_fetch():
     assert fc.calls[0][0] == GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA
 
 
-def test_s96_resolves_sku_to_variant_gid_then_runs_mutation():
-    resolver_resp = {
-        "product": {
-            "id": _S96_PRODUCT_GID,
-            "variants": {"nodes": [{"id": _S96_VARIANT_A, "sku": "SKU-A"}]},
-        }
-    }
+def test_s96_resolves_sku_against_combined_query_variants_no_extra_fetch():
+    # SKU input is resolved against the combined query's variants list — no
+    # separate resolver fetch. Total round-trips: 2 (combined + mutation),
+    # not 3.
     combined = _s96_combined_response(
         media_ids=[_S96_MEDIA_1],
         variants=[(_S96_VARIANT_A, "SKU-A", [])],
@@ -3252,18 +3250,66 @@ def test_s96_resolves_sku_to_variant_gid_then_runs_mutation():
     mutation = _s96_mutation_response(
         productVariants=[(_S96_VARIANT_A, [(_S96_MEDIA_1, "", None)])]
     )
-    tools, fc = _build([resolver_resp, combined, mutation])
+    tools, fc = _build([combined, mutation])
     out = tools["update_variant_image_binding"](
         product_id=_S96_PRODUCT_GID,
         variant_media=[{"variantId": "SKU-A", "mediaIds": [_S96_MEDIA_1]}],
         confirm=True,
     )
     assert "CONFIRMED" in out
-    assert len(fc.calls) == 3
-    assert fc.calls[0][0] == GET_PRODUCT_VARIANTS_FOR_RESOLVE
-    assert fc.calls[1][0] == GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA
-    assert fc.calls[2][0] == PRODUCT_VARIANT_APPEND_MEDIA
-    assert fc.calls[2][1]["variantMedia"][0]["variantId"] == _S96_VARIANT_A
+    assert len(fc.calls) == 2
+    assert fc.calls[0][0] == GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA
+    assert fc.calls[1][0] == PRODUCT_VARIANT_APPEND_MEDIA
+    # Mutation uses the RESOLVED gid, not the SKU string.
+    assert fc.calls[1][1]["variantMedia"][0]["variantId"] == _S96_VARIANT_A
+
+
+def test_s96_combined_query_variants_flow_through_to_resolver(monkeypatch):
+    """Pin the resolver-of-record contract.
+
+    The renamed `..._no_extra_fetch` test asserts on the call count (2 vs 3)
+    and the resolved GID landing in the mutation, which is sufficient
+    behavioral evidence today. This test goes further and pins WHICH resolver
+    is called and WHAT it's called with — specifically that the variants list
+    flows from the combined query straight into
+    `resolve_variant_ids_with_variants` without an interceding fetch.
+
+    A future refactor that swapped the enabler for a fresh fetch would still
+    pass the count-based test (same number of `client.execute` calls if the
+    refactor happens to balance) but would fail this one.
+    """
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1],
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+    )
+    mutation = _s96_mutation_response(
+        productVariants=[(_S96_VARIANT_A, [(_S96_MEDIA_1, "", None)])]
+    )
+
+    captured: dict[str, Any] = {}
+    original = catalog_hygiene.resolve_variant_ids_with_variants
+
+    def _spy(
+        variant_ids: list[str], variants: list[dict[str, Any]], *, product_gid: str
+    ) -> list[str]:
+        captured["variant_ids"] = list(variant_ids)
+        captured["variants"] = list(variants)
+        captured["product_gid"] = product_gid
+        return original(variant_ids, variants, product_gid=product_gid)
+
+    monkeypatch.setattr(catalog_hygiene, "resolve_variant_ids_with_variants", _spy)
+
+    tools, fc = _build([combined, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": "SKU-A", "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    assert "CONFIRMED" in out
+    # Resolver received the variants list straight from the combined query.
+    assert captured["product_gid"] == _S96_PRODUCT_GID
+    assert captured["variant_ids"] == ["SKU-A"]
+    assert captured["variants"] == [{"id": _S96_VARIANT_A, "sku": "SKU-A", "media": {"nodes": []}}]
 
 
 # ---------- idempotent no-op (AC #6) ----------

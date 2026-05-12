@@ -30,9 +30,6 @@ Story 9.6 (`update_variant_image_binding`) known limitations:
     - GraphQL pagination caps: 100 product media, 250 variants, 100 media
       per variant. A media GID past the first 100 product-media nodes would
       be falsely rejected as not-on-product (T-9.6-media-cap).
-    - Worst-case 3 round-trips when at least one SKU is supplied: resolver
-      fetches variants, combined query refetches them, then the mutation
-      fires (T-9.6-rt).
 """
 
 import json
@@ -50,7 +47,7 @@ from shopify_client import (
     with_confirm_hint,
 )
 from tools._log import log_write
-from tools._resolvers import resolve_variant_ids_to_gids, resolve_variant_ids_with_variants
+from tools._resolvers import resolve_variant_ids_with_variants
 from tools.media._common import _as_product_gid
 
 # Page cap mirrors `productVariantsBulkUpdate`'s 250-variant window; same idiom
@@ -1700,15 +1697,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                     return _render(f"Error: {msg}", _err_payload(msg))
             normalized.append((raw_variant_id.strip(), list(raw_media_ids)))
 
-        # Step 2 — resolve variant IDs (numeric / GID / SKU → Variant GID)
-        try:
-            resolved_variant_gids = resolve_variant_ids_to_gids(
-                client, gid, [v for v, _ in normalized]
-            )
-        except ValueError as exc:
-            return _render(f"Error: {exc}", _err_payload(str(exc)))
-
-        # Step 3 — fetch product media + per-variant bound media
+        # Step 2 — fetch product media + per-variant bound media. The combined
+        # query already pulls every variant's id + sku, so we feed that list
+        # straight into Story 9.3's `resolve_variant_ids_with_variants` enabler
+        # (in-memory SKU lookup) instead of paying for a second variants fetch.
+        # Collapses worst-case SKU-input round-trips from 3 (resolver + combined
+        # + mutation) to 2 (combined + mutation).
         data = client.execute(GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA, {"id": gid})
         product = (data or {}).get("product")
         if not product:
@@ -1730,6 +1724,16 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             variant_sku_map[vid] = v.get("sku") or ""
             bound = (v.get("media") or {}).get("nodes", []) or []
             variant_media_map[vid] = {m.get("id") for m in bound if m.get("id")}
+
+        # Step 3 — resolve variant IDs in-memory against the pre-fetched list
+        try:
+            resolved_variant_gids = resolve_variant_ids_with_variants(
+                [v for v, _ in normalized],
+                variant_nodes,
+                product_gid=gid,
+            )
+        except ValueError as exc:
+            return _render(f"Error: {exc}", _err_payload(str(exc)))
 
         # Step 4 — validate every requested media GID belongs to this product
         unknown: list[str] = []
