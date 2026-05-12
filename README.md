@@ -33,6 +33,11 @@ Enables Claude to read products, check inventory, manage collections, handle dis
 
 Requires `write_files` and `write_products` scopes. Local-file source paths are not accepted in v1 — URL only.
 
+### Catalog hygiene
+| Tool | Description |
+|------|-------------|
+| `update_variant_image_binding` | Bind existing product media to one or more variants; resolves `variantId` (numeric / GID / SKU), rejects media GIDs not on the product, treats already-bound media as idempotent no-op, appends only the delta via `productVariantAppendMedia` (preview + confirm; head + JSON tail per the Epic 9 amendment) |
+
 ### Inventory
 | Tool | Description |
 |------|-------------|

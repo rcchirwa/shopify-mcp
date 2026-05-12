@@ -136,6 +136,7 @@ def test_register_adds_expected_tools():
         "update_product_pricing",
         "update_product_category",
         "update_product_vendor",
+        "update_variant_image_binding",
     }
     assert fc.calls == []
 
@@ -2376,3 +2377,896 @@ def test_vendor_text_non_empty_returns_value():
 
     assert _vendor_text("Nike") == "Nike"
     assert _vendor_text("  Nike  ") == "  Nike  "
+
+
+# =============================================================================
+# Story 9.6 — update_variant_image_binding
+# =============================================================================
+
+from tools._resolvers import GET_PRODUCT_VARIANTS_FOR_RESOLVE  # noqa: E402
+from tools.catalog_hygiene import (  # noqa: E402
+    GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA,
+    PRODUCT_VARIANT_APPEND_MEDIA,
+    _is_already_bound_error,
+    _media_node_to_json,
+)
+
+_S96_PRODUCT_GID = "gid://shopify/Product/5234567890"
+_S96_VARIANT_A = "gid://shopify/ProductVariant/100"
+_S96_VARIANT_B = "gid://shopify/ProductVariant/200"
+_S96_MEDIA_1 = "gid://shopify/MediaImage/1"
+_S96_MEDIA_2 = "gid://shopify/MediaImage/2"
+_S96_MEDIA_3 = "gid://shopify/MediaImage/3"
+_S96_MEDIA_CROSS = "gid://shopify/MediaImage/999"
+
+
+def _s96_combined_response(
+    media_ids,
+    variants,
+    *,
+    alt_for_media=None,
+    preview_url_for_media=None,
+    title="Test Product",
+):
+    """Build a GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA response.
+
+    variants: list of (variant_gid, sku, [bound_media_ids]).
+    """
+    alt_for_media = alt_for_media or {}
+    preview_url_for_media = preview_url_for_media or {}
+    media_nodes = [
+        {
+            "id": mid,
+            "alt": alt_for_media.get(mid),
+            "mediaContentType": "IMAGE",
+            "image": {"url": preview_url_for_media.get(mid)}
+            if mid in preview_url_for_media
+            else None,
+        }
+        for mid in media_ids
+    ]
+    variant_nodes = [
+        {
+            "id": vgid,
+            "sku": sku,
+            "media": {"nodes": [{"id": m} for m in bound]},
+        }
+        for vgid, sku, bound in variants
+    ]
+    return {
+        "product": {
+            "id": _S96_PRODUCT_GID,
+            "title": title,
+            "media": {"nodes": media_nodes},
+            "variants": {"nodes": variant_nodes},
+        }
+    }
+
+
+def _s96_mutation_response(productVariants=None, user_errors=None):
+    """Build a PRODUCT_VARIANT_APPEND_MEDIA response.
+
+    productVariants: list of (variant_gid, [(media_id, alt, preview_url), ...]).
+    """
+    pv = []
+    for vgid, media in productVariants or []:
+        nodes = []
+        for mid, alt, preview_url in media:
+            node = {"id": mid, "alt": alt, "mediaContentType": "IMAGE"}
+            if preview_url is not None:
+                node["image"] = {"url": preview_url}
+            nodes.append(node)
+        pv.append({"id": vgid, "media": {"nodes": nodes}})
+    return {
+        "productVariantAppendMedia": {
+            "productVariants": pv,
+            "userErrors": user_errors or [],
+        }
+    }
+
+
+# ---------- input validation (no network) ----------
+
+
+def test_s96_empty_product_id_rejected():
+    tools, fc = _build([])
+    out = tools["update_variant_image_binding"](
+        product_id="", variant_media=[{"variantId": "1", "mediaIds": [_S96_MEDIA_1]}]
+    )
+    assert out.startswith("Error: provide product_id")
+    assert fc.calls == []
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+
+
+def test_s96_wrong_gid_type_product_id_rejected():
+    tools, fc = _build([])
+    out = tools["update_variant_image_binding"](
+        product_id="gid://shopify/Order/1",
+        variant_media=[{"variantId": "1", "mediaIds": [_S96_MEDIA_1]}],
+    )
+    assert out.startswith("Error: provide product_id")
+    assert fc.calls == []
+
+
+def test_s96_empty_variant_media_rejected():
+    tools, fc = _build([])
+    out = tools["update_variant_image_binding"](product_id=_S96_PRODUCT_GID, variant_media=[])
+    assert "variant_media must be a non-empty list" in out
+    assert fc.calls == []
+
+
+def test_s96_none_variant_media_rejected():
+    tools, fc = _build([])
+    out = tools["update_variant_image_binding"](product_id=_S96_PRODUCT_GID, variant_media=None)
+    assert "variant_media must be a non-empty list" in out
+    assert fc.calls == []
+
+
+def test_s96_non_dict_entry_rejected():
+    tools, fc = _build([])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID, variant_media=["not-a-dict"]
+    )
+    assert "variant_media[0] must be an object" in out
+    assert fc.calls == []
+
+
+def test_s96_missing_variant_id_rejected():
+    tools, fc = _build([])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"mediaIds": [_S96_MEDIA_1]}],
+    )
+    assert "variant_media[0].variantId must be a non-empty string" in out
+    assert fc.calls == []
+
+
+def test_s96_non_string_variant_id_rejected():
+    tools, fc = _build([])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": 42, "mediaIds": [_S96_MEDIA_1]}],
+    )
+    assert "variant_media[0].variantId must be a non-empty string" in out
+
+
+def test_s96_whitespace_variant_id_rejected():
+    tools, fc = _build([])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": "   ", "mediaIds": [_S96_MEDIA_1]}],
+    )
+    assert "variantId must be a non-empty string" in out
+
+
+def test_s96_empty_media_ids_rejected():
+    tools, fc = _build([])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": "1", "mediaIds": []}],
+    )
+    assert "variant_media[0].mediaIds must be a non-empty list" in out
+
+
+def test_s96_non_list_media_ids_rejected():
+    tools, fc = _build([])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": "1", "mediaIds": "not-a-list"}],
+    )
+    assert "mediaIds must be a non-empty list" in out
+
+
+def test_s96_malformed_media_gid_rejected():
+    tools, fc = _build([])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": "1", "mediaIds": ["42"]}],
+    )
+    assert "must be a Shopify media GID" in out
+
+
+def test_s96_non_string_media_gid_rejected():
+    tools, fc = _build([])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": "1", "mediaIds": [123]}],
+    )
+    assert "must be a Shopify media GID" in out
+
+
+# ---------- resolver + product-not-found ----------
+
+
+def test_s96_resolver_value_error_returned_as_error():
+    fc_resp = {
+        "product": {
+            "id": _S96_PRODUCT_GID,
+            "variants": {"nodes": [{"id": _S96_VARIANT_A, "sku": "OTHER"}]},
+        }
+    }
+    tools, fc = _build([fc_resp])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": "MISSING-SKU", "mediaIds": [_S96_MEDIA_1]}],
+    )
+    assert out.startswith("Error:")
+    assert "MISSING-SKU" in out
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == GET_PRODUCT_VARIANTS_FOR_RESOLVE
+
+
+def test_s96_product_not_found_message():
+    tools, fc = _build([{"product": None}])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+    )
+    assert out.startswith(f"No product found with id {_S96_PRODUCT_GID}.")
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert tail["errors"] == [{"message": f"No product found with id {_S96_PRODUCT_GID}."}]
+
+
+# ---------- cross-product media GID rejection (AC #4) ----------
+
+
+def test_s96_cross_product_media_gid_rejected():
+    tools, fc = _build(
+        [
+            _s96_combined_response(
+                media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
+                variants=[(_S96_VARIANT_A, "SKU-A", [])],
+            )
+        ]
+    )
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_CROSS]}],
+    )
+    assert out.startswith("Error: media GIDs not on product")
+    assert _S96_MEDIA_CROSS in out
+    assert len(fc.calls) == 1
+
+
+def test_s96_multiple_unknown_media_gids_listed_once_each():
+    other = "gid://shopify/MediaImage/888"
+    tools, fc = _build(
+        [
+            _s96_combined_response(
+                media_ids=[_S96_MEDIA_1],
+                variants=[(_S96_VARIANT_A, "SKU-A", [])],
+            )
+        ]
+    )
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[
+            {"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_CROSS, other, _S96_MEDIA_CROSS]},
+        ],
+    )
+    human_prefix = out.split("```json")[0]
+    assert human_prefix.count(_S96_MEDIA_CROSS) == 1
+    assert other in human_prefix
+
+
+# ---------- preview path ----------
+
+
+def test_s96_preview_returns_with_confirm_hint_and_no_mutation_call():
+    tools, fc = _build(
+        [
+            _s96_combined_response(
+                media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
+                variants=[(_S96_VARIANT_A, "SKU-A", [])],
+                alt_for_media={_S96_MEDIA_1: "front"},
+                preview_url_for_media={_S96_MEDIA_1: "https://cdn/1.jpg"},
+            )
+        ]
+    )
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]}],
+    )
+    assert "PREVIEW — Bind variant images" in out
+    assert "Will append" in out
+    assert "net-new media bindings: 2" in out
+    assert "Reply with confirm=True" in out or "To apply" in out
+    assert len(fc.calls) == 1
+
+
+def test_s96_preview_with_all_no_op_marks_already_bound():
+    tools, fc = _build(
+        [
+            _s96_combined_response(
+                media_ids=[_S96_MEDIA_1],
+                variants=[(_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_1])],
+            )
+        ]
+    )
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+    )
+    assert "PREVIEW" in out
+    assert "Already bound" in out
+    assert "net-new media bindings: 0" in out
+
+
+# ---------- happy path (confirm=True) ----------
+
+
+def test_s96_confirm_executes_mutation_and_returns_bound_state():
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+    )
+    mutation = _s96_mutation_response(
+        productVariants=[
+            (
+                _S96_VARIANT_A,
+                [(_S96_MEDIA_1, "front", "https://cdn/1.jpg"), (_S96_MEDIA_2, "back", None)],
+            )
+        ]
+    )
+    tools, fc = _build([combined, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]}],
+        confirm=True,
+    )
+    assert "CONFIRMED — Bind variant images" in out
+    assert len(fc.calls) == 2
+    assert fc.calls[0][0] == GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA
+    assert fc.calls[1][0] == PRODUCT_VARIANT_APPEND_MEDIA
+    assert fc.calls[1][1] == {
+        "productId": _S96_PRODUCT_GID,
+        "variantMedia": [{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]}],
+    }
+
+
+def test_s96_numeric_variant_id_is_coerced_to_gid_without_extra_fetch():
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1],
+        variants=[("gid://shopify/ProductVariant/42", "", [])],
+    )
+    mutation = _s96_mutation_response(
+        productVariants=[("gid://shopify/ProductVariant/42", [(_S96_MEDIA_1, "", None)])]
+    )
+    tools, fc = _build([combined, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": "42", "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    assert "CONFIRMED" in out
+    assert len(fc.calls) == 2
+    assert fc.calls[0][0] == GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA
+
+
+def test_s96_resolves_sku_to_variant_gid_then_runs_mutation():
+    resolver_resp = {
+        "product": {
+            "id": _S96_PRODUCT_GID,
+            "variants": {"nodes": [{"id": _S96_VARIANT_A, "sku": "SKU-A"}]},
+        }
+    }
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1],
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+    )
+    mutation = _s96_mutation_response(
+        productVariants=[(_S96_VARIANT_A, [(_S96_MEDIA_1, "", None)])]
+    )
+    tools, fc = _build([resolver_resp, combined, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": "SKU-A", "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    assert "CONFIRMED" in out
+    assert len(fc.calls) == 3
+    assert fc.calls[0][0] == GET_PRODUCT_VARIANTS_FOR_RESOLVE
+    assert fc.calls[1][0] == GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA
+    assert fc.calls[2][0] == PRODUCT_VARIANT_APPEND_MEDIA
+    assert fc.calls[2][1]["variantMedia"][0]["variantId"] == _S96_VARIANT_A
+
+
+# ---------- idempotent no-op (AC #6) ----------
+
+
+def test_s96_idempotent_no_op_when_all_media_already_bound():
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
+        variants=[(_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_1, _S96_MEDIA_2])],
+    )
+    tools, fc = _build([combined])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]}],
+        confirm=True,
+    )
+    assert "CONFIRMED — Bind variant images (no-op)" in out
+    assert len(fc.calls) == 1
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+    media_ids_in_tail = {m["id"] for m in tail["variants"][0]["media"]}
+    assert media_ids_in_tail == {_S96_MEDIA_1, _S96_MEDIA_2}
+
+
+# ---------- duplicate variantId merge ----------
+
+
+def test_s96_duplicate_variant_id_entries_merge_to_single_mutation_entry():
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+    )
+    mutation = _s96_mutation_response(
+        productVariants=[(_S96_VARIANT_A, [(_S96_MEDIA_1, "", None), (_S96_MEDIA_2, "", None)])]
+    )
+    tools, fc = _build([combined, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[
+            {"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]},
+            {"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_2]},
+        ],
+        confirm=True,
+    )
+    assert "CONFIRMED" in out
+    assert len(fc.calls[1][1]["variantMedia"]) == 1
+    assert fc.calls[1][1]["variantMedia"][0] == {
+        "variantId": _S96_VARIANT_A,
+        "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2],
+    }
+
+
+def test_s96_duplicate_variant_id_with_overlapping_media_dedups():
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+    )
+    mutation = _s96_mutation_response(
+        productVariants=[(_S96_VARIANT_A, [(_S96_MEDIA_1, "", None), (_S96_MEDIA_2, "", None)])]
+    )
+    tools, fc = _build([combined, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[
+            {"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]},
+            {"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]},  # overlap
+        ],
+        confirm=True,
+    )
+    assert "CONFIRMED" in out
+    assert fc.calls[1][1]["variantMedia"][0]["mediaIds"] == [_S96_MEDIA_1, _S96_MEDIA_2]
+
+
+def test_s96_duplicate_variant_id_all_already_bound_collapses_to_no_op():
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1],
+        variants=[(_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_1])],
+    )
+    tools, fc = _build([combined])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[
+            {"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]},
+            {"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]},
+        ],
+        confirm=True,
+    )
+    assert "CONFIRMED — Bind variant images (no-op)" in out
+    assert len(fc.calls) == 1
+
+
+# ---------- partial overlap → only delta sent ----------
+
+
+def test_s96_partial_overlap_only_appends_delta():
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2, _S96_MEDIA_3],
+        variants=[(_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_1])],
+    )
+    mutation = _s96_mutation_response(
+        productVariants=[
+            (
+                _S96_VARIANT_A,
+                [(_S96_MEDIA_1, "", None), (_S96_MEDIA_2, "", None), (_S96_MEDIA_3, "", None)],
+            )
+        ]
+    )
+    tools, fc = _build([combined, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[
+            {"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2, _S96_MEDIA_3]}
+        ],
+        confirm=True,
+    )
+    assert "CONFIRMED" in out
+    assert fc.calls[1][1]["variantMedia"] == [
+        {"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_2, _S96_MEDIA_3]}
+    ]
+
+
+def test_s96_duplicate_media_ids_within_entry_are_deduped():
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1],
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+    )
+    mutation = _s96_mutation_response(
+        productVariants=[(_S96_VARIANT_A, [(_S96_MEDIA_1, "", None)])]
+    )
+    tools, fc = _build([combined, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[
+            {"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_1, _S96_MEDIA_1]}
+        ],
+        confirm=True,
+    )
+    assert "CONFIRMED" in out
+    assert fc.calls[1][1]["variantMedia"] == [
+        {"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}
+    ]
+
+
+def test_s96_mixed_no_op_and_delta_variants_only_sends_delta_variants():
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
+        variants=[
+            (_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_1]),
+            (_S96_VARIANT_B, "SKU-B", []),
+        ],
+    )
+    mutation = _s96_mutation_response(
+        productVariants=[(_S96_VARIANT_B, [(_S96_MEDIA_2, "", None)])]
+    )
+    tools, fc = _build([combined, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[
+            {"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]},
+            {"variantId": _S96_VARIANT_B, "mediaIds": [_S96_MEDIA_2]},
+        ],
+        confirm=True,
+    )
+    assert "CONFIRMED" in out
+    assert fc.calls[1][1]["variantMedia"] == [
+        {"variantId": _S96_VARIANT_B, "mediaIds": [_S96_MEDIA_2]}
+    ]
+    # Both variants render in the JSON tail — no-op via fallback, delta via post-state.
+    tail = _parse_tail(out)
+    ids_in_tail = [v["id"] for v in tail["variants"]]
+    assert ids_in_tail == [_S96_VARIANT_A, _S96_VARIANT_B]
+
+
+def test_s96_post_mutation_variant_with_empty_media_renders_empty_in_tail():
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1],
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+    )
+    mutation = _s96_mutation_response(productVariants=[(_S96_VARIANT_A, [])])
+    tools, fc = _build([combined, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    assert "CONFIRMED" in out
+    tail = _parse_tail(out)
+    assert tail["variants"] == [{"id": _S96_VARIANT_A, "sku": "SKU-A", "media": []}]
+
+
+# ---------- userErrors handling ----------
+
+
+def test_s96_user_errors_already_bound_treated_as_success():
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1],
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+    )
+    mutation = _s96_mutation_response(
+        productVariants=[(_S96_VARIANT_A, [(_S96_MEDIA_1, "", None)])],
+        user_errors=[{"field": ["variantMedia"], "message": "Media is already bound to variant"}],
+    )
+    tools, fc = _build([combined, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    assert "CONFIRMED" in out
+    assert not out.split("```json")[0].startswith("Error:")
+
+
+def test_s96_user_errors_other_returned_as_error():
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1],
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+    )
+    mutation = _s96_mutation_response(
+        user_errors=[{"field": ["variantMedia"], "message": "Media is not ready"}],
+    )
+    tools, fc = _build([combined, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    assert out.startswith("Error:")
+    assert "Media is not ready" in out
+    # Human prefix uses dotted-path field formatting.
+    assert "variantMedia:" in out.split("```json")[0]
+
+
+def test_s96_user_errors_mixed_real_and_already_bound_returns_real_only():
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+    )
+    mutation = _s96_mutation_response(
+        user_errors=[
+            {"field": ["variantMedia", "0"], "message": "Media is already associated"},
+            {"field": ["variantMedia", "1"], "message": "Media is not ready"},
+        ],
+    )
+    tools, fc = _build([combined, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]}],
+        confirm=True,
+    )
+    assert out.startswith("Error:")
+    assert "not ready" in out
+    assert "already associated" not in out
+
+
+def test_s96_user_errors_only_already_bound_with_no_returned_variants_falls_through_to_success():
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1],
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+    )
+    mutation = {
+        "productVariantAppendMedia": {
+            "productVariants": None,
+            "userErrors": [{"field": None, "message": "Already bound"}],
+        }
+    }
+    tools, fc = _build([combined, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    assert "CONFIRMED — Bind variant images" in out
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+    assert tail["variants"] == [{"id": _S96_VARIANT_A, "sku": "SKU-A", "media": []}]
+
+
+# ---------- defensive paths ----------
+
+
+def test_s96_runtime_error_propagates():
+    tools, fc = _build([RuntimeError("Shopify HTTP error: 503")])
+    with pytest.raises(RuntimeError):
+        tools["update_variant_image_binding"](
+            product_id=_S96_PRODUCT_GID,
+            variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+            confirm=True,
+        )
+
+
+def test_s96_variant_node_without_id_is_skipped():
+    combined = {
+        "product": {
+            "id": _S96_PRODUCT_GID,
+            "title": "T",
+            "media": {"nodes": [{"id": _S96_MEDIA_1, "alt": None, "mediaContentType": "IMAGE"}]},
+            "variants": {
+                "nodes": [
+                    {"id": None, "sku": "GHOST", "media": {"nodes": []}},
+                    {"id": _S96_VARIANT_A, "sku": "SKU-A", "media": {"nodes": []}},
+                ]
+            },
+        }
+    }
+    mutation = _s96_mutation_response(
+        productVariants=[(_S96_VARIANT_A, [(_S96_MEDIA_1, "", None)])]
+    )
+    tools, fc = _build([combined, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    assert "CONFIRMED" in out
+
+
+def test_s96_mutation_response_with_returned_variant_missing_id_is_skipped():
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1],
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+    )
+    mutation = {
+        "productVariantAppendMedia": {
+            "productVariants": [
+                {"id": None, "media": {"nodes": []}},
+                {"id": _S96_VARIANT_A, "media": {"nodes": [{"id": _S96_MEDIA_1}]}},
+            ],
+            "userErrors": [],
+        }
+    }
+    tools, fc = _build([combined, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    assert "CONFIRMED" in out
+    tail = _parse_tail(out)
+    assert tail["variants"][0]["media"][0]["id"] == _S96_MEDIA_1
+
+
+def test_s96_no_op_confirmed_surfaces_bound_mid_not_in_product_media_index():
+    # Variant has bound media beyond the product-media `first: 100` window —
+    # JSON tail falls back to `{"id": mid}` for that node.
+    far_mid = "gid://shopify/MediaImage/9999"
+    combined = {
+        "product": {
+            "id": _S96_PRODUCT_GID,
+            "title": "T",
+            "media": {"nodes": [{"id": _S96_MEDIA_1, "alt": None, "mediaContentType": "IMAGE"}]},
+            "variants": {
+                "nodes": [
+                    {
+                        "id": _S96_VARIANT_A,
+                        "sku": "SKU-A",
+                        "media": {"nodes": [{"id": far_mid}, {"id": _S96_MEDIA_1}]},
+                    }
+                ]
+            },
+        }
+    }
+    tools, fc = _build([combined])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    assert "CONFIRMED — Bind variant images (no-op)" in out
+    tail = _parse_tail(out)
+    ids_in_tail = {m["id"] for m in tail["variants"][0]["media"]}
+    assert ids_in_tail == {far_mid, _S96_MEDIA_1}
+    # far_mid's node has alt/image None (came from fallback dict).
+    far = next(m for m in tail["variants"][0]["media"] if m["id"] == far_mid)
+    assert far["alt"] is None
+    assert far["image"] is None
+
+
+# ---------- _is_already_bound_error helper ----------
+
+
+def test_s96_is_already_bound_error_matches_bound():
+    assert _is_already_bound_error("Media is already bound") is True
+
+
+def test_s96_is_already_bound_error_matches_associated():
+    assert _is_already_bound_error("Media is already associated with variant") is True
+
+
+def test_s96_is_already_bound_error_rejects_other_messages():
+    assert _is_already_bound_error("Media is not ready") is False
+    assert _is_already_bound_error("") is False
+    assert _is_already_bound_error("already in a relationship") is False
+
+
+# ---------- _media_node_to_json helper ----------
+
+
+def test_s96_media_node_to_json_full_node():
+    out = _media_node_to_json(
+        {"id": _S96_MEDIA_1, "alt": "front", "mediaContentType": "IMAGE", "image": {"url": "u"}}
+    )
+    assert out == {
+        "id": _S96_MEDIA_1,
+        "alt": "front",
+        "mediaContentType": "IMAGE",
+        "image": {"url": "u"},
+    }
+
+
+def test_s96_media_node_to_json_missing_image_renders_none():
+    out = _media_node_to_json({"id": _S96_MEDIA_1, "alt": None, "mediaContentType": "VIDEO"})
+    assert out == {
+        "id": _S96_MEDIA_1,
+        "alt": None,
+        "mediaContentType": "VIDEO",
+        "image": None,
+    }
+
+
+# ---------- JSON-tail shape pinning ----------
+
+
+def test_s96_preview_json_tail_shape():
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
+        variants=[(_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_1])],
+    )
+    tools, fc = _build([combined])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]}],
+    )
+    tail = _parse_tail(out)
+    assert tail == {
+        "ok": True,
+        "dryRun": True,
+        "variants": [
+            {
+                "id": _S96_VARIANT_A,
+                "sku": "SKU-A",
+                "currentMedia": [_S96_MEDIA_1],
+                "wouldAppend": [_S96_MEDIA_2],
+            }
+        ],
+        "errors": [],
+    }
+
+
+def test_s96_done_json_tail_shape_matches_spec_example():
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1],
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+    )
+    mutation = _s96_mutation_response(
+        productVariants=[(_S96_VARIANT_A, [(_S96_MEDIA_1, "front", "https://cdn/1.jpg")])]
+    )
+    tools, fc = _build([combined, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    tail = _parse_tail(out)
+    assert tail == {
+        "ok": True,
+        "variants": [
+            {
+                "id": _S96_VARIANT_A,
+                "sku": "SKU-A",
+                "media": [
+                    {
+                        "id": _S96_MEDIA_1,
+                        "alt": "front",
+                        "mediaContentType": "IMAGE",
+                        "image": {"url": "https://cdn/1.jpg"},
+                    }
+                ],
+            }
+        ],
+        "errors": [],
+    }
+
+
+def test_s96_shopify_user_errors_pass_through_verbatim_in_tail():
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1],
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+    )
+    user_errors = [{"field": ["variantMedia"], "message": "Media is not ready"}]
+    mutation = _s96_mutation_response(user_errors=user_errors)
+    tools, fc = _build([combined, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert tail["errors"] == user_errors
