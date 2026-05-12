@@ -23,6 +23,16 @@ Return shape — human-readable head + fenced ```json``` tail:
          LLMs-in-the-loop read the head.
     Use `_render(head, payload)` for every return — it guarantees the dual
     output and keeps the JSON serialization consistent across tools.
+
+Story 9.6 (`update_variant_image_binding`) known limitations:
+    - product_id accepts numeric ID or Product GID only — handle resolution
+      is not wired through `_as_product_gid` (T-9.6-handle).
+    - GraphQL pagination caps: 100 product media, 250 variants, 100 media
+      per variant. A media GID past the first 100 product-media nodes would
+      be falsely rejected as not-on-product (T-9.6-media-cap).
+    - Worst-case 3 round-trips when at least one SKU is supplied: resolver
+      fetches variants, combined query refetches them, then the mutation
+      fires (T-9.6-rt).
 """
 
 import json
@@ -40,7 +50,8 @@ from shopify_client import (
     with_confirm_hint,
 )
 from tools._log import log_write
-from tools._resolvers import resolve_variant_ids_with_variants
+from tools._resolvers import resolve_variant_ids_to_gids, resolve_variant_ids_with_variants
+from tools.media._common import _as_product_gid
 
 # Page cap mirrors `productVariantsBulkUpdate`'s 250-variant window; same idiom
 # as tools/products.py:247. A product hitting this cap would need paginated
@@ -180,6 +191,87 @@ mutation productUpdate($product: ProductUpdateInput!) {
 _VALID_RESOLVE_STRATEGIES = ("exact", "best-match", "reject-ambiguous")
 _TAXONOMY_GID_PREFIX = "gid://shopify/TaxonomyCategory/"
 _PRODUCT_GID_PREFIX = "gid://shopify/Product/"
+
+# ---------------------------------------------------------------------------
+# GraphQL — Story 9.6 (update_variant_image_binding)
+# ---------------------------------------------------------------------------
+
+# Combined fetch: product media set (cross-product validation, AC #4) AND
+# per-variant currently-bound media (idempotent detection, AC #6) in one
+# round-trip. The SKU index also rides along — so if the caller mixes SKUs
+# in, no extra resolver fetch is needed (the variants list is already here).
+GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA = """
+query GetProductMediaAndVariantMedia($id: ID!) {
+  product(id: $id) {
+    id
+    title
+    media(first: 100) {
+      nodes {
+        id
+        alt
+        mediaContentType
+        ... on MediaImage { image { url } }
+      }
+    }
+    variants(first: 250) {
+      nodes {
+        id
+        sku
+        media(first: 100) { nodes { id } }
+      }
+    }
+  }
+}
+"""
+
+PRODUCT_VARIANT_APPEND_MEDIA = """
+mutation ProductVariantAppendMedia(
+  $productId: ID!,
+  $variantMedia: [ProductVariantAppendMediaInput!]!
+) {
+  productVariantAppendMedia(productId: $productId, variantMedia: $variantMedia) {
+    productVariants {
+      id
+      media(first: 100) {
+        nodes {
+          id
+          alt
+          mediaContentType
+          ... on MediaImage { image { url } }
+        }
+      }
+    }
+    userErrors { field message }
+  }
+}
+"""
+
+
+def _is_already_bound_error(message: str) -> bool:
+    """Detect Shopify's 'already bound' family of userErrors.
+
+    Pre-filtering empty deltas prevents the error in the common case, but a
+    parallel call against the same product can race past the read — treat
+    those errors as success per AC #6 (idempotent re-bind).
+    """
+    lower = (message or "").lower()
+    return "already" in lower and ("bound" in lower or "associated" in lower)
+
+
+def _media_node_to_json(node: dict[str, Any]) -> dict[str, Any]:
+    """Serialize a media node into the spec-aligned JSON-tail shape.
+
+    Keys: `id`, `alt`, `mediaContentType`, `image` (object with `url` or
+    None). Missing fields surface as None — JSON consumers should treat
+    these as "unknown" rather than literal empties.
+    """
+    image = node.get("image")
+    return {
+        "id": node.get("id"),
+        "alt": node.get("alt"),
+        "mediaContentType": node.get("mediaContentType"),
+        "image": {"url": (image or {}).get("url")} if image else None,
+    }
 
 
 def _render(head: str, payload: dict[str, Any]) -> str:
@@ -1246,4 +1338,264 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 preview=False,
                 errors=[],
             )
+        )
+
+    @server.tool()
+    def update_variant_image_binding(
+        product_id: str,
+        variant_media: list[dict[str, Any]] | None = None,
+        confirm: bool = False,
+    ) -> str:
+        """
+        Bind existing product media to one or more product variants.
+
+        product_id  : numeric ID or GID of the product (handle not supported in v1).
+        variant_media: non-empty list of entries. Each entry is a dict with:
+            - variantId : str — numeric ID, ProductVariant GID, or SKU on this product
+            - mediaIds  : list[str] — non-empty list of MediaImage / Video / Model3d GIDs
+                          already attached to this product
+        confirm     : if False (default) returns a preview; if True applies the change.
+
+        Fetches the product's media + per-variant bound media in one query,
+        rejects media GIDs that don't belong to this product, treats re-binding
+        of already-bound media as idempotent success (no-op), and appends only
+        the net-new media via productVariantAppendMedia. Two entries for the
+        same resolved variant are merged into one mutation entry.
+
+        Returns the dual head + ```json``` tail per the spec amendment —
+        `{ok, variants[{id, sku, media[]}], errors[]}` on success;
+        `{ok: false, variants: [], errors: [{message}]}` on validation or
+        resolver errors; Shopify userErrors pass through verbatim.
+        """
+        # Step 1 — input validation (no network)
+        gid = _as_product_gid(product_id)
+        if not gid:
+            msg = "provide product_id (numeric ID or Product GID)."
+            return _render(f"Error: {msg}", _err_payload(msg))
+
+        if not variant_media:
+            msg = "variant_media must be a non-empty list."
+            return _render(f"Error: {msg}", _err_payload(msg))
+
+        normalized: list[tuple[str, list[str]]] = []
+        for idx, entry in enumerate(variant_media):
+            if not isinstance(entry, dict):
+                msg = f"variant_media[{idx}] must be an object."
+                return _render(f"Error: {msg}", _err_payload(msg))
+            raw_variant_id = entry.get("variantId")
+            if not isinstance(raw_variant_id, str) or not raw_variant_id.strip():
+                msg = f"variant_media[{idx}].variantId must be a non-empty string."
+                return _render(f"Error: {msg}", _err_payload(msg))
+            raw_media_ids = entry.get("mediaIds")
+            if not isinstance(raw_media_ids, list) or not raw_media_ids:
+                msg = f"variant_media[{idx}].mediaIds must be a non-empty list."
+                return _render(f"Error: {msg}", _err_payload(msg))
+            for mi, mid in enumerate(raw_media_ids):
+                if not isinstance(mid, str) or not mid.startswith("gid://shopify/"):
+                    msg = (
+                        f"variant_media[{idx}].mediaIds[{mi}] must be a Shopify "
+                        f"media GID (got {mid!r})."
+                    )
+                    return _render(f"Error: {msg}", _err_payload(msg))
+            normalized.append((raw_variant_id.strip(), list(raw_media_ids)))
+
+        # Step 2 — resolve variant IDs (numeric / GID / SKU → Variant GID)
+        try:
+            resolved_variant_gids = resolve_variant_ids_to_gids(
+                client, gid, [v for v, _ in normalized]
+            )
+        except ValueError as exc:
+            return _render(f"Error: {exc}", _err_payload(str(exc)))
+
+        # Step 3 — fetch product media + per-variant bound media
+        data = client.execute(GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA, {"id": gid})
+        product = (data or {}).get("product")
+        if not product:
+            msg = f"No product found with id {product_id}."
+            return _render(msg, _err_payload(msg))
+
+        title = product.get("title", "")
+        media_nodes = (product.get("media") or {}).get("nodes", []) or []
+        product_media_set = {n.get("id") for n in media_nodes if n.get("id")}
+        product_media_index = {n["id"]: n for n in media_nodes if n.get("id")}
+
+        variant_nodes = (product.get("variants") or {}).get("nodes", []) or []
+        variant_media_map: dict[str, set[str]] = {}
+        variant_sku_map: dict[str, str] = {}
+        for v in variant_nodes:
+            vid = v.get("id")
+            if not vid:
+                continue
+            variant_sku_map[vid] = v.get("sku") or ""
+            bound = (v.get("media") or {}).get("nodes", []) or []
+            variant_media_map[vid] = {m.get("id") for m in bound if m.get("id")}
+
+        # Step 4 — validate every requested media GID belongs to this product
+        unknown: list[str] = []
+        for _, media_ids in normalized:
+            for mid in media_ids:
+                if mid not in product_media_set and mid not in unknown:
+                    unknown.append(mid)
+        if unknown:
+            msg = f"media GIDs not on product {product_id}: {', '.join(unknown)}"
+            return _render(f"Error: {msg}", _err_payload(msg))
+
+        # Step 5a — collapse duplicate variantIds: same resolved variant appearing
+        # in multiple input entries merges its mediaIds (preserves first-seen order).
+        merged: dict[str, list[str]] = {}
+        for resolved_gid, (_, media_ids) in zip(resolved_variant_gids, normalized, strict=True):
+            bucket = merged.setdefault(resolved_gid, [])
+            for mid in media_ids:
+                if mid not in bucket:
+                    bucket.append(mid)
+
+        # Step 5b — compute the delta per unique variant
+        deltas: list[tuple[str, list[str]]] = []
+        for resolved_gid, media_ids in merged.items():
+            currently = variant_media_map.get(resolved_gid, set())
+            new_ids = [mid for mid in media_ids if mid not in currently]
+            deltas.append((resolved_gid, new_ids))
+
+        all_no_op = all(not new_ids for _, new_ids in deltas)
+        total_new = sum(len(new_ids) for _, new_ids in deltas)
+
+        def _variant_block(rgid: str, label_ids: list[str], label: str) -> str:
+            sku = variant_sku_map.get(rgid, "")
+            sku_part = f" — SKU: {sku}" if sku else ""
+            lines = [f"        - {mid}" for mid in label_ids] or ["        (none)"]
+            return f"    • id: {from_gid(rgid)}{sku_part}\n      {label}:\n" + "\n".join(lines)
+
+        def _fallback_media_nodes(rgid: str) -> list[dict[str, Any]]:
+            return [
+                product_media_index.get(mid) or {"id": mid}
+                for mid in sorted(variant_media_map.get(rgid, set()))
+            ]
+
+        def _variant_success_payload(
+            rgid: str, media_nodes_for_variant: list[dict[str, Any]]
+        ) -> dict[str, Any]:
+            """Shared shape for no-op and post-mutation JSON-tail variants.
+
+            Sorts media by `id` so consumers see deterministic ordering
+            regardless of whether the data came from Shopify's mutation
+            response or the pre-fetch fallback.
+            """
+            return {
+                "id": rgid,
+                "sku": variant_sku_map.get(rgid, ""),
+                "media": sorted(
+                    (_media_node_to_json(m) for m in media_nodes_for_variant),
+                    key=lambda x: x.get("id") or "",
+                ),
+            }
+
+        # Step 6 — preview body (reused verbatim for preview + confirmed branches)
+        preview_blocks = [
+            _variant_block(rgid, new_ids, "Will append" if new_ids else "Already bound")
+            for rgid, new_ids in deltas
+        ]
+        preview_head = (
+            f"PREVIEW — Bind variant images\n"
+            f"  Product : {title} (id: {product_id})\n"
+            f"  Variants ({len(deltas)}) — net-new media bindings: {total_new}\n"
+            + "\n".join(preview_blocks)
+        )
+
+        # Step 7 — preview branch (confirm=False).
+        if not confirm:
+            preview_payload: dict[str, Any] = {
+                "ok": True,
+                "dryRun": True,
+                "variants": [
+                    {
+                        "id": rgid,
+                        "sku": variant_sku_map.get(rgid, ""),
+                        "currentMedia": sorted(variant_media_map.get(rgid, set())),
+                        "wouldAppend": list(new_ids),
+                    }
+                    for rgid, new_ids in deltas
+                ],
+                "errors": [],
+            }
+            return with_confirm_hint(_render(preview_head, preview_payload))
+
+        # Step 8 — idempotent no-op short-circuit (no mutation call).
+        if all_no_op:
+            log_write(
+                "update_variant_image_binding",
+                f"product={product_id} variants={len(deltas)} media_bound=0 (idempotent)",
+            )
+            head = (
+                f"CONFIRMED — Bind variant images (no-op)\n"
+                f"  Product : {title} (id: {product_id})\n"
+                f"  Variants ({len(deltas)}) — all requested media already bound."
+            )
+            return _render(
+                head,
+                {
+                    "ok": True,
+                    "variants": [
+                        _variant_success_payload(rgid, _fallback_media_nodes(rgid))
+                        for rgid, _ in deltas
+                    ],
+                    "errors": [],
+                },
+            )
+
+        # Step 9 — execute the mutation for variants with non-empty deltas only
+        mutation_input = [
+            {"variantId": rgid, "mediaIds": new_ids} for rgid, new_ids in deltas if new_ids
+        ]
+        result = client.execute(
+            PRODUCT_VARIANT_APPEND_MEDIA,
+            {"productId": gid, "variantMedia": mutation_input},
+        )
+
+        # Drop race-condition "already bound" errors per AC #6 defensive fallback.
+        raw_errors = extract_user_errors(result, "productVariantAppendMedia")
+        real_errors = [e for e in raw_errors if not _is_already_bound_error(e.get("message") or "")]
+        if real_errors:
+            # Mirror Story 9.3's userError formatter — Shopify returns `field` as a
+            # dotted-path list, so str() of the whole list reads poorly.
+            def _fmt(e: dict[str, Any]) -> str:
+                field_path = ".".join(str(f) for f in (e.get("field") or []))
+                return f"{field_path or '(no field)'}: {e.get('message', '')}"
+
+            msgs = "; ".join(_fmt(e) for e in real_errors)
+            return _render(
+                f"Error: {msgs}",
+                {"ok": False, "variants": [], "errors": list(real_errors)},
+            )
+
+        # Step 10 — merge mutation response with pre-fetch state for the JSON tail.
+        payload = result.get("productVariantAppendMedia") or {}
+        returned_variants = payload.get("productVariants") or []
+        post_state: dict[str, list[dict[str, Any]]] = {}
+        for v in returned_variants:
+            vid = v.get("id")
+            if not vid:
+                continue
+            post_state[vid] = (v.get("media") or {}).get("nodes", []) or []
+
+        success_variants = [
+            _variant_success_payload(
+                rgid,
+                post_state[rgid] if rgid in post_state else _fallback_media_nodes(rgid),
+            )
+            for rgid, _ in deltas
+        ]
+
+        log_write(
+            "update_variant_image_binding",
+            f"product={product_id} variants={len(deltas)} media_bound={total_new}",
+        )
+        head = (
+            f"CONFIRMED — Bind variant images\n"
+            f"  Product : {title} (id: {product_id})\n"
+            f"  Variants ({len(deltas)}) — net-new media bindings: {total_new}\n"
+            + "\n".join(preview_blocks)
+        )
+        return _render(
+            head,
+            {"ok": True, "variants": success_variants, "errors": []},
         )
