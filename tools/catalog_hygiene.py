@@ -383,6 +383,93 @@ mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
 _NUMBER_INTEGER_RE = re.compile(r"^-?\d+$")
 _NUMBER_DECIMAL_RE = re.compile(r"^-?\d+(\.\d+)?$")
 
+# ---------------------------------------------------------------------------
+# GraphQL + constants — Story 9.5 (update_product_options)
+# ---------------------------------------------------------------------------
+
+# Narrow read: option + value GIDs for the tool-side child-of-option validation
+# AND the post-write snapshot's variants slice. The variants(first: 50) cap
+# matches `get_product_full` in tools/products.py — products beyond that need
+# pagination (tracked as T-9.5-variants-cap).
+GET_PRODUCT_OPTIONS = """
+query GetProductOptions($id: ID!) {
+  product(id: $id) {
+    id
+    title
+    options {
+      id
+      name
+      optionValues { id name }
+    }
+    variants(first: 50) {
+      nodes { id title selectedOptions { name value } }
+    }
+  }
+}
+"""
+
+# Handle-form resolver — fired only when product_id is non-numeric and non-GID.
+# Returns the same shape as GET_PRODUCT_OPTIONS so callers don't branch on the
+# read result.
+GET_PRODUCT_OPTIONS_BY_HANDLE = """
+query GetProductOptionsByHandle($handle: String!) {
+  productByHandle(handle: $handle) {
+    id
+    title
+    options {
+      id
+      name
+      optionValues { id name }
+    }
+    variants(first: 50) {
+      nodes { id title selectedOptions { name value } }
+    }
+  }
+}
+"""
+
+# `productOptionUpdate` updates exactly one option per call (Shopify limit).
+# The tool signature only accepts a single `option` arg, so the multi-option
+# case is impossible to express — see AC #10. `userErrors { code }` is required
+# here so a DUPLICATE_OPTION_VALUE_NAME (rename collision) is surfacable as a
+# structured error rather than message-string matching.
+UPDATE_PRODUCT_OPTION = """
+mutation productOptionUpdate(
+  $productId: ID!,
+  $option: OptionUpdateInput!,
+  $optionValuesToUpdate: [OptionValueUpdateInput!],
+  $variantStrategy: ProductOptionUpdateVariantStrategy
+) {
+  productOptionUpdate(
+    productId: $productId,
+    option: $option,
+    optionValuesToUpdate: $optionValuesToUpdate,
+    variantStrategy: $variantStrategy
+  ) {
+    product {
+      id
+      options { id name optionValues { id name } }
+      variants(first: 50) { nodes { id title selectedOptions { name value } } }
+    }
+    userErrors { field message code }
+  }
+}
+"""
+
+# Shopify caps option names at 255 chars (Admin schema docstring). Same value
+# as VENDOR_MAX_LEN / PRODUCT_TYPE_MAX_LEN; kept distinct so a future divergence
+# can change one without touching the others.
+OPTION_NAME_MAX_LEN = 255
+
+# Default per spec is LEAVE_AS_IS — keeps existing variants pointing at the
+# renamed values. MANAGE lets Shopify reconcile (rarely needed for renames;
+# useful for option-shape changes). Default is loud in the docstring per the
+# spec edge-case warning about unexpected variant deduplication.
+_VALID_VARIANT_STRATEGIES: tuple[str, str] = ("LEAVE_AS_IS", "MANAGE")
+
+_PRODUCT_OPTION_GID_PREFIX = "gid://shopify/ProductOption/"
+_PRODUCT_OPTION_VALUE_GID_PREFIX = "gid://shopify/ProductOptionValue/"
+
 
 def _is_already_bound_error(message: str) -> bool:
     """Detect Shopify's 'already bound' family of userErrors.
@@ -1143,6 +1230,215 @@ def _format_type_payload(
 def _type_text(product_type: str) -> str:
     """Human-readable productType display: empty/whitespace → '(cleared)'."""
     return "(cleared)" if not product_type.strip() else product_type
+
+
+# ---------------------------------------------------------------------------
+# Helpers — Story 9.5 (update_product_options)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_product_id_for_options(
+    client: ShopifyClient, product_id: str
+) -> tuple[str | None, dict]:
+    """Resolve a numeric/GID/handle product_id to (product_gid, product_snapshot).
+
+    Twin of `_resolve_product_id_for_type` at the productType helper above —
+    same numeric/GID short-circuit, same `productByHandle` fallback for the
+    handle path, but reads the options + variants slice (vs. productType).
+    Returns (None, {}) when no product is found so callers emit a clean
+    "not found" head without raising.
+    """
+    if not isinstance(product_id, str) or not product_id.strip():
+        raise ValueError("product_id must be a non-empty string")
+    stripped = product_id.strip()
+
+    if stripped.startswith(_PRODUCT_GID_PREFIX):
+        if not stripped[len(_PRODUCT_GID_PREFIX) :]:
+            raise ValueError(f"Empty product GID body: {stripped!r}")
+        gid = stripped
+    elif stripped.isdigit():
+        gid = to_gid("Product", stripped)
+    else:
+        data = client.execute(GET_PRODUCT_OPTIONS_BY_HANDLE, {"handle": stripped})
+        product = (data or {}).get("productByHandle") or {}
+        if not product:
+            return None, {}
+        return product.get("id"), product
+
+    data = client.execute(GET_PRODUCT_OPTIONS, {"id": gid})
+    product = (data or {}).get("product") or {}
+    if not product:
+        return None, {}
+    return product.get("id") or gid, product
+
+
+def _normalize_option_input(
+    option: object,
+    option_values_to_update: object,
+    variant_strategy: object,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Validate + normalize the caller's option / values / strategy inputs.
+
+    Returns `(normalized, error)`:
+      - On success: `(normalized, None)` where normalized is
+        `{"option_id": str, "option_name": str | None, "values": list[{"id", "name"}],
+          "variant_strategy": str}`. `option_name` is None when the caller didn't
+        request a name change.
+      - On any failure: `(None, "Error: ...")` — the caller short-circuits with
+        no Shopify call. All cheap-rejects live here so the tool body deals
+        with happy-path types only.
+
+    Does NOT check GID-child-of-option (that needs the read result); only
+    checks GID prefix shape, presence, types, length, and duplicate input IDs.
+    """
+    if not isinstance(option, dict):
+        return None, "Error: option must be an object with at least an 'id' field."
+
+    raw_id = option.get("id")
+    if not isinstance(raw_id, str) or not raw_id.strip():
+        return None, "Error: option.id must be a non-empty string."
+    option_id = raw_id.strip()
+    if not option_id.startswith(_PRODUCT_OPTION_GID_PREFIX):
+        return None, (f"Error: option.id must be a ProductOption GID (got {option_id!r}).")
+    if not option_id[len(_PRODUCT_OPTION_GID_PREFIX) :]:
+        return None, f"Error: option.id has empty GID body: {option_id!r}."
+
+    option_name: str | None = None
+    if "name" in option:
+        raw_name = option.get("name")
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            return None, "Error: option.name, when supplied, must be a non-empty string."
+        trimmed = raw_name.strip()
+        if len(trimmed) > OPTION_NAME_MAX_LEN:
+            return None, (
+                f"Error: option.name exceeds {OPTION_NAME_MAX_LEN}-char limit (got {len(trimmed)})."
+            )
+        option_name = trimmed
+
+    # Treat None / omitted as "no value renames requested" — empty list is the
+    # canonical normalized form so the empty-delta short-circuit can compare on
+    # length without juggling None.
+    if option_values_to_update is None:
+        raw_values: list = []
+    elif isinstance(option_values_to_update, list):
+        raw_values = option_values_to_update
+    else:
+        return None, "Error: option_values_to_update must be a list (or omitted)."
+
+    normalized_values: list[dict[str, str]] = []
+    seen_value_ids: set[str] = set()
+    for idx, entry in enumerate(raw_values):
+        if not isinstance(entry, dict):
+            return None, f"Error: option_values_to_update[{idx}] must be an object."
+        raw_value_id = entry.get("id")
+        if not isinstance(raw_value_id, str) or not raw_value_id.strip():
+            return None, (f"Error: option_values_to_update[{idx}].id must be a non-empty string.")
+        value_id = raw_value_id.strip()
+        if not value_id.startswith(_PRODUCT_OPTION_VALUE_GID_PREFIX):
+            return None, (
+                f"Error: option_values_to_update[{idx}].id must be a "
+                f"ProductOptionValue GID (got {value_id!r})."
+            )
+        if not value_id[len(_PRODUCT_OPTION_VALUE_GID_PREFIX) :]:
+            return None, (
+                f"Error: option_values_to_update[{idx}].id has empty GID body: {value_id!r}."
+            )
+        if value_id in seen_value_ids:
+            return None, (
+                f"Error: option_values_to_update[{idx}].id {value_id!r} is a "
+                "duplicate; merge into a single entry."
+            )
+        seen_value_ids.add(value_id)
+
+        raw_value_name = entry.get("name")
+        if not isinstance(raw_value_name, str) or not raw_value_name.strip():
+            return None, (f"Error: option_values_to_update[{idx}].name must be a non-empty string.")
+        trimmed_name = raw_value_name.strip()
+        if len(trimmed_name) > OPTION_NAME_MAX_LEN:
+            return None, (
+                f"Error: option_values_to_update[{idx}].name exceeds "
+                f"{OPTION_NAME_MAX_LEN}-char limit (got {len(trimmed_name)})."
+            )
+        normalized_values.append({"id": value_id, "name": trimmed_name})
+
+    if not isinstance(variant_strategy, str) or variant_strategy not in _VALID_VARIANT_STRATEGIES:
+        return None, (
+            f"Error: variant_strategy must be one of "
+            f"{list(_VALID_VARIANT_STRATEGIES)} (got {variant_strategy!r})."
+        )
+
+    return (
+        {
+            "option_id": option_id,
+            "option_name": option_name,
+            "values": normalized_values,
+            "variant_strategy": variant_strategy,
+        },
+        None,
+    )
+
+
+def _shape_options_snapshot(product_node: dict[str, Any] | None) -> dict[str, Any]:
+    """Build the JSON-tail `product` shape from a product node.
+
+    Returns `{id, options[{id, name, optionValues[{id, name}]}], variants[{id, title, selectedOptions[]}]}`.
+    Missing top-level node yields a minimal `{"id": ""}` so the tail shape
+    stays consistent across error / success paths.
+    """
+    if not product_node:
+        return {"id": "", "options": [], "variants": []}
+    options = []
+    for opt in product_node.get("options") or []:
+        options.append(
+            {
+                "id": opt.get("id"),
+                "name": opt.get("name"),
+                "optionValues": [
+                    {"id": v.get("id"), "name": v.get("name")}
+                    for v in (opt.get("optionValues") or [])
+                ],
+            }
+        )
+    variants = []
+    for v in (product_node.get("variants") or {}).get("nodes") or []:
+        variants.append(
+            {
+                "id": v.get("id"),
+                "title": v.get("title"),
+                "selectedOptions": [
+                    {"name": so.get("name"), "value": so.get("value")}
+                    for so in (v.get("selectedOptions") or [])
+                ],
+            }
+        )
+    return {
+        "id": product_node.get("id") or "",
+        "options": options,
+        "variants": variants,
+    }
+
+
+def _format_options_payload(
+    *,
+    product_snapshot: dict[str, Any],
+    ok: bool,
+    preview: bool,
+    errors: list,
+) -> str:
+    """Serialize the JSON tail block for update_product_options.
+
+    Twin of `_format_vendor_payload` — emits ONLY the fenced JSON block so
+    the caller composes the head separately. The `product` slot carries the
+    full `_shape_options_snapshot` output so callers can read the post-write
+    options + variants state without a follow-up get_product_full call.
+    """
+    payload = {
+        "ok": ok,
+        "product": product_snapshot,
+        "errors": errors,
+        "preview": preview,
+    }
+    return "```json\n" + json.dumps(payload) + "\n```"
 
 
 def register(server: FastMCP, client: ShopifyClient) -> None:
@@ -2449,5 +2745,315 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 errors=[],
                 ok=True,
                 preview=False,
+            )
+        )
+
+    @server.tool()
+    def update_product_options(
+        product_id: str,
+        option: dict[str, Any],
+        option_values_to_update: list[dict[str, Any]] | None = None,
+        variant_strategy: str = "LEAVE_AS_IS",
+        confirm: bool = False,
+    ) -> str:
+        """
+        Rename a product's variant option name and/or its option value names.
+
+        product_id  : numeric ID, GID, or handle.
+        option      : dict — `{"id": "<ProductOption GID>", "name": "<new name>"?}`.
+                      The option GID is required; `name` is optional (omit to
+                      keep the current option name).
+        option_values_to_update : optional list of dicts —
+                      `[{"id": "<ProductOptionValue GID>", "name": "<new name>"}, ...]`.
+                      Default is none — every entry must belong to the option
+                      identified by `option.id`.
+        variant_strategy : 'LEAVE_AS_IS' (default) keeps existing variants
+                      pointing at the renamed values. 'MANAGE' lets Shopify
+                      reconcile — rarely needed for renames; may unexpectedly
+                      deduplicate variants on option-shape changes.
+        confirm     : if False (default) returns a preview; if True applies
+                      the change via `productOptionUpdate`.
+
+        Pre-fetches the product's options + variants in one query, validates
+        that `option.id` is on the product and that every `option_values_to_update`
+        ID is a child of that option (tool-side reject — avoids a guaranteed
+        Shopify userError). Short-circuits to a no-op when no name changes are
+        requested OR every requested rename already matches the current state
+        (AC #8 idempotency).
+
+        Single-option-per-call restriction (AC #10) is enforced by signature:
+        the `option` arg accepts exactly one option. For multi-option renames,
+        the caller chains calls.
+
+        Returns the dual head + ```json``` tail per the spec amendment —
+        `{ok, product{id, options[{id, name, optionValues[{id, name}]}],
+        variants[{id, title, selectedOptions[]}]}, errors[], preview}`.
+        Shopify userErrors (including the `code` field) pass through verbatim
+        on a mutation failure.
+        """
+        # Step 1 — cheap input validation (no network).
+        normalized, val_err = _normalize_option_input(
+            option, option_values_to_update, variant_strategy
+        )
+        if val_err or normalized is None:
+            # `normalized is None` is the runtime witness for `val_err is not None`
+            # — `_normalize_option_input` returns (None, str) on failure and
+            # (dict, None) on success, so the two branches are mutually exclusive.
+            # The combined guard satisfies mypy without an extra assert.
+            err_msg = val_err or "Error: option validation failed."
+            return f"{err_msg}\n\n" + _format_options_payload(
+                product_snapshot=_shape_options_snapshot(None),
+                ok=False,
+                preview=False,
+                errors=[
+                    {
+                        "field": "option",
+                        "message": err_msg.removeprefix("Error: "),
+                        "stage": "validation",
+                    }
+                ],
+            )
+
+        # Step 2 — resolve product_id (numeric / GID / handle) and pre-fetch
+        # options + variants in the same query (handle path uses the _BY_HANDLE
+        # twin; either way `product` carries the full snapshot we need).
+        try:
+            product_gid, product = _resolve_product_id_for_options(client, product_id)
+        except Exception as exc:
+            msg = f"Error resolving product_id ({type(exc).__name__}): {exc}"
+            return f"{msg}\n\n" + _format_options_payload(
+                product_snapshot=_shape_options_snapshot(None),
+                ok=False,
+                preview=False,
+                errors=[{"message": str(exc), "stage": "product-resolve"}],
+            )
+
+        if not product_gid:
+            msg = f"Error: no product found for {product_id!r}."
+            return f"{msg}\n\n" + _format_options_payload(
+                product_snapshot=_shape_options_snapshot(None),
+                ok=False,
+                preview=False,
+                errors=[
+                    {
+                        "message": msg.removeprefix("Error: "),
+                        "stage": "product-resolve",
+                    }
+                ],
+            )
+
+        # Step 3 — validate `option.id` is on this product. Index the options
+        # by GID for O(1) lookup + child-of-option checks below.
+        product_options = product.get("options") or []
+        matching_option = next(
+            (o for o in product_options if o.get("id") == normalized["option_id"]),
+            None,
+        )
+        if matching_option is None:
+            msg = f"Error: option.id {normalized['option_id']!r} is not on product {product_id!r}."
+            return f"{msg}\n\n" + _format_options_payload(
+                product_snapshot=_shape_options_snapshot(product),
+                ok=False,
+                preview=False,
+                errors=[
+                    {
+                        "message": msg.removeprefix("Error: "),
+                        "stage": "option-validation",
+                    }
+                ],
+            )
+
+        # Step 4 — validate every option-value GID is a child of `matching_option`.
+        # The `if v.get("id")` filter is purely defensive: Shopify's schema types
+        # `ProductOptionValue.id` as `ID!`, so a None / missing id is impossible
+        # in practice. Kept so a future schema regression doesn't trip a KeyError
+        # in the comprehension; not load-bearing for correctness.
+        existing_values_by_id: dict[str, dict[str, Any]] = {
+            v["id"]: v for v in (matching_option.get("optionValues") or []) if v.get("id")
+        }
+        unknown_value_ids = [
+            v["id"] for v in normalized["values"] if v["id"] not in existing_values_by_id
+        ]
+        if unknown_value_ids:
+            msg = (
+                f"Error: option_values_to_update contains IDs not on option "
+                f"{normalized['option_id']!r}: {', '.join(unknown_value_ids)}."
+            )
+            return f"{msg}\n\n" + _format_options_payload(
+                product_snapshot=_shape_options_snapshot(product),
+                ok=False,
+                preview=False,
+                errors=[
+                    {
+                        "message": msg.removeprefix("Error: "),
+                        "stage": "option-value-validation",
+                    }
+                ],
+            )
+
+        current_option_name = matching_option.get("name") or ""
+
+        # Step 5 — empty-delta short-circuit. Per AC notes: "Empty
+        # optionValuesToUpdate[] combined with no option.name change → no-op;
+        # the tool MAY short-circuit to success without calling the API."
+        if normalized["option_name"] is None and not normalized["values"]:
+            head = (
+                f"Done. Update product options (no-op, no changes requested)\n"
+                f"  Product ID : {from_gid(product_gid)}\n"
+                f"  Option     : {current_option_name} [id: {normalized['option_id']}]\n"
+            )
+            return (
+                head
+                + "\n"
+                + _format_options_payload(
+                    product_snapshot=_shape_options_snapshot(product),
+                    ok=True,
+                    preview=False,
+                    errors=[],
+                )
+            )
+
+        # Step 6 — idempotency: every requested rename already matches.
+        option_name_no_op = (
+            normalized["option_name"] is None or normalized["option_name"] == current_option_name
+        )
+        values_no_op = all(
+            (existing_values_by_id[v["id"]].get("name") or "") == v["name"]
+            for v in normalized["values"]
+        )
+        if option_name_no_op and values_no_op:
+            head = (
+                f"Done. Update product options (no-op, already set)\n"
+                f"  Product ID : {from_gid(product_gid)}\n"
+                f"  Option     : {current_option_name} [id: {normalized['option_id']}]\n"
+            )
+            return (
+                head
+                + "\n"
+                + _format_options_payload(
+                    product_snapshot=_shape_options_snapshot(product),
+                    ok=True,
+                    preview=False,
+                    errors=[],
+                )
+            )
+
+        # Step 7 — build the preview body (reused verbatim for confirm branch).
+        diff_lines: list[str] = []
+        if (
+            normalized["option_name"] is not None
+            and normalized["option_name"] != current_option_name
+        ):
+            diff_lines.append(
+                f"  Option name : {current_option_name!r} → {normalized['option_name']!r}"
+            )
+        for v in normalized["values"]:
+            old_name = existing_values_by_id[v["id"]].get("name") or ""
+            if old_name != v["name"]:
+                diff_lines.append(f"  Value [{v['id']}]: {old_name!r} → {v['name']!r}")
+
+        # Step 6 guarantees diff_lines is non-empty here: we only reach this
+        # point when at least one of option_name / values is a real change. The
+        # assert is a mypy invariant pin in the same shape as
+        # `_normalize_metafield_entries` (Story 9.7) — stripped under `python -O`
+        # so it's free at runtime in production but trips loudly in tests if a
+        # future refactor breaks the Step 5 / Step 6 short-circuit ordering.
+        assert diff_lines, (
+            "Step 6 invariant: at least one of option_name / values must be a real change."
+        )
+        header_text = "CONFIRMED —" if confirm else "PREVIEW —"
+        body = (
+            f"{header_text} Update product options\n"
+            f"  Product ID    : {from_gid(product_gid)}\n"
+            f"  Option ID     : {normalized['option_id']}\n"
+            f"  Strategy      : {normalized['variant_strategy']}\n" + "\n".join(diff_lines) + "\n"
+        )
+
+        # Step 8 — preview branch (confirm=False). No mutation; emit current
+        # product snapshot so the caller can audit pre-state alongside the diff.
+        if not confirm:
+            text = body + "\nReply with confirm=True to execute.\n"
+            return (
+                text
+                + "\n"
+                + _format_options_payload(
+                    product_snapshot=_shape_options_snapshot(product),
+                    ok=True,
+                    preview=True,
+                    errors=[],
+                )
+            )
+
+        # Step 9 — execute the productOptionUpdate mutation. `option.name` is
+        # omitted from the input when the caller didn't request a name change
+        # (`option_name is None`) OR when the requested name already matches
+        # the current name. The second case is the no-op-slot optimization
+        # added in the code-review pass: a caller redundantly passing the
+        # current name alongside real value renames would otherwise ship a
+        # redundant `name` field on every call. Server-side Shopify dedupes,
+        # but stripping client-side keeps the mutation input minimal.
+        option_input: dict[str, Any] = {"id": normalized["option_id"]}
+        if normalized["option_name"] is not None and not option_name_no_op:
+            option_input["name"] = normalized["option_name"]
+
+        try:
+            result = client.execute(
+                UPDATE_PRODUCT_OPTION,
+                {
+                    "productId": product_gid,
+                    "option": option_input,
+                    "optionValuesToUpdate": normalized["values"],
+                    "variantStrategy": normalized["variant_strategy"],
+                },
+            )
+        except Exception as exc:
+            msg = f"Error calling productOptionUpdate ({type(exc).__name__}): {exc}"
+            return f"{msg}\n\n" + _format_options_payload(
+                product_snapshot=_shape_options_snapshot(product),
+                ok=False,
+                preview=False,
+                errors=[{"message": str(exc), "stage": "option-update"}],
+            )
+
+        user_errors = extract_user_errors(result, "productOptionUpdate")
+        if user_errors:
+            # Shopify returns `field` as a list (e.g. ["option", "name"]) plus
+            # a `code` for option-rename rejections like DUPLICATE_OPTION_VALUE_NAME.
+            # Preserve `code` in the head so the caller can string-match without
+            # parsing the JSON tail.
+            def _fmt(e: dict[str, Any]) -> str:
+                field_path = ".".join(str(f) for f in (e.get("field") or []))
+                code_part = f" [{e['code']}]" if e.get("code") else ""
+                return f"{field_path or '(no field)'}{code_part}: {e.get('message', '')}"
+
+            msgs = "; ".join(_fmt(e) for e in user_errors)
+            return f"Error: productOptionUpdate userErrors: {msgs}\n\n" + _format_options_payload(
+                product_snapshot=_shape_options_snapshot(product),
+                ok=False,
+                preview=False,
+                errors=list(user_errors),
+            )
+
+        # Step 10 — success: shape the JSON tail from Shopify's echoed product
+        # snapshot (includes the renamed option / values + the post-write
+        # variants slice with refreshed selectedOptions).
+        updated_product = (result.get("productOptionUpdate") or {}).get("product") or {}
+
+        log_write(
+            "update_product_options",
+            f"id={from_gid(product_gid)} option={normalized['option_id']} "
+            f"name_change={normalized['option_name'] is not None} "
+            f"value_renames={len(normalized['values'])} "
+            f"strategy={normalized['variant_strategy']}",
+        )
+
+        return (
+            body
+            + "\n"
+            + _format_options_payload(
+                product_snapshot=_shape_options_snapshot(updated_product),
+                ok=True,
+                preview=False,
+                errors=[],
             )
         )
