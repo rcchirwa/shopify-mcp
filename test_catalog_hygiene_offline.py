@@ -2071,6 +2071,21 @@ def test_update_product_vendor_handle_not_found():
     assert payload["preview"] is False
 
 
+def test_update_product_vendor_handle_not_found_dry_run():
+    # Symmetric to ..._handle_not_found but with confirm=False. Pins that the
+    # not-found error path emits preview=False regardless of confirm.
+    tools, fc = _build([{"productByHandle": None}])
+    out = tools["update_product_vendor"](product_id="nope-handle", vendor="Vanish", confirm=False)
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == GET_PRODUCT_VENDOR_BY_HANDLE
+    assert "no product found" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+    assert payload["preview"] is False
+    assert payload["errors"][0]["stage"] == "product-resolve"
+    assert UPDATE_PRODUCT_VENDOR not in [c[0] for c in fc.calls]
+
+
 def test_update_product_vendor_numeric_id_not_found():
     # GET_PRODUCT_VENDOR returns null when the numeric/GID id doesn't exist.
     tools, fc = _build([{"product": None}])
@@ -2145,6 +2160,7 @@ def test_update_product_vendor_rejects_whitespace_only():
     assert "Error:" in out
     payload = _extract_json(out)
     assert payload["ok"] is False
+    assert payload["preview"] is False
 
 
 def test_update_product_vendor_rejects_over_255_chars():
@@ -2155,6 +2171,7 @@ def test_update_product_vendor_rejects_over_255_chars():
     assert f"{VENDOR_MAX_LEN}" in out
     payload = _extract_json(out)
     assert payload["ok"] is False
+    assert payload["preview"] is False
 
 
 def test_update_product_vendor_accepts_exact_255_chars():
@@ -2243,6 +2260,7 @@ def test_update_product_vendor_idempotent_when_both_empty():
     assert "(cleared)" in out
     payload = _extract_json(out)
     assert payload["ok"] is True
+    assert payload["preview"] is False
     assert payload["product"]["vendor"] is None
 
 
@@ -2253,6 +2271,7 @@ def test_update_product_vendor_idempotent_when_current_whitespace_target_none():
     assert len(fc.calls) == 1
     payload = _extract_json(out)
     assert payload["ok"] is True
+    assert payload["preview"] is False
 
 
 # ---------- error surfacing ----------
@@ -2329,3 +2348,31 @@ def test_update_product_vendor_post_mutation_missing_vendor_field_falls_back():
     out = tools["update_product_vendor"](product_id="123", vendor="Vanish", confirm=True)
     payload = _extract_json(out)
     assert payload["product"]["vendor"] == "Vanish"
+
+
+# ---------- _vendor_text unit tests (Suggestion #1) ----------
+
+
+def test_vendor_text_none_returns_cleared():
+    from tools.catalog_hygiene import _vendor_text
+
+    assert _vendor_text(None) == "(cleared)"
+
+
+def test_vendor_text_empty_string_returns_cleared():
+    from tools.catalog_hygiene import _vendor_text
+
+    assert _vendor_text("") == "(cleared)"
+
+
+def test_vendor_text_whitespace_only_returns_cleared():
+    from tools.catalog_hygiene import _vendor_text
+
+    assert _vendor_text("   ") == "(cleared)"
+
+
+def test_vendor_text_non_empty_returns_value():
+    from tools.catalog_hygiene import _vendor_text
+
+    assert _vendor_text("Nike") == "Nike"
+    assert _vendor_text("  Nike  ") == "  Nike  "

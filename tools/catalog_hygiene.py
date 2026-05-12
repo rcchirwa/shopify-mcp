@@ -559,22 +559,27 @@ def _resolve_product_id(client: ShopifyClient, product_id: str) -> tuple[str | N
     if not isinstance(product_id, str) or not product_id.strip():
         raise ValueError("product_id must be a non-empty string")
     stripped = product_id.strip()
-    if stripped.startswith(_PRODUCT_GID_PREFIX) and not stripped[len(_PRODUCT_GID_PREFIX) :]:
-        raise ValueError(f"Empty product GID body: {stripped!r}")
 
-    if stripped.startswith(_PRODUCT_GID_PREFIX) or stripped.isdigit():
-        gid = stripped if stripped.startswith(_PRODUCT_GID_PREFIX) else to_gid("Product", stripped)
-        data = client.execute(GET_PRODUCT_VENDOR, {"id": gid})
-        product = (data or {}).get("product") or {}
+    if stripped.startswith(_PRODUCT_GID_PREFIX):
+        if not stripped[len(_PRODUCT_GID_PREFIX) :]:
+            raise ValueError(f"Empty product GID body: {stripped!r}")
+        gid = stripped
+    elif stripped.isdigit():
+        gid = to_gid("Product", stripped)
+    else:
+        # Handle path — separate query.
+        data = client.execute(GET_PRODUCT_VENDOR_BY_HANDLE, {"handle": stripped})
+        product = (data or {}).get("productByHandle") or {}
         if not product:
             return None, {}
-        return product.get("id") or gid, product
+        return product.get("id"), product
 
-    data = client.execute(GET_PRODUCT_VENDOR_BY_HANDLE, {"handle": stripped})
-    product = (data or {}).get("productByHandle") or {}
+    # Numeric / GID path shares the same query.
+    data = client.execute(GET_PRODUCT_VENDOR, {"id": gid})
+    product = (data or {}).get("product") or {}
     if not product:
         return None, {}
-    return product.get("id"), product
+    return product.get("id") or gid, product
 
 
 def _normalize_vendor(vendor: str | None) -> tuple[str | None, str | None]:
@@ -623,8 +628,8 @@ def _format_vendor_payload(
 
 
 def _vendor_text(vendor: str | None) -> str:
-    """Human-readable vendor display: None → '(cleared)'."""
-    return "(cleared)" if vendor is None else vendor
+    """Human-readable vendor display: None or empty/whitespace → '(cleared)'."""
+    return "(cleared)" if not (vendor and vendor.strip()) else vendor
 
 
 def register(server: FastMCP, client: ShopifyClient) -> None:
