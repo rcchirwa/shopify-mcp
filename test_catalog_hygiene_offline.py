@@ -36,8 +36,14 @@ from tools.catalog_hygiene import (
 
 @pytest.fixture(autouse=True)
 def _no_log_write(monkeypatch):
-    """Keep tests from polluting aon_mcp_log.txt."""
-    monkeypatch.setattr(catalog_hygiene, "log_write", lambda *a, **k: None)
+    """Keep tests from polluting aon_mcp_log.txt.
+
+    `tools.catalog_hygiene` does `from tools._log import log_write`, so the
+    callable lives at the `tools.catalog_hygiene.log_write` attribute. Patch
+    the call-site module (not `tools._log`) or the binding won't intercept.
+    Shared by 9.3 (update_product_pricing) and 9.1 (update_product_category).
+    """
+    monkeypatch.setattr(catalog_hygiene, "log_write", lambda *_a, **_kw: None)
 
 
 def _build(responses):
@@ -1234,7 +1240,7 @@ def test_update_product_category_malformed_product_gid_errors():
         product_id="gid://shopify/Product/",
         category="sweatshirt",
     )
-    assert "Malformed product GID" in out
+    assert "Empty product GID body" in out
     assert fc.calls == []
 
 
@@ -1268,7 +1274,7 @@ def test_update_product_category_malformed_category_gid_errors():
         product_id="5234567890",
         category="gid://shopify/TaxonomyCategory/",
     )
-    assert "Malformed TaxonomyCategory GID" in out
+    assert "Empty TaxonomyCategory GID body" in out
     body = _extract_json_tail(out)
     assert body["ok"] is False
     assert fc.calls == []
@@ -1381,9 +1387,9 @@ def test_update_product_category_best_match_picks_first_leaf_and_lists_alternate
     assert len(body["alternates"]) == 2
     assert body["alternates"][0]["id"] == "gid://shopify/TaxonomyCategory/aa-1-13-10"
     assert body["alternates"][1]["id"] == "gid://shopify/TaxonomyCategory/aa-1-13-11"
-    # Synthesized rank-based scores: 0.9 then 0.8.
-    assert body["alternates"][0]["score"] == 0.9
-    assert body["alternates"][1]["score"] == 0.8
+    # No `score` field — Shopify doesn't return one, order alone carries the signal.
+    assert "score" not in body["alternates"][0]
+    assert "score" not in body["alternates"][1]
 
 
 def test_update_product_category_best_match_filters_non_leaf_intermediate_nodes():
@@ -1640,6 +1646,40 @@ def test_update_product_category_user_errors_surface_in_output():
     assert body["errors"] == [{"field": "category", "message": "invalid category for product"}]
 
 
+def test_update_product_category_transport_error_on_taxonomy_search_surfaces_structured_error():
+    # AC #8 — non-200 on the taxonomy lookup must NOT propagate uncaught.
+    tools, fc = _build([RuntimeError("Shopify HTTP error: 502 Bad Gateway")])
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="sweatshirt",
+        confirm=True,
+    )
+    assert "Taxonomy search failed" in out
+    body = _extract_json_tail(out)
+    assert body["ok"] is False
+    assert "502" in body["errors"][0]["message"]
+    # Product read + mutation must NOT have been attempted.
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == TAXONOMY_SEARCH
+
+
+def test_update_product_category_transport_error_on_handle_lookup_surfaces_structured_error():
+    # AC #8 — non-200 on the productByHandle lookup must NOT propagate uncaught.
+    tools, fc = _build([RuntimeError("Shopify HTTP error: 503 Service Unavailable")])
+    out = tools["update_product_category"](
+        product_id="mcp-test-product",
+        category="sweatshirt",
+        confirm=True,
+    )
+    assert "Handle lookup failed" in out
+    body = _extract_json_tail(out)
+    assert body["ok"] is False
+    assert "503" in body["errors"][0]["message"]
+    # Taxonomy + product read + mutation must NOT have been attempted.
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == GET_PRODUCT_BY_HANDLE_MIN
+
+
 def test_update_product_category_transport_error_on_read_surfaces_structured_error():
     tools, fc = _build(
         [
@@ -1855,7 +1895,7 @@ def test_update_product_category_done_branch_strips_preview_marker():
         category="sweatshirts",
         confirm=True,
     )
-    assert out.startswith("Done. —"), out
+    assert out.startswith("Done. Update product category"), out
     assert "PREVIEW" not in out
     assert "Reply with confirm=True" not in out
     body = _extract_json_tail(out)

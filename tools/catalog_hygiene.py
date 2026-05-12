@@ -331,9 +331,10 @@ def _resolve_product_gid(
     """Map a numeric ID / GID / handle to a Product GID.
 
     Returns (gid, error). On success, error is None. On failure (handle not
-    found, malformed input), gid is None and error is a human-readable string.
-    Numeric and GID inputs short-circuit without a network call; handle
-    inputs trigger a `productByHandle` query.
+    found, malformed input, transport failure), gid is None and error is a
+    human-readable string. Numeric and GID inputs short-circuit without a
+    network call; handle inputs trigger a `productByHandle` query (wrapped
+    in try/except so non-200 HTTP surfaces as a structured error per AC #8).
     """
     if not isinstance(product_id, str) or not product_id.strip():
         return None, "product_id must be a non-empty string."
@@ -341,7 +342,7 @@ def _resolve_product_gid(
 
     if stripped.startswith(_PRODUCT_GID_PREFIX):
         if not stripped[len(_PRODUCT_GID_PREFIX) :]:
-            return None, f"Malformed product GID (empty tail): {stripped!r}"
+            return None, f"Empty product GID body: {stripped!r}"
         return stripped, None
 
     if stripped.isdigit():
@@ -350,7 +351,10 @@ def _resolve_product_gid(
     # Treat anything else as a handle. Shopify handles are lowercase
     # alphanumerics/hyphens/underscores — but rather than gate here, we let
     # the GraphQL query decide (returns null for unknown handles).
-    data = client.execute(GET_PRODUCT_BY_HANDLE_MIN, {"handle": stripped})
+    try:
+        data = client.execute(GET_PRODUCT_BY_HANDLE_MIN, {"handle": stripped})
+    except Exception as e:
+        return None, f"Handle lookup failed: {e}"
     product = (data or {}).get("productByHandle")
     if not product:
         return None, f"No product found with handle {stripped!r}."
@@ -376,12 +380,21 @@ def _resolve_taxonomy_category(
 
     if stripped.startswith(_TAXONOMY_GID_PREFIX):
         if not stripped[len(_TAXONOMY_GID_PREFIX) :]:
-            return None, [], f"Malformed TaxonomyCategory GID (empty tail): {stripped!r}"
+            return None, [], f"Empty TaxonomyCategory GID body: {stripped!r}"
         # GID passthrough — caller already knows which leaf they want. We don't
         # fabricate a fullName; the post-write snapshot from productUpdate fills it.
         return {"id": stripped, "fullName": None, "name": None}, [], None
 
-    data = client.execute(TAXONOMY_SEARCH, {"search": stripped})
+    # Ordering: taxonomy search runs before the product read (on the caller
+    # side) so a 0-result / ambiguous / no-exact-match failure bails CHEAP,
+    # without paying for an unused product fetch. The trade-off: a transport
+    # failure here happens before we've validated the product exists. The
+    # try/except below makes that surface as a structured error (AC #8),
+    # mirroring the product-read and mutation wrappers in the caller.
+    try:
+        data = client.execute(TAXONOMY_SEARCH, {"search": stripped})
+    except Exception as e:
+        return None, [], f"Taxonomy search failed: {e}"
     nodes = ((data or {}).get("taxonomy") or {}).get("categories", {}).get("nodes") or []
     leaves = [n for n in nodes if n.get("isLeaf")]
     if not leaves:
@@ -392,6 +405,11 @@ def _resolve_taxonomy_category(
         )
 
     if resolve_strategy == "exact":
+        # Match by fullName OR short name — intentional. Callers paste either
+        # the leaf's short label ("Sweatshirts") or its full path
+        # ("Apparel & Accessories > … > Sweatshirts"); both should resolve.
+        # Defensive: two distinct leaves matching the same needle (one by
+        # fullName, one by name) still trip the >1 guard below.
         needle = stripped.casefold()
         matches = [
             n
@@ -426,18 +444,18 @@ def _resolve_taxonomy_category(
             )
         return leaves[0], [], None
 
-    # best-match: first leaf wins; subsequent leaves become alternates.
-    # Shopify doesn't return a score; synthesize a rank-based score so the
-    # spec's documented `alternates[].score` slot stays populated.
+    # best-match: first leaf wins; subsequent leaves become alternates in
+    # Shopify's relevance order. No `score` field — Shopify doesn't return
+    # one, and synthesizing a rank-based stand-in misled downstream agents
+    # into treating it as a probability. Order alone carries the signal.
     chosen = leaves[0]
     alternates = [
         {
             "id": n["id"],
             "fullName": n.get("fullName"),
             "name": n.get("name"),
-            "score": round(1.0 - (i + 1) * 0.1, 2),
         }
-        for i, n in enumerate(leaves[1:])
+        for n in leaves[1:]
     ]
     return chosen, alternates, None
 
@@ -806,7 +824,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 preview=False,
             )
             header = (
-                f"Done. — Update product category (no-op, already set)\n"
+                f"Done. Update product category (no-op, already set)\n"
                 f"  Product ID : {from_gid(product_gid)}\n"
                 f"  Category   : {old_category_fullname or '(unknown)'} "
                 f"({old_category_id})"
@@ -910,7 +928,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"'{(updated_product.get('category') or {}).get('fullName') or target_full_name or target_category_gid}'",
         )
         return _format_payload(
-            f"Done. — Update product category\n{header_body}",
+            f"Done. Update product category\n{header_body}",
             payload,
             confirm_hint=False,
         )
