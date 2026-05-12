@@ -36,8 +36,11 @@ Requires `write_files` and `write_products` scopes. Local-file source paths are 
 ### Catalog hygiene
 | Tool | Description |
 |------|-------------|
+| `update_product_category` | Set or change a product's Standard Product Taxonomy category; accepts a TaxonomyCategory GID or a free-text search string with `resolve_strategy` (exact / best-match / reject-ambiguous) (preview + confirm) |
+| `update_product_vendor` | Set or clear a product's vendor / brand name; pass `None` to clear; trims whitespace and enforces ≤ 255 chars (preview + confirm) |
 | `update_product_type` | Set or clear a product's legacy free-text `productType` field via `productUpdate`; accepts numeric ID / GID / handle; empty or whitespace input clears the field (Shopify treats `""` as cleared) (preview + confirm; head + JSON tail per the Epic 9 amendment) |
 | `update_variant_image_binding` | Bind existing product media to one or more variants; resolves `variantId` (numeric / GID / SKU), rejects media GIDs not on the product, treats already-bound media as idempotent no-op, appends only the delta via `productVariantAppendMedia` (preview + confirm; head + JSON tail per the Epic 9 amendment) |
+| `set_product_metafields` | Set or update up to 25 metafields on Products or ProductVariants in one `metafieldsSet` call; validates owner GID, namespace (rejects reserved `app--*`), and value shape per type (numeric regex, JSON parse for `json` / `list.*`); per-entry errors surface in head + `errorsByIndex` map; emits `remediation` block on Shopify `ACCESS_DENIED` (preview + confirm; head + JSON tail) |
 
 ### Inventory
 | Tool | Description |
