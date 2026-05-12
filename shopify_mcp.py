@@ -9,6 +9,7 @@ All credentials loaded from .env — never hardcoded here.
 
 from mcp.server.fastmcp import FastMCP
 
+import tools.catalog_hygiene as catalog_hygiene_module
 import tools.collections as collections_module
 import tools.discounts as discounts_module
 import tools.inventory as inventory_module
@@ -32,6 +33,7 @@ def create_server() -> FastMCP:
     publications_module.register(server, client)
     webhooks_module.register(server, client)
     media_module.register(server, client)
+    catalog_hygiene_module.register(server, client)
 
     return server
 

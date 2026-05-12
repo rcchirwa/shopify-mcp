@@ -1277,6 +1277,58 @@ def test_get_product_full_empty_optionals_render_placeholders():
     assert "Tags: (none)" in out
     assert "SEO title: (none)" in out
     assert "SEO description: (none)" in out
+    # Story 9.0 additive extension: Options section is always rendered.
+    assert "Options:\n  (none)" in out
+
+
+def test_get_product_full_surfaces_option_and_option_value_gids():
+    # Story 9.0 AC #5/#6: get_product_full must surface option + option-value
+    # GIDs additively — existing lines stay intact.
+    product = _full_product(
+        "123",
+        "Hoodie",
+        "hoodie",
+        variants=[{"id": "gid://shopify/ProductVariant/1", "title": "S", "sku": "H-S"}],
+    )
+    product["options"] = [
+        {
+            "id": "gid://shopify/ProductOption/aaa",
+            "name": "Size",
+            "optionValues": [
+                {"id": "gid://shopify/ProductOptionValue/v1", "name": "Small"},
+                {"id": "gid://shopify/ProductOptionValue/v2", "name": "Medium"},
+            ],
+        },
+        {
+            "id": "gid://shopify/ProductOption/bbb",
+            "name": "Color",
+            "optionValues": [
+                {"id": "gid://shopify/ProductOptionValue/v3", "name": "Cream"},
+            ],
+        },
+    ]
+    tools, fc = _build([{"product": product}])
+    out = tools["get_product_full"](product_id="123")
+
+    # New: option / option-value GIDs surfaced.
+    assert "gid://shopify/ProductOption/aaa" in out
+    assert "gid://shopify/ProductOption/bbb" in out
+    assert "gid://shopify/ProductOptionValue/v1" in out
+    assert "gid://shopify/ProductOptionValue/v2" in out
+    assert "gid://shopify/ProductOptionValue/v3" in out
+    assert "Size" in out
+    assert "Color" in out
+    assert "Small" in out
+    assert "Medium" in out
+    assert "Cream" in out
+
+    # Existing return-shape lines must stay intact (additive contract).
+    assert "ID: 123" in out
+    assert "Title: Hoodie" in out
+    assert "Handle: hoodie" in out
+    assert "Variants:" in out
+    assert "S — SKU: H-S" in out
+    assert "Options:" in out
 
 
 # ---------- update_product_description ----------
