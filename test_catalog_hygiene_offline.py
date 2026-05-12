@@ -26,12 +26,29 @@ import pytest
 
 from _testing import CapturingServer, FakeClient
 from tools import catalog_hygiene
+from tools.catalog_hygiene import (
+    GET_PRODUCT_BY_HANDLE_MIN,
+    GET_PRODUCT_CATEGORY,
+    TAXONOMY_SEARCH,
+    UPDATE_PRODUCT_CATEGORY,
+)
 
 
 @pytest.fixture(autouse=True)
-def _no_log_write(monkeypatch):
-    """Keep tests from polluting aon_mcp_log.txt."""
-    monkeypatch.setattr(catalog_hygiene, "log_write", lambda *a, **k: None)
+def _no_log_write(request, monkeypatch):
+    """Keep tests from polluting aon_mcp_log.txt.
+
+    `tools.catalog_hygiene` does `from tools._log import log_write`, so the
+    callable lives at the `tools.catalog_hygiene.log_write` attribute. Patch
+    the call-site module (not `tools._log`) or the binding won't intercept.
+    Shared by 9.3 (update_product_pricing) and 9.1 (update_product_category).
+
+    Scoped to tool-invoking tests — the Wave 0 contract tests (which only
+    call `register()`) skip the patch since `log_write` is never reached.
+    """
+    if request.node.name.startswith("test_register_"):
+        return
+    monkeypatch.setattr(catalog_hygiene, "log_write", lambda *_a, **_kw: None)
 
 
 def _build(responses):
@@ -105,11 +122,13 @@ def test_register_is_callable_and_returns_none():
     assert catalog_hygiene.register(srv, fc) is None
 
 
-def test_register_adds_update_product_pricing_only():
+def test_register_adds_expected_tools():
+    # Pins the current tool set. Future Stories 9.2/9.4-9.7 will grow this;
+    # update the assertion alongside each one.
     srv = CapturingServer()
     fc = FakeClient([])
     catalog_hygiene.register(srv, fc)
-    assert set(srv.tools.keys()) == {"update_product_pricing"}
+    assert set(srv.tools.keys()) == {"update_product_pricing", "update_product_category"}
     assert fc.calls == []
 
 
@@ -1016,3 +1035,919 @@ def test_tail_unknown_gids_at_confirm_marks_ok_false():
     tail = _parse_tail(out)
     assert tail["ok"] is False
     assert any("201" in e["message"] for e in tail["errors"])
+
+
+# ---------- Helpers — Story 9.1 (update_product_category) ----------
+
+
+def _taxonomy_response(*nodes_kwargs):
+    nodes = []
+    for kw in nodes_kwargs:
+        nodes.append(
+            {
+                "id": kw["id"],
+                "fullName": kw.get("fullName", ""),
+                "name": kw.get("name", ""),
+                "level": kw.get("level", 3),
+                "isLeaf": kw.get("isLeaf", True),
+                "isRoot": kw.get("isRoot", False),
+            }
+        )
+    return {"taxonomy": {"categories": {"nodes": nodes}}}
+
+
+def _product_read_response(
+    *,
+    pid="5234567890",
+    title="MCP Test Product — DO NOT PUBLISH",
+    category_id=None,
+    category_full_name=None,
+    category_name=None,
+):
+    cat = (
+        None
+        if category_id is None
+        else {
+            "id": category_id,
+            "fullName": category_full_name,
+            "name": category_name,
+        }
+    )
+    return {
+        "product": {
+            "id": f"gid://shopify/Product/{pid}",
+            "title": title,
+            "category": cat,
+        }
+    }
+
+
+def _product_update_ok(
+    *,
+    pid="5234567890",
+    title="MCP Test Product — DO NOT PUBLISH",
+    category_id="gid://shopify/TaxonomyCategory/aa-1-13-9",
+    category_full_name="Apparel & Accessories > Clothing > Shirts & Tops > Sweatshirts",
+    category_name="Sweatshirts",
+):
+    return {
+        "productUpdate": {
+            "product": {
+                "id": f"gid://shopify/Product/{pid}",
+                "title": title,
+                "category": {
+                    "id": category_id,
+                    "fullName": category_full_name,
+                    "name": category_name,
+                },
+            },
+            "userErrors": [],
+        }
+    }
+
+
+def _product_update_err(field="category", message="invalid category for product"):
+    return {
+        "productUpdate": {
+            "product": None,
+            "userErrors": [{"field": field, "message": message}],
+        }
+    }
+
+
+def _extract_json_tail(output: str) -> dict:
+    """Pull the fenced ```json ...``` block out of a Story 9.1 tool's hybrid output.
+
+    9.1 emits the JSON tail with `json.dumps(...)` (no indent), so the tail is a
+    single line. 9.3 uses `json.dumps(..., indent=2)` via `_parse_tail`. Both
+    helpers coexist — each test uses the one matching its tool's emitter.
+    """
+    marker = "```json\n"
+    start = output.rindex(marker) + len(marker)
+    end = output.rindex("\n```")
+    return json.loads(output[start:end])
+
+
+def test_update_product_category_numeric_id_resolved_to_gid_before_mutation():
+    tools, fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Apparel & Accessories > Clothing > Shirts & Tops > Sweatshirts",
+                    "name": "Sweatshirts",
+                }
+            ),
+            _product_read_response(),
+            _product_update_ok(),
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="crewneck sweatshirt",
+        confirm=True,
+    )
+    # The mutation variable's product.id MUST be a GID.
+    _, vars_put = fc.calls[2]
+    assert vars_put["product"]["id"] == "gid://shopify/Product/5234567890"
+    assert fc.calls[2][0] == UPDATE_PRODUCT_CATEGORY
+    body = _extract_json_tail(out)
+    assert body["ok"] is True
+    assert body["errors"] == []
+
+
+def test_update_product_category_gid_passthrough_skips_handle_lookup():
+    tools, fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Apparel & Accessories > Clothing > Shirts & Tops > Sweatshirts",
+                    "name": "Sweatshirts",
+                }
+            ),
+            _product_read_response(),
+            _product_update_ok(),
+        ]
+    )
+    tools["update_product_category"](
+        product_id="gid://shopify/Product/5234567890",
+        category="sweatshirt",
+        confirm=True,
+    )
+    # Three calls only: taxonomy search + product read + mutation. No handle lookup.
+    assert len(fc.calls) == 3
+    assert fc.calls[0][0] == TAXONOMY_SEARCH
+    assert fc.calls[1][0] == GET_PRODUCT_CATEGORY
+
+
+def test_update_product_category_handle_resolves_via_product_by_handle():
+    tools, fc = _build(
+        [
+            # Handle lookup short-circuits with the product's GID.
+            {
+                "productByHandle": {
+                    "id": "gid://shopify/Product/5234567890",
+                    "title": "MCP Test Product — DO NOT PUBLISH",
+                    "category": None,
+                }
+            },
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Apparel & Accessories > Clothing > Shirts & Tops > Sweatshirts",
+                    "name": "Sweatshirts",
+                }
+            ),
+            _product_read_response(),
+            _product_update_ok(),
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="mcp-test-product",
+        category="sweatshirt",
+        confirm=True,
+    )
+    assert fc.calls[0][0] == GET_PRODUCT_BY_HANDLE_MIN
+    assert fc.calls[0][1] == {"handle": "mcp-test-product"}
+    assert fc.calls[-1][1]["product"]["id"] == "gid://shopify/Product/5234567890"
+    body = _extract_json_tail(out)
+    assert body["ok"] is True
+
+
+def test_update_product_category_handle_not_found_errors_cleanly():
+    tools, fc = _build([{"productByHandle": None}])
+    out = tools["update_product_category"](
+        product_id="ghost-handle",
+        category="sweatshirt",
+    )
+    assert "No product found with handle" in out
+    body = _extract_json_tail(out)
+    assert body["ok"] is False
+    # No taxonomy / mutation calls — bailed at handle resolution.
+    assert len(fc.calls) == 1
+
+
+def test_update_product_category_empty_product_id_errors_without_network():
+    tools, fc = _build([])
+    out = tools["update_product_category"](product_id="", category="sweatshirt")
+    assert "product_id must be a non-empty string" in out
+    assert fc.calls == []
+    body = _extract_json_tail(out)
+    assert body["ok"] is False
+
+
+def test_update_product_category_malformed_product_gid_errors():
+    tools, fc = _build([])
+    out = tools["update_product_category"](
+        product_id="gid://shopify/Product/",
+        category="sweatshirt",
+    )
+    assert "Empty product GID body" in out
+    assert fc.calls == []
+
+
+# ---------- AC #2 — category accepts GID or search ----------
+
+
+def test_update_product_category_with_category_gid_skips_taxonomy_lookup():
+    tools, fc = _build(
+        [
+            _product_read_response(),
+            _product_update_ok(),
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="gid://shopify/TaxonomyCategory/aa-1-13-9",
+        confirm=True,
+    )
+    # Only 2 calls: GET_PRODUCT_CATEGORY + UPDATE. No TAXONOMY_SEARCH.
+    assert len(fc.calls) == 2
+    assert TAXONOMY_SEARCH not in [c[0] for c in fc.calls]
+    assert fc.calls[0][0] == GET_PRODUCT_CATEGORY
+    assert fc.calls[1][0] == UPDATE_PRODUCT_CATEGORY
+    body = _extract_json_tail(out)
+    assert body["ok"] is True
+
+
+def test_update_product_category_malformed_category_gid_errors():
+    tools, fc = _build([])
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="gid://shopify/TaxonomyCategory/",
+    )
+    assert "Empty TaxonomyCategory GID body" in out
+    body = _extract_json_tail(out)
+    assert body["ok"] is False
+    assert fc.calls == []
+
+
+def test_update_product_category_empty_category_errors():
+    tools, fc = _build([])
+    out = tools["update_product_category"](product_id="5234567890", category="   ")
+    assert "category must be a non-empty string" in out
+    assert fc.calls == []
+
+
+# ---------- AC #3 — reject-ambiguous ----------
+
+
+def test_update_product_category_reject_ambiguous_fails_on_multiple_leaves():
+    tools, fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Apparel & Accessories > Clothing > Shirts & Tops > Sweatshirts",
+                    "name": "Sweatshirts",
+                },
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-10",
+                    "fullName": "Apparel & Accessories > Clothing > Shirts & Tops > T-Shirts",
+                    "name": "T-Shirts",
+                },
+            )
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="shirt",
+        resolve_strategy="reject-ambiguous",
+        confirm=True,
+    )
+    assert "reject-ambiguous" in out
+    body = _extract_json_tail(out)
+    assert body["ok"] is False
+    # No GET_PRODUCT_CATEGORY, no UPDATE_PRODUCT_CATEGORY — bailed at search.
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == TAXONOMY_SEARCH
+
+
+def test_update_product_category_reject_ambiguous_succeeds_on_single_leaf():
+    tools, fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Apparel & Accessories > Clothing > Shirts & Tops > Sweatshirts",
+                    "name": "Sweatshirts",
+                }
+            ),
+            _product_read_response(),
+            _product_update_ok(),
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="sweatshirt",
+        resolve_strategy="reject-ambiguous",
+        confirm=True,
+    )
+    body = _extract_json_tail(out)
+    assert body["ok"] is True
+    assert body["alternates"] == []
+
+
+# ---------- AC #4 — best-match picks first, lists alternates ----------
+
+
+def test_update_product_category_best_match_picks_first_leaf_and_lists_alternates():
+    tools, fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Apparel & Accessories > Clothing > Shirts & Tops > Sweatshirts",
+                    "name": "Sweatshirts",
+                },
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-10",
+                    "fullName": "Apparel & Accessories > Clothing > Shirts & Tops > T-Shirts",
+                    "name": "T-Shirts",
+                },
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-11",
+                    "fullName": "Apparel & Accessories > Clothing > Shirts & Tops > Polo Shirts",
+                    "name": "Polo Shirts",
+                },
+            ),
+            _product_read_response(),
+            _product_update_ok(),
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="shirt",
+        resolve_strategy="best-match",
+        confirm=True,
+    )
+    # Picked the first leaf.
+    _, vars_put = fc.calls[2]
+    assert vars_put["product"]["category"] == "gid://shopify/TaxonomyCategory/aa-1-13-9"
+    body = _extract_json_tail(out)
+    assert body["ok"] is True
+    assert len(body["alternates"]) == 2
+    assert body["alternates"][0]["id"] == "gid://shopify/TaxonomyCategory/aa-1-13-10"
+    assert body["alternates"][1]["id"] == "gid://shopify/TaxonomyCategory/aa-1-13-11"
+    # No `score` field — Shopify doesn't return one, order alone carries the signal.
+    assert "score" not in body["alternates"][0]
+    assert "score" not in body["alternates"][1]
+
+
+def test_update_product_category_best_match_filters_non_leaf_intermediate_nodes():
+    # Shopify returns mixed root/intermediate/leaf nodes; we must filter to isLeaf.
+    tools, fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa",
+                    "fullName": "Apparel & Accessories",
+                    "name": "Apparel & Accessories",
+                    "isLeaf": False,
+                    "isRoot": True,
+                },
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13",
+                    "fullName": "Apparel & Accessories > Clothing > Shirts & Tops",
+                    "name": "Shirts & Tops",
+                    "isLeaf": False,
+                },
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Apparel & Accessories > Clothing > Shirts & Tops > Sweatshirts",
+                    "name": "Sweatshirts",
+                    "isLeaf": True,
+                },
+            ),
+            _product_read_response(),
+            _product_update_ok(),
+        ]
+    )
+    tools["update_product_category"](
+        product_id="5234567890",
+        category="sweatshirt",
+        confirm=True,
+    )
+    _, vars_put = fc.calls[2]
+    # Picked the only leaf, not the root or intermediate.
+    assert vars_put["product"]["category"] == "gid://shopify/TaxonomyCategory/aa-1-13-9"
+
+
+# ---------- AC #5 — exact ----------
+
+
+def test_update_product_category_exact_succeeds_on_full_name_match():
+    tools, fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Apparel & Accessories > Clothing > Shirts & Tops > Sweatshirts",
+                    "name": "Sweatshirts",
+                }
+            ),
+            _product_read_response(),
+            _product_update_ok(),
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="Apparel & Accessories > Clothing > Shirts & Tops > Sweatshirts",
+        resolve_strategy="exact",
+        confirm=True,
+    )
+    body = _extract_json_tail(out)
+    assert body["ok"] is True
+
+
+def test_update_product_category_exact_succeeds_on_name_match():
+    # Match by short `name` too — the exact branch checks both fullName and name.
+    tools, fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Apparel & Accessories > Clothing > Shirts & Tops > Sweatshirts",
+                    "name": "Sweatshirts",
+                }
+            ),
+            _product_read_response(),
+            _product_update_ok(),
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="sweatshirts",
+        resolve_strategy="exact",
+        confirm=True,
+    )
+    body = _extract_json_tail(out)
+    assert body["ok"] is True
+
+
+def test_update_product_category_exact_fails_when_no_exact_match():
+    tools, fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Apparel & Accessories > Clothing > Shirts & Tops > Sweatshirts",
+                    "name": "Sweatshirts",
+                }
+            )
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="crewneck pullover",
+        resolve_strategy="exact",
+        confirm=True,
+    )
+    assert "exact" in out
+    body = _extract_json_tail(out)
+    assert body["ok"] is False
+    # Mutation must NOT have run.
+    assert len(fc.calls) == 1
+
+
+def test_update_product_category_exact_fails_on_multiple_exact_matches():
+    # Defensive: if two leaves happen to share the same fullName casefold,
+    # exact must NOT silently pick one.
+    tools, _fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Sweatshirts",
+                    "name": "Sweatshirts",
+                },
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-99-9",
+                    "fullName": "SWEATSHIRTS",
+                    "name": "Sweatshirts",
+                },
+            )
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="sweatshirts",
+        resolve_strategy="exact",
+        confirm=True,
+    )
+    body = _extract_json_tail(out)
+    assert body["ok"] is False
+    assert "exact" in out
+
+
+# ---------- AC #6 — productUpdate input shape ----------
+
+
+def test_update_product_category_mutation_uses_product_update_input_shape():
+    tools, fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Sweatshirts",
+                    "name": "Sweatshirts",
+                }
+            ),
+            _product_read_response(),
+            _product_update_ok(),
+        ]
+    )
+    tools["update_product_category"](
+        product_id="5234567890",
+        category="sweatshirts",
+        confirm=True,
+    )
+    query, variables = fc.calls[2]
+    assert query == UPDATE_PRODUCT_CATEGORY
+    # The spec pins `product: ProductUpdateInput!` — NOT `input: ProductInput!`.
+    assert "product" in variables
+    assert variables["product"] == {
+        "id": "gid://shopify/Product/5234567890",
+        "category": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+    }
+
+
+# ---------- AC #7 — dry-run (confirm=False) ----------
+
+
+def test_update_product_category_dry_run_no_mutation():
+    tools, fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Apparel & Accessories > Clothing > Shirts & Tops > Sweatshirts",
+                    "name": "Sweatshirts",
+                }
+            ),
+            _product_read_response(),
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="sweatshirt",
+        confirm=False,
+    )
+    assert out.startswith("PREVIEW —"), out
+    # NO UPDATE_PRODUCT_CATEGORY call in the recorded queries.
+    queries = [c[0] for c in fc.calls]
+    assert UPDATE_PRODUCT_CATEGORY not in queries
+    body = _extract_json_tail(out)
+    assert body["preview"] is True
+    assert body["ok"] is True
+    # The preview product carries the resolved target category so callers can
+    # inspect exactly what *would* be written.
+    assert body["product"]["category"]["id"] == "gid://shopify/TaxonomyCategory/aa-1-13-9"
+    assert "Reply with confirm=True" in out
+
+
+def test_update_product_category_dry_run_with_category_gid_still_skips_mutation():
+    tools, fc = _build([_product_read_response()])
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="gid://shopify/TaxonomyCategory/aa-1-13-9",
+        confirm=False,
+    )
+    assert out.startswith("PREVIEW —")
+    assert UPDATE_PRODUCT_CATEGORY not in [c[0] for c in fc.calls]
+    body = _extract_json_tail(out)
+    assert body["preview"] is True
+
+
+# ---------- AC #8 — userErrors verbatim + transport errors ----------
+
+
+def test_update_product_category_user_errors_surface_in_output():
+    tools, _fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Sweatshirts",
+                    "name": "Sweatshirts",
+                }
+            ),
+            _product_read_response(),
+            _product_update_err(field="category", message="invalid category for product"),
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="sweatshirts",
+        confirm=True,
+    )
+    assert "invalid category for product" in out
+    body = _extract_json_tail(out)
+    assert body["ok"] is False
+    # Verbatim userErrors land in the JSON tail.
+    assert body["errors"] == [{"field": "category", "message": "invalid category for product"}]
+
+
+def test_update_product_category_transport_error_on_taxonomy_search_surfaces_structured_error():
+    # AC #8 — non-200 on the taxonomy lookup must NOT propagate uncaught.
+    tools, fc = _build([RuntimeError("Shopify HTTP error: 502 Bad Gateway")])
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="sweatshirt",
+        confirm=True,
+    )
+    # Header annotates exception type so UX disambiguates transport vs logic failures.
+    assert "Taxonomy search failed (RuntimeError)" in out
+    body = _extract_json_tail(out)
+    assert body["ok"] is False
+    assert body["errors"][0]["stage"] == "category-resolve"
+    assert "502" in body["errors"][0]["message"]
+    # Product read + mutation must NOT have been attempted.
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == TAXONOMY_SEARCH
+
+
+def test_update_product_category_transport_error_on_handle_lookup_surfaces_structured_error():
+    # AC #8 — non-200 on the productByHandle lookup must NOT propagate uncaught.
+    tools, fc = _build([RuntimeError("Shopify HTTP error: 503 Service Unavailable")])
+    out = tools["update_product_category"](
+        product_id="mcp-test-product",
+        category="sweatshirt",
+        confirm=True,
+    )
+    assert "Handle lookup failed (RuntimeError)" in out
+    body = _extract_json_tail(out)
+    assert body["ok"] is False
+    assert body["errors"][0]["stage"] == "product-resolve"
+    assert "503" in body["errors"][0]["message"]
+    # Taxonomy + product read + mutation must NOT have been attempted.
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == GET_PRODUCT_BY_HANDLE_MIN
+
+
+def test_update_product_category_transport_error_on_read_surfaces_structured_error():
+    tools, fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Sweatshirts",
+                    "name": "Sweatshirts",
+                }
+            ),
+            RuntimeError("Shopify HTTP error: 503 Service Unavailable"),
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="sweatshirts",
+        confirm=True,
+    )
+    assert "Failed to read current product" in out
+    body = _extract_json_tail(out)
+    assert body["ok"] is False
+    assert body["errors"][0]["stage"] == "product-read"
+    assert "503" in body["errors"][0]["message"]
+    # Mutation was never attempted (responses had only 2 entries; no AssertionError).
+    assert len(fc.calls) == 2
+
+
+def test_update_product_category_transport_error_on_mutation_surfaces_structured_error():
+    tools, _fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Sweatshirts",
+                    "name": "Sweatshirts",
+                }
+            ),
+            _product_read_response(),
+            RuntimeError("Shopify HTTP error: 500"),
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="sweatshirts",
+        confirm=True,
+    )
+    assert "Mutation failed" in out
+    body = _extract_json_tail(out)
+    assert body["ok"] is False
+    assert body["errors"][0]["stage"] == "product-update"
+
+
+# ---------- AC #9 — idempotent no-op ----------
+
+
+def test_update_product_category_idempotent_when_already_set():
+    # The product already has the target category — no mutation.
+    target_gid = "gid://shopify/TaxonomyCategory/aa-1-13-9"
+    target_full = "Apparel & Accessories > Clothing > Shirts & Tops > Sweatshirts"
+    tools, fc = _build(
+        [
+            _taxonomy_response({"id": target_gid, "fullName": target_full, "name": "Sweatshirts"}),
+            _product_read_response(
+                category_id=target_gid,
+                category_full_name=target_full,
+                category_name="Sweatshirts",
+            ),
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="sweatshirt",
+        confirm=True,
+    )
+    assert "no-op, already set" in out
+    body = _extract_json_tail(out)
+    assert body["ok"] is True
+    assert body["errors"] == []
+    assert UPDATE_PRODUCT_CATEGORY not in [c[0] for c in fc.calls]
+
+
+# ---------- AC #10 — return shape ----------
+
+
+def test_update_product_category_returns_fenced_json_tail_block():
+    tools, _fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Sweatshirts",
+                    "name": "Sweatshirts",
+                }
+            ),
+            _product_read_response(),
+            _product_update_ok(),
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="sweatshirts",
+        confirm=True,
+    )
+    assert "```json" in out
+    assert out.rstrip().endswith("```")
+    body = _extract_json_tail(out)
+    # Spec's return shape: ok, product { id, title, category }, alternates, errors.
+    assert set(body.keys()) >= {"ok", "product", "alternates", "errors", "preview"}
+    assert set(body["product"].keys()) >= {"id", "title", "category"}
+    assert set(body["product"]["category"].keys()) >= {"id", "fullName"}
+
+
+# ---------- Edge cases & validation ----------
+
+
+def test_update_product_category_zero_search_results_errors_cleanly():
+    tools, fc = _build([_taxonomy_response()])
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="unicorn dust",
+    )
+    assert "unicorn dust" in out
+    assert "No taxonomy categories matched" in out
+    body = _extract_json_tail(out)
+    assert body["ok"] is False
+    # Only the taxonomy search ran.
+    assert len(fc.calls) == 1
+
+
+def test_update_product_category_invalid_resolve_strategy_errors_before_network():
+    tools, fc = _build([])
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="sweatshirt",
+        resolve_strategy="fuzzy-magic",
+    )
+    assert "Invalid resolve_strategy" in out
+    assert "fuzzy-magic" in out
+    body = _extract_json_tail(out)
+    assert body["ok"] is False
+    assert fc.calls == []
+
+
+def test_update_product_category_preview_shows_alternates_count_in_human_text():
+    # Two leaves → header should mention the runner-up count.
+    tools, _fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Sweatshirts",
+                    "name": "Sweatshirts",
+                },
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-10",
+                    "fullName": "T-Shirts",
+                    "name": "T-Shirts",
+                },
+            ),
+            _product_read_response(),
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="shirt",
+        confirm=False,
+    )
+    assert "runner-up" in out
+
+
+def test_update_product_category_preview_old_block_shows_existing_category():
+    tools, _fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Sweatshirts",
+                    "name": "Sweatshirts",
+                }
+            ),
+            _product_read_response(
+                category_id="gid://shopify/TaxonomyCategory/aa-1-13-10",
+                category_full_name="T-Shirts",
+                category_name="T-Shirts",
+            ),
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="sweatshirt",
+        confirm=False,
+    )
+    assert "T-Shirts" in out
+    assert "gid://shopify/TaxonomyCategory/aa-1-13-10" in out
+
+
+def test_update_product_category_done_branch_strips_preview_marker():
+    tools, _fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Sweatshirts",
+                    "name": "Sweatshirts",
+                }
+            ),
+            _product_read_response(),
+            _product_update_ok(),
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="sweatshirts",
+        confirm=True,
+    )
+    assert out.startswith("Done. Update product category"), out
+    assert "PREVIEW" not in out
+    assert "Reply with confirm=True" not in out
+    body = _extract_json_tail(out)
+    assert body["preview"] is False
+    assert body["ok"] is True
+
+
+def test_update_product_category_with_gid_no_existing_category_writes_cleanly():
+    # Category GID passthrough on a product with no existing category — covers
+    # the `old_block == '(none)'` branch on the execute path.
+    tools, _fc = _build(
+        [
+            _product_read_response(category_id=None),
+            _product_update_ok(),
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="gid://shopify/TaxonomyCategory/aa-1-13-9",
+        confirm=True,
+    )
+    assert "(none)" in out
+    body = _extract_json_tail(out)
+    assert body["ok"] is True
+
+
+def test_update_product_category_post_update_product_node_null_yields_none_snapshot():
+    # productUpdate returns no product node (rare but possible Shopify response).
+    tools, _fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Sweatshirts",
+                    "name": "Sweatshirts",
+                }
+            ),
+            _product_read_response(),
+            {"productUpdate": {"product": None, "userErrors": []}},
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="sweatshirts",
+        confirm=True,
+    )
+    body = _extract_json_tail(out)
+    assert body["ok"] is True
+    assert body["product"] is None
