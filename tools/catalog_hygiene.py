@@ -33,6 +33,7 @@ Story 9.6 (`update_variant_image_binding`) known limitations:
 """
 
 import json
+import re
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -288,6 +289,100 @@ mutation ProductVariantAppendMedia(
 }
 """
 
+# ---------------------------------------------------------------------------
+# GraphQL + constants — Story 9.7 (set_product_metafields)
+# ---------------------------------------------------------------------------
+
+# Shopify's `metafieldsSet` accepts up to 25 entries per call. Enforced
+# client-side so the cap-exceeded path returns a structured tool error
+# rather than a less-descriptive Shopify userError.
+METAFIELDS_SET_MAX = 25
+
+# Reserved namespace for app-context metafields. Setting an `app--*` metafield
+# requires the metafield owner app's token; rejecting client-side prevents a
+# guaranteed Shopify rejection.
+RESERVED_NAMESPACE_PREFIX = "app--"
+
+# Story 9.7 scope: metafield owners are limited to Product and ProductVariant.
+# Other owner types (Collection, Customer, Order, etc.) are out of scope —
+# adding them would require deciding their resolver / preview strategy.
+METAFIELD_OWNER_PREFIXES: tuple[str, str] = (
+    "gid://shopify/Product/",
+    "gid://shopify/ProductVariant/",
+)
+
+# Owner-prefix → Shopify ownerType enum string. Only the two supported types
+# are mapped; lookup failure is a programmer error caught by `_parse_owner_gid`.
+_OWNER_TYPE_BY_PREFIX: dict[str, str] = {
+    "gid://shopify/Product/": "PRODUCT",
+    "gid://shopify/ProductVariant/": "PRODUCT_VARIANT",
+}
+
+# Curated set of Shopify metafield types this tool *shape-checks* client-side.
+# Spec line 506 calls for "basic regex check for numeric types, JSON.parse
+# check for JSON / list.* types" — keep the set small and predictable. Any
+# `type` value NOT in this frozenset is passed through to Shopify with no
+# client-side shape check (forward-compatible: Shopify adds new types and we
+# don't want the tool to gate on every API version bump).
+SUPPORTED_METAFIELD_TYPES: frozenset[str] = frozenset(
+    [
+        "single_line_text_field",
+        "multi_line_text_field",
+        "number_integer",
+        "number_decimal",
+        "boolean",
+        "date",
+        "date_time",
+        "url",
+        "color",
+        "json",
+        "rich_text_field",
+        "list.single_line_text_field",
+        "list.number_integer",
+        "list.number_decimal",
+        "list.url",
+        "list.color",
+        "list.date",
+        "list.date_time",
+    ]
+)
+
+# Currently-granted OAuth scopes per CLAUDE.md §"Shopify Admin API scopes".
+# Surfaced in the ACCESS_DENIED `remediation` payload so the caller / merchant
+# can see exactly what's available when deciding whether to re-grant. Keep
+# in lockstep with CLAUDE.md:13-19 — if scopes are added or removed there,
+# update this constant in the same PR.
+GRANTED_SCOPES_HINT = (
+    "read_products, write_products, read_inventory, write_inventory, "
+    "read_orders, read_price_rules, write_price_rules, "
+    "read_discounts, write_discounts, "
+    "read_publications, write_publications, write_files"
+)
+
+# `userErrors { code }` is REQUIRED here (vs. just `field message` in the
+# other Epic 9 mutations) so the ACCESS_DENIED branch in AC #10 can detect
+# the scope-block signal without falling back to message-string matching.
+METAFIELDS_SET_MUTATION = """
+mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+  metafieldsSet(metafields: $metafields) {
+    metafields {
+      id
+      namespace
+      key
+      value
+      type
+      ownerType
+    }
+    userErrors { field message code }
+  }
+}
+"""
+
+# Regex shape-checks for numeric metafield types. Anchored on both ends so a
+# leading minus is allowed but trailing junk ("14abc", "14 ") is rejected.
+_NUMBER_INTEGER_RE = re.compile(r"^-?\d+$")
+_NUMBER_DECIMAL_RE = re.compile(r"^-?\d+(\.\d+)?$")
+
 
 def _is_already_bound_error(message: str) -> bool:
     """Detect Shopify's 'already bound' family of userErrors.
@@ -327,14 +422,216 @@ def _render(head: str, payload: dict[str, Any]) -> str:
     return f"{head}\n\n```json\n{json.dumps(payload, indent=2)}\n```"
 
 
-def _err_payload(message: str) -> dict[str, Any]:
+def _err_payload(message: str, *, key: str = "variants") -> dict[str, Any]:
     """Build the JSON tail for a tool-side error (validation, resolver, etc.).
 
     Shape mirrors the success payload's `errors` slot but with `ok: false`
-    and an empty `variants` list. Validation errors have no Shopify `field`
-    path, so the entry carries `message` only.
+    and an empty data list under the per-tool key. Validation errors have
+    no Shopify `field` path, so the entry carries `message` only.
+
+    `key` defaults to `"variants"` for backwards-compat with Story 9.6
+    (`update_variant_image_binding`). Story 9.7 calls with `key="metafields"`.
     """
-    return {"ok": False, "variants": [], "errors": [{"message": message}]}
+    return {"ok": False, key: [], "errors": [{"message": message}]}
+
+
+def _parse_owner_gid(gid: object) -> tuple[str | None, str | None]:
+    """Parse a metafield owner GID into (ownerType, error).
+
+    Accepts only Product / ProductVariant GIDs per Story 9.7 scope. Returns
+    `(ownerType, None)` on the happy path where `ownerType` is the Shopify
+    enum string (`"PRODUCT"` / `"PRODUCT_VARIANT"`). Returns `(None, msg)`
+    on a malformed or out-of-scope GID — the GID prefix decides the
+    ownerType; the numeric tail is left to Shopify to reject if invalid.
+    """
+    if not isinstance(gid, str) or not gid.strip():
+        return None, "ownerId must be a non-empty string"
+    stripped = gid.strip()
+    for prefix in METAFIELD_OWNER_PREFIXES:
+        if stripped.startswith(prefix):
+            if not stripped[len(prefix) :]:
+                return None, f"ownerId has empty GID body: {stripped!r}"
+            return _OWNER_TYPE_BY_PREFIX[prefix], None
+    return None, (f"ownerId must be a Product or ProductVariant GID (got {stripped!r})")
+
+
+def _validate_metafield_value(value: str, mtype: str) -> str | None:
+    """Light-touch shape check for known metafield types.
+
+    Returns None on shape OK (or for an unknown type — those pass through
+    to Shopify for validation per the curated-set rationale at
+    SUPPORTED_METAFIELD_TYPES). Returns a single-line error string when
+    the value is shape-incompatible with the type.
+    """
+    if mtype == "number_integer":
+        if not _NUMBER_INTEGER_RE.match(value):
+            return f"value {value!r} is not a valid integer for type 'number_integer'"
+        return None
+    if mtype == "number_decimal":
+        if not _NUMBER_DECIMAL_RE.match(value):
+            return f"value {value!r} is not a valid decimal for type 'number_decimal'"
+        return None
+    if mtype == "boolean":
+        if value not in ("true", "false"):
+            return f"value {value!r} must be 'true' or 'false' for type 'boolean'"
+        return None
+    if mtype == "json":
+        try:
+            json.loads(value)
+        except (ValueError, TypeError):
+            return f"value {value!r} is not valid JSON for type 'json'"
+        return None
+    if mtype.startswith("list."):
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            return (
+                f"value {value!r} is not valid JSON for list-type {mtype!r} "
+                f"(expected a JSON-serialized array string)"
+            )
+        if not isinstance(parsed, list):
+            return (
+                f"value for list-type {mtype!r} must decode to a JSON array "
+                f"(got {type(parsed).__name__})"
+            )
+        return None
+    # Other supported types (text, url, color, date, date_time, rich_text_field)
+    # and unknown types: no client-side shape check — Shopify validates.
+    return None
+
+
+def _normalize_metafield_entries(
+    entries: list,
+) -> tuple[list[dict[str, Any]] | None, dict[int, list[str]]]:
+    """Per-entry validate + normalize the `metafields` input.
+
+    Returns `(normalized_list, errors_by_index)`:
+      - On all-entries-valid: `(normalized, {})` where each normalized dict
+        is `{ownerId, namespace, key, value, type, ownerType}` ready to ship
+        to Shopify. The added `ownerType` is *internal* — stripped from the
+        mutation input but kept for the preview payload's per-entry display.
+      - On any entry invalid: `(None, errors_by_index)` where the dict maps
+        each failing entry index to a list of error strings (one entry can
+        have multiple errors, e.g. bad ownerId AND bad value).
+    """
+    normalized: list[dict[str, Any]] = []
+    errors_by_index: dict[int, list[str]] = {}
+
+    def _push(idx: int, msg: str) -> None:
+        errors_by_index.setdefault(idx, []).append(msg)
+
+    for idx, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            _push(idx, f"metafields[{idx}] must be an object")
+            continue
+
+        owner_id_raw = entry.get("ownerId")
+        owner_type, owner_err = _parse_owner_gid(owner_id_raw)
+        if owner_err:
+            _push(idx, f"metafields[{idx}].{owner_err}")
+
+        ns = entry.get("namespace")
+        if not isinstance(ns, str) or not ns.strip():
+            _push(idx, f"metafields[{idx}].namespace must be a non-empty string")
+            ns_clean: str | None = None
+        else:
+            ns_clean = ns.strip()
+            if ns_clean.startswith(RESERVED_NAMESPACE_PREFIX):
+                _push(
+                    idx,
+                    f"metafields[{idx}].namespace {ns_clean!r} uses the reserved "
+                    f"'{RESERVED_NAMESPACE_PREFIX}' prefix (app-context only)",
+                )
+
+        key = entry.get("key")
+        if not isinstance(key, str) or not key.strip():
+            _push(idx, f"metafields[{idx}].key must be a non-empty string")
+            key_clean: str | None = None
+        else:
+            key_clean = key.strip()
+
+        mtype = entry.get("type")
+        if not isinstance(mtype, str) or not mtype.strip():
+            _push(idx, f"metafields[{idx}].type must be a non-empty string")
+            mtype_clean: str | None = None
+        else:
+            mtype_clean = mtype.strip()
+
+        value = entry.get("value")
+        if not isinstance(value, str):
+            _push(
+                idx,
+                f"metafields[{idx}].value must be a string "
+                f"(JSON-serialized for json / list.* types)",
+            )
+            value_clean: str | None = None
+        else:
+            value_clean = value
+            if mtype_clean:
+                shape_err = _validate_metafield_value(value_clean, mtype_clean)
+                if shape_err:
+                    _push(idx, f"metafields[{idx}].{shape_err}")
+
+        if idx not in errors_by_index:
+            # All per-entry checks passed — every local is a non-None str /
+            # known ownerType at this point. The `if idx not in errors_by_index`
+            # guard above is the runtime proof that no validation branch ran, so
+            # these asserts can never fire in production; they exist solely as
+            # mypy invariant pins. Under `python -O` they are stripped, which is
+            # safe for exactly this reason.
+            assert owner_type is not None
+            assert ns_clean is not None
+            assert key_clean is not None
+            assert mtype_clean is not None
+            assert value_clean is not None
+            assert isinstance(owner_id_raw, str)
+            normalized.append(
+                {
+                    "ownerId": owner_id_raw.strip(),
+                    "namespace": ns_clean,
+                    "key": key_clean,
+                    "value": value_clean,
+                    "type": mtype_clean,
+                    # `ownerType` is for preview display only — stripped before
+                    # the mutation call (Shopify infers it from `ownerId`).
+                    "ownerType": owner_type,
+                }
+            )
+
+    if errors_by_index:
+        return None, errors_by_index
+    return normalized, {}
+
+
+def _format_metafields_payload(
+    *,
+    metafields: list[dict[str, Any]],
+    errors: list[dict[str, Any]],
+    ok: bool,
+    preview: bool,
+    remediation: str | None = None,
+    errors_by_index: dict[str, list[dict[str, Any]]] | None = None,
+) -> str:
+    """Serialize the JSON tail block for set_product_metafields.
+
+    Returns ONLY the fenced ```json``` block — the caller composes the
+    human-readable head. Parallel to `_format_vendor_payload` (Story 9.2)
+    rather than `_render` (which wraps head + tail in one call) so that
+    the head wording can vary across validation / preview / mutation /
+    ACCESS_DENIED / userError paths without ferrying the head through
+    multiple helper signatures.
+    """
+    payload: dict[str, Any] = {
+        "ok": ok,
+        "metafields": metafields,
+        "errors": errors,
+        "preview": preview,
+    }
+    if errors_by_index:
+        payload["errorsByIndex"] = errors_by_index
+    if remediation:
+        payload["remediation"] = remediation
+    return "```json\n" + json.dumps(payload, indent=2) + "\n```"
 
 
 def _parse_positive_decimal(raw: object) -> Decimal:
@@ -1903,4 +2200,254 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         return _render(
             head,
             {"ok": True, "variants": success_variants, "errors": []},
+        )
+
+    @server.tool()
+    def set_product_metafields(
+        metafields: list[dict[str, Any]] | None = None,
+        confirm: bool = False,
+    ) -> str:
+        """
+        Set or update one or more metafields on Products or ProductVariants.
+
+        metafields : non-empty list of up to 25 entries. Each entry is a dict:
+            - ownerId   : str — Product or ProductVariant GID
+                          (`gid://shopify/Product/...` or
+                          `gid://shopify/ProductVariant/...`)
+            - namespace : str — e.g. 'custom'; `app--*` is reserved and rejected
+            - key       : str — e.g. 'fabric_weight_oz'
+            - value     : str — value as a string. For typed values supply the
+                          JSON-serialized form: '14' (number_integer),
+                          'true' (boolean), '["Cold wash","Hang dry"]'
+                          (list.single_line_text_field).
+            - type      : str — Shopify metafield type identifier.
+        confirm    : if False (default) returns a preview; if True applies
+                     the change via `metafieldsSet`.
+
+        Validation runs entirely client-side before any network call: top-level
+        size (>=1, <=25), per-entry required keys, ownerId GID shape, reserved
+        namespace, and a basic shape check for known types
+        (number_integer, number_decimal, boolean, json, list.*). Unknown types
+        pass through to Shopify validation. Errors are surfaced both in the
+        human-readable head and as `errorsByIndex` in the JSON tail so callers
+        can pinpoint which entries failed.
+
+        Idempotency relies on Shopify's own `metafieldsSet` semantics —
+        re-running with identical inputs returns the same metafield IDs and
+        is treated as success. No client-side pre-fetch.
+
+        On Shopify `ACCESS_DENIED` (scope-block) the response includes a
+        `remediation` field listing the currently granted scopes and the
+        action needed to unblock (add `write_metafields` to the OAuth grant).
+
+        Returns the dual head + ```json``` tail —
+        `{ok, metafields[{id, namespace, key, value, type, ownerType}],
+        errors[], preview, errorsByIndex?, remediation?}`.
+        """
+        # Top-level shape gate — keeps the per-entry validator dealing with
+        # `dict | non-dict` only, not `list | None | str`.
+        if not isinstance(metafields, list) or not metafields:
+            msg = "metafields must be a non-empty list (up to 25 entries)."
+            return _render(
+                f"Error: {msg}",
+                _err_payload(msg, key="metafields"),
+            )
+        if len(metafields) > METAFIELDS_SET_MAX:
+            msg = (
+                f"metafields exceeds the {METAFIELDS_SET_MAX}-entry "
+                f"per-call cap (got {len(metafields)})."
+            )
+            return _render(
+                f"Error: {msg}",
+                _err_payload(msg, key="metafields"),
+            )
+
+        normalized, errors_by_index = _normalize_metafield_entries(metafields)
+        if normalized is None:
+            # Sort indices ASC for deterministic human-readable head ordering.
+            sorted_pairs = sorted(errors_by_index.items())
+            lines = [f"  [{idx}] " + "; ".join(msgs) for idx, msgs in sorted_pairs]
+            head = "Error: metafields validation failed\n" + "\n".join(lines)
+            # Normalize to the same {"field", "message", "code"} shape used by
+            # Shopify userErrors so callers always see a consistent errors[] schema.
+            errors_for_payload = [
+                {"field": ["metafields", str(idx)], "message": m, "code": "INVALID_INPUT"}
+                for idx, msgs in sorted_pairs
+                for m in msgs
+            ]
+            return (
+                head
+                + "\n\n"
+                + _format_metafields_payload(
+                    metafields=[],
+                    errors=errors_for_payload,
+                    ok=False,
+                    preview=False,
+                    errors_by_index={
+                        str(idx): [
+                            {
+                                "field": ["metafields", str(idx)],
+                                "message": m,
+                                "code": "INVALID_INPUT",
+                            }
+                            for m in msgs
+                        ]
+                        for idx, msgs in sorted_pairs
+                    },
+                )
+            )
+
+        # Per-entry preview line — same shape used on preview and post-mutation
+        # head, so the caller sees the same display regardless of dry-run state.
+        def _entry_line(idx: int, entry: dict[str, Any]) -> str:
+            return (
+                f"  [{idx}] {entry['ownerType']} {entry['ownerId']} | "
+                f"{entry['namespace']}.{entry['key']} = {entry['value']!r} "
+                f"({entry['type']})"
+            )
+
+        entry_lines = [_entry_line(i, e) for i, e in enumerate(normalized)]
+
+        if not confirm:
+            preview_head = (
+                f"PREVIEW — Set product metafields\n"
+                f"  Entries ({len(normalized)}):\n" + "\n".join(entry_lines)
+            )
+            # Preview metafields[] echoes the normalized input (ownerId,
+            # namespace, key, value, type, ownerType) — no `id` yet because
+            # no mutation ran. Mirrors Story 9.6's preview/success shape
+            # divergence (preview = inputs; success = Shopify-echoed).
+            return with_confirm_hint(
+                preview_head
+                + "\n\n"
+                + _format_metafields_payload(
+                    metafields=[dict(e) for e in normalized],
+                    errors=[],
+                    ok=True,
+                    preview=True,
+                )
+            )
+
+        # Strip the internal `ownerType` before the mutation call — Shopify
+        # infers it from `ownerId`, and `MetafieldsSetInput` doesn't accept it.
+        mutation_input = []
+        for e in normalized:
+            row = e.copy()
+            del row["ownerType"]
+            mutation_input.append(row)
+
+        try:
+            result = client.execute(
+                METAFIELDS_SET_MUTATION,
+                {"metafields": mutation_input},
+            )
+        except Exception as exc:
+            msg = f"Error calling metafieldsSet ({type(exc).__name__}): {exc}"
+            return _render(msg, _err_payload(str(exc), key="metafields"))
+
+        user_errors = extract_user_errors(result, "metafieldsSet")
+
+        # ACCESS_DENIED is a class-of-error signal (scope block) per AC #10 —
+        # surface remediation + granted-scope context once even if multiple
+        # entries returned the same code.
+        access_denied = [e for e in user_errors if e.get("code") == "ACCESS_DENIED"]
+        if access_denied:
+            remediation = (
+                "Add 'write_metafields' scope to the OAuth grant. "
+                f"Currently granted: {GRANTED_SCOPES_HINT}. "
+                "See https://shopify.dev/docs/api/usage/access-scopes"
+                "#authenticated-access-scopes"
+            )
+            err_summary = "; ".join(
+                f"{'.'.join(str(f) for f in (e.get('field') or [])) or '(no field)'}: "
+                f"{e.get('message', '')}"
+                for e in access_denied
+            )
+            head = (
+                f"Error: metafieldsSet ACCESS_DENIED — likely missing the "
+                f"write_metafields scope.\n  {err_summary}\n"
+                f"  Remediation: {remediation}"
+            )
+            return (
+                head
+                + "\n\n"
+                + _format_metafields_payload(
+                    metafields=[],
+                    errors=list(user_errors),
+                    ok=False,
+                    preview=False,
+                    remediation=remediation,
+                )
+            )
+
+        if user_errors:
+            # Mirror Story 9.6's dotted-path formatter — Shopify returns
+            # `field` as a list like ["metafields", "0", "value"]; str() of
+            # the raw list reads poorly in a head.
+            def _fmt(e: dict[str, Any]) -> str:
+                field_path = ".".join(str(f) for f in (e.get("field") or []))
+                return f"{field_path or '(no field)'}: {e.get('message', '')}"
+
+            # Bucket userErrors by entry index for the `errorsByIndex` map.
+            by_index: dict[str, list[dict[str, Any]]] = {}
+            for e in user_errors:
+                field = e.get("field") or []
+                # MetafieldsSetInput field paths look like
+                # ["metafields", "<idx>", "<attr>"]. If we can't read an
+                # index, bucket under "_" so it still appears in the map.
+                # Shopify's schema types `field` as `[String!]!`, so
+                # `isinstance(field[1], str)` is always true in practice;
+                # the check guards defensively against future API changes.
+                idx_str = "_"
+                if len(field) >= 2 and isinstance(field[1], str) and field[1].isdigit():
+                    idx_str = field[1]
+                by_index.setdefault(idx_str, []).append(dict(e))
+
+            msgs = "; ".join(_fmt(e) for e in user_errors)
+            head = f"Error: metafieldsSet userErrors: {msgs}"
+            return (
+                head
+                + "\n\n"
+                + _format_metafields_payload(
+                    metafields=[],
+                    errors=list(user_errors),
+                    ok=False,
+                    preview=False,
+                    errors_by_index=by_index,
+                )
+            )
+
+        # Success — build response from Shopify's echoed metafields[] (preserves
+        # documented key order id, namespace, key, value, type, ownerType).
+        returned = (result.get("metafieldsSet") or {}).get("metafields") or []
+        success_metafields = [
+            {
+                "id": m.get("id"),
+                "namespace": m.get("namespace"),
+                "key": m.get("key"),
+                "value": m.get("value"),
+                "type": m.get("type"),
+                "ownerType": m.get("ownerType"),
+            }
+            for m in returned
+        ]
+
+        log_write(
+            "set_product_metafields",
+            f"entries={len(normalized)} owners="
+            + ",".join(sorted({e["ownerType"] for e in normalized})),
+        )
+
+        head = f"CONFIRMED — Set product metafields\n  Entries ({len(normalized)}):\n" + "\n".join(
+            entry_lines
+        )
+        return (
+            head
+            + "\n\n"
+            + _format_metafields_payload(
+                metafields=success_metafields,
+                errors=[],
+                ok=True,
+                preview=False,
+            )
         )

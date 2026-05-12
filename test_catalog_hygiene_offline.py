@@ -132,7 +132,7 @@ def test_register_is_callable_and_returns_none():
 
 
 def test_register_adds_expected_tools():
-    # Pins the current tool set. Future Stories 9.4-9.7 will grow this;
+    # Pins the current tool set. Future Stories 9.4-9.5 will grow this;
     # update the assertion alongside each one.
     srv = CapturingServer()
     fc = FakeClient([])
@@ -143,6 +143,7 @@ def test_register_adds_expected_tools():
         "update_product_vendor",
         "update_product_type",
         "update_variant_image_binding",
+        "set_product_metafields",
     }
     assert fc.calls == []
 
@@ -3809,3 +3810,551 @@ def test_s96_shopify_user_errors_pass_through_verbatim_in_tail():
     tail = _parse_tail(out)
     assert tail["ok"] is False
     assert tail["errors"] == user_errors
+
+
+# =============================================================================
+# Story 9.7 — set_product_metafields
+# =============================================================================
+#
+# AC coverage map (see context/EPIC_9_catalog_hygiene_stories.md §Story 9.7):
+#   AC #1  25-entry-per-call cap        → test_s97_validation_rejects param
+#   AC #2  required keys per entry      → test_s97_validation_rejects param
+#   AC #3  type/value shape checks      → test_s97_value_shape_* tests
+#   AC #4  reserved namespace reject    → test_s97_validation_rejects param
+#   AC #5  metafieldsSet single call    → test_s97_mutation_*_path tests
+#   AC #6  per-entry errors by index    → test_s97_user_errors_indexed_by_entry
+#   AC #7  dry-run path (confirm=False) → test_s97_preview_does_not_call_mutation
+#   AC #8  userErrors verbatim          → test_s97_user_errors_indexed_by_entry
+#   AC #9  idempotent re-run            → test_s97_idempotent_rerun_succeeds_twice
+#   AC #10 ACCESS_DENIED + remediation  → test_s97_access_denied_* tests
+#   AC #11 success return shape         → test_s97_success_json_tail_shape
+
+_S97_PRODUCT_GID = "gid://shopify/Product/777"
+_S97_VARIANT_GID = "gid://shopify/ProductVariant/8001"
+_S97_METAFIELD_GID = "gid://shopify/Metafield/42"
+_S97_METAFIELD_GID_2 = "gid://shopify/Metafield/43"
+
+
+def _s97_entry(
+    *,
+    owner_id: str = _S97_PRODUCT_GID,
+    namespace: str = "custom",
+    key: str = "fabric_weight_oz",
+    value: str = "14",
+    mtype: str = "number_integer",
+) -> dict:
+    return {
+        "ownerId": owner_id,
+        "namespace": namespace,
+        "key": key,
+        "value": value,
+        "type": mtype,
+    }
+
+
+def _s97_mutation_response(metafields=None, user_errors=None):
+    return {
+        "metafieldsSet": {
+            "metafields": metafields or [],
+            "userErrors": user_errors or [],
+        }
+    }
+
+
+# --- Validation rejects (no network) -----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "metafields,fragment",
+    [
+        (None, "metafields must be a non-empty list"),
+        ([], "metafields must be a non-empty list"),
+        ("not-a-list", "metafields must be a non-empty list"),
+        # 26 entries hits the cap.
+        ([_s97_entry()] * 26, "exceeds the 25-entry"),
+        (["not-a-dict"], "metafields[0] must be an object"),
+        # Missing each required key, one per row.
+        ([{**_s97_entry(), "ownerId": None}], "ownerId must be a non-empty string"),
+        ([{**_s97_entry(), "ownerId": ""}], "ownerId must be a non-empty string"),
+        # Out-of-scope owner type — Collection is not Product or ProductVariant.
+        (
+            [{**_s97_entry(), "ownerId": "gid://shopify/Collection/1"}],
+            "must be a Product or ProductVariant GID",
+        ),
+        # Wrong shape (not a GID at all).
+        (
+            [{**_s97_entry(), "ownerId": "12345"}],
+            "must be a Product or ProductVariant GID",
+        ),
+        # Empty body after prefix.
+        (
+            [{**_s97_entry(), "ownerId": "gid://shopify/Product/"}],
+            "ownerId has empty GID body",
+        ),
+        ([{**_s97_entry(), "namespace": None}], "namespace must be a non-empty string"),
+        ([{**_s97_entry(), "namespace": "   "}], "namespace must be a non-empty string"),
+        # Reserved namespace.
+        (
+            [{**_s97_entry(), "namespace": "app--myapp"}],
+            "uses the reserved 'app--' prefix",
+        ),
+        ([{**_s97_entry(), "key": None}], "key must be a non-empty string"),
+        ([{**_s97_entry(), "type": None}], "type must be a non-empty string"),
+        ([{**_s97_entry(), "value": 14}], "value must be a string"),
+        # Type-shape mismatches.
+        (
+            [{**_s97_entry(), "value": "1.5", "mtype": "number_integer"}],
+            "not a valid integer for type 'number_integer'",
+        ),
+        (
+            [{**_s97_entry(), "value": "abc", "mtype": "number_integer"}],
+            "not a valid integer for type 'number_integer'",
+        ),
+        (
+            [{**_s97_entry(), "value": "abc", "mtype": "number_decimal"}],
+            "not a valid decimal for type 'number_decimal'",
+        ),
+        (
+            [{**_s97_entry(), "value": "yes", "mtype": "boolean"}],
+            "must be 'true' or 'false' for type 'boolean'",
+        ),
+        (
+            [{**_s97_entry(), "value": "{not json", "mtype": "json"}],
+            "not valid JSON for type 'json'",
+        ),
+        (
+            [
+                {
+                    **_s97_entry(),
+                    "value": "{not json",
+                    "mtype": "list.single_line_text_field",
+                }
+            ],
+            "not valid JSON for list-type",
+        ),
+        (
+            [
+                {
+                    **_s97_entry(),
+                    "value": '"a string, not a list"',
+                    "mtype": "list.single_line_text_field",
+                }
+            ],
+            "must decode to a JSON array",
+        ),
+    ],
+)
+def test_s97_validation_rejects(metafields, fragment):
+    # Patch the parametrize indirection: some rows use `mtype=` shorthand.
+    if isinstance(metafields, list):
+        for e in metafields:
+            if isinstance(e, dict) and "mtype" in e:
+                e["type"] = e.pop("mtype")
+
+    tools, fc = _build([])
+    out = tools["set_product_metafields"](metafields=metafields)
+    assert out.startswith("Error:")
+    assert fragment in out
+    assert fc.calls == []  # No mutation call before validation passes.
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert tail["metafields"] == []
+    # Cap / shape errors that short-circuit before per-entry validation use
+    # the plain `errors` list (no `errorsByIndex` because there's no index).
+    # Per-entry validation failures populate `errorsByIndex`.
+
+
+def test_s97_validation_aggregates_multiple_errors_per_entry():
+    # One entry with TWO problems: out-of-scope owner + bad namespace.
+    bad = {
+        "ownerId": "gid://shopify/Collection/9",
+        "namespace": "app--reserved",
+        "key": "k",
+        "value": "v",
+        "type": "single_line_text_field",
+    }
+    tools, fc = _build([])
+    out = tools["set_product_metafields"](metafields=[bad])
+    assert fc.calls == []
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert "0" in tail["errorsByIndex"]
+    msgs = " | ".join(e["message"] for e in tail["errorsByIndex"]["0"])
+    assert "must be a Product or ProductVariant GID" in msgs
+    assert "uses the reserved 'app--' prefix" in msgs
+
+
+def test_s97_validation_indexes_each_failing_entry_separately():
+    # Two entries, both bad — errorsByIndex keys 0 and 1 must both appear.
+    bad_a = {**_s97_entry(), "ownerId": "nope"}
+    bad_b = {**_s97_entry(), "value": "1.5", "type": "number_integer"}
+    tools, fc = _build([])
+    out = tools["set_product_metafields"](metafields=[bad_a, bad_b])
+    assert fc.calls == []
+    tail = _parse_tail(out)
+    assert set(tail["errorsByIndex"].keys()) == {"0", "1"}
+
+
+def test_s97_unknown_type_passes_validation_through_to_shopify():
+    # `weight` is not in our curated SUPPORTED_METAFIELD_TYPES — it falls
+    # through to Shopify without a client-side shape check.
+    weight_entry = _s97_entry(value="3.5", mtype="weight")
+    tools, fc = _build(
+        [
+            _s97_mutation_response(
+                metafields=[
+                    {
+                        "id": _S97_METAFIELD_GID,
+                        "namespace": "custom",
+                        "key": "fabric_weight_oz",
+                        "value": "3.5",
+                        "type": "weight",
+                        "ownerType": "PRODUCT",
+                    }
+                ]
+            )
+        ]
+    )
+    out = tools["set_product_metafields"](metafields=[weight_entry], confirm=True)
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+    assert tail["metafields"][0]["type"] == "weight"
+
+
+# --- Dry-run / preview path --------------------------------------------------
+
+
+def test_s97_preview_does_not_call_mutation():
+    tools, fc = _build([])
+    out = tools["set_product_metafields"](metafields=[_s97_entry()], confirm=False)
+    assert fc.calls == []
+    assert "PREVIEW" in out
+    assert "To apply, call again with confirm=True" in out
+    tail = _parse_tail(out)
+    assert tail["preview"] is True
+    assert tail["ok"] is True
+    assert tail["metafields"][0]["ownerId"] == _S97_PRODUCT_GID
+    assert tail["metafields"][0]["ownerType"] == "PRODUCT"
+
+
+def test_s97_preview_strips_whitespace_in_normalized_payload():
+    out_entry = _s97_entry(owner_id=f"  {_S97_PRODUCT_GID}  ", namespace="  custom  ")
+    tools, fc = _build([])
+    out = tools["set_product_metafields"](metafields=[out_entry], confirm=False)
+    assert fc.calls == []
+    tail = _parse_tail(out)
+    assert tail["metafields"][0]["ownerId"] == _S97_PRODUCT_GID
+    assert tail["metafields"][0]["namespace"] == "custom"
+
+
+# --- Mutation happy path -----------------------------------------------------
+
+
+def test_s97_mutation_product_owner_path_shape():
+    """`metafieldsSet` is invoked with a list missing the internal ownerType key."""
+    tools, fc = _build(
+        [
+            _s97_mutation_response(
+                metafields=[
+                    {
+                        "id": _S97_METAFIELD_GID,
+                        "namespace": "custom",
+                        "key": "fabric_weight_oz",
+                        "value": "14",
+                        "type": "number_integer",
+                        "ownerType": "PRODUCT",
+                    }
+                ]
+            )
+        ]
+    )
+    out = tools["set_product_metafields"](metafields=[_s97_entry()], confirm=True)
+    assert "CONFIRMED" in out
+    assert len(fc.calls) == 1
+    _, vars_sent = fc.calls[0]
+    assert list(vars_sent["metafields"][0].keys()) == [
+        "ownerId",
+        "namespace",
+        "key",
+        "value",
+        "type",
+    ]
+    # Critically: ownerType is NOT sent (Shopify infers it from ownerId).
+    assert "ownerType" not in vars_sent["metafields"][0]
+
+
+def test_s97_mutation_variant_owner_happy_path():
+    tools, fc = _build(
+        [
+            _s97_mutation_response(
+                metafields=[
+                    {
+                        "id": _S97_METAFIELD_GID,
+                        "namespace": "custom",
+                        "key": "size_chart",
+                        "value": "M",
+                        "type": "single_line_text_field",
+                        "ownerType": "PRODUCT_VARIANT",
+                    }
+                ]
+            )
+        ]
+    )
+    entry = _s97_entry(
+        owner_id=_S97_VARIANT_GID,
+        key="size_chart",
+        value="M",
+        mtype="single_line_text_field",
+    )
+    out = tools["set_product_metafields"](metafields=[entry], confirm=True)
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+    assert tail["metafields"][0]["ownerType"] == "PRODUCT_VARIANT"
+
+
+def test_s97_mutation_mixed_owner_types_one_call():
+    product_entry = _s97_entry()
+    variant_entry = _s97_entry(
+        owner_id=_S97_VARIANT_GID,
+        key="size",
+        value="M",
+        mtype="single_line_text_field",
+    )
+    tools, fc = _build(
+        [
+            _s97_mutation_response(
+                metafields=[
+                    {
+                        "id": _S97_METAFIELD_GID,
+                        "namespace": "custom",
+                        "key": "fabric_weight_oz",
+                        "value": "14",
+                        "type": "number_integer",
+                        "ownerType": "PRODUCT",
+                    },
+                    {
+                        "id": _S97_METAFIELD_GID_2,
+                        "namespace": "custom",
+                        "key": "size",
+                        "value": "M",
+                        "type": "single_line_text_field",
+                        "ownerType": "PRODUCT_VARIANT",
+                    },
+                ]
+            )
+        ]
+    )
+    out = tools["set_product_metafields"](metafields=[product_entry, variant_entry], confirm=True)
+    assert len(fc.calls) == 1
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+    assert {m["ownerType"] for m in tail["metafields"]} == {"PRODUCT", "PRODUCT_VARIANT"}
+
+
+def test_s97_success_json_tail_shape():
+    """Pin the per-spec key order for each metafield entry in the success tail."""
+    tools, fc = _build(
+        [
+            _s97_mutation_response(
+                metafields=[
+                    {
+                        "id": _S97_METAFIELD_GID,
+                        "namespace": "custom",
+                        "key": "fabric_weight_oz",
+                        "value": "14",
+                        "type": "number_integer",
+                        "ownerType": "PRODUCT",
+                    }
+                ]
+            )
+        ]
+    )
+    out = tools["set_product_metafields"](metafields=[_s97_entry()], confirm=True)
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+    assert tail["preview"] is False
+    assert tail["errors"] == []
+    assert list(tail["metafields"][0].keys()) == [
+        "id",
+        "namespace",
+        "key",
+        "value",
+        "type",
+        "ownerType",
+    ]
+
+
+def test_s97_idempotent_rerun_succeeds_twice():
+    # `metafieldsSet` is idempotent at the Shopify level — re-running with
+    # identical inputs returns the same metafield IDs/values. AC #9.
+    response = _s97_mutation_response(
+        metafields=[
+            {
+                "id": _S97_METAFIELD_GID,
+                "namespace": "custom",
+                "key": "fabric_weight_oz",
+                "value": "14",
+                "type": "number_integer",
+                "ownerType": "PRODUCT",
+            }
+        ]
+    )
+    tools, fc = _build([response, response])
+    out1 = tools["set_product_metafields"](metafields=[_s97_entry()], confirm=True)
+    out2 = tools["set_product_metafields"](metafields=[_s97_entry()], confirm=True)
+    assert _parse_tail(out1)["ok"] is True
+    assert _parse_tail(out2)["ok"] is True
+    # Two mutation calls, identical variables — no client-side dedupe.
+    assert len(fc.calls) == 2
+    assert fc.calls[0][1] == fc.calls[1][1]
+
+
+# --- userError pass-through & per-entry indexing ----------------------------
+
+
+def test_s97_user_errors_indexed_by_entry():
+    # Shopify returns `field: ["metafields", "1", "value"]` for entry 1.
+    # The tool must surface this both verbatim and bucketed under
+    # errorsByIndex["1"].
+    raw_errors = [
+        {
+            "field": ["metafields", "1", "value"],
+            "message": "Value does not match definition.",
+            "code": "INVALID_VALUE",
+        }
+    ]
+    tools, fc = _build([_s97_mutation_response(user_errors=raw_errors)])
+    out = tools["set_product_metafields"](
+        metafields=[_s97_entry(), _s97_entry(key="other")], confirm=True
+    )
+    assert "metafields.1.value" in out
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert tail["errors"] == raw_errors  # verbatim
+    assert "1" in tail["errorsByIndex"]
+    assert tail["errorsByIndex"]["1"][0]["message"] == "Value does not match definition."
+
+
+def test_s97_user_errors_without_index_bucket_under_underscore():
+    # Errors with no parseable index (e.g., top-level errors) land under "_".
+    raw_errors = [{"field": ["metafields"], "message": "Generic failure", "code": None}]
+    tools, fc = _build([_s97_mutation_response(user_errors=raw_errors)])
+    out = tools["set_product_metafields"](metafields=[_s97_entry()], confirm=True)
+    tail = _parse_tail(out)
+    assert "_" in tail["errorsByIndex"]
+
+
+def test_s97_user_errors_with_empty_field_path_handled():
+    # Errors with empty / no `field` list still surface in head and tail.
+    raw_errors = [{"field": [], "message": "Mystery error", "code": None}]
+    tools, fc = _build([_s97_mutation_response(user_errors=raw_errors)])
+    out = tools["set_product_metafields"](metafields=[_s97_entry()], confirm=True)
+    assert "(no field)" in out
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+
+
+# --- ACCESS_DENIED + remediation --------------------------------------------
+
+
+def test_s97_access_denied_emits_remediation_block():
+    raw_errors = [
+        {
+            "field": ["metafields", "0"],
+            "message": "Access denied for set_metafield action.",
+            "code": "ACCESS_DENIED",
+        }
+    ]
+    tools, fc = _build([_s97_mutation_response(user_errors=raw_errors)])
+    out = tools["set_product_metafields"](metafields=[_s97_entry()], confirm=True)
+    assert "ACCESS_DENIED" in out
+    assert "write_metafields" in out
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert "remediation" in tail
+    assert "write_metafields" in tail["remediation"]
+    # GRANTED_SCOPES_HINT context is included verbatim.
+    assert "write_products" in tail["remediation"]
+
+
+def test_s97_access_denied_with_mixed_user_errors_routes_to_remediation_branch():
+    # If ANY userError carries code=ACCESS_DENIED, the remediation branch wins
+    # (per AC #10 — the scope block is the dominant signal).
+    raw_errors = [
+        {
+            "field": ["metafields", "1", "value"],
+            "message": "Bad value",
+            "code": "INVALID_VALUE",
+        },
+        {
+            "field": ["metafields", "0"],
+            "message": "Access denied",
+            "code": "ACCESS_DENIED",
+        },
+    ]
+    tools, fc = _build([_s97_mutation_response(user_errors=raw_errors)])
+    out = tools["set_product_metafields"](
+        metafields=[_s97_entry(), _s97_entry(key="other")], confirm=True
+    )
+    tail = _parse_tail(out)
+    assert "remediation" in tail
+    # All raw errors are still surfaced.
+    assert tail["errors"] == raw_errors
+
+
+# --- Network exception path --------------------------------------------------
+
+
+def test_s97_network_exception_returns_structured_error():
+    tools, fc = _build([RuntimeError("boom")])
+    out = tools["set_product_metafields"](metafields=[_s97_entry()], confirm=True)
+    assert "Error calling metafieldsSet" in out
+    assert "RuntimeError" in out
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert tail["metafields"] == []
+    assert "boom" in tail["errors"][0]["message"]
+
+
+# --- Helper-level pins (coverage for branches not exercised via the tool) ---
+
+
+def test_s97_parse_owner_gid_accepts_product_and_variant():
+    assert catalog_hygiene._parse_owner_gid(_S97_PRODUCT_GID) == ("PRODUCT", None)
+    assert catalog_hygiene._parse_owner_gid(_S97_VARIANT_GID) == (
+        "PRODUCT_VARIANT",
+        None,
+    )
+
+
+def test_s97_validate_metafield_value_known_types():
+    # Happy paths for each shape-checked type.
+    assert catalog_hygiene._validate_metafield_value("14", "number_integer") is None
+    assert catalog_hygiene._validate_metafield_value("-14", "number_integer") is None
+    assert catalog_hygiene._validate_metafield_value("14.5", "number_decimal") is None
+    assert catalog_hygiene._validate_metafield_value("14", "number_decimal") is None
+    assert catalog_hygiene._validate_metafield_value("true", "boolean") is None
+    assert catalog_hygiene._validate_metafield_value("false", "boolean") is None
+    assert catalog_hygiene._validate_metafield_value('{"a": 1}', "json") is None
+    assert catalog_hygiene._validate_metafield_value('["a"]', "list.single_line_text_field") is None
+    # Unknown type passes through (returns None — no shape check).
+    assert catalog_hygiene._validate_metafield_value("anything", "weight") is None
+    # Free-text supported types also have no shape check.
+    assert catalog_hygiene._validate_metafield_value("anything", "single_line_text_field") is None
+
+
+def test_s97_err_payload_default_key_is_variants():
+    # Backwards-compat with Story 9.6.
+    assert catalog_hygiene._err_payload("oops") == {
+        "ok": False,
+        "variants": [],
+        "errors": [{"message": "oops"}],
+    }
+
+
+def test_s97_err_payload_custom_key():
+    assert catalog_hygiene._err_payload("oops", key="metafields") == {
+        "ok": False,
+        "metafields": [],
+        "errors": [{"message": "oops"}],
+    }
