@@ -144,6 +144,7 @@ def test_register_adds_expected_tools():
         "update_product_type",
         "update_variant_image_binding",
         "set_product_metafields",
+        "update_product_options",
     }
     assert fc.calls == []
 
@@ -4357,4 +4358,638 @@ def test_s97_err_payload_custom_key():
         "ok": False,
         "metafields": [],
         "errors": [{"message": "oops"}],
+    }
+
+
+# =============================================================================
+# Story 9.5 — update_product_options
+# =============================================================================
+
+from tools.catalog_hygiene import (  # noqa: E402
+    GET_PRODUCT_OPTIONS,
+    GET_PRODUCT_OPTIONS_BY_HANDLE,
+    OPTION_NAME_MAX_LEN,
+    UPDATE_PRODUCT_OPTION,
+)
+
+_OPT_GID = "gid://shopify/ProductOption/300"
+_OV_M = "gid://shopify/ProductOptionValue/4001"
+_OV_L = "gid://shopify/ProductOptionValue/4002"
+
+
+def _options_read_response(
+    *,
+    product_gid: str = "gid://shopify/Product/100",
+    title: str = "Test Product",
+    option_id: str = _OPT_GID,
+    option_name: str = "Size",
+    values: list[dict[str, str]] | None = None,
+    variants: list[dict[str, Any]] | None = None,
+    by_handle: bool = False,
+) -> dict:
+    """One-read fixture mirroring GET_PRODUCT_OPTIONS / _BY_HANDLE.
+
+    `by_handle=True` wraps the same product under `productByHandle` so a single
+    helper covers both resolver paths.
+    """
+    node: dict[str, Any] = {
+        "id": product_gid,
+        "title": title,
+        "options": [
+            {
+                "id": option_id,
+                "name": option_name,
+                "optionValues": values
+                or [
+                    {"id": _OV_M, "name": "M-CRM"},
+                    {"id": _OV_L, "name": "L-CRM"},
+                ],
+            }
+        ],
+        "variants": {
+            "nodes": variants
+            or [
+                {
+                    "id": "gid://shopify/ProductVariant/501",
+                    "title": "M-CRM / Cream",
+                    "selectedOptions": [{"name": "Size", "value": "M-CRM"}],
+                }
+            ],
+        },
+    }
+    return {"productByHandle": node} if by_handle else {"product": node}
+
+
+def _options_mutation_ok(
+    *,
+    product_gid: str = "gid://shopify/Product/100",
+    option_id: str = _OPT_GID,
+    option_name: str = "Size",
+    values: list[dict[str, str]] | None = None,
+    variants: list[dict[str, Any]] | None = None,
+) -> dict:
+    return {
+        "productOptionUpdate": {
+            "product": {
+                "id": product_gid,
+                "options": [
+                    {
+                        "id": option_id,
+                        "name": option_name,
+                        "optionValues": values
+                        or [
+                            {"id": _OV_M, "name": "Medium"},
+                            {"id": _OV_L, "name": "L-CRM"},
+                        ],
+                    }
+                ],
+                "variants": {
+                    "nodes": variants
+                    or [
+                        {
+                            "id": "gid://shopify/ProductVariant/501",
+                            "title": "Medium / Cream",
+                            "selectedOptions": [{"name": "Size", "value": "Medium"}],
+                        }
+                    ],
+                },
+            },
+            "userErrors": [],
+        }
+    }
+
+
+# Validation rejects — no network call -----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "option,values,strategy,fragment",
+    [
+        # option arg shape
+        (None, None, "LEAVE_AS_IS", "option must be an object"),
+        ("not-a-dict", None, "LEAVE_AS_IS", "option must be an object"),
+        ({}, None, "LEAVE_AS_IS", "option.id must be a non-empty string"),
+        ({"id": ""}, None, "LEAVE_AS_IS", "option.id must be a non-empty string"),
+        ({"id": "   "}, None, "LEAVE_AS_IS", "option.id must be a non-empty string"),
+        ({"id": 123}, None, "LEAVE_AS_IS", "option.id must be a non-empty string"),
+        ({"id": "gid://shopify/Product/1"}, None, "LEAVE_AS_IS", "must be a ProductOption GID"),
+        (
+            {"id": "gid://shopify/ProductOption/"},
+            None,
+            "LEAVE_AS_IS",
+            "empty GID body",
+        ),
+        ({"id": _OPT_GID, "name": ""}, None, "LEAVE_AS_IS", "option.name, when supplied"),
+        ({"id": _OPT_GID, "name": "   "}, None, "LEAVE_AS_IS", "option.name, when supplied"),
+        (
+            {"id": _OPT_GID, "name": "X" * (OPTION_NAME_MAX_LEN + 1)},
+            None,
+            "LEAVE_AS_IS",
+            f"exceeds {OPTION_NAME_MAX_LEN}-char limit",
+        ),
+        # option_values_to_update arg shape
+        ({"id": _OPT_GID}, "not-a-list", "LEAVE_AS_IS", "must be a list"),
+        ({"id": _OPT_GID}, ["not-a-dict"], "LEAVE_AS_IS", "must be an object"),
+        ({"id": _OPT_GID}, [{}], "LEAVE_AS_IS", "option_values_to_update[0].id"),
+        ({"id": _OPT_GID}, [{"id": ""}], "LEAVE_AS_IS", "option_values_to_update[0].id"),
+        (
+            {"id": _OPT_GID},
+            [{"id": "gid://shopify/Product/1"}],
+            "LEAVE_AS_IS",
+            "ProductOptionValue GID",
+        ),
+        (
+            {"id": _OPT_GID},
+            [{"id": "gid://shopify/ProductOptionValue/"}],
+            "LEAVE_AS_IS",
+            "empty GID body",
+        ),
+        (
+            {"id": _OPT_GID},
+            [{"id": _OV_M, "name": "Medium-1"}, {"id": _OV_M, "name": "Medium-2"}],
+            "LEAVE_AS_IS",
+            "is a duplicate",
+        ),
+        (
+            {"id": _OPT_GID},
+            [{"id": _OV_M, "name": ""}],
+            "LEAVE_AS_IS",
+            "option_values_to_update[0].name",
+        ),
+        (
+            {"id": _OPT_GID},
+            [{"id": _OV_M, "name": "X" * (OPTION_NAME_MAX_LEN + 1)}],
+            "LEAVE_AS_IS",
+            f"exceeds {OPTION_NAME_MAX_LEN}-char limit",
+        ),
+        # variant_strategy
+        ({"id": _OPT_GID}, None, "INVALID", "variant_strategy must be one of"),
+        ({"id": _OPT_GID}, None, 123, "variant_strategy must be one of"),
+    ],
+)
+def test_s95_validation_rejects_no_network(option, values, strategy, fragment):
+    tools, fc = _build([])
+    out = tools["update_product_options"](
+        product_id="100",
+        option=option,
+        option_values_to_update=values,
+        variant_strategy=strategy,
+    )
+    assert out.startswith("Error:")
+    assert fragment in out
+    assert fc.calls == []
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert tail["preview"] is False
+    assert tail["errors"][0]["stage"] == "validation"
+
+
+# Product resolver paths -------------------------------------------------------
+
+
+def test_s95_resolver_empty_product_id_raises_caught():
+    tools, fc = _build([])
+    out = tools["update_product_options"](
+        product_id="",
+        option={"id": _OPT_GID, "name": "Size"},
+    )
+    assert out.startswith("Error resolving product_id")
+    # ValueError is caught before any network call.
+    assert fc.calls == []
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert tail["errors"][0]["stage"] == "product-resolve"
+
+
+def test_s95_resolver_empty_gid_body_raises_caught():
+    tools, fc = _build([])
+    out = tools["update_product_options"](
+        product_id="gid://shopify/Product/",
+        option={"id": _OPT_GID, "name": "Size"},
+    )
+    assert "Empty product GID body" in out
+    assert fc.calls == []
+
+
+def test_s95_no_product_found_numeric():
+    tools, fc = _build([{"product": None}])
+    out = tools["update_product_options"](
+        product_id="404",
+        option={"id": _OPT_GID, "name": "Size"},
+    )
+    assert "Error: no product found for '404'" in out
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == GET_PRODUCT_OPTIONS
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert tail["errors"][0]["stage"] == "product-resolve"
+
+
+def test_s95_no_product_found_handle():
+    tools, fc = _build([{"productByHandle": None}])
+    out = tools["update_product_options"](
+        product_id="missing-handle",
+        option={"id": _OPT_GID, "name": "Size"},
+    )
+    assert "Error: no product found for 'missing-handle'" in out
+    assert fc.calls[0][0] == GET_PRODUCT_OPTIONS_BY_HANDLE
+
+
+def test_s95_resolves_gid_path():
+    # Read returns current state — empty-delta path short-circuits (no mutation).
+    tools, fc = _build([_options_read_response()])
+    out = tools["update_product_options"](
+        product_id="gid://shopify/Product/100",
+        option={"id": _OPT_GID},  # no name, no values → no-op short-circuit
+    )
+    assert "no-op, no changes requested" in out
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == GET_PRODUCT_OPTIONS
+    assert fc.calls[0][1] == {"id": "gid://shopify/Product/100"}
+
+
+def test_s95_resolves_handle_path():
+    tools, fc = _build([_options_read_response(by_handle=True)])
+    out = tools["update_product_options"](
+        product_id="vanish-crewneck",
+        option={"id": _OPT_GID},
+    )
+    assert "no-op, no changes requested" in out
+    assert fc.calls[0][0] == GET_PRODUCT_OPTIONS_BY_HANDLE
+    assert fc.calls[0][1] == {"handle": "vanish-crewneck"}
+
+
+# Option / option-value validation against the read ---------------------------
+
+
+def test_s95_option_not_on_product():
+    other_opt = "gid://shopify/ProductOption/999"
+    tools, fc = _build([_options_read_response()])
+    out = tools["update_product_options"](
+        product_id="100",
+        option={"id": other_opt, "name": "Color"},
+    )
+    assert "is not on product '100'" in out
+    assert len(fc.calls) == 1  # read only — no mutation
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert tail["errors"][0]["stage"] == "option-validation"
+    # Product snapshot still rendered so the caller can audit pre-state.
+    assert tail["product"]["id"] == "gid://shopify/Product/100"
+
+
+def test_s95_option_value_not_on_option():
+    stranger_value = "gid://shopify/ProductOptionValue/9999"
+    tools, fc = _build([_options_read_response()])
+    out = tools["update_product_options"](
+        product_id="100",
+        option={"id": _OPT_GID},
+        option_values_to_update=[{"id": stranger_value, "name": "Medium"}],
+    )
+    assert "not on option" in out
+    assert stranger_value in out
+    assert len(fc.calls) == 1
+    tail = _parse_tail(out)
+    assert tail["errors"][0]["stage"] == "option-value-validation"
+
+
+# Short-circuit paths ----------------------------------------------------------
+
+
+def test_s95_empty_delta_short_circuit():
+    tools, fc = _build([_options_read_response()])
+    out = tools["update_product_options"](
+        product_id="100",
+        option={"id": _OPT_GID},
+        option_values_to_update=None,
+    )
+    assert "no-op, no changes requested" in out
+    assert len(fc.calls) == 1  # read only
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+    assert tail["preview"] is False
+    assert tail["product"]["options"][0]["name"] == "Size"
+
+
+def test_s95_empty_delta_short_circuit_explicit_empty_list():
+    tools, fc = _build([_options_read_response()])
+    out = tools["update_product_options"](
+        product_id="100",
+        option={"id": _OPT_GID},
+        option_values_to_update=[],
+    )
+    assert "no-op, no changes requested" in out
+    assert len(fc.calls) == 1
+
+
+def test_s95_idempotent_no_op_name_only():
+    # Caller requests rename to the same current name → no-op (no mutation).
+    tools, fc = _build([_options_read_response()])
+    out = tools["update_product_options"](
+        product_id="100",
+        option={"id": _OPT_GID, "name": "Size"},  # already "Size"
+        confirm=True,
+    )
+    assert "no-op, already set" in out
+    assert len(fc.calls) == 1  # read only
+
+
+def test_s95_idempotent_no_op_values_match():
+    # Every value rename matches the current value name → no-op (no mutation).
+    tools, fc = _build([_options_read_response()])
+    out = tools["update_product_options"](
+        product_id="100",
+        option={"id": _OPT_GID, "name": "Size"},
+        option_values_to_update=[
+            {"id": _OV_M, "name": "M-CRM"},  # current
+            {"id": _OV_L, "name": "L-CRM"},  # current
+        ],
+        confirm=True,
+    )
+    assert "no-op, already set" in out
+    assert len(fc.calls) == 1  # read only
+
+
+# Preview path -----------------------------------------------------------------
+
+
+def test_s95_preview_no_mutation_with_name_and_value_diffs():
+    tools, fc = _build([_options_read_response()])
+    out = tools["update_product_options"](
+        product_id="100",
+        option={"id": _OPT_GID, "name": "Sizing"},
+        option_values_to_update=[{"id": _OV_M, "name": "Medium"}],
+    )
+    assert out.startswith("PREVIEW —")
+    assert "Reply with confirm=True" in out
+    # Diff lines render old → new for both option name and the renamed value.
+    assert "'Size' → 'Sizing'" in out
+    assert "'M-CRM' → 'Medium'" in out
+    assert "Strategy      : LEAVE_AS_IS" in out
+    assert len(fc.calls) == 1  # read only
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+    assert tail["preview"] is True
+    # Snapshot is pre-state — option still "Size", value still "M-CRM".
+    assert tail["product"]["options"][0]["name"] == "Size"
+    assert tail["product"]["options"][0]["optionValues"][0]["name"] == "M-CRM"
+
+
+def test_s95_preview_name_only_change_omits_value_diffs():
+    tools, fc = _build([_options_read_response()])
+    out = tools["update_product_options"](
+        product_id="100",
+        option={"id": _OPT_GID, "name": "Sizing"},
+        option_values_to_update=None,
+    )
+    assert "'Size' → 'Sizing'" in out
+    # No value renames requested → no value-diff lines.
+    assert "M-CRM" not in out.split("```json")[0]
+    assert len(fc.calls) == 1
+
+
+def test_s95_preview_values_only_change_omits_name_diff():
+    tools, fc = _build([_options_read_response()])
+    out = tools["update_product_options"](
+        product_id="100",
+        option={"id": _OPT_GID},  # no name change
+        option_values_to_update=[{"id": _OV_M, "name": "Medium"}],
+    )
+    head = out.split("```json")[0]
+    assert "Option name" not in head
+    assert "'M-CRM' → 'Medium'" in out
+    assert len(fc.calls) == 1
+
+
+# Confirm path — mutation called ----------------------------------------------
+
+
+def test_s95_confirm_executes_mutation_full_payload():
+    tools, fc = _build(
+        [
+            _options_read_response(),
+            _options_mutation_ok(
+                option_name="Sizing",
+                values=[
+                    {"id": _OV_M, "name": "Medium"},
+                    {"id": _OV_L, "name": "L-CRM"},
+                ],
+            ),
+        ]
+    )
+    out = tools["update_product_options"](
+        product_id="100",
+        option={"id": _OPT_GID, "name": "Sizing"},
+        option_values_to_update=[{"id": _OV_M, "name": "Medium"}],
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED —")
+    # Mutation called with the exact shape: name in option_input, values list,
+    # explicit variantStrategy default.
+    assert fc.calls[1][0] == UPDATE_PRODUCT_OPTION
+    mutation_vars = fc.calls[1][1]
+    assert mutation_vars == {
+        "productId": "gid://shopify/Product/100",
+        "option": {"id": _OPT_GID, "name": "Sizing"},
+        "optionValuesToUpdate": [{"id": _OV_M, "name": "Medium"}],
+        "variantStrategy": "LEAVE_AS_IS",
+    }
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+    assert tail["preview"] is False
+    # Post-state snapshot reflects Shopify's echoed product.
+    assert tail["product"]["options"][0]["name"] == "Sizing"
+    assert tail["product"]["options"][0]["optionValues"][0]["name"] == "Medium"
+    assert tail["product"]["variants"][0]["selectedOptions"][0]["value"] == "Medium"
+
+
+def test_s95_confirm_name_only_omits_name_from_option_input_when_no_name():
+    # No `name` change requested → mutation `option` input should NOT include
+    # a `name` field. Renames a value to exercise that branch.
+    tools, fc = _build(
+        [
+            _options_read_response(),
+            _options_mutation_ok(
+                values=[{"id": _OV_M, "name": "Medium"}, {"id": _OV_L, "name": "L-CRM"}]
+            ),
+        ]
+    )
+    out = tools["update_product_options"](
+        product_id="100",
+        option={"id": _OPT_GID},
+        option_values_to_update=[{"id": _OV_M, "name": "Medium"}],
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED —")
+    mutation_vars = fc.calls[1][1]
+    assert mutation_vars["option"] == {"id": _OPT_GID}
+    assert "name" not in mutation_vars["option"]
+
+
+def test_s95_confirm_omits_name_when_matches_current_alongside_value_renames():
+    # Code-review Suggestion 2: when the caller passes option.name matching the
+    # current name AND there are real value renames, the mutation input should
+    # OMIT the redundant `name` field (no-op slot save). The call still ships
+    # because values_no_op is False — only the `name` slot is stripped.
+    tools, fc = _build(
+        [
+            _options_read_response(),  # current option name is "Size"
+            _options_mutation_ok(
+                values=[{"id": _OV_M, "name": "Medium"}, {"id": _OV_L, "name": "L-CRM"}]
+            ),
+        ]
+    )
+    out = tools["update_product_options"](
+        product_id="100",
+        option={"id": _OPT_GID, "name": "Size"},  # redundant — matches current
+        option_values_to_update=[{"id": _OV_M, "name": "Medium"}],
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED —")
+    # Mutation still ran (one value rename is real)…
+    assert fc.calls[1][0] == UPDATE_PRODUCT_OPTION
+    # …but `name` was stripped from the option input.
+    mutation_vars = fc.calls[1][1]
+    assert mutation_vars["option"] == {"id": _OPT_GID}
+    assert "name" not in mutation_vars["option"]
+    # Diff body also shouldn't surface a redundant "Option name" line.
+    head = out.split("```json")[0]
+    assert "Option name" not in head
+    # Value rename does surface in the diff.
+    assert "'M-CRM' → 'Medium'" in out
+
+
+def test_s95_confirm_variant_strategy_manage_passed_through():
+    tools, fc = _build(
+        [
+            _options_read_response(),
+            _options_mutation_ok(option_name="Sizing"),
+        ]
+    )
+    out = tools["update_product_options"](
+        product_id="100",
+        option={"id": _OPT_GID, "name": "Sizing"},
+        variant_strategy="MANAGE",
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED —")
+    assert "Strategy      : MANAGE" in out
+    assert fc.calls[1][1]["variantStrategy"] == "MANAGE"
+
+
+# Confirm path — error mapping ------------------------------------------------
+
+
+def test_s95_confirm_user_errors_preserves_code():
+    tools, fc = _build(
+        [
+            _options_read_response(),
+            {
+                "productOptionUpdate": {
+                    "product": None,
+                    "userErrors": [
+                        {
+                            "field": ["optionValuesToUpdate", "0", "name"],
+                            "message": "Option value name already exists.",
+                            "code": "DUPLICATE_OPTION_VALUE_NAME",
+                        }
+                    ],
+                }
+            },
+        ]
+    )
+    out = tools["update_product_options"](
+        product_id="100",
+        option={"id": _OPT_GID},
+        option_values_to_update=[{"id": _OV_M, "name": "L-CRM"}],
+        confirm=True,
+    )
+    assert out.startswith("Error: productOptionUpdate userErrors")
+    assert "DUPLICATE_OPTION_VALUE_NAME" in out  # code surfaced in the head
+    assert "optionValuesToUpdate.0.name" in out  # dotted field path
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert tail["errors"][0]["code"] == "DUPLICATE_OPTION_VALUE_NAME"
+
+
+def test_s95_confirm_user_errors_no_code():
+    # Defensive: an error without a `code` shouldn't emit "[] ".
+    tools, fc = _build(
+        [
+            _options_read_response(),
+            {
+                "productOptionUpdate": {
+                    "product": None,
+                    "userErrors": [
+                        {"field": [], "message": "Something went wrong.", "code": None},
+                    ],
+                }
+            },
+        ]
+    )
+    out = tools["update_product_options"](
+        product_id="100",
+        option={"id": _OPT_GID, "name": "Sizing"},
+        confirm=True,
+    )
+    assert "Error: productOptionUpdate userErrors" in out
+    assert "(no field): Something went wrong." in out
+    # No square-bracket code marker when code is None/missing.
+    assert "[None]" not in out
+
+
+def test_s95_confirm_mutation_raises_caught():
+    tools, fc = _build(
+        [
+            _options_read_response(),
+            RuntimeError("HTTP 500"),
+        ]
+    )
+    out = tools["update_product_options"](
+        product_id="100",
+        option={"id": _OPT_GID, "name": "Sizing"},
+        confirm=True,
+    )
+    assert "Error calling productOptionUpdate (RuntimeError)" in out
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert tail["errors"][0]["stage"] == "option-update"
+
+
+def test_s95_confirm_success_with_null_returned_product():
+    # Defensive: Shopify omits/nulls the `product` slot but userErrors is empty.
+    # The success path should still produce a well-shaped (empty) snapshot.
+    tools, fc = _build(
+        [
+            _options_read_response(),
+            {"productOptionUpdate": {"product": None, "userErrors": []}},
+        ]
+    )
+    out = tools["update_product_options"](
+        product_id="100",
+        option={"id": _OPT_GID, "name": "Sizing"},
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED —")
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+    assert tail["product"] == {"id": "", "options": [], "variants": []}
+
+
+# Helper sanity ---------------------------------------------------------------
+
+
+def test_s95_shape_options_snapshot_handles_none():
+    assert catalog_hygiene._shape_options_snapshot(None) == {
+        "id": "",
+        "options": [],
+        "variants": [],
+    }
+
+
+def test_s95_shape_options_snapshot_handles_empty_dict():
+    assert catalog_hygiene._shape_options_snapshot({}) == {
+        "id": "",
+        "options": [],
+        "variants": [],
     }

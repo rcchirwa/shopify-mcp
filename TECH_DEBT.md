@@ -8,6 +8,25 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-05-12 — Story 9.5 follow-ups
+
+Items surfaced during implementation of Story 9.5 (`update_product_options`). Not yet triaged against the active priority list — score columns are estimates. Pending next full re-audit.
+
+### Active
+
+| # | Item | Where | Score |
+|---|------|-------|-------|
+| T-9.5-variants-cap | **`variants(first: 50)` silent truncation in the post-write snapshot** — both `GET_PRODUCT_OPTIONS` and the `productOptionUpdate` mutation echo cap the returned variants slice at 50. A product with more than 50 variants would see the JSON tail's `product.variants` truncated without warning. Matches the pattern called out by T-9.6-media-cap. Fix path: paginate or emit a `hasNextPage` warning. Trigger: a real product hits > 50 variants. | `tools/catalog_hygiene.py:GET_PRODUCT_OPTIONS`, `:UPDATE_PRODUCT_OPTION` | 6 (watch) |
+| T-9.5-resolver-fanout | **Per-story product-id resolvers proliferating** — `_resolve_product_gid` (9.1), `_resolve_product_id` (9.2), `_resolve_product_id_for_type` (9.4), and now `_resolve_product_id_for_options` (9.5) are near-twins differing only in the GraphQL query. Story 9.1's helper returns `(gid, error_str)` while 9.2/9.4/9.5 return `(gid, product_snapshot)` — two shapes but the same numeric/GID/handle dispatch logic. With Epic 9 effectively closed (9.1-9.7 all shipped), the trigger is now any Epic-10+ catalog-hygiene tool that needs a product read — that will fire on Story 10.1 unless that tool reuses one of the existing helpers. Fix path: a single `_resolve_product_id_with_query(client, product_id, query_id, query_by_handle)` that takes the two queries as args, or hoist a shared helper into a `tools/_product_resolvers.py`. Don't refactor in 9.5 — wait until the next net-new helper would land, then refactor it + the four existing twins in one PR. | `tools/catalog_hygiene.py:_resolve_product_gid, _resolve_product_id, _resolve_product_id_for_type, _resolve_product_id_for_options` | 8 (watch) |
+
+### Closed
+
+None — no Story 9.5 debt closed during this story.
+
+T-9.5-variants-cap mirrors T-9.6-media-cap (both first-N pagination caps in the same module) and may close as a single fix. T-9.5-resolver-fanout is a structural watch item, not actionable until the 4th twin lands.
+
+---
+
 ## 2026-05-12 — Story 9.6 follow-ups (updated 2026-05-12 post-PR #52)
 
 Items surfaced during code review of Story 9.6 (`update_variant_image_binding`) and the PR #52 follow-up review. Not yet triaged against the active priority list — score columns are estimates. Pending next full re-audit. The in-code module docstring at `tools/catalog_hygiene.py` references the active IDs.
