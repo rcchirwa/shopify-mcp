@@ -145,6 +145,11 @@ query GetProductFullById($id: ID!) {
     productType
     vendor
     seo { title description }
+    options {
+      id
+      name
+      optionValues { id name }
+    }
     variants(first: 50) {
       nodes { id title sku }
     }
@@ -164,6 +169,11 @@ query GetProductFullByHandle($handle: String!) {
     productType
     vendor
     seo { title description }
+    options {
+      id
+      name
+      optionValues { id name }
+    }
     variants(first: 50) {
       nodes { id title sku }
     }
@@ -586,6 +596,23 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         seo_title = seo.get("title") or "(none)"
         seo_desc = seo.get("description") or "(none)"
 
+        # Surface full GIDs (unlike the Variants block above, which uses from_gid)
+        # so Story 9.5 callers can pipe them straight into productOptionUpdate.
+        options_nodes = p.get("options") or []
+        if options_nodes:
+            option_lines: list[str] = []
+            for opt in options_nodes:
+                option_lines.append(
+                    f"  • {opt.get('name', '')} — id: {opt.get('id', '')}"
+                )
+                for ov in opt.get("optionValues") or []:
+                    option_lines.append(
+                        f"      - {ov.get('name', '')} — id: {ov.get('id', '')}"
+                    )
+            options_block = "\n".join(option_lines)
+        else:
+            options_block = "  (none)"
+
         return (
             f"ID: {from_gid(p['id'])}\n"
             f"Title: {p['title']}\n"
@@ -597,6 +624,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"SEO title: {seo_title}\n"
             f"SEO description: {seo_desc}\n"
             f"Variants:\n{variants}\n"
+            f"Options:\n{options_block}\n"
             f"body_html:\n{p.get('bodyHtml') or ''}"
         )
 
