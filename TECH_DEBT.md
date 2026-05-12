@@ -16,9 +16,9 @@ Items surfaced during code review of Story 9.6 (`update_variant_image_binding`).
 |---|------|-------|-------|
 | T-9.6-handle | **Product-ID handle resolution missing** — `_as_product_gid` accepts numeric ID and Product GID only. The Epic 9 spec's AC #1 lists product handles as a valid input form across all 7 tools. Fix path: add a `handle → GID` resolver alongside `_as_product_gid` (the existing `productByHandle` query in `tools/products.py` already does the lookup); apply uniformly across catalog-hygiene tools. Trigger: the first Story 9.x where a merchant asks "why can't I pass the handle?" | `tools/media/_common.py:8`, all catalog-hygiene callers | 12 |
 | T-9.6-media-cap | **`media(first: 100)` silent truncation** — `update_variant_image_binding` validates input mediaIds against the first 100 product-media nodes only; a valid media GID past that window would be falsely rejected as not-on-product. Matches the existing cap in `tools/media/_graphql.py:GET_PRODUCT_MEDIA`. Fix path: paginate, or surface a "first-100-only" warning when `pageInfo.hasNextPage` is true. Trigger: a real product hits >100 media. | `tools/catalog_hygiene.py`, `tools/media/_graphql.py` | 6 (watch) |
-| T-9.6-rt | **Worst-case 3 round-trips when SKUs are supplied** — `resolve_variant_ids_to_gids` does its own variants fetch, then the combined query refetches variants for the media+SKU index. Collapse by doing inline SKU lookup against the combined query's `variants.nodes` (mirror Story 9.3's `resolve_variant_ids_with_variants` pattern) and dropping the resolver call for this tool. Trigger: live-smoke latency complaints from agents using `update_variant_image_binding` with SKU inputs. | `tools/catalog_hygiene.py` | 4 (watch) |
+| T-9.6-rt | ~~**Worst-case 3 round-trips when SKUs are supplied**~~ — **CLOSED 2026-05-12** by switching to Story 9.3's `resolve_variant_ids_with_variants` enabler: variant resolution now runs in-memory against the combined query's `variants.nodes`, collapsing SKU-input round-trips from 3 to 2 (combined + mutation). PR: follow-up to #50. | `tools/catalog_hygiene.py` | closed |
 
-No item lands above the active priority list. All three are deferred-pending-trigger.
+No item lands above the active priority list. T-9.6-handle and T-9.6-media-cap remain deferred-pending-trigger; T-9.6-rt closed by the resolver swap.
 
 ---
 
