@@ -13,6 +13,10 @@ CLAUDE.md
 ACCOMPLISHMENTS_*.md
 accomplishments_*.html
 
+# Personal dump folder — non-MCP files that shouldn't be checked in.
+# Anything dropped here is automatically excluded from git.
+_personal/
+
 # Python
 __pycache__/
 *.py[cod]
