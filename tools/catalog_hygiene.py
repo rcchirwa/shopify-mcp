@@ -1611,13 +1611,20 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
 
         # ---- Build mutation input + execute ----------------------------
+        # Track per-resolved-gid whether the caller passed `compareAtPrice` so
+        # the post-mutation summary can distinguish "caller cleared it" from
+        # "caller left it alone and Shopify's response happens to echo null".
+        # Without this, an unchanged null reads as "(cleared)" in the head —
+        # a copy-only bug surfaced during 9.3 integration smoke testing.
         variants_input: list[dict[str, Any]] = []
+        cap_intent_by_gid: dict[str, str | None] = {}
         for entry, gid in zip(entries, resolved_gids, strict=True):
             payload: dict[str, Any] = {"id": gid}
             if "price" in entry:
                 payload["price"] = entry["price"]
             if "compareAtPrice" in entry:
                 payload["compareAtPrice"] = entry["compareAtPrice"]
+                cap_intent_by_gid[gid] = entry["compareAtPrice"]  # value or None
             variants_input.append(payload)
 
         result = client.execute(
@@ -1641,11 +1648,35 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
 
         updated = (result.get("productVariantsBulkUpdate") or {}).get("productVariants") or []
+
+        def _cap_display(variant: dict[str, Any]) -> str:
+            """Render compareAtPrice for the post-confirm head.
+
+            Keyed off caller intent (NOT response state) so the head describes
+            the call, not the variant's post-mutation state:
+              - caller omitted, current is None    → "(unchanged)"
+              - caller omitted, current is a value → "<current> (unchanged)"
+                                                     (show state, label intent
+                                                     so the reader knows the
+                                                     value wasn't touched)
+              - caller passed None                 → "(cleared)"
+              - caller passed a value              → "<value>" (echo intent)
+            """
+            gid = variant.get("id")
+            if gid not in cap_intent_by_gid:
+                current = variant.get("compareAtPrice")
+                if current is None:
+                    return "(unchanged)"
+                return f"{current} (unchanged)"
+            intended = cap_intent_by_gid[gid]
+            if intended is None:
+                return "(cleared)"
+            return str(intended)
+
         updated_lines = (
             "\n".join(
                 f"    • id: {from_gid(v['id'])} — SKU: {v.get('sku') or '(no SKU)'} — "
-                f"price: {v.get('price')} — compareAtPrice: "
-                f"{v.get('compareAtPrice') if v.get('compareAtPrice') is not None else '(cleared)'}"
+                f"price: {v.get('price')} — compareAtPrice: {_cap_display(v)}"
                 for v in updated
             )
             or "    (none returned)"
