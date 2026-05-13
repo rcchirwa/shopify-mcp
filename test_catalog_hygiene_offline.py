@@ -1544,6 +1544,10 @@ def test_update_product_category_reject_ambiguous_fails_on_multiple_leaves():
         confirm=True,
     )
     assert "reject-ambiguous" in out
+    # Story 9.8 AC6: error wording must say "taxonomy categories", not
+    # "leaf categories". Locks in the rewording on the reject-ambiguous path.
+    assert "2 taxonomy categories matched" in out
+    assert "leaf" not in out
     body = _extract_json_tail(out)
     assert body["ok"] is False
     # No GET_PRODUCT_CATEGORY, no UPDATE_PRODUCT_CATEGORY — bailed at search.
@@ -1622,8 +1626,12 @@ def test_update_product_category_best_match_picks_first_leaf_and_lists_alternate
     assert "score" not in body["alternates"][1]
 
 
-def test_update_product_category_best_match_filters_non_leaf_intermediate_nodes():
-    # Shopify returns mixed root/intermediate/leaf nodes; we must filter to isLeaf.
+def test_update_product_category_best_match_picks_leaf_via_prefix_over_unrelated_parents():
+    # Story 9.8 dropped the isLeaf filter — parent and intermediate nodes now
+    # compete with leaves. For input "sweatshirt", Tier 2 (casefold prefix)
+    # picks "Sweatshirts" because neither the root "Apparel & Accessories" nor
+    # the intermediate "Shirts & Tops" starts with "sweatshirt". This is the
+    # regression guard for the leaf-wins-when-parent-doesn't-prefix-match path.
     tools, fc = _build(
         [
             _taxonomy_response(
@@ -1657,8 +1665,249 @@ def test_update_product_category_best_match_filters_non_leaf_intermediate_nodes(
         confirm=True,
     )
     _, vars_put = fc.calls[2]
-    # Picked the only leaf, not the root or intermediate.
+    # "Sweatshirts" wins via Tier 2 prefix; root + intermediate don't prefix-match.
     assert vars_put["product"]["category"] == "gid://shopify/TaxonomyCategory/aa-1-13-9"
+
+
+# ---------- Story 9.8 — non-leaf taxonomy node matching ----------
+
+
+def test_update_product_category_exact_resolves_parent_node_apparel_accessories():
+    # Story 9.8 AC1: input "Apparel & Accessories" with resolve_strategy='exact'
+    # must resolve to the parent node `aa`, not error out. Before 9.8 the
+    # resolver filtered to leaves and failed with "no leaf category matched".
+    tools, fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa",
+                    "fullName": "Apparel & Accessories",
+                    "name": "Apparel & Accessories",
+                    "isLeaf": False,
+                    "isRoot": True,
+                },
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Apparel & Accessories > Clothing > Shirts & Tops > Sweatshirts",
+                    "name": "Sweatshirts",
+                    "isLeaf": True,
+                },
+            ),
+            _product_read_response(),
+            _product_update_ok(
+                category_id="gid://shopify/TaxonomyCategory/aa",
+                category_full_name="Apparel & Accessories",
+                category_name="Apparel & Accessories",
+            ),
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="Apparel & Accessories",
+        resolve_strategy="exact",
+        confirm=True,
+    )
+    _, vars_put = fc.calls[2]
+    assert vars_put["product"]["category"] == "gid://shopify/TaxonomyCategory/aa"
+    body = _extract_json_tail(out)
+    assert body["ok"] is True
+
+
+def test_update_product_category_exact_resolves_intermediate_clothing():
+    # Story 9.8 AC2: input "Clothing" with resolve_strategy='exact' must
+    # resolve to the intermediate node under `aa`. Same principle as AC1 but
+    # for a mid-tree non-leaf.
+    tools, fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa",
+                    "fullName": "Apparel & Accessories",
+                    "name": "Apparel & Accessories",
+                    "isLeaf": False,
+                    "isRoot": True,
+                },
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1",
+                    "fullName": "Apparel & Accessories > Clothing",
+                    "name": "Clothing",
+                    "isLeaf": False,
+                },
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Apparel & Accessories > Clothing > Shirts & Tops > Sweatshirts",
+                    "name": "Sweatshirts",
+                    "isLeaf": True,
+                },
+            ),
+            _product_read_response(),
+            _product_update_ok(
+                category_id="gid://shopify/TaxonomyCategory/aa-1",
+                category_full_name="Apparel & Accessories > Clothing",
+                category_name="Clothing",
+            ),
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="Clothing",
+        resolve_strategy="exact",
+        confirm=True,
+    )
+    _, vars_put = fc.calls[2]
+    assert vars_put["product"]["category"] == "gid://shopify/TaxonomyCategory/aa-1"
+    body = _extract_json_tail(out)
+    assert body["ok"] is True
+
+
+def test_update_product_category_best_match_prefers_parent_full_string_over_token_leaf():
+    # Story 9.8 AC3: input "Apparel & Accessories" with best-match must NOT
+    # land on Pager Accessories (or any unrelated *_Accessories leaf). Tier 1
+    # full-string match on the parent `aa` beats Tier 3 fallback. Fixture
+    # mirrors the actual 2026-05-12 smoke-test response.
+    tools, fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa",
+                    "fullName": "Apparel & Accessories",
+                    "name": "Apparel & Accessories",
+                    "isLeaf": False,
+                    "isRoot": True,
+                },
+                {
+                    "id": "gid://shopify/TaxonomyCategory/el-4-12",
+                    "fullName": "Electronics > Communications > Pager Accessories",
+                    "name": "Pager Accessories",
+                    "isLeaf": True,
+                },
+                {
+                    "id": "gid://shopify/TaxonomyCategory/hg-1-1",
+                    "fullName": "Hardware > Tools > Auger Accessories",
+                    "name": "Auger Accessories",
+                    "isLeaf": True,
+                },
+                {
+                    "id": "gid://shopify/TaxonomyCategory/hg-1-2",
+                    "fullName": "Hardware > Building Materials > Cable Tray Accessories",
+                    "name": "Cable Tray Accessories",
+                    "isLeaf": True,
+                },
+            ),
+            _product_read_response(),
+            _product_update_ok(
+                category_id="gid://shopify/TaxonomyCategory/aa",
+                category_full_name="Apparel & Accessories",
+                category_name="Apparel & Accessories",
+            ),
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="Apparel & Accessories",
+        resolve_strategy="best-match",
+        confirm=True,
+    )
+    _, vars_put = fc.calls[2]
+    assert vars_put["product"]["category"] == "gid://shopify/TaxonomyCategory/aa"
+    body = _extract_json_tail(out)
+    assert body["ok"] is True
+    # The three unrelated *_Accessories leaves drop into alternates, in
+    # Shopify's relevance order.
+    assert len(body["alternates"]) == 3
+    assert body["alternates"][0]["id"] == "gid://shopify/TaxonomyCategory/el-4-12"
+    assert body["alternates"][1]["id"] == "gid://shopify/TaxonomyCategory/hg-1-1"
+    assert body["alternates"][2]["id"] == "gid://shopify/TaxonomyCategory/hg-1-2"
+
+
+def test_update_product_category_best_match_tier1_multi_hit_falls_through():
+    # Coverage: when two candidates both casefold-equal the needle, Tier 1
+    # must NOT silently pick one — it falls through. Tier 2 ALSO has 2 hits
+    # in this fixture (both dup-1 and dup-2 prefix the needle "hat"), so the
+    # scorer falls all the way to Tier 3 (Shopify's relevance order). The
+    # test name omits a destination tier because the depth of the fall
+    # depends on what Tier 2 produces.
+    tools, fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/dup-1",
+                    "fullName": "Hat",
+                    "name": "Hat",
+                },
+                {
+                    "id": "gid://shopify/TaxonomyCategory/dup-2",
+                    "fullName": "HAT",
+                    "name": "HAT",
+                },
+                {
+                    "id": "gid://shopify/TaxonomyCategory/uniq-3",
+                    "fullName": "Apparel & Accessories > Hats > Wide-Brim Hat",
+                    "name": "Wide-Brim Hat",
+                },
+            ),
+            _product_read_response(),
+            _product_update_ok(
+                category_id="gid://shopify/TaxonomyCategory/uniq-3",
+                category_full_name="Apparel & Accessories > Hats > Wide-Brim Hat",
+                category_name="Wide-Brim Hat",
+            ),
+        ]
+    )
+    # Needle is "hat" — Tier 1 matches dup-1 AND dup-2 (both casefold-equal
+    # "hat"), so it falls through. Tier 2 only matches dup-1 and dup-2 (both
+    # prefix "hat"); Wide-Brim Hat does NOT prefix-match. Tier 2 has 2 → falls
+    # through. Tier 3 picks the first candidate (dup-1).
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="hat",
+        resolve_strategy="best-match",
+        confirm=True,
+    )
+    _, vars_put = fc.calls[2]
+    # Tier 3 fallback — first candidate in Shopify's relevance order.
+    assert vars_put["product"]["category"] == "gid://shopify/TaxonomyCategory/dup-1"
+    body = _extract_json_tail(out)
+    assert body["ok"] is True
+
+
+def test_update_product_category_best_match_no_tier_hit_falls_back_to_shopify_rank():
+    # Coverage for Tier 3: no candidate's name/fullName equals or prefixes
+    # the input, so best-match returns candidates[0] — Shopify's top-ranked
+    # result. This is the existing pre-9.8 behavior, preserved.
+    tools, fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Apparel & Accessories > Clothing > Shirts & Tops > Sweatshirts",
+                    "name": "Sweatshirts",
+                },
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-10",
+                    "fullName": "Apparel & Accessories > Clothing > Shirts & Tops > T-Shirts",
+                    "name": "T-Shirts",
+                },
+            ),
+            _product_read_response(),
+            _product_update_ok(),
+        ]
+    )
+    # Needle is "crewneck" — no candidate name/fullName equals or starts with
+    # "crewneck", so Tier 3 picks the first leaf (Sweatshirts).
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="crewneck",
+        resolve_strategy="best-match",
+        confirm=True,
+    )
+    _, vars_put = fc.calls[2]
+    assert vars_put["product"]["category"] == "gid://shopify/TaxonomyCategory/aa-1-13-9"
+    body = _extract_json_tail(out)
+    assert body["ok"] is True
+    # T-Shirts drops to alternates.
+    assert len(body["alternates"]) == 1
+    assert body["alternates"][0]["id"] == "gid://shopify/TaxonomyCategory/aa-1-13-10"
 
 
 # ---------- AC #5 — exact ----------
@@ -1732,6 +1981,10 @@ def test_update_product_category_exact_fails_when_no_exact_match():
         confirm=True,
     )
     assert "exact" in out
+    # Story 9.8 AC6: the error message must say "taxonomy category", not
+    # "leaf category". Locks in the rewording.
+    assert "no taxonomy category matched" in out
+    assert "leaf" not in out
     body = _extract_json_tail(out)
     assert body["ok"] is False
     # Mutation must NOT have run.
@@ -1766,6 +2019,10 @@ def test_update_product_category_exact_fails_on_multiple_exact_matches():
     body = _extract_json_tail(out)
     assert body["ok"] is False
     assert "exact" in out
+    # Story 9.8 AC6: error wording must say "taxonomy categories", not
+    # "leaf categories". Locks in the rewording on the >1 match path.
+    assert "2 taxonomy categories matched" in out
+    assert "leaf" not in out
 
 
 # ---------- AC #6 — productUpdate input shape ----------

@@ -935,9 +935,15 @@ def _resolve_taxonomy_category(
 
     Returns (chosen_node, alternates, error). `chosen_node` is the dict
     {id, fullName, name, ...} that will be sent to productUpdate. `alternates`
-    are runner-up leaves (only populated under best-match). When a
+    are runner-up candidates (only populated under best-match). When a
     TaxonomyCategory GID is supplied, no search is performed: chosen_node has
     only the `id` set so the caller still sees a stable shape.
+
+    Candidate set includes leaves AND non-leaves (root + intermediate nodes).
+    Story 9.8 dropped the leaf-only filter because `productUpdate.category`
+    accepts non-leaf GIDs end-to-end, and the leaf filter caused best-match to
+    fall through to bare-token overlap and land on unrelated leaves (e.g.
+    "Apparel & Accessories" → "Pager Accessories").
     """
     if not isinstance(category, str) or not category.strip():
         return None, [], "category must be a non-empty string."
@@ -946,7 +952,7 @@ def _resolve_taxonomy_category(
     if stripped.startswith(_TAXONOMY_GID_PREFIX):
         if not stripped[len(_TAXONOMY_GID_PREFIX) :]:
             return None, [], f"Empty TaxonomyCategory GID body: {stripped!r}"
-        # GID passthrough — caller already knows which leaf they want. We don't
+        # GID passthrough — caller already knows which node they want. We don't
         # fabricate a fullName; the post-write snapshot from productUpdate fills it.
         return {"id": stripped, "fullName": None, "name": None}, [], None
 
@@ -961,24 +967,27 @@ def _resolve_taxonomy_category(
     except Exception as e:
         return None, [], f"Taxonomy search failed ({type(e).__name__}): {e}"
     nodes = ((data or {}).get("taxonomy") or {}).get("categories", {}).get("nodes") or []
-    leaves = [n for n in nodes if n.get("isLeaf")]
-    if not leaves:
+    candidates = list(nodes)
+    if not candidates:
         return (
             None,
             [],
             f"No taxonomy categories matched search {stripped!r}. Try a broader term.",
         )
 
+    # All three strategies do casefold comparison on the same input. Hoisting
+    # the casefold call here (one place) keeps the branch bodies tight and
+    # avoids two separate `needle = stripped.casefold()` definitions.
+    needle = stripped.casefold()
+
     if resolve_strategy == "exact":
         # Match by fullName OR short name — intentional. Callers paste either
-        # the leaf's short label ("Sweatshirts") or its full path
+        # the node's short label ("Sweatshirts", "Clothing") or its full path
         # ("Apparel & Accessories > … > Sweatshirts"); both should resolve.
-        # Defensive: two distinct leaves matching the same needle (one by
-        # fullName, one by name) still trip the >1 guard below.
-        needle = stripped.casefold()
+        # The >1 guard below catches the rare collision case.
         matches = [
             n
-            for n in leaves
+            for n in candidates
             if (n.get("fullName") or "").casefold() == needle
             or (n.get("name") or "").casefold() == needle
         ]
@@ -986,41 +995,75 @@ def _resolve_taxonomy_category(
             return (
                 None,
                 [],
-                f"resolve_strategy='exact' but no leaf category matched "
+                f"resolve_strategy='exact' but no taxonomy category matched "
                 f"{stripped!r} by fullName or name.",
             )
         if len(matches) > 1:
             return (
                 None,
                 [],
-                f"resolve_strategy='exact' but {len(matches)} leaf categories "
+                f"resolve_strategy='exact' but {len(matches)} taxonomy categories "
                 f"matched {stripped!r} exactly — refine the search.",
             )
         return matches[0], [], None
 
     if resolve_strategy == "reject-ambiguous":
-        if len(leaves) > 1:
+        # Story 9.8 widened the candidate population (parents + intermediates
+        # are no longer filtered out). The count-based rejection is preserved
+        # deliberately — a query that previously succeeded because parents
+        # got filtered (e.g. "Sweatshirts" returning a single leaf after
+        # filtering) may now reject if Shopify also returns the parent in
+        # the same response. Per Story 9.8 plan, this stricter behavior is
+        # accepted as the conservative call; revisit if real callers
+        # complain.
+        if len(candidates) > 1:
             return (
                 None,
                 [],
-                f"resolve_strategy='reject-ambiguous' but {len(leaves)} leaf "
-                f"categories matched {stripped!r} — refine the search or use "
-                f"resolve_strategy='best-match'.",
+                f"resolve_strategy='reject-ambiguous' but {len(candidates)} "
+                f"taxonomy categories matched {stripped!r} — refine the search "
+                f"or use resolve_strategy='best-match'.",
             )
-        return leaves[0], [], None
+        return candidates[0], [], None
 
-    # best-match: first leaf wins; subsequent leaves become alternates in
-    # Shopify's relevance order. No `score` field — Shopify doesn't return
+    # best-match: 3 ordinal tiers. No `score` field — Shopify doesn't return
     # one, and synthesizing a rank-based stand-in misled downstream agents
     # into treating it as a probability. Order alone carries the signal.
-    chosen = leaves[0]
+    #   Tier 1 — casefold full-string equality on `name` or `fullName`. Wins
+    #            outright when exactly one candidate matches (e.g. input
+    #            "Apparel & Accessories" → the `aa` parent over Pager
+    #            Accessories).
+    #   Tier 2 — casefold prefix on `name` or `fullName`. Wins when exactly one
+    #            candidate matches (e.g. input "sweatshirt" → the "Sweatshirts"
+    #            leaf over the apparel parent).
+    #   Tier 3 — Shopify's relevance order (the original behavior).
+    # Tiers are discrete and deterministic, not a continuous similarity score.
+    tier1 = [
+        n
+        for n in candidates
+        if (n.get("fullName") or "").casefold() == needle
+        or (n.get("name") or "").casefold() == needle
+    ]
+    if len(tier1) == 1:
+        chosen = tier1[0]
+    else:
+        tier2 = [
+            n
+            for n in candidates
+            if (n.get("fullName") or "").casefold().startswith(needle)
+            or (n.get("name") or "").casefold().startswith(needle)
+        ]
+        chosen = tier2[0] if len(tier2) == 1 else candidates[0]
+    # `n["id"]` is bare (not `.get("id")`) — the TAXONOMY_SEARCH GraphQL
+    # schema marks `id` as non-nullable, so every node in `candidates` has it.
     alternates = [
         {
             "id": n["id"],
             "fullName": n.get("fullName"),
             "name": n.get("name"),
         }
-        for n in leaves[1:]
+        for n in candidates
+        if n["id"] != chosen["id"]
     ]
     return chosen, alternates, None
 
