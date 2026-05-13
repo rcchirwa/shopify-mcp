@@ -503,7 +503,217 @@ def test_confirm_path_renders_sku_none_in_confirmed_block():
         confirm=True,
     )
     assert "(no SKU)" in out
-    assert "(cleared)" in out
+    # Caller didn't pass compareAtPrice → head shows "(unchanged)", not
+    # "(cleared)". See test_confirm_summary_unchanged_compare_at_price_*
+    # below for the regression coverage of that distinction.
+    assert "compareAtPrice: (unchanged)" in out
+    assert "(cleared)" not in out
+
+
+# Regression — copy-only bug surfaced during 9.3 integration smoke testing
+# on 2026-05-12. The post-confirm head was reading `compareAtPrice` from the
+# mutation response (which echoes current state, not the diff) and labeling
+# null as "(cleared)", even when the caller never passed compareAtPrice and
+# the variant already had compareAtPrice=null on its baseline.
+
+
+def test_confirm_summary_unchanged_compare_at_price_null_is_not_cleared():
+    # Scenario A: variant has compareAtPrice=null on baseline. Caller updates
+    # `price` only. Head must NOT say "(cleared)" — the caller didn't clear
+    # anything; the field was already null.
+    tools, fc = _build(
+        [
+            _read_response(
+                [
+                    {
+                        "id": "gid://shopify/ProductVariant/201",
+                        "sku": "SKU-A",
+                        "price": "59.99",
+                        "compareAtPrice": None,
+                    }
+                ]
+            ),
+            _mutation_ok(
+                [
+                    {
+                        "id": "gid://shopify/ProductVariant/201",
+                        "sku": "SKU-A",
+                        "price": "63.93",
+                        "compareAtPrice": None,  # Shopify echoes current state.
+                    }
+                ]
+            ),
+        ]
+    )
+    out = tools["update_product_pricing"](
+        "100",
+        variants=[{"variantId": "201", "price": "63.93"}],
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED — Product pricing update")
+    assert "price: 63.93" in out
+    # The bug printed "(cleared)" here. Post-fix, the head shows the caller-
+    # neutral "(unchanged)" token — caller didn't touch compareAtPrice.
+    assert "(cleared)" not in out
+    assert "compareAtPrice: (unchanged)" in out
+
+
+def test_confirm_summary_unchanged_compare_at_price_with_value_shows_unchanged():
+    # Scenario B (stronger): Shopify's mutation response echoes a non-null
+    # compareAtPrice="10.00", but the caller still only updated `price`. The
+    # head must surface the value alongside an "(unchanged)" label so the
+    # reader can see current state without mistaking it for a diff.
+    tools, fc = _build(
+        [
+            _read_response(
+                [
+                    {
+                        "id": "gid://shopify/ProductVariant/201",
+                        "sku": "SKU-A",
+                        "price": "59.99",
+                        "compareAtPrice": "10.00",
+                    }
+                ]
+            ),
+            _mutation_ok(
+                [
+                    {
+                        "id": "gid://shopify/ProductVariant/201",
+                        "sku": "SKU-A",
+                        "price": "63.93",
+                        "compareAtPrice": "10.00",  # echo of current state.
+                    }
+                ]
+            ),
+        ]
+    )
+    out = tools["update_product_pricing"](
+        "100",
+        variants=[{"variantId": "201", "price": "63.93"}],
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED — Product pricing update")
+    assert "price: 63.93" in out
+    assert "(cleared)" not in out
+    assert "compareAtPrice: 10.00 (unchanged)" in out
+
+
+def test_confirm_summary_explicit_clear_still_labelled_cleared():
+    # Counter-test: when the caller DOES pass compareAtPrice=None, the head
+    # must still say "(cleared)". This pins the kept half of the labelling
+    # contract so a future refactor doesn't regress in the other direction.
+    tools, fc = _build(
+        [
+            _read_response(),
+            _mutation_ok(
+                [
+                    {
+                        "id": "gid://shopify/ProductVariant/201",
+                        "sku": "SKU-A",
+                        "price": "39.99",
+                        "compareAtPrice": None,
+                    }
+                ]
+            ),
+        ]
+    )
+    out = tools["update_product_pricing"](
+        "100",
+        variants=[{"variantId": "201", "compareAtPrice": None}],
+        confirm=True,
+    )
+    assert "compareAtPrice: (cleared)" in out
+    assert "(unchanged)" not in out
+
+
+def test_confirm_summary_explicit_value_echoes_caller_value():
+    # Counter-test: caller passes compareAtPrice="65.00" → head shows the
+    # caller's value, not "(unchanged)".
+    tools, fc = _build(
+        [
+            _read_response(),
+            _mutation_ok(
+                [
+                    {
+                        "id": "gid://shopify/ProductVariant/201",
+                        "sku": "SKU-A",
+                        "price": "39.99",
+                        "compareAtPrice": "65.00",
+                    }
+                ]
+            ),
+        ]
+    )
+    out = tools["update_product_pricing"](
+        "100",
+        variants=[{"variantId": "201", "compareAtPrice": "65.00"}],
+        confirm=True,
+    )
+    assert "compareAtPrice: 65.00" in out
+    assert "(unchanged)" not in out
+    assert "(cleared)" not in out
+
+
+def test_confirm_summary_mixed_batch_keys_intent_per_variant():
+    # Per-GID intent-map test: two variants in one call, one with
+    # compareAtPrice explicitly passed and one without. Proves the intent
+    # dict matches by GID (not by position/ordering), so a future refactor
+    # that breaks the keying would surface here even when single-variant
+    # tests all pass.
+    tools, fc = _build(
+        [
+            _read_response(
+                [
+                    {
+                        "id": "gid://shopify/ProductVariant/201",
+                        "sku": "SKU-A",
+                        "price": "59.99",
+                        "compareAtPrice": "10.00",
+                    },
+                    {
+                        "id": "gid://shopify/ProductVariant/202",
+                        "sku": "SKU-B",
+                        "price": "29.99",
+                        "compareAtPrice": None,
+                    },
+                ]
+            ),
+            _mutation_ok(
+                [
+                    {
+                        "id": "gid://shopify/ProductVariant/201",
+                        "sku": "SKU-A",
+                        "price": "63.93",
+                        "compareAtPrice": "10.00",  # echo — caller didn't touch.
+                    },
+                    {
+                        "id": "gid://shopify/ProductVariant/202",
+                        "sku": "SKU-B",
+                        "price": "29.99",
+                        "compareAtPrice": "12.00",  # explicit set by caller.
+                    },
+                ]
+            ),
+        ]
+    )
+    out = tools["update_product_pricing"](
+        "100",
+        variants=[
+            {"variantId": "201", "price": "63.93"},  # untouched compareAtPrice
+            {"variantId": "202", "compareAtPrice": "12.00"},  # explicit
+        ],
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED — Product pricing update")
+    # SKU-A: caller didn't touch compareAtPrice → "<current> (unchanged)".
+    assert "SKU: SKU-A — price: 63.93 — compareAtPrice: 10.00 (unchanged)" in out
+    # SKU-B: caller explicitly set 12.00 → echo caller's value (no label).
+    assert "SKU: SKU-B — price: 29.99 — compareAtPrice: 12.00" in out
+    assert "(cleared)" not in out
+    # SKU-B's line must NOT be labelled "(unchanged)" — its presence would
+    # mean the intent map wasn't matching SKU-B's GID.
+    sku_b_line = next(line for line in out.splitlines() if "SKU-B" in line)
+    assert "(unchanged)" not in sku_b_line
 
 
 # Idempotent fast-path ---------------------------------------------------------
