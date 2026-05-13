@@ -1617,7 +1617,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # Without this, an unchanged null reads as "(cleared)" in the head —
         # a copy-only bug surfaced during 9.3 integration smoke testing.
         variants_input: list[dict[str, Any]] = []
-        cap_intent_by_gid: dict[str, Any] = {}
+        cap_intent_by_gid: dict[str, str | None] = {}
         for entry, gid in zip(entries, resolved_gids, strict=True):
             payload: dict[str, Any] = {"id": gid}
             if "price" in entry:
@@ -1652,17 +1652,22 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         def _cap_display(variant: dict[str, Any]) -> str:
             """Render compareAtPrice for the post-confirm head.
 
-            Three cases, keyed off caller intent (NOT response value):
-              - caller omitted     → "(unchanged)"  current state isn't a
-                                     diff signal; the head is about the call
-              - caller passed None → "(cleared)"
-              - caller passed val  → "<val>"        echo what the caller asked
-                                     for; falls back to the response value if
-                                     the GID isn't in the intent map (defense)
+            Keyed off caller intent (NOT response state) so the head describes
+            the call, not the variant's post-mutation state:
+              - caller omitted, current is None    → "(unchanged)"
+              - caller omitted, current is a value → "<current> (unchanged)"
+                                                     (show state, label intent
+                                                     so the reader knows the
+                                                     value wasn't touched)
+              - caller passed None                 → "(cleared)"
+              - caller passed a value              → "<value>" (echo intent)
             """
             gid = variant.get("id")
             if gid not in cap_intent_by_gid:
-                return "(unchanged)"
+                current = variant.get("compareAtPrice")
+                if current is None:
+                    return "(unchanged)"
+                return f"{current} (unchanged)"
             intended = cap_intent_by_gid[gid]
             if intended is None:
                 return "(cleared)"
