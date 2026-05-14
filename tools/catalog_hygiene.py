@@ -289,6 +289,24 @@ mutation ProductVariantAppendMedia(
 }
 """
 
+# Sequential complement to PRODUCT_VARIANT_APPEND_MEDIA. Shopify rejects
+# productVariantAppendMedia for any variant that already has ANY media bound,
+# so existing bindings must be cleared first. Unlike Append, Detach accepts
+# multiple mediaIds per entry and has no pre-condition. NOT exposed as a
+# standalone MCP tool — only the update_variant_image_binding composite flow
+# calls this.
+PRODUCT_VARIANT_DETACH_MEDIA = """
+mutation ProductVariantDetachMedia(
+  $productId: ID!,
+  $variantMedia: [ProductVariantDetachMediaInput!]!
+) {
+  productVariantDetachMedia(productId: $productId, variantMedia: $variantMedia) {
+    product { id }
+    userErrors { field message }
+  }
+}
+"""
+
 # ---------------------------------------------------------------------------
 # GraphQL + constants — Story 9.7 (set_product_metafields)
 # ---------------------------------------------------------------------------
@@ -482,6 +500,32 @@ def _is_already_bound_error(message: str) -> bool:
     return "already" in lower and ("bound" in lower or "associated" in lower)
 
 
+def _expand_append_entries(variant_id: str, media_ids: list[str]) -> list[dict[str, Any]]:
+    """Expand one variant's desired media into N single-mediaId append entries.
+
+    Shopify's ProductVariantAppendMediaInput enforces exactly one mediaId per
+    entry at the API level (passes local dryRun but fails live). Centralised
+    here so both the append-only queue and the reattach queue share the same
+    expansion logic.
+    """
+    return [{"variantId": variant_id, "mediaIds": [mid]} for mid in media_ids]
+
+
+def _format_user_errors(errors: list[dict[str, Any]]) -> str:
+    """Render a Shopify userErrors list as a single human-readable string.
+
+    Shopify returns `field` as a list of path segments; joining with '.' is
+    more readable than str(list). Shared by the detach-halt path and the
+    append-failure path so formatting stays consistent across both.
+    """
+
+    def _fmt(e: dict[str, Any]) -> str:
+        field_path = ".".join(str(f) for f in (e.get("field") or []))
+        return f"{field_path or '(no field)'}: {e.get('message', '')}"
+
+    return "; ".join(_fmt(e) for e in errors)
+
+
 def _media_node_to_json(node: dict[str, Any]) -> dict[str, Any]:
     """Serialize a media node into the spec-aligned JSON-tail shape.
 
@@ -496,6 +540,60 @@ def _media_node_to_json(node: dict[str, Any]) -> dict[str, Any]:
         "mediaContentType": node.get("mediaContentType"),
         "image": {"url": (image or {}).get("url")} if image else None,
     }
+
+
+def _handle_append_failure_after_detach(
+    *,
+    real_errors: list[dict[str, Any]],
+    detached_variant_gids: list[str],
+    routes: list[dict[str, Any]],
+    product_gid: str,
+    client: Any,
+) -> str:
+    """Section 5.4 — append failed after a successful detach.
+
+    One or more variants are now in a zero-media state. Attempt rollback by
+    re-appending each detached variant's pre-captured `willDetach` bindings.
+    Reports the outcome regardless of rollback success; never returns ok:true.
+    """
+    route_by_gid = {r["rgid"]: r for r in routes}
+    rollback_entries: list[dict[str, Any]] = []
+    for vgid in detached_variant_gids:
+        rollback_entries.extend(_expand_append_entries(vgid, route_by_gid[vgid]["willDetach"]))
+
+    rollback_errors: list[dict[str, Any]] = []
+    rollback_ok = False
+    if rollback_entries:
+        try:
+            rb = client.execute(
+                PRODUCT_VARIANT_APPEND_MEDIA,
+                {"productId": product_gid, "variantMedia": rollback_entries},
+            )
+            rb_errs = extract_user_errors(rb, "productVariantAppendMedia")
+            rollback_errors = [
+                e for e in rb_errs if not _is_already_bound_error(e.get("message") or "")
+            ]
+            rollback_ok = not rollback_errors
+        except Exception as exc:
+            rollback_errors = [{"message": f"rollback raised: {exc}"}]
+
+    head = f"Error: append failed after detach — {_format_user_errors(real_errors)}"
+    return _render(
+        head,
+        {
+            "ok": False,
+            "variants": [],
+            "errors": list(real_errors),
+            "appendFailedAfterDetach": True,
+            # Shopify mutations are atomic per call, so all-or-nothing: if the
+            # append failed, every variant in detached_variant_gids is in a
+            # zero-media state (none were re-bound by the failed call).
+            "zeroMediaVariants": list(detached_variant_gids) if not rollback_ok else [],
+            "rollbackAttempted": bool(rollback_entries),
+            "rollbackOk": rollback_ok,
+            "rollbackErrors": list(rollback_errors),
+        },
+    )
 
 
 def _render(head: str, payload: dict[str, Any]) -> str:
@@ -2421,21 +2519,71 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 if mid not in bucket:
                     bucket.append(mid)
 
-        # Step 5b — compute the delta per unique variant
-        deltas: list[tuple[str, list[str]]] = []
-        for resolved_gid, media_ids in merged.items():
-            currently = variant_media_map.get(resolved_gid, set())
-            new_ids = [mid for mid in media_ids if mid not in currently]
-            deltas.append((resolved_gid, new_ids))
+        # Step 5b — route each unique variant into no-op / append-only / detach-reattach.
+        # current == desired_set  → no-op (skip all API calls for this variant)
+        # current is empty        → append-only (standard path, no detach needed)
+        # current is non-empty    → detach-reattach (clear existing, then write full set)
+        routes: list[dict[str, Any]] = []
+        for resolved_gid, desired in merged.items():
+            current = variant_media_map.get(resolved_gid, set())
+            desired_set = set(desired)
+            if current == desired_set:
+                path = "no-op"
+                will_detach: list[str] = []
+                will_reattach: list[str] = []
+                net_new: list[str] = []
+                will_lose: list[str] = []
+            elif not current:
+                path = "append-only"
+                will_detach = []
+                will_reattach = []
+                net_new = list(desired)
+                will_lose = []
+            else:
+                path = "detach-reattach"
+                will_detach = sorted(current)
+                will_reattach = list(desired)
+                net_new = [mid for mid in desired if mid not in current]
+                will_lose = sorted(current - desired_set)
+            routes.append(
+                {
+                    "rgid": resolved_gid,
+                    "path": path,
+                    "current": sorted(current),
+                    "desired": list(desired),
+                    "willDetach": will_detach,
+                    "willReattach": will_reattach,
+                    "netNew": net_new,
+                    "willLose": will_lose,
+                }
+            )
 
-        all_no_op = all(not new_ids for _, new_ids in deltas)
-        total_new = sum(len(new_ids) for _, new_ids in deltas)
+        all_no_op = all(r["path"] == "no-op" for r in routes)
+        total_new = sum(len(r["netNew"]) for r in routes)
+        total_detach = sum(len(r["willDetach"]) for r in routes)
 
-        def _variant_block(rgid: str, label_ids: list[str], label: str) -> str:
+        def _variant_block(r: dict[str, Any]) -> str:
+            rgid = r["rgid"]
             sku = variant_sku_map.get(rgid, "")
             sku_part = f" — SKU: {sku}" if sku else ""
-            lines = [f"        - {mid}" for mid in label_ids] or ["        (none)"]
-            return f"    • id: {from_gid(rgid)}{sku_part}\n      {label}:\n" + "\n".join(lines)
+            prefix = f"    • id: {from_gid(rgid)}{sku_part}"
+            if r["path"] == "no-op":
+                lines = [f"        - {mid}" for mid in r["current"]] or ["        (none)"]
+                return f"{prefix}\n      Already bound:\n" + "\n".join(lines)
+            if r["path"] == "append-only":
+                lines = [f"        - {mid}" for mid in r["netNew"]] or ["        (none)"]
+                return f"{prefix}\n      Will append:\n" + "\n".join(lines)
+            # detach-reattach — willDetach is always non-empty on this path
+            # (routing requires current to be non-empty to reach here), but
+            # guard matches the other branches for consistency.
+            det_lines = [f"        - {mid}" for mid in r["willDetach"]] or ["        (none)"]
+            ret_lines = [f"        - {mid}" for mid in r["willReattach"]] or ["        (none)"]
+            result = f"{prefix}\n      Will detach:\n" + "\n".join(det_lines)
+            result += "\n      Will reattach:\n" + "\n".join(ret_lines)
+            if r["willLose"]:
+                lose_lines = [f"        - {mid}" for mid in r["willLose"]]
+                result += "\n      WARNING — will lose:\n" + "\n".join(lose_lines)
+            return result
 
         def _fallback_media_nodes(rgid: str) -> list[dict[str, Any]]:
             return [
@@ -2462,31 +2610,41 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             }
 
         # Step 6 — preview body (reused verbatim for preview + confirmed branches)
-        preview_blocks = [
-            _variant_block(rgid, new_ids, "Will append" if new_ids else "Already bound")
-            for rgid, new_ids in deltas
-        ]
+        will_lose_count = sum(len(r["willLose"]) for r in routes)
+        preview_blocks = [_variant_block(r) for r in routes]
         preview_head = (
             f"PREVIEW — Bind variant images\n"
             f"  Product : {title} (id: {product_id})\n"
-            f"  Variants ({len(deltas)}) — net-new media bindings: {total_new}\n"
+            f"  Variants ({len(routes)}) — net-new media bindings: {total_new}"
+            + (f" — WARNING: {will_lose_count} binding(s) will be lost" if will_lose_count else "")
+            + "\n"
             + "\n".join(preview_blocks)
         )
 
-        # Step 7 — preview branch (confirm=False).
+        # Step 7 — preview branch (confirm=False). Never issues any mutations.
         if not confirm:
+
+            def _dryrun_variant(r: dict[str, Any]) -> dict[str, Any]:
+                base: dict[str, Any] = {
+                    "id": r["rgid"],
+                    "sku": variant_sku_map.get(r["rgid"], ""),
+                    "path": r["path"],
+                    "currentMedia": r["current"],
+                }
+                if r["path"] == "detach-reattach":
+                    base["willDetach"] = r["willDetach"]
+                    base["willReattach"] = r["willReattach"]
+                    base["netNew"] = r["netNew"]
+                else:
+                    base["wouldAppend"] = r["netNew"]
+                if r["willLose"]:
+                    base["willLose"] = r["willLose"]
+                return base
+
             preview_payload: dict[str, Any] = {
                 "ok": True,
                 "dryRun": True,
-                "variants": [
-                    {
-                        "id": rgid,
-                        "sku": variant_sku_map.get(rgid, ""),
-                        "currentMedia": sorted(variant_media_map.get(rgid, set())),
-                        "wouldAppend": list(new_ids),
-                    }
-                    for rgid, new_ids in deltas
-                ],
+                "variants": [_dryrun_variant(r) for r in routes],
                 "errors": [],
             }
             return with_confirm_hint(_render(preview_head, preview_payload))
@@ -2495,52 +2653,84 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if all_no_op:
             log_write(
                 "update_variant_image_binding",
-                f"product={product_id} variants={len(deltas)} media_bound=0 (idempotent)",
+                f"product={product_id} variants={len(routes)} media_bound=0 (idempotent)",
             )
             head = (
                 f"CONFIRMED — Bind variant images (no-op)\n"
                 f"  Product : {title} (id: {product_id})\n"
-                f"  Variants ({len(deltas)}) — all requested media already bound."
+                f"  Variants ({len(routes)}) — all requested media already bound."
             )
             return _render(
                 head,
                 {
                     "ok": True,
                     "variants": [
-                        _variant_success_payload(rgid, _fallback_media_nodes(rgid))
-                        for rgid, _ in deltas
+                        _variant_success_payload(r["rgid"], _fallback_media_nodes(r["rgid"]))
+                        for r in routes
                     ],
                     "errors": [],
                 },
             )
 
-        # Step 9 — execute the mutation for variants with non-empty deltas only
-        mutation_input = [
-            {"variantId": rgid, "mediaIds": new_ids} for rgid, new_ids in deltas if new_ids
-        ]
-        result = client.execute(
-            PRODUCT_VARIANT_APPEND_MEDIA,
-            {"productId": gid, "variantMedia": mutation_input},
-        )
+        # Step 9a — build detach and append queues from routes.
+        # append_entries is empty only when all non-no-op routes are detach-reattach
+        # with zero desired mediaIds — impossible by construction (detach-reattach
+        # requires current to be non-empty AND current != desired, so desired is
+        # always non-empty). The guard below is therefore defensive only.
+        detach_entries: list[dict[str, Any]] = []
+        append_entries: list[dict[str, Any]] = []
+        for r in routes:
+            if r["path"] == "no-op":
+                continue
+            if r["path"] == "detach-reattach":
+                # Detach accepts multiple mediaIds per entry (no Shopify restriction).
+                detach_entries.append({"variantId": r["rgid"], "mediaIds": r["willDetach"]})
+                append_entries.extend(_expand_append_entries(r["rgid"], r["willReattach"]))
+            else:
+                # append-only
+                append_entries.extend(_expand_append_entries(r["rgid"], r["netNew"]))
 
-        # Drop race-condition "already bound" errors per AC #6 defensive fallback.
-        raw_errors = extract_user_errors(result, "productVariantAppendMedia")
-        real_errors = [e for e in raw_errors if not _is_already_bound_error(e.get("message") or "")]
-        if real_errors:
-            # Mirror Story 9.3's userError formatter — Shopify returns `field` as a
-            # dotted-path list, so str() of the whole list reads poorly.
-            def _fmt(e: dict[str, Any]) -> str:
-                field_path = ".".join(str(f) for f in (e.get("field") or []))
-                return f"{field_path or '(no field)'}: {e.get('message', '')}"
-
-            msgs = "; ".join(_fmt(e) for e in real_errors)
-            return _render(
-                f"Error: {msgs}",
-                {"ok": False, "variants": [], "errors": list(real_errors)},
+        # Step 9b — DETACH first. HALT on any userError; do NOT proceed to append.
+        detached_variant_gids: list[str] = []
+        if detach_entries:
+            detach_result = client.execute(
+                PRODUCT_VARIANT_DETACH_MEDIA,
+                {"productId": gid, "variantMedia": detach_entries},
             )
+            detach_errors = extract_user_errors(detach_result, "productVariantDetachMedia")
+            if detach_errors:
+                msgs = _format_user_errors(detach_errors)
+                return _render(
+                    f"Error: detach failed — {msgs}",
+                    {"ok": False, "variants": [], "errors": list(detach_errors)},
+                )
+            detached_variant_gids = [e["variantId"] for e in detach_entries]
+
+        # Step 9c — APPEND (append-only variants + reattach for detach-reattach variants).
+        # All entries are batched into a single mutation call.
+        append_result: dict[str, Any] = {}
+        if append_entries:
+            append_result = client.execute(
+                PRODUCT_VARIANT_APPEND_MEDIA,
+                {"productId": gid, "variantMedia": append_entries},
+            )
+            raw_errors = extract_user_errors(append_result, "productVariantAppendMedia")
+            real_errors = [
+                e for e in raw_errors if not _is_already_bound_error(e.get("message") or "")
+            ]
+            if real_errors:
+                # Section 5.4 — detach succeeded but append failed. Affected variants
+                # are now in zero-media state; attempt rollback before returning.
+                return _handle_append_failure_after_detach(
+                    real_errors=real_errors,
+                    detached_variant_gids=detached_variant_gids,
+                    routes=routes,
+                    product_gid=gid,
+                    client=client,
+                )
 
         # Step 10 — merge mutation response with pre-fetch state for the JSON tail.
-        payload = result.get("productVariantAppendMedia") or {}
+        payload = append_result.get("productVariantAppendMedia") or {}
         returned_variants = payload.get("productVariants") or []
         post_state: dict[str, list[dict[str, Any]]] = {}
         for v in returned_variants:
@@ -2549,22 +2739,27 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 continue
             post_state[vid] = (v.get("media") or {}).get("nodes", []) or []
 
-        success_variants = [
-            _variant_success_payload(
-                rgid,
-                post_state[rgid] if rgid in post_state else _fallback_media_nodes(rgid),
-            )
-            for rgid, _ in deltas
-        ]
+        def _success_nodes(r: dict[str, Any]) -> list[dict[str, Any]]:
+            rgid = r["rgid"]
+            if rgid in post_state:
+                return post_state[rgid]
+            if r["path"] == "detach-reattach":
+                # Defensive fallback: mutation succeeded but returned no nodes.
+                # Synthesise from desired using the product media index.
+                return [product_media_index.get(mid) or {"id": mid} for mid in sorted(r["desired"])]
+            # no-op and append-only: fall back to the pre-mutation bound state.
+            return _fallback_media_nodes(rgid)
+
+        success_variants = [_variant_success_payload(r["rgid"], _success_nodes(r)) for r in routes]
 
         log_write(
             "update_variant_image_binding",
-            f"product={product_id} variants={len(deltas)} media_bound={total_new}",
+            f"product={product_id} variants={len(routes)} detached={total_detach} appended={total_new}",
         )
         head = (
             f"CONFIRMED — Bind variant images\n"
             f"  Product : {title} (id: {product_id})\n"
-            f"  Variants ({len(deltas)}) — net-new media bindings: {total_new}\n"
+            f"  Variants ({len(routes)}) — net-new media bindings: {total_new}\n"
             + "\n".join(preview_blocks)
         )
         return _render(
