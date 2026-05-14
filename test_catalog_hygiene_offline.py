@@ -3349,6 +3349,7 @@ def test_type_text_non_empty_returns_value():
 from tools.catalog_hygiene import (  # noqa: E402
     GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA,
     PRODUCT_VARIANT_APPEND_MEDIA,
+    PRODUCT_VARIANT_DETACH_MEDIA,
     _is_already_bound_error,
     _media_node_to_json,
 )
@@ -3422,6 +3423,16 @@ def _s96_mutation_response(productVariants=None, user_errors=None):
     return {
         "productVariantAppendMedia": {
             "productVariants": pv,
+            "userErrors": user_errors or [],
+        }
+    }
+
+
+def _s96_detach_response(user_errors=None):
+    """Build a PRODUCT_VARIANT_DETACH_MEDIA response."""
+    return {
+        "productVariantDetachMedia": {
+            "product": {"id": _S96_PRODUCT_GID},
             "userErrors": user_errors or [],
         }
     }
@@ -3683,10 +3694,12 @@ def test_s96_confirm_executes_mutation_and_returns_bound_state():
     assert len(fc.calls) == 2
     assert fc.calls[0][0] == GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA
     assert fc.calls[1][0] == PRODUCT_VARIANT_APPEND_MEDIA
-    assert fc.calls[1][1] == {
-        "productId": _S96_PRODUCT_GID,
-        "variantMedia": [{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]}],
-    }
+    # Fix A: each mediaId must be its own entry (Shopify enforces exactly 1 per entry).
+    sent = fc.calls[1][1]
+    assert sent["productId"] == _S96_PRODUCT_GID
+    assert len(sent["variantMedia"]) == 2
+    assert all(e["variantId"] == _S96_VARIANT_A for e in sent["variantMedia"])
+    assert all(len(e["mediaIds"]) == 1 for e in sent["variantMedia"])
 
 
 def test_s96_numeric_variant_id_is_coerced_to_gid_without_extra_fetch():
@@ -3824,11 +3837,14 @@ def test_s96_duplicate_variant_id_entries_merge_to_single_mutation_entry():
         confirm=True,
     )
     assert "CONFIRMED" in out
-    assert len(fc.calls[1][1]["variantMedia"]) == 1
-    assert fc.calls[1][1]["variantMedia"][0] == {
-        "variantId": _S96_VARIANT_A,
-        "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2],
-    }
+    # Fix A: duplicate variant entries are merged (Step 5a) then expanded to one
+    # entry per mediaId. Two distinct mediaIds → 2 append entries.
+    sent = fc.calls[1][1]["variantMedia"]
+    assert len(sent) == 2
+    assert all(e["variantId"] == _S96_VARIANT_A for e in sent)
+    assert all(len(e["mediaIds"]) == 1 for e in sent)
+    appended_mids = {e["mediaIds"][0] for e in sent}
+    assert appended_mids == {_S96_MEDIA_1, _S96_MEDIA_2}
 
 
 def test_s96_duplicate_variant_id_with_overlapping_media_dedups():
@@ -3849,7 +3865,12 @@ def test_s96_duplicate_variant_id_with_overlapping_media_dedups():
         confirm=True,
     )
     assert "CONFIRMED" in out
-    assert fc.calls[1][1]["variantMedia"][0]["mediaIds"] == [_S96_MEDIA_1, _S96_MEDIA_2]
+    # Fix A: overlapping input entries merge (Step 5a dedup) to {M1, M2}, then
+    # each gets its own single-mediaId append entry.
+    sent = fc.calls[1][1]["variantMedia"]
+    assert len(sent) == 2
+    appended_mids = {e["mediaIds"][0] for e in sent}
+    assert appended_mids == {_S96_MEDIA_1, _S96_MEDIA_2}
 
 
 def test_s96_duplicate_variant_id_all_already_bound_collapses_to_no_op():
@@ -3873,11 +3894,15 @@ def test_s96_duplicate_variant_id_all_already_bound_collapses_to_no_op():
 # ---------- partial overlap → only delta sent ----------
 
 
-def test_s96_partial_overlap_only_appends_delta():
+def test_s96_partial_overlap_routes_to_detach_reattach():
+    # Variant has M1 already bound; desired is [M1, M2, M3]. Since current is
+    # non-empty and current != desired, the detach-reattach path fires: detach
+    # M1 first, then reattach all three (M1 included). Fix B + Fix A.
     combined = _s96_combined_response(
         media_ids=[_S96_MEDIA_1, _S96_MEDIA_2, _S96_MEDIA_3],
         variants=[(_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_1])],
     )
+    detach = _s96_detach_response()
     mutation = _s96_mutation_response(
         productVariants=[
             (
@@ -3886,7 +3911,7 @@ def test_s96_partial_overlap_only_appends_delta():
             )
         ]
     )
-    tools, fc = _build([combined, mutation])
+    tools, fc = _build([combined, detach, mutation])
     out = tools["update_variant_image_binding"](
         product_id=_S96_PRODUCT_GID,
         variant_media=[
@@ -3895,9 +3920,15 @@ def test_s96_partial_overlap_only_appends_delta():
         confirm=True,
     )
     assert "CONFIRMED" in out
-    assert fc.calls[1][1]["variantMedia"] == [
-        {"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_2, _S96_MEDIA_3]}
-    ]
+    assert len(fc.calls) == 3
+    assert fc.calls[1][0] == PRODUCT_VARIANT_DETACH_MEDIA
+    assert fc.calls[2][0] == PRODUCT_VARIANT_APPEND_MEDIA
+    # Detach carries the existing binding; append carries all 3 as separate entries.
+    det_sent = fc.calls[1][1]["variantMedia"]
+    assert _S96_MEDIA_1 in det_sent[0]["mediaIds"]
+    app_sent = fc.calls[2][1]["variantMedia"]
+    assert len(app_sent) == 3
+    assert all(len(e["mediaIds"]) == 1 for e in app_sent)
 
 
 def test_s96_duplicate_media_ids_within_entry_are_deduped():
@@ -4120,15 +4151,23 @@ def test_s96_mutation_response_with_returned_variant_missing_id_is_skipped():
     assert tail["variants"][0]["media"][0]["id"] == _S96_MEDIA_1
 
 
-def test_s96_no_op_confirmed_surfaces_bound_mid_not_in_product_media_index():
-    # Variant has bound media beyond the product-media `first: 100` window —
-    # JSON tail falls back to `{"id": mid}` for that node.
+def test_s96_no_op_confirmed_surfaces_bound_mid_without_image_data():
+    # Variant has two bound mediaIds; one (far_mid) has no image data in the
+    # product media index. Since desired == current, it's a no-op. The JSON
+    # tail must include far_mid with alt=None and image=None via the fallback
+    # path through _media_node_to_json.
     far_mid = "gid://shopify/MediaImage/9999"
     combined = {
         "product": {
             "id": _S96_PRODUCT_GID,
             "title": "T",
-            "media": {"nodes": [{"id": _S96_MEDIA_1, "alt": None, "mediaContentType": "IMAGE"}]},
+            "media": {
+                "nodes": [
+                    {"id": _S96_MEDIA_1, "alt": None, "mediaContentType": "IMAGE"},
+                    # far_mid is in the product-level list but has no image key.
+                    {"id": far_mid, "alt": None, "mediaContentType": "IMAGE"},
+                ]
+            },
             "variants": {
                 "nodes": [
                     {
@@ -4141,16 +4180,18 @@ def test_s96_no_op_confirmed_surfaces_bound_mid_not_in_product_media_index():
         }
     }
     tools, fc = _build([combined])
+    # desired == current → no-op path.
     out = tools["update_variant_image_binding"](
         product_id=_S96_PRODUCT_GID,
-        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, far_mid]}],
         confirm=True,
     )
     assert "CONFIRMED — Bind variant images (no-op)" in out
+    assert len(fc.calls) == 1
     tail = _parse_tail(out)
     ids_in_tail = {m["id"] for m in tail["variants"][0]["media"]}
     assert ids_in_tail == {far_mid, _S96_MEDIA_1}
-    # far_mid's node has alt/image None (came from fallback dict).
+    # far_mid node has no image key → _media_node_to_json renders image as None.
     far = next(m for m in tail["variants"][0]["media"] if m["id"] == far_mid)
     assert far["alt"] is None
     assert far["image"] is None
@@ -4201,7 +4242,37 @@ def test_s96_media_node_to_json_missing_image_renders_none():
 # ---------- JSON-tail shape pinning ----------
 
 
-def test_s96_preview_json_tail_shape():
+def test_s96_preview_json_tail_shape_append_only():
+    # Variant with 0 existing bindings → append-only path; preview uses wouldAppend.
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+    )
+    tools, fc = _build([combined])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]}],
+    )
+    tail = _parse_tail(out)
+    assert tail == {
+        "ok": True,
+        "dryRun": True,
+        "variants": [
+            {
+                "id": _S96_VARIANT_A,
+                "sku": "SKU-A",
+                "path": "append-only",
+                "currentMedia": [],
+                "wouldAppend": [_S96_MEDIA_1, _S96_MEDIA_2],
+            }
+        ],
+        "errors": [],
+    }
+
+
+def test_s96_preview_json_tail_shape_detach_reattach():
+    # Variant with 1 existing binding and 2 desired → detach-reattach path;
+    # preview uses willDetach / willReattach / netNew (Fix C).
     combined = _s96_combined_response(
         media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
         variants=[(_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_1])],
@@ -4219,8 +4290,11 @@ def test_s96_preview_json_tail_shape():
             {
                 "id": _S96_VARIANT_A,
                 "sku": "SKU-A",
+                "path": "detach-reattach",
                 "currentMedia": [_S96_MEDIA_1],
-                "wouldAppend": [_S96_MEDIA_2],
+                "willDetach": [_S96_MEDIA_1],
+                "willReattach": [_S96_MEDIA_1, _S96_MEDIA_2],
+                "netNew": [_S96_MEDIA_2],
             }
         ],
         "errors": [],
@@ -4278,6 +4352,446 @@ def test_s96_shopify_user_errors_pass_through_verbatim_in_tail():
     tail = _parse_tail(out)
     assert tail["ok"] is False
     assert tail["errors"] == user_errors
+
+
+# =============================================================================
+# Story 9.9 — update_variant_image_binding: detach-reattach enhancement
+# =============================================================================
+#
+# AC coverage map:
+#   AC1 (Fix A — input expansion)         → T2
+#   AC2 (Fix B — detach-reattach)         → T3, T6
+#   AC3 (detach-halt)                     → test_s99_detach_userErrors_halts_before_append
+#   AC4 (mixed-batch routing)             → T6
+#   AC5 (idempotency)                     → T5
+#   AC6 (willLose warning)                → T4
+#   AC7 (Fix C — dryRun accuracy)         → T8
+#   AC8 (partial-failure handling)        → T9a, T9b
+#   AC9 (media membership pre-flight)     → T7
+#   AC10 (no new MCP tool)               → test_s99_PRODUCT_VARIANT_DETACH_MEDIA_constant_importable
+#   AC11 (all tests pass)                 → this section
+#   AC12 (CI chain)                       → verified at end of session
+
+
+def test_s99_zero_existing_one_desired_appends_one_entry():
+    """T1 — 0 existing bindings, 1 desired mediaId → standard append path, 1 entry."""
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1],
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+    )
+    mutation = _s96_mutation_response(
+        productVariants=[(_S96_VARIANT_A, [(_S96_MEDIA_1, None, None)])]
+    )
+    tools, fc = _build([combined, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED —"), out
+    assert len(fc.calls) == 2
+    assert fc.calls[0][0] == GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA
+    assert fc.calls[1][0] == PRODUCT_VARIANT_APPEND_MEDIA
+    sent = fc.calls[1][1]["variantMedia"]
+    assert len(sent) == 1
+    assert sent[0]["variantId"] == _S96_VARIANT_A
+    assert sent[0]["mediaIds"] == [_S96_MEDIA_1]
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+
+
+def test_s99_zero_existing_four_desired_expands_to_four_entries():
+    """T2 — Fix A: 4 desired mediaIds must produce 4 separate single-mediaId append entries."""
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2, _S96_MEDIA_3, "gid://shopify/MediaImage/4"],
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+    )
+    mutation = _s96_mutation_response(
+        productVariants=[(_S96_VARIANT_A, [(_S96_MEDIA_1, None, None)])]
+    )
+    tools, fc = _build([combined, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[
+            {
+                "variantId": _S96_VARIANT_A,
+                "mediaIds": [
+                    _S96_MEDIA_1,
+                    _S96_MEDIA_2,
+                    _S96_MEDIA_3,
+                    "gid://shopify/MediaImage/4",
+                ],
+            }
+        ],
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED —"), out
+    assert len(fc.calls) == 2
+    sent = fc.calls[1][1]["variantMedia"]
+    # Every entry must carry exactly one mediaId — the core of Fix A.
+    assert len(sent) == 4
+    for entry in sent:
+        assert entry["variantId"] == _S96_VARIANT_A
+        assert len(entry["mediaIds"]) == 1
+
+
+def test_s99_one_existing_four_desired_detach_then_reattach():
+    """T3 — Fix B: 1 existing binding → detach first, then reattach all 4."""
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2, _S96_MEDIA_3, "gid://shopify/MediaImage/4"],
+        variants=[(_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_1])],
+    )
+    detach = _s96_detach_response()
+    mutation = _s96_mutation_response(
+        productVariants=[(_S96_VARIANT_A, [(_S96_MEDIA_1, None, None)])]
+    )
+    tools, fc = _build([combined, detach, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[
+            {
+                "variantId": _S96_VARIANT_A,
+                "mediaIds": [
+                    _S96_MEDIA_1,
+                    _S96_MEDIA_2,
+                    _S96_MEDIA_3,
+                    "gid://shopify/MediaImage/4",
+                ],
+            }
+        ],
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED —"), out
+    assert len(fc.calls) == 3
+    assert fc.calls[0][0] == GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA
+    assert fc.calls[1][0] == PRODUCT_VARIANT_DETACH_MEDIA
+    assert fc.calls[2][0] == PRODUCT_VARIANT_APPEND_MEDIA
+    # Detach entry carries the existing binding (M1)
+    det_sent = fc.calls[1][1]["variantMedia"]
+    assert len(det_sent) == 1
+    assert det_sent[0]["variantId"] == _S96_VARIANT_A
+    assert _S96_MEDIA_1 in det_sent[0]["mediaIds"]
+    # Append entries must each carry exactly 1 mediaId (Fix A) and cover all 4
+    app_sent = fc.calls[2][1]["variantMedia"]
+    assert len(app_sent) == 4
+    for entry in app_sent:
+        assert len(entry["mediaIds"]) == 1
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+
+
+def test_s99_dryrun_willlose_shows_warning():
+    """T4 (dryRun half) — existing binding not in desired set → willLose present, no mutations."""
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2, _S96_MEDIA_3],
+        variants=[(_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_1])],
+    )
+    tools, fc = _build([combined])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_2, _S96_MEDIA_3]}],
+        confirm=False,
+    )
+    assert out.startswith("PREVIEW —"), out
+    assert len(fc.calls) == 1
+    tail = _parse_tail(out)
+    assert tail["dryRun"] is True
+    v = tail["variants"][0]
+    assert v["path"] == "detach-reattach"
+    assert _S96_MEDIA_1 in v["willLose"]
+
+
+def test_s99_confirm_detach_reattach_drops_old_image():
+    """T4 (confirm half) — existing NOT in desired → detach removes it, append uses caller's set."""
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2, _S96_MEDIA_3],
+        variants=[(_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_1])],
+    )
+    detach = _s96_detach_response()
+    mutation = _s96_mutation_response(
+        productVariants=[(_S96_VARIANT_A, [(_S96_MEDIA_2, None, None), (_S96_MEDIA_3, None, None)])]
+    )
+    tools, fc = _build([combined, detach, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_2, _S96_MEDIA_3]}],
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED —"), out
+    assert len(fc.calls) == 3
+    # Detach must include M1 (the dropped binding)
+    det_sent = fc.calls[1][1]["variantMedia"]
+    assert _S96_MEDIA_1 in det_sent[0]["mediaIds"]
+    # Append must NOT include M1
+    app_sent = fc.calls[2][1]["variantMedia"]
+    app_media_ids = [e["mediaIds"][0] for e in app_sent]
+    assert _S96_MEDIA_1 not in app_media_ids
+    assert _S96_MEDIA_2 in app_media_ids
+    assert _S96_MEDIA_3 in app_media_ids
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+
+
+def test_s99_exact_set_match_is_noop():
+    """T5 — idempotency: variant already has exactly the desired set → no mutations."""
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
+        variants=[(_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_1, _S96_MEDIA_2])],
+    )
+    tools, fc = _build([combined])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]}],
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED — Bind variant images (no-op)"), out
+    assert len(fc.calls) == 1  # read only — no detach, no append
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+
+
+def test_s99_mixed_batch_one_append_only_one_detach_reattach():
+    """T6 — mixed batch: V_A clean (append-only), V_B dirty (detach-reattach).
+    Detach is issued for V_B only; single append batches both V_A and V_B.
+    """
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2, _S96_MEDIA_3],
+        variants=[
+            (_S96_VARIANT_A, "SKU-A", []),
+            (_S96_VARIANT_B, "SKU-B", [_S96_MEDIA_1]),
+        ],
+    )
+    detach = _s96_detach_response()
+    mutation = _s96_mutation_response(
+        productVariants=[
+            (_S96_VARIANT_A, [(_S96_MEDIA_2, None, None)]),
+            (_S96_VARIANT_B, [(_S96_MEDIA_1, None, None), (_S96_MEDIA_3, None, None)]),
+        ]
+    )
+    tools, fc = _build([combined, detach, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[
+            {"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_2]},
+            {"variantId": _S96_VARIANT_B, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_3]},
+        ],
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED —"), out
+    assert len(fc.calls) == 3
+    assert fc.calls[1][0] == PRODUCT_VARIANT_DETACH_MEDIA
+    assert fc.calls[2][0] == PRODUCT_VARIANT_APPEND_MEDIA
+    # Detach must only target V_B
+    det_sent = fc.calls[1][1]["variantMedia"]
+    assert len(det_sent) == 1
+    assert det_sent[0]["variantId"] == _S96_VARIANT_B
+    # Append must cover entries for both variants in a single call
+    app_sent = fc.calls[2][1]["variantMedia"]
+    app_variant_ids = {e["variantId"] for e in app_sent}
+    assert _S96_VARIANT_A in app_variant_ids
+    assert _S96_VARIANT_B in app_variant_ids
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+
+
+def test_s99_media_not_on_product_rejects_preflight():
+    """T7 — media membership pre-flight: foreign mediaId rejected before any mutation."""
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1],
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+    )
+    tools, fc = _build([combined])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_CROSS]}],
+        confirm=True,
+    )
+    assert out.startswith("Error:"), out
+    assert len(fc.calls) == 1  # read only, no mutation
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+
+
+def test_s99_dryrun_detach_reattach_payload_shape():
+    """T8 — Fix C: dryRun on detach-reattach variant returns correct path-aware shape."""
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2, _S96_MEDIA_3],
+        variants=[(_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_1])],
+    )
+    tools, fc = _build([combined])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[
+            {"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2, _S96_MEDIA_3]}
+        ],
+        confirm=False,
+    )
+    assert out.startswith("PREVIEW —"), out
+    assert len(fc.calls) == 1  # no mutations during dryRun
+    tail = _parse_tail(out)
+    assert tail["dryRun"] is True
+    v = tail["variants"][0]
+    assert v["path"] == "detach-reattach"
+    assert v["willDetach"] == [_S96_MEDIA_1]
+    assert v["willReattach"] == [_S96_MEDIA_1, _S96_MEDIA_2, _S96_MEDIA_3]
+    assert v["netNew"] == [_S96_MEDIA_2, _S96_MEDIA_3]
+
+
+def test_s99_detach_ok_append_fails_rollback_succeeds():
+    """T9a — partial failure: detach OK, append fails, rollback succeeds → ok:false, zeroMediaVariants empty."""
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
+        variants=[(_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_1])],
+    )
+    detach = _s96_detach_response()
+    append_fail = _s96_mutation_response(user_errors=[{"field": [], "message": "Media not found"}])
+    rollback_ok = _s96_mutation_response(
+        productVariants=[(_S96_VARIANT_A, [(_S96_MEDIA_1, None, None)])]
+    )
+    tools, fc = _build([combined, detach, append_fail, rollback_ok])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]}],
+        confirm=True,
+    )
+    assert out.startswith("Error:"), out
+    assert len(fc.calls) == 4
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert tail["appendFailedAfterDetach"] is True
+    assert tail["rollbackOk"] is True
+    assert tail["zeroMediaVariants"] == []
+
+
+def test_s99_detach_ok_append_fails_rollback_also_fails():
+    """T9b — partial failure: detach OK, append fails, rollback also fails → zeroMediaVariants listed."""
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
+        variants=[(_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_1])],
+    )
+    detach = _s96_detach_response()
+    append_fail = _s96_mutation_response(user_errors=[{"field": [], "message": "Media not found"}])
+    rollback_fail = _s96_mutation_response(
+        user_errors=[{"field": [], "message": "Rollback also failed"}]
+    )
+    tools, fc = _build([combined, detach, append_fail, rollback_fail])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]}],
+        confirm=True,
+    )
+    assert out.startswith("Error:"), out
+    assert len(fc.calls) == 4
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert tail["appendFailedAfterDetach"] is True
+    assert tail["rollbackOk"] is False
+    assert _S96_VARIANT_A in tail["zeroMediaVariants"]
+
+
+def test_s99_detach_ok_append_fails_rollback_raises_exception():
+    """Rollback call itself raises (not userErrors) → exception reported, zeroMediaVariants listed."""
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
+        variants=[(_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_1])],
+    )
+    detach = _s96_detach_response()
+    append_fail = _s96_mutation_response(user_errors=[{"field": [], "message": "Media not found"}])
+    # FakeClient raises when a BaseException instance is queued.
+    rollback_raises = RuntimeError("Shopify 503")
+    tools, fc = _build([combined, detach, append_fail, rollback_raises])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]}],
+        confirm=True,
+    )
+    assert out.startswith("Error:"), out
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert tail["rollbackOk"] is False
+    assert _S96_VARIANT_A in tail["zeroMediaVariants"]
+    assert any("rollback raised" in e.get("message", "") for e in tail["rollbackErrors"])
+
+
+def test_s99_detach_reattach_variant_missing_from_append_response_uses_desired_fallback():
+    """Detach-reattach succeeds but variant missing from productVariants response → desired fallback."""
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
+        variants=[(_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_1])],
+    )
+    detach = _s96_detach_response()
+    # Append returns empty productVariants (variant missing from response).
+    mutation_no_variants = {"productVariantAppendMedia": {"productVariants": [], "userErrors": []}}
+    tools, fc = _build([combined, detach, mutation_no_variants])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]}],
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED —"), out
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+    # Fallback synthesises from desired set via product_media_index.
+    ids_in_tail = {m["id"] for m in tail["variants"][0]["media"]}
+    assert _S96_MEDIA_1 in ids_in_tail
+    assert _S96_MEDIA_2 in ids_in_tail
+
+
+def test_s99_detach_userErrors_halts_before_append():
+    """Regression — detach returns userErrors: append must never be called."""
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
+        variants=[(_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_1])],
+    )
+    detach_err = _s96_detach_response(
+        user_errors=[{"field": [], "message": "Cannot detach media from this variant"}]
+    )
+    # Only 2 responses queued — FakeClient will raise if a 3rd call is made.
+    tools, fc = _build([combined, detach_err])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]}],
+        confirm=True,
+    )
+    assert out.startswith("Error:"), out
+    assert len(fc.calls) == 2
+    assert fc.calls[1][0] == PRODUCT_VARIANT_DETACH_MEDIA
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+
+
+def test_s99_log_write_called_with_detach_and_append_counts(monkeypatch):
+    """Regression — log_write must include detached=N appended=M in the new format."""
+    import tools.catalog_hygiene as _ch
+
+    logged: list[tuple[str, str]] = []
+    monkeypatch.setattr(_ch, "log_write", lambda name, msg: logged.append((name, msg)))
+
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
+        variants=[(_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_1])],
+    )
+    detach = _s96_detach_response()
+    mutation = _s96_mutation_response(
+        productVariants=[(_S96_VARIANT_A, [(_S96_MEDIA_1, None, None), (_S96_MEDIA_2, None, None)])]
+    )
+    tools, _ = _build([combined, detach, mutation])
+    tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]}],
+        confirm=True,
+    )
+    assert logged, "log_write was never called"
+    _, msg = logged[-1]
+    assert "detached=" in msg
+    assert "appended=" in msg
+
+
+def test_s99_PRODUCT_VARIANT_DETACH_MEDIA_constant_importable():
+    """Regression — guards against accidental rename of the module-level constant."""
+    from tools.catalog_hygiene import PRODUCT_VARIANT_DETACH_MEDIA as _c
+
+    assert "productVariantDetachMedia" in _c
 
 
 # =============================================================================
