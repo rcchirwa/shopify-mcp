@@ -145,6 +145,11 @@ query GetProductFullById($id: ID!) {
     productType
     vendor
     seo { title description }
+    category {
+      id
+      name
+      fullName
+    }
     options {
       id
       name
@@ -169,6 +174,11 @@ query GetProductFullByHandle($handle: String!) {
     productType
     vendor
     seo { title description }
+    category {
+      id
+      name
+      fullName
+    }
     options {
       id
       name
@@ -573,7 +583,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     def get_product_full(product_id: str = "", handle: str = "") -> str:
         """
         Get a full product record: id, title, handle, status, body_html, tags,
-        product_type, vendor, seo, and variants.
+        product_type, vendor, seo, category, variants, and options.
         """
         if product_id:
             data = client.execute(GET_PRODUCT_FULL_BY_ID, {"id": to_gid("Product", product_id)})
@@ -595,6 +605,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         seo = p.get("seo") or {}
         seo_title = seo.get("title") or "(none)"
         seo_desc = seo.get("description") or "(none)"
+        cat = p.get("category") or {}
+        cat_id = cat.get("id") or "(none)"
+        cat_name = cat.get("name") or "(none)"
+        cat_full = cat.get("fullName") or "(none)"
 
         # Surface full GIDs (unlike the Variants block above, which uses from_gid)
         # so Story 9.5 callers can pipe them straight into productOptionUpdate.
@@ -619,6 +633,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"Tags: {tags}\n"
             f"SEO title: {seo_title}\n"
             f"SEO description: {seo_desc}\n"
+            f"Category ID: {cat_id}\n"
+            f"Category name: {cat_name}\n"
+            f"Category full name: {cat_full}\n"
             f"Variants:\n{variants}\n"
             f"Options:\n{options_block}\n"
             f"body_html:\n{p.get('bodyHtml') or ''}"
