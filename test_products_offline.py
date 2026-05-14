@@ -1108,6 +1108,7 @@ def _full_product(
     seo=None,
     product_type=None,
     vendor=None,
+    category=None,
 ):
     return {
         "id": f"gid://shopify/Product/{pid}",
@@ -1120,6 +1121,7 @@ def _full_product(
         "seo": seo or {},
         "productType": product_type,
         "vendor": vendor,
+        "category": category,
     }
 
 
@@ -1234,6 +1236,11 @@ def test_get_product_full_by_id_renders_all_fields():
                     seo={"title": "SEO T", "description": "SEO D"},
                     product_type="Apparel",
                     vendor="AON",
+                    category={
+                        "id": "gid://shopify/TaxonomyCategory/aa-1-13-8",
+                        "name": "T-Shirts",
+                        "fullName": "Apparel & Accessories > Clothing > Clothing Tops > T-Shirts",
+                    },
                 )
             }
         ]
@@ -1247,6 +1254,9 @@ def test_get_product_full_by_id_renders_all_fields():
     assert "SEO title: SEO T" in out
     assert "SEO description: SEO D" in out
     assert "S — SKU: H-S" in out
+    assert "gid://shopify/TaxonomyCategory/aa-1-13-8" in out
+    assert "T-Shirts" in out
+    assert "Apparel & Accessories" in out
     assert fc.calls[0][0] == GET_PRODUCT_FULL_BY_ID
 
 
@@ -1277,6 +1287,9 @@ def test_get_product_full_empty_optionals_render_placeholders():
     assert "Tags: (none)" in out
     assert "SEO title: (none)" in out
     assert "SEO description: (none)" in out
+    assert "Category ID: (none)" in out
+    assert "Category name: (none)" in out
+    assert "Category full name: (none)" in out
     # Story 9.0 additive extension: Options section is always rendered.
     assert "Options:\n  (none)" in out
 
