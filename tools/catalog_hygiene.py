@@ -439,6 +439,155 @@ mutation metafieldsDelete($metafields: [MetafieldIdentifierInput!]!) {
 """
 
 # ---------------------------------------------------------------------------
+# GraphQL + constants — Story 9.11 (get_product_metafields)
+# ---------------------------------------------------------------------------
+
+# Shopify's product.metafields connection caps at 250 per page; 100 keeps each
+# request cheap and aligns with the read patterns used by tools/products.py.
+# Cursor pagination via `pageInfo.hasNextPage` handles the long-tail.
+METAFIELDS_READ_PAGE_SIZE = 100
+
+# Cap on variants per page. Matches the get_product_full convention; the
+# include_variants path paginates the variants connection itself when needed.
+VARIANTS_READ_PAGE_SIZE = 50
+
+# Product-only metafields read. `namespace` / `keys` are nullable in the
+# Admin schema — passing `null` means "no filter", which is the default
+# behavior when the caller leaves the filters unset.
+GET_PRODUCT_METAFIELDS_QUERY = """
+query GetProductMetafields(
+  $id: ID!
+  $namespace: String
+  $keys: [String!]
+  $first: Int!
+  $after: String
+) {
+  product(id: $id) {
+    id
+    title
+    handle
+    metafields(namespace: $namespace, keys: $keys, first: $first, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      edges {
+        node {
+          id
+          namespace
+          key
+          value
+          type
+          createdAt
+          updatedAt
+        }
+      }
+    }
+  }
+}
+"""
+
+# Product + variant metafields read. The variants connection itself paginates
+# via its own pageInfo; per-variant metafields use a fixed page (the read tool
+# does not currently follow variant-metafield cursors beyond the first page
+# per variant — Shopify products with > 100 metafields per variant are rare
+# enough that the simpler single-page read is acceptable).
+GET_PRODUCT_AND_VARIANT_METAFIELDS_QUERY = """
+query GetProductAndVariantMetafields(
+  $id: ID!
+  $namespace: String
+  $keys: [String!]
+  $first: Int!
+  $after: String
+  $variantsFirst: Int!
+  $variantsAfter: String
+) {
+  product(id: $id) {
+    id
+    title
+    handle
+    metafields(namespace: $namespace, keys: $keys, first: $first, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      edges {
+        node {
+          id
+          namespace
+          key
+          value
+          type
+          createdAt
+          updatedAt
+        }
+      }
+    }
+    variants(first: $variantsFirst, after: $variantsAfter) {
+      pageInfo { hasNextPage endCursor }
+      edges {
+        node {
+          id
+          title
+          sku
+          metafields(namespace: $namespace, keys: $keys, first: $first) {
+            edges {
+              node {
+                id
+                namespace
+                key
+                value
+                type
+                createdAt
+                updatedAt
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+# Variants-only continuation page. Used when the metafields connection is
+# already exhausted but `include_variants=True` still needs more variant pages
+# — avoids re-requesting an empty metafields slice each round-trip.
+GET_PRODUCT_VARIANT_METAFIELDS_PAGE_QUERY = """
+query GetProductVariantMetafieldsPage(
+  $id: ID!
+  $namespace: String
+  $keys: [String!]
+  $first: Int!
+  $variantsFirst: Int!
+  $variantsAfter: String
+) {
+  product(id: $id) {
+    id
+    title
+    handle
+    variants(first: $variantsFirst, after: $variantsAfter) {
+      pageInfo { hasNextPage endCursor }
+      edges {
+        node {
+          id
+          title
+          sku
+          metafields(namespace: $namespace, keys: $keys, first: $first) {
+            edges {
+              node {
+                id
+                namespace
+                key
+                value
+                type
+                createdAt
+                updatedAt
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+# ---------------------------------------------------------------------------
 # GraphQL + constants — Story 9.5 (update_product_options)
 # ---------------------------------------------------------------------------
 
@@ -1020,6 +1169,101 @@ def _format_delete_metafields_payload(
     if errors_by_index:
         payload["errorsByIndex"] = errors_by_index
     return "```json\n" + json.dumps(payload, indent=2) + "\n```"
+
+
+# ---------------------------------------------------------------------------
+# Story 9.11 helpers — get_product_metafields
+# ---------------------------------------------------------------------------
+
+
+def _normalize_metafield_read_filters(
+    namespace: str,
+    keys: list[str] | None,
+) -> tuple[str | None, list[str] | None, str | None]:
+    """Normalize (namespace, keys) filter input for the read query.
+
+    Empty/whitespace strings become `None` so the GraphQL variable carries the
+    "no filter" signal Shopify expects (`null`). When `keys` is supplied but
+    `namespace` is empty, Shopify ignores the keys filter — the spec mandates
+    surfacing a warning in the head and dropping the unused filter. Returns
+    `(namespace_or_none, keys_or_none, warning_or_none)`.
+    """
+    ns: str | None = None
+    if isinstance(namespace, str) and namespace.strip():
+        ns = namespace.strip()
+
+    keys_clean: list[str] | None = None
+    if isinstance(keys, list) and keys:
+        # Filter out empty / non-string entries defensively; Shopify rejects
+        # empty strings in `keys`. Strip whitespace for caller convenience.
+        cleaned = [k.strip() for k in keys if isinstance(k, str) and k.strip()]
+        keys_clean = cleaned or None
+
+    warning: str | None = None
+    if keys_clean and ns is None:
+        warning = "Warning: keys filter is ignored when namespace is not set."
+        keys_clean = None
+
+    return ns, keys_clean, warning
+
+
+def _metafield_node_to_dict(node: dict[str, Any]) -> dict[str, Any]:
+    """Project a raw Shopify metafield node to the documented payload shape.
+
+    Preserves insertion order so callers can rely on the key order
+    (`id, namespace, key, value, type, createdAt, updatedAt`) when reading
+    the JSON tail.
+    """
+    return {
+        "id": node.get("id"),
+        "namespace": node.get("namespace"),
+        "key": node.get("key"),
+        "value": node.get("value"),
+        "type": node.get("type"),
+        "createdAt": node.get("createdAt"),
+        "updatedAt": node.get("updatedAt"),
+    }
+
+
+def _format_read_metafields_payload(
+    *,
+    ok: bool,
+    product: dict[str, Any] | None,
+    metafields: list[dict[str, Any]],
+    variant_metafields: list[dict[str, Any]] | None,
+    total_found: int,
+    errors: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Build the JSON-tail payload for `get_product_metafields`.
+
+    Key order is fixed for downstream agents: `ok, product, metafields,
+    variantMetafields, totalFound, errors`. `variantMetafields` is `None`
+    (becomes JSON `null`) when the caller did not opt-in via
+    `include_variants`, an array when they did.
+    """
+    return {
+        "ok": ok,
+        "product": product,
+        "metafields": metafields,
+        "variantMetafields": variant_metafields,
+        "totalFound": total_found,
+        "errors": errors or [],
+    }
+
+
+def _group_metafields_by_namespace(
+    metafields: list[dict[str, Any]],
+) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Group metafields by namespace, preserving first-seen ordering.
+
+    Returns a list of (namespace, entries) tuples. Stable ordering keeps the
+    head deterministic for snapshot-style assertions in tests.
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for m in metafields:
+        ns = m.get("namespace") or ""
+        groups.setdefault(ns, []).append(m)
+    return list(groups.items())
 
 
 def _parse_positive_decimal(raw: object) -> Decimal:
@@ -3587,6 +3831,234 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 preview=False,
             )
         )
+
+    @server.tool()
+    def get_product_metafields(
+        product_id: str = "",
+        handle: str = "",
+        namespace: str = "",
+        keys: list[str] | None = None,
+        include_variants: bool = False,
+    ) -> str:
+        """
+        Read all metafields on a Shopify product, optionally filtered.
+
+        product_id : numeric product ID or full Product GID. e.g.
+                     '8581472649369' or 'gid://shopify/Product/8581472649369'.
+                     Used if non-empty; otherwise `handle` must be supplied.
+        handle     : product handle slug. Used when product_id is empty.
+                     Resolved via productByHandle before the metafield query.
+        namespace  : optional metafield namespace filter (e.g. 'google',
+                     'custom'). Empty means "all namespaces".
+        keys       : optional list of keys within the namespace. Only takes
+                     effect when `namespace` is set — if `keys` is supplied
+                     without a namespace, a warning surfaces in the head and
+                     the keys filter is dropped (Shopify ignores it anyway).
+        include_variants : if True, also fetch metafields on each variant.
+                     Each entry in `variantMetafields[]` carries the variant
+                     id/title/sku plus its own metafields list.
+
+        Read-only tool — no `confirm` flag, no mutations. The Shopify Admin
+        API exposes product metafields under the existing `read_products`
+        scope, so no new OAuth scope is required.
+
+        Pagination is automatic and cost-minimal: a single combined query
+        runs first to retrieve product info + the first page of each
+        requested connection. Subsequent round-trips switch to a
+        metafields-only or variants-only query so an already-exhausted
+        connection is never re-fetched. Per-variant metafields are read in
+        a single page of up to `METAFIELDS_READ_PAGE_SIZE` (100); Shopify
+        products with > 100 metafields per variant are out of scope for
+        this tool.
+
+        Mid-pagination disappearance: if Shopify returns `product: null`
+        on any page (e.g. the product was deleted between pages), the
+        tool returns an error and discards already-accumulated data. The
+        race is extremely rare in practice and the alternative — silently
+        returning partial results — would mislead callers.
+
+        Returns the dual head + ```json``` tail —
+        `{ok, product{id, title, handle}, metafields[{id, namespace, key,
+        value, type, createdAt, updatedAt}], variantMetafields, totalFound,
+        errors}`. `variantMetafields` is `null` when include_variants is
+        False, an array of `{variantId, variantTitle, sku, metafields[]}`
+        when True.
+        """
+        # ---- Phase 1 — client-side validation ----------------------------
+        # Reject before any network call when no identifier was supplied —
+        # spec AC #1. The trimmed-empty check covers `"   "` callers too.
+        pid = product_id.strip() if isinstance(product_id, str) else ""
+        hdl = handle.strip() if isinstance(handle, str) else ""
+        if not pid and not hdl:
+            msg = "At least one of product_id or handle is required."
+            return _render(f"Error: {msg}", _err_payload(msg, key="metafields"))
+
+        ns_filter, keys_filter, filter_warning = _normalize_metafield_read_filters(namespace, keys)
+
+        # ---- Phase 2 — resolve owner GID --------------------------------
+        # `_resolve_product_gid` short-circuits for numeric IDs and GIDs;
+        # the handle path costs one extra round-trip via productByHandle.
+        product_gid, resolve_err = _resolve_product_gid(client, pid or hdl)
+        if resolve_err or not product_gid:
+            msg = resolve_err or "Unable to resolve product."
+            return _render(f"Error: {msg}", _err_payload(msg, key="metafields"))
+
+        # ---- Phase 3 — fetch metafields (paginated) ---------------------
+        # Track per-connection "still fetching" flags. After each round-trip,
+        # the flag flips off when that connection's pageInfo.hasNextPage is
+        # false. The query is picked per-iteration so we never re-request a
+        # connection that already exhausted (CR suggestion #1):
+        #   both pending → GET_PRODUCT_AND_VARIANT_METAFIELDS_QUERY
+        #   metafields only → GET_PRODUCT_METAFIELDS_QUERY
+        #   variants only  → GET_PRODUCT_VARIANT_METAFIELDS_PAGE_QUERY
+        product_node: dict[str, Any] = {}
+        all_metafield_nodes: list[dict[str, Any]] = []
+        variant_buckets: list[dict[str, Any]] = []
+        seen_variant_ids: set[str] = set()
+        metafields_cursor: str | None = None
+        variants_cursor: str | None = None
+        fetch_metafields = True
+        fetch_variants = include_variants
+
+        try:
+            while fetch_metafields or fetch_variants:
+                if fetch_metafields and fetch_variants:
+                    query = GET_PRODUCT_AND_VARIANT_METAFIELDS_QUERY
+                elif fetch_metafields:
+                    query = GET_PRODUCT_METAFIELDS_QUERY
+                else:
+                    query = GET_PRODUCT_VARIANT_METAFIELDS_PAGE_QUERY
+
+                variables: dict[str, Any] = {
+                    "id": product_gid,
+                    "namespace": ns_filter,
+                    "keys": keys_filter,
+                    "first": METAFIELDS_READ_PAGE_SIZE,
+                }
+                if fetch_metafields:
+                    variables["after"] = metafields_cursor
+                if fetch_variants:
+                    variables["variantsFirst"] = VARIANTS_READ_PAGE_SIZE
+                    variables["variantsAfter"] = variants_cursor
+
+                data = client.execute(query, variables)
+
+                product_node = (data or {}).get("product") or {}
+                if not product_node:
+                    msg = "No product found for the provided ID or handle."
+                    return _render(
+                        f"Error: {msg}",
+                        _err_payload(msg, key="metafields"),
+                    )
+
+                if fetch_metafields:
+                    mf_conn = product_node.get("metafields") or {}
+                    for edge in mf_conn.get("edges") or []:
+                        node = edge.get("node") or {}
+                        if node:
+                            all_metafield_nodes.append(node)
+                    page_info = mf_conn.get("pageInfo") or {}
+                    if page_info.get("hasNextPage"):
+                        metafields_cursor = page_info.get("endCursor")
+                    else:
+                        fetch_metafields = False
+
+                if fetch_variants:
+                    v_conn = product_node.get("variants") or {}
+                    for v_edge in v_conn.get("edges") or []:
+                        v_node = v_edge.get("node") or {}
+                        v_id = v_node.get("id")
+                        if not v_id or v_id in seen_variant_ids:
+                            continue
+                        seen_variant_ids.add(v_id)
+                        v_mf_conn = v_node.get("metafields") or {}
+                        variant_mfs = [
+                            _metafield_node_to_dict(e.get("node") or {})
+                            for e in (v_mf_conn.get("edges") or [])
+                            if e.get("node")
+                        ]
+                        variant_buckets.append(
+                            {
+                                "variantId": v_id,
+                                "variantTitle": v_node.get("title"),
+                                "sku": v_node.get("sku"),
+                                "metafields": variant_mfs,
+                            }
+                        )
+                    v_page_info = v_conn.get("pageInfo") or {}
+                    if v_page_info.get("hasNextPage"):
+                        variants_cursor = v_page_info.get("endCursor")
+                    else:
+                        fetch_variants = False
+        except Exception as exc:
+            msg = f"Error calling Shopify ({type(exc).__name__}): {exc}"
+            return _render(msg, _err_payload(str(exc), key="metafields"))
+
+        # ---- Phase 4 — format response ----------------------------------
+        # `product_node` is guaranteed non-empty here — the loop returns
+        # early on a null product, and the loop body runs at least once
+        # (fetch_metafields starts True).
+        metafields_out = [_metafield_node_to_dict(n) for n in all_metafield_nodes]
+        product_summary: dict[str, Any] = {
+            "id": product_node.get("id"),
+            "title": product_node.get("title"),
+            "handle": product_node.get("handle"),
+        }
+
+        variant_metafields_payload: list[dict[str, Any]] | None
+        if include_variants:
+            variant_metafields_payload = variant_buckets
+            variant_mf_count = sum(len(b["metafields"]) for b in variant_buckets)
+        else:
+            variant_metafields_payload = None
+            variant_mf_count = 0
+        total_found = len(metafields_out) + variant_mf_count
+
+        # ----- Head text -------------------------------------------------
+        title = product_summary["title"] or "(untitled)"
+        pid_display = from_gid(product_summary["id"]) if product_summary["id"] else "(unknown)"
+        handle_display = product_summary["handle"] or "(unknown)"
+        head_lines = [
+            f"Product: {title} ({pid_display})",
+            f"Handle: {handle_display}",
+        ]
+        if filter_warning:
+            head_lines.append(filter_warning)
+
+        if total_found == 0:
+            if ns_filter:
+                head_lines.append(f'No metafields found for namespace: "{ns_filter}"')
+            else:
+                head_lines.append("No metafields found.")
+        else:
+            head_lines.append(f"Metafields found: {total_found}")
+            for ns_name, group in _group_metafields_by_namespace(metafields_out):
+                head_lines.append("")
+                head_lines.append(f"Namespace: {ns_name or '(none)'}")
+                for m in group:
+                    head_lines.append(f"  • {m['key']}  [{m['type']}]  →  {m['value']}")
+            if include_variants and variant_buckets:
+                head_lines.append("")
+                head_lines.append(f"Variant metafields ({variant_mf_count}):")
+                for v in variant_buckets:
+                    if not v["metafields"]:
+                        continue
+                    head_lines.append(
+                        f"  Variant {v['variantTitle'] or '(untitled)'} [{v['sku'] or 'no-sku'}]:"
+                    )
+                    for m in v["metafields"]:
+                        head_lines.append(
+                            f"    • {m['namespace']}.{m['key']}  [{m['type']}]  →  {m['value']}"
+                        )
+
+        payload = _format_read_metafields_payload(
+            ok=True,
+            product=product_summary,
+            metafields=metafields_out,
+            variant_metafields=variant_metafields_payload,
+            total_found=total_found,
+        )
+        return _render("\n".join(head_lines), payload)
 
     @server.tool()
     def update_product_options(
