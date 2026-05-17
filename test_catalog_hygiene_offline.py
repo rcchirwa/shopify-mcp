@@ -145,6 +145,7 @@ def test_register_adds_expected_tools():
         "update_variant_image_binding",
         "set_product_metafields",
         "delete_product_metafields",
+        "get_product_metafields",
         "update_product_options",
     }
     assert fc.calls == []
@@ -6627,3 +6628,827 @@ def test_s910_build_batch_resolve_query_all_triple_mode():
         "ns1": "custom",
         "k1": "b",
     }
+
+
+# =============================================================================
+# Story 9.11 — get_product_metafields
+# =============================================================================
+# AC coverage map (see context/get_product_metafields_tool_spec.md):
+#   AC #1  identifier validation              → test_s911_no_identifier_rejects
+#   AC #2  numeric product_id accepted        → test_s911_numeric_product_id_path
+#   AC #3  GID product_id accepted            → test_s911_gid_product_id_path
+#   AC #4  handle resolves before fetch       → test_s911_handle_path_resolves_then_fetches
+#   AC #5  default returns all namespaces     → test_s911_default_sends_null_filters
+#   AC #6  namespace filter                   → test_s911_namespace_filter_passes_through
+#   AC #7  namespace + keys filter            → test_s911_namespace_and_keys_filter_passes_through
+#   AC #8  keys without namespace warning     → test_s911_keys_without_namespace_warns
+#   AC #9  include_variants=True              → test_s911_include_variants_returns_variant_block
+#   AC #10 empty-state, no crash              → test_s911_empty_metafields_no_crash
+#   AC #11 product not found                  → test_s911_product_not_found_returns_structured_error
+#   AC #12 network exception                  → test_s911_network_exception_returns_structured_error
+#   AC #13 pagination                         → test_s911_pagination_concatenates_pages
+#   AC #14 google_shopping_pause surfaces     → test_s911_google_shopping_pause_surfaces_in_head_and_tail
+#   AC #15 dual output contract               → test_s911_every_path_emits_dual_output
+#   AC #16 no new OAuth scopes                → test_s911_happy_path_uses_only_read_query
+#   AC #17 coverage gate                      → exercised by branch coverage across all tests
+#   AC #18 CI chain green                     → out-of-band (CI verifies)
+
+_S911_PRODUCT_NUMERIC = "8581472649369"
+_S911_PRODUCT_GID = "gid://shopify/Product/8581472649369"
+_S911_PRODUCT_HANDLE = "all-or-nothing-cypher-tee"
+_S911_PRODUCT_TITLE = "All or Nothing Cypher | The Rotation Tee"
+_S911_VARIANT_GID = "gid://shopify/ProductVariant/45919117869209"
+_S911_METAFIELD_GID = "gid://shopify/Metafield/9000"
+
+
+def _s911_metafield_node(
+    *,
+    mid: str = _S911_METAFIELD_GID,
+    namespace: str = "google",
+    key: str = "age_group",
+    value: str = "adult",
+    mtype: str = "single_line_text_field",
+    created_at: str = "2026-05-16T19:00:00Z",
+    updated_at: str = "2026-05-16T19:00:00Z",
+) -> dict:
+    """Build one metafield-edge node in the Shopify-echo shape."""
+    return {
+        "id": mid,
+        "namespace": namespace,
+        "key": key,
+        "value": value,
+        "type": mtype,
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+    }
+
+
+def _s911_product_response(
+    metafields: list[dict] | None = None,
+    *,
+    has_next: bool = False,
+    end_cursor: str | None = None,
+    title: str = _S911_PRODUCT_TITLE,
+    handle: str = _S911_PRODUCT_HANDLE,
+    product_gid: str = _S911_PRODUCT_GID,
+) -> dict:
+    """Product-only metafields query response (no variants connection)."""
+    return {
+        "product": {
+            "id": product_gid,
+            "title": title,
+            "handle": handle,
+            "metafields": {
+                "pageInfo": {"hasNextPage": has_next, "endCursor": end_cursor},
+                "edges": [{"node": n} for n in (metafields or [])],
+            },
+        }
+    }
+
+
+def _s911_product_with_variants_response(
+    metafields: list[dict] | None = None,
+    variants: list[dict] | None = None,
+    *,
+    mf_has_next: bool = False,
+    mf_end_cursor: str | None = None,
+    variants_has_next: bool = False,
+    variants_end_cursor: str | None = None,
+    title: str = _S911_PRODUCT_TITLE,
+    handle: str = _S911_PRODUCT_HANDLE,
+    product_gid: str = _S911_PRODUCT_GID,
+) -> dict:
+    """Product+variants query response — variants is a list of node dicts."""
+    return {
+        "product": {
+            "id": product_gid,
+            "title": title,
+            "handle": handle,
+            "metafields": {
+                "pageInfo": {"hasNextPage": mf_has_next, "endCursor": mf_end_cursor},
+                "edges": [{"node": n} for n in (metafields or [])],
+            },
+            "variants": {
+                "pageInfo": {
+                    "hasNextPage": variants_has_next,
+                    "endCursor": variants_end_cursor,
+                },
+                "edges": [{"node": v} for v in (variants or [])],
+            },
+        }
+    }
+
+
+def _s911_variant_node(
+    *,
+    vid: str = _S911_VARIANT_GID,
+    title: str = "Royal / S",
+    sku: str = "98665589120164795250",
+    metafields: list[dict] | None = None,
+) -> dict:
+    """One variant-node entry for the include_variants response."""
+    return {
+        "id": vid,
+        "title": title,
+        "sku": sku,
+        "metafields": {"edges": [{"node": n} for n in (metafields or [])]},
+    }
+
+
+def _s911_handle_lookup_response(
+    product_gid: str = _S911_PRODUCT_GID,
+) -> dict:
+    """Response for the productByHandle resolver used by handle inputs."""
+    return {"productByHandle": {"id": product_gid}}
+
+
+# ----- AC #1 — identifier validation ----------------------------------------
+
+
+def test_s911_no_identifier_rejects():
+    """Calling with neither product_id nor handle returns validation error and
+    issues zero GraphQL calls."""
+    tools, fc = _build([])
+    out = tools["get_product_metafields"]()
+    assert "At least one of product_id or handle is required." in out
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert tail["metafields"] == []
+    assert any(
+        "At least one of product_id or handle is required" in e["message"] for e in tail["errors"]
+    )
+    assert fc.calls == []
+
+
+def test_s911_whitespace_only_identifier_rejects():
+    """Whitespace-only product_id and handle trip the same gate as empty
+    strings — no network calls."""
+    tools, fc = _build([])
+    out = tools["get_product_metafields"](product_id="   ", handle="\t")
+    assert "At least one of product_id or handle is required." in out
+    assert fc.calls == []
+
+
+# ----- AC #2 — numeric product_id accepted ----------------------------------
+
+
+def test_s911_numeric_product_id_path():
+    """Numeric ID is wrapped into a Product GID without an extra resolver call."""
+    tools, fc = _build([_s911_product_response([_s911_metafield_node()])])
+    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_NUMERIC)
+    assert len(fc.calls) == 1
+    query, variables = fc.calls[0]
+    assert variables["id"] == _S911_PRODUCT_GID
+    assert "GetProductMetafields" in query
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+    assert tail["product"]["id"] == _S911_PRODUCT_GID
+    assert tail["totalFound"] == 1
+
+
+# ----- AC #3 — GID product_id accepted --------------------------------------
+
+
+def test_s911_gid_product_id_path():
+    """Full Product GID passes through unchanged — no resolver round-trip."""
+    tools, fc = _build([_s911_product_response([_s911_metafield_node()])])
+    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID)
+    assert len(fc.calls) == 1
+    _, variables = fc.calls[0]
+    assert variables["id"] == _S911_PRODUCT_GID
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+
+
+# ----- AC #4 — handle resolution --------------------------------------------
+
+
+def test_s911_handle_path_resolves_then_fetches():
+    """Handle path: 2 calls — productByHandle then GetProductMetafields."""
+    tools, fc = _build(
+        [
+            _s911_handle_lookup_response(),
+            _s911_product_response([_s911_metafield_node()]),
+        ]
+    )
+    out = tools["get_product_metafields"](handle=_S911_PRODUCT_HANDLE)
+    assert len(fc.calls) == 2
+    first_query, first_vars = fc.calls[0]
+    assert "productByHandle" in first_query
+    assert first_vars == {"handle": _S911_PRODUCT_HANDLE}
+    _, fetch_vars = fc.calls[1]
+    assert fetch_vars["id"] == _S911_PRODUCT_GID
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+
+
+def test_s911_handle_not_found_propagates_resolver_error():
+    """Handle that productByHandle can't resolve returns a structured error
+    before the metafields query is issued."""
+    tools, fc = _build([{"productByHandle": None}])
+    out = tools["get_product_metafields"](handle="never-was-a-product")
+    assert "No product found with handle" in out
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert len(fc.calls) == 1
+
+
+# ----- AC #5 — default returns all namespaces -------------------------------
+
+
+def test_s911_default_sends_null_filters():
+    """Empty namespace + empty keys translate to GraphQL null variables."""
+    tools, fc = _build(
+        [
+            _s911_product_response(
+                [
+                    _s911_metafield_node(namespace="google", key="age_group"),
+                    _s911_metafield_node(
+                        mid="gid://shopify/Metafield/9001",
+                        namespace="custom",
+                        key="fabric_weight_oz",
+                        value="14",
+                        mtype="number_integer",
+                    ),
+                ]
+            )
+        ]
+    )
+    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID)
+    _, variables = fc.calls[0]
+    assert variables["namespace"] is None
+    assert variables["keys"] is None
+    tail = _parse_tail(out)
+    assert tail["totalFound"] == 2
+    assert {m["namespace"] for m in tail["metafields"]} == {"google", "custom"}
+
+
+# ----- AC #6 — namespace filter ---------------------------------------------
+
+
+def test_s911_namespace_filter_passes_through():
+    """`namespace='google'` is forwarded verbatim; head groups by namespace."""
+    tools, fc = _build(
+        [
+            _s911_product_response(
+                [
+                    _s911_metafield_node(namespace="google", key="age_group"),
+                    _s911_metafield_node(
+                        mid="gid://shopify/Metafield/9002",
+                        namespace="google",
+                        key="gender",
+                        value="unisex",
+                    ),
+                ]
+            )
+        ]
+    )
+    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID, namespace="google")
+    _, variables = fc.calls[0]
+    assert variables["namespace"] == "google"
+    assert variables["keys"] is None
+    assert "Namespace: google" in out
+    assert "• age_group" in out
+    assert "• gender" in out
+
+
+# ----- AC #7 — namespace + keys filter --------------------------------------
+
+
+def test_s911_namespace_and_keys_filter_passes_through():
+    """Both filters forwarded; only the listed keys come back."""
+    tools, fc = _build(
+        [
+            _s911_product_response(
+                [
+                    _s911_metafield_node(namespace="google", key="age_group"),
+                    _s911_metafield_node(
+                        mid="gid://shopify/Metafield/9002",
+                        namespace="google",
+                        key="gender",
+                        value="unisex",
+                    ),
+                ]
+            )
+        ]
+    )
+    tools["get_product_metafields"](
+        product_id=_S911_PRODUCT_GID,
+        namespace="google",
+        keys=["age_group", "gender"],
+    )
+    _, variables = fc.calls[0]
+    assert variables["namespace"] == "google"
+    assert variables["keys"] == ["age_group", "gender"]
+
+
+def test_s911_keys_with_whitespace_are_stripped_and_empties_dropped():
+    """Defensive normalization — whitespace is stripped, empty entries dropped."""
+    tools, fc = _build([_s911_product_response([])])
+    tools["get_product_metafields"](
+        product_id=_S911_PRODUCT_GID,
+        namespace="google",
+        keys=["  age_group  ", "", "   ", "gender"],
+    )
+    _, variables = fc.calls[0]
+    assert variables["keys"] == ["age_group", "gender"]
+
+
+# ----- AC #8 — keys without namespace warning -------------------------------
+
+
+def test_s911_keys_without_namespace_warns():
+    """Warning surfaces; keys filter dropped; query still runs."""
+    tools, fc = _build([_s911_product_response([_s911_metafield_node()])])
+    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID, keys=["age_group"])
+    assert "keys filter is ignored when namespace is not set." in out
+    _, variables = fc.calls[0]
+    assert variables["namespace"] is None
+    assert variables["keys"] is None
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+
+
+# ----- AC #9 — include_variants=True ----------------------------------------
+
+
+def test_s911_include_variants_returns_variant_block():
+    """`include_variants=True` populates variantMetafields list; default leaves it null."""
+    tools, fc = _build(
+        [
+            _s911_product_with_variants_response(
+                metafields=[_s911_metafield_node()],
+                variants=[
+                    _s911_variant_node(
+                        metafields=[
+                            _s911_metafield_node(
+                                mid="gid://shopify/Metafield/v1",
+                                namespace="custom",
+                                key="printify_variant_id",
+                                value="98665589120164795250",
+                            )
+                        ]
+                    )
+                ],
+            )
+        ]
+    )
+    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID, include_variants=True)
+    query, variables = fc.calls[0]
+    assert "GetProductAndVariantMetafields" in query
+    assert variables["variantsFirst"] == 50
+    assert variables["variantsAfter"] is None
+    tail = _parse_tail(out)
+    assert tail["variantMetafields"] is not None
+    assert len(tail["variantMetafields"]) == 1
+    assert tail["variantMetafields"][0]["variantId"] == _S911_VARIANT_GID
+    assert tail["variantMetafields"][0]["sku"] == "98665589120164795250"
+    assert tail["totalFound"] == 2  # 1 product + 1 variant
+    assert "Variant metafields (1):" in out
+
+
+def test_s911_include_variants_default_false_keeps_variant_metafields_null():
+    """Without include_variants, the JSON tail's variantMetafields stays null."""
+    tools, fc = _build([_s911_product_response([_s911_metafield_node()])])
+    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID)
+    query, variables = fc.calls[0]
+    assert "GetProductAndVariantMetafields" not in query
+    assert "variantsFirst" not in variables
+    tail = _parse_tail(out)
+    assert tail["variantMetafields"] is None
+
+
+# ----- AC #10 — empty-state, no crash ---------------------------------------
+
+
+def test_s911_empty_metafields_no_crash():
+    """Zero metafields returns ok=true with totalFound=0 and a clean head."""
+    tools, _ = _build([_s911_product_response([])])
+    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID)
+    assert "No metafields found" in out
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+    assert tail["metafields"] == []
+    assert tail["totalFound"] == 0
+
+
+def test_s911_empty_metafields_with_namespace_filter_mentions_namespace():
+    """Empty result under a namespace filter mentions the namespace in the head."""
+    tools, _ = _build([_s911_product_response([])])
+    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID, namespace="google")
+    assert 'No metafields found for namespace: "google"' in out
+
+
+# ----- AC #11 — product not found -------------------------------------------
+
+
+def test_s911_product_not_found_returns_structured_error():
+    """Shopify returns `product: null` → structured error response."""
+    tools, _ = _build([{"product": None}])
+    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID)
+    assert "No product found for the provided ID or handle." in out
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert tail["metafields"] == []
+
+
+# ----- AC #12 — network exception -------------------------------------------
+
+
+def test_s911_network_exception_returns_structured_error():
+    """Client RuntimeError is caught and reflected in the JSON tail."""
+    tools, _ = _build([RuntimeError("Shopify GraphQL error: 503")])
+    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID)
+    assert "Error calling Shopify (RuntimeError):" in out
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert any("503" in e["message"] for e in tail["errors"])
+
+
+def test_s911_handle_resolver_exception_surfaces_as_resolver_error():
+    """An exception raised by the handle resolver becomes a resolver-level error,
+    not a "no product" message."""
+    tools, _ = _build([RuntimeError("Shopify GraphQL error: 500")])
+    out = tools["get_product_metafields"](handle=_S911_PRODUCT_HANDLE)
+    assert "Handle lookup failed" in out
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+
+
+# ----- AC #13 — pagination --------------------------------------------------
+
+
+def test_s911_pagination_concatenates_pages():
+    """Two pages of metafields are concatenated; `after` cursor is forwarded
+    on the second call."""
+    tools, fc = _build(
+        [
+            _s911_product_response(
+                [
+                    _s911_metafield_node(mid="gid://shopify/Metafield/p1a", key="age_group"),
+                    _s911_metafield_node(mid="gid://shopify/Metafield/p1b", key="gender"),
+                ],
+                has_next=True,
+                end_cursor="CURSOR_PAGE_2",
+            ),
+            _s911_product_response(
+                [
+                    _s911_metafield_node(mid="gid://shopify/Metafield/p2a", key="custom_label_0"),
+                ],
+                has_next=False,
+            ),
+        ]
+    )
+    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID, namespace="google")
+    assert len(fc.calls) == 2
+    _, page2_vars = fc.calls[1]
+    assert page2_vars["after"] == "CURSOR_PAGE_2"
+    tail = _parse_tail(out)
+    assert tail["totalFound"] == 3
+    assert [m["key"] for m in tail["metafields"]] == [
+        "age_group",
+        "gender",
+        "custom_label_0",
+    ]
+
+
+def test_s911_variant_pagination_concatenates_pages():
+    """`include_variants` + multi-page variants slice: every variant surfaces
+    once across the concatenated pages."""
+    tools, fc = _build(
+        [
+            _s911_product_with_variants_response(
+                metafields=[],
+                variants=[
+                    _s911_variant_node(
+                        vid="gid://shopify/ProductVariant/v1",
+                        title="Royal / S",
+                        sku="SKU-V1",
+                        metafields=[
+                            _s911_metafield_node(mid="gid://shopify/Metafield/vm1", key="m1")
+                        ],
+                    )
+                ],
+                variants_has_next=True,
+                variants_end_cursor="VARIANTS_PAGE_2",
+            ),
+            _s911_product_with_variants_response(
+                metafields=[],
+                variants=[
+                    _s911_variant_node(
+                        vid="gid://shopify/ProductVariant/v2",
+                        title="Royal / M",
+                        sku="SKU-V2",
+                        metafields=[
+                            _s911_metafield_node(mid="gid://shopify/Metafield/vm2", key="m2")
+                        ],
+                    )
+                ],
+            ),
+        ]
+    )
+    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID, include_variants=True)
+    assert len(fc.calls) == 2
+    # Iter 1 uses the combined query (both connections still pending).
+    iter1_query, _ = fc.calls[0]
+    assert "GetProductAndVariantMetafields" in iter1_query
+    # Iter 2 switches to the variants-only query — the metafields connection
+    # exhausted in iter 1 must not be re-requested (CR suggestion #1 fix).
+    iter2_query, page2_vars = fc.calls[1]
+    assert "GetProductVariantMetafieldsPage" in iter2_query
+    assert "after" not in page2_vars  # metafields cursor not sent on variants-only
+    assert page2_vars["variantsAfter"] == "VARIANTS_PAGE_2"
+    tail = _parse_tail(out)
+    assert len(tail["variantMetafields"]) == 2
+    assert {b["variantId"] for b in tail["variantMetafields"]} == {
+        "gid://shopify/ProductVariant/v1",
+        "gid://shopify/ProductVariant/v2",
+    }
+
+
+def test_s911_pagination_switches_to_metafields_only_query_when_variants_exhaust():
+    """Mirror of the variants-only case: when variants exhaust first but
+    metafields still need pagination, iter 2 switches to the metafields-only
+    query (no variants slice re-requested)."""
+    tools, fc = _build(
+        [
+            _s911_product_with_variants_response(
+                metafields=[
+                    _s911_metafield_node(mid="gid://shopify/Metafield/p1", key="age_group"),
+                ],
+                variants=[
+                    _s911_variant_node(
+                        vid="gid://shopify/ProductVariant/only",
+                        metafields=[],
+                    )
+                ],
+                mf_has_next=True,
+                mf_end_cursor="MF_PAGE_2",
+            ),
+            _s911_product_response(
+                [_s911_metafield_node(mid="gid://shopify/Metafield/p2", key="gender")],
+            ),
+        ]
+    )
+    tools["get_product_metafields"](product_id=_S911_PRODUCT_GID, include_variants=True)
+    assert len(fc.calls) == 2
+    iter1_query, _ = fc.calls[0]
+    assert "GetProductAndVariantMetafields" in iter1_query
+    iter2_query, page2_vars = fc.calls[1]
+    assert "GetProductMetafields" in iter2_query
+    assert "GetProductAndVariantMetafields" not in iter2_query
+    assert "variantsFirst" not in page2_vars  # variants slice not re-requested
+    assert page2_vars["after"] == "MF_PAGE_2"
+
+
+# ----- AC #14 — google_shopping_pause surfaces ------------------------------
+
+
+def test_s911_google_shopping_pause_surfaces_in_head_and_tail():
+    """`google.google_shopping_pause = 'all'` appears verbatim in head + JSON."""
+    tools, _ = _build(
+        [
+            _s911_product_response(
+                [
+                    _s911_metafield_node(
+                        namespace="google",
+                        key="google_shopping_pause",
+                        value="all",
+                    )
+                ]
+            )
+        ]
+    )
+    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID, namespace="google")
+    assert "google_shopping_pause" in out
+    assert "→  all" in out
+    tail = _parse_tail(out)
+    matching = [m for m in tail["metafields"] if m["key"] == "google_shopping_pause"]
+    assert len(matching) == 1
+    assert matching[0]["value"] == "all"
+
+
+# ----- AC #15 — dual output contract ----------------------------------------
+
+
+def test_s911_every_path_emits_dual_output():
+    """Validation error, network error, empty state, and success all emit a
+    parseable ```json``` tail."""
+    # Validation
+    tools, _ = _build([])
+    assert _parse_tail(tools["get_product_metafields"]())["ok"] is False
+
+    # Network error
+    tools, _ = _build([RuntimeError("boom")])
+    assert _parse_tail(tools["get_product_metafields"](product_id=_S911_PRODUCT_GID))["ok"] is False
+
+    # Empty state
+    tools, _ = _build([_s911_product_response([])])
+    empty_tail = _parse_tail(tools["get_product_metafields"](product_id=_S911_PRODUCT_GID))
+    assert empty_tail["ok"] is True and empty_tail["metafields"] == []
+
+    # Success
+    tools, _ = _build([_s911_product_response([_s911_metafield_node()])])
+    success_tail = _parse_tail(tools["get_product_metafields"](product_id=_S911_PRODUCT_GID))
+    assert success_tail["ok"] is True and success_tail["totalFound"] == 1
+
+
+# ----- AC #16 — no new OAuth scopes / happy-path query shape ----------------
+
+
+def test_s911_happy_path_uses_only_read_query():
+    """Happy path executes a single query named GetProductMetafields — no
+    mutations, no scope-protected fields. Implicitly confirms the tool stays
+    within `read_products`."""
+    tools, fc = _build([_s911_product_response([_s911_metafield_node()])])
+    tools["get_product_metafields"](product_id=_S911_PRODUCT_GID)
+    assert len(fc.calls) == 1
+    query, _ = fc.calls[0]
+    assert "mutation" not in query.lower()
+    assert "GetProductMetafields" in query
+
+
+# ----- Return-shape pin -----------------------------------------------------
+
+
+def test_s911_success_json_tail_key_order_pinned():
+    """Pin the documented JSON-tail key order so downstream agents can rely
+    on consistent traversal: ok, product, metafields, variantMetafields,
+    totalFound, errors."""
+    tools, _ = _build([_s911_product_response([_s911_metafield_node()])])
+    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID)
+    tail = _parse_tail(out)
+    assert list(tail.keys()) == [
+        "ok",
+        "product",
+        "metafields",
+        "variantMetafields",
+        "totalFound",
+        "errors",
+    ]
+    # Per-metafield key order matches the documented shape too.
+    assert list(tail["metafields"][0].keys()) == [
+        "id",
+        "namespace",
+        "key",
+        "value",
+        "type",
+        "createdAt",
+        "updatedAt",
+    ]
+
+
+# ----- Helper-level coverage ------------------------------------------------
+
+
+def test_s911_normalize_filters_helper_empty_namespace_becomes_none():
+    ns, keys, warn = catalog_hygiene._normalize_metafield_read_filters("   ", [])
+    assert ns is None and keys is None and warn is None
+
+
+def test_s911_normalize_filters_helper_keys_without_namespace_warns():
+    ns, keys, warn = catalog_hygiene._normalize_metafield_read_filters("", ["age_group"])
+    assert ns is None
+    assert keys is None
+    assert warn is not None and "ignored" in warn
+
+
+def test_s911_normalize_filters_helper_non_list_keys_ignored():
+    ns, keys, warn = catalog_hygiene._normalize_metafield_read_filters("google", None)
+    assert ns == "google" and keys is None and warn is None
+
+
+def test_s911_normalize_filters_helper_non_string_keys_dropped():
+    ns, keys, warn = catalog_hygiene._normalize_metafield_read_filters(
+        "google", ["age_group", 42, None, "  ", "gender"]
+    )
+    assert ns == "google"
+    assert keys == ["age_group", "gender"]
+    assert warn is None
+
+
+def test_s911_group_metafields_by_namespace_preserves_first_seen_order():
+    grouped = catalog_hygiene._group_metafields_by_namespace(
+        [
+            {"namespace": "google", "key": "age_group", "type": "x", "value": "v"},
+            {"namespace": "custom", "key": "fabric", "type": "x", "value": "v"},
+            {"namespace": "google", "key": "gender", "type": "x", "value": "v"},
+        ]
+    )
+    assert [ns for ns, _ in grouped] == ["google", "custom"]
+    assert len(grouped[0][1]) == 2  # two google entries
+    assert len(grouped[1][1]) == 1
+
+
+def test_s911_include_variants_skips_variant_without_metafields_in_head():
+    """A variant returned with an empty metafields list is silently skipped in
+    the head's per-variant section (still counted in variantMetafields list)."""
+    tools, _ = _build(
+        [
+            _s911_product_with_variants_response(
+                metafields=[],
+                variants=[
+                    _s911_variant_node(
+                        vid="gid://shopify/ProductVariant/v-with",
+                        title="With Mfs",
+                        sku="SKU-WITH",
+                        metafields=[
+                            _s911_metafield_node(
+                                mid="gid://shopify/Metafield/keeper",
+                                namespace="custom",
+                                key="kept",
+                                value="ok",
+                            )
+                        ],
+                    ),
+                    _s911_variant_node(
+                        vid="gid://shopify/ProductVariant/v-empty",
+                        title="Empty Mfs",
+                        sku="SKU-EMPTY",
+                        metafields=[],
+                    ),
+                ],
+            )
+        ]
+    )
+    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID, include_variants=True)
+    # Both variants surface in the JSON tail (empty array preserved).
+    tail = _parse_tail(out)
+    skus = {b["sku"] for b in tail["variantMetafields"]}
+    assert skus == {"SKU-WITH", "SKU-EMPTY"}
+    # But the empty-mfs variant is omitted from the head's per-variant lines.
+    assert "Variant With Mfs" in out
+    assert "Variant Empty Mfs" not in out
+
+
+def test_s911_pagination_deduplicates_variant_ids_across_pages():
+    """If Shopify echoes the same variant across pages (rare race) the tool
+    keeps only the first occurrence — no duplicate entries in the response."""
+    duplicated_variant = _s911_variant_node(
+        vid="gid://shopify/ProductVariant/dup",
+        title="Duplicate",
+        sku="SKU-DUP",
+        metafields=[
+            _s911_metafield_node(
+                mid="gid://shopify/Metafield/dup1",
+                namespace="custom",
+                key="kept",
+                value="from-page-1",
+            )
+        ],
+    )
+    duplicated_again = _s911_variant_node(
+        vid="gid://shopify/ProductVariant/dup",
+        title="Duplicate",
+        sku="SKU-DUP",
+        metafields=[
+            _s911_metafield_node(
+                mid="gid://shopify/Metafield/dup2",
+                namespace="custom",
+                key="kept",
+                value="from-page-2-IGNORED",
+            )
+        ],
+    )
+    tools, _ = _build(
+        [
+            _s911_product_with_variants_response(
+                metafields=[],
+                variants=[duplicated_variant],
+                variants_has_next=True,
+                variants_end_cursor="V_NEXT",
+            ),
+            _s911_product_with_variants_response(
+                metafields=[],
+                variants=[duplicated_again],
+            ),
+        ]
+    )
+    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID, include_variants=True)
+    tail = _parse_tail(out)
+    # Only the first-seen variant survives the dedup.
+    assert len(tail["variantMetafields"]) == 1
+    assert tail["variantMetafields"][0]["metafields"][0]["value"] == "from-page-1"
+
+
+def test_s911_metafield_node_to_dict_preserves_documented_key_order():
+    out = catalog_hygiene._metafield_node_to_dict(
+        {
+            "type": "single_line_text_field",
+            "key": "age_group",
+            "id": _S911_METAFIELD_GID,
+            "value": "adult",
+            "namespace": "google",
+            "createdAt": "t1",
+            "updatedAt": "t2",
+        }
+    )
+    assert list(out.keys()) == [
+        "id",
+        "namespace",
+        "key",
+        "value",
+        "type",
+        "createdAt",
+        "updatedAt",
+    ]
