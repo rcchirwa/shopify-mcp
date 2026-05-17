@@ -144,6 +144,7 @@ def test_register_adds_expected_tools():
         "update_product_type",
         "update_variant_image_binding",
         "set_product_metafields",
+        "delete_product_metafields",
         "update_product_options",
     }
     assert fc.calls == []
@@ -5973,4 +5974,656 @@ def test_s95_shape_options_snapshot_handles_empty_dict():
         "id": "",
         "options": [],
         "variants": [],
+    }
+
+
+# =============================================================================
+# Story 9.10 — delete_product_metafields
+# =============================================================================
+#
+# AC coverage map (see context/EPIC_9_addendum_metafield_reads.md §Story 9.10):
+#   AC #1  metafields[] required, ≤ 25      → test_s910_validation_rejects, _25_cap
+#   AC #2  exactly one of metafieldId|triple → test_s910_mixed_addressing_*, _neither_*
+#   AC #3  metafieldId direct / triple resolves → test_s910_metafieldId_path_*, _triple_path_*
+#   AC #4  fail-fast on first invalid entry → test_s910_fail_fast_*
+#   AC #5  dry-run resolves but no mutation → test_s910_dryrun_resolves_but_no_mutation
+#   AC #6  userErrors keyed by entry index  → test_s910_errors_keyed_by_entry_index
+#   AC #7  NOT_FOUND treated as idempotent  → test_s910_idempotent_not_found_*
+#   AC #8  return shape                     → test_s910_metafieldId_path_*, _success_*
+
+from tools.catalog_hygiene import (  # noqa: E402
+    METAFIELDS_DELETE_MAX,
+    METAFIELDS_DELETE_MUTATION,
+)
+
+_S910_PRODUCT_GID = "gid://shopify/Product/777"
+_S910_VARIANT_GID = "gid://shopify/ProductVariant/8001"
+_S910_METAFIELD_GID = "gid://shopify/Metafield/42"
+_S910_METAFIELD_GID_2 = "gid://shopify/Metafield/43"
+
+
+def _s910_batch_resolve(*aliases: dict) -> dict:
+    """Build a batched resolve response keyed by `e0`, `e1`, ...
+
+    Each positional arg is the per-alias response shape (see
+    `_build_batch_resolve_query`'s docstring) — pass `None` for owner-not-found
+    in triple mode, or build an explicit dict for the matching mode's payload.
+    """
+    return {f"e{i}": a for i, a in enumerate(aliases)}
+
+
+def _s910_gid_alias(
+    *,
+    metafield_id: str = _S910_METAFIELD_GID,
+    namespace: str = "custom",
+    key: str = "fabric_weight_oz",
+    owner_type: str = "PRODUCT",
+    owner_gid: str = _S910_PRODUCT_GID,
+) -> dict:
+    """Per-alias `e<i>` shape for a metafieldId-mode lookup (happy path)."""
+    return {
+        "id": metafield_id,
+        "namespace": namespace,
+        "key": key,
+        "ownerType": owner_type,
+        "owner": {"id": owner_gid},
+    }
+
+
+def _s910_triple_alias(
+    *,
+    metafield_id: str | None = _S910_METAFIELD_GID,
+    namespace: str = "custom",
+    key: str = "fabric_weight_oz",
+    owner_type: str = "PRODUCT",
+) -> dict:
+    """Per-alias `e<i>` shape for a triple-mode lookup.
+
+    Passing `metafield_id=None` simulates "owner exists but metafield does not"
+    — the idempotent success-with-note branch.
+    """
+    metafield_block: dict | None = (
+        None
+        if metafield_id is None
+        else {
+            "id": metafield_id,
+            "namespace": namespace,
+            "key": key,
+            "ownerType": owner_type,
+        }
+    )
+    return {"metafield": metafield_block}
+
+
+def _s910_delete_response(deleted=None, user_errors=None):
+    return {
+        "metafieldsDelete": {
+            "deletedMetafields": deleted or [],
+            "userErrors": user_errors or [],
+        }
+    }
+
+
+# --- Validation rejects (no network) -----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "metafields,fragment",
+    [
+        (None, "metafields must be a non-empty list"),
+        ([], "metafields must be a non-empty list"),
+        ("not-a-list", "metafields must be a non-empty list"),
+        (["not-a-dict"], "metafields[0] must be an object"),
+        # Neither addressing — empty entry.
+        ([{}], "needs either `metafieldId`"),
+        # Both addressing modes in one entry.
+        (
+            [
+                {
+                    "metafieldId": _S910_METAFIELD_GID,
+                    "ownerId": _S910_PRODUCT_GID,
+                    "namespace": "custom",
+                    "key": "k",
+                }
+            ],
+            "has both `metafieldId` and the",
+        ),
+        # Malformed metafield GID.
+        ([{"metafieldId": "not-a-gid"}], "must be a Metafield GID"),
+        ([{"metafieldId": "gid://shopify/Product/123"}], "must be a Metafield GID"),
+        ([{"metafieldId": "gid://shopify/Metafield/"}], "has empty GID body"),
+        ([{"metafieldId": ""}], "must be a non-empty string"),
+        # Triple missing pieces.
+        (
+            [{"ownerId": _S910_PRODUCT_GID, "namespace": "", "key": "k"}],
+            "namespace must be a non-empty string",
+        ),
+        (
+            [{"ownerId": _S910_PRODUCT_GID, "namespace": "custom", "key": "   "}],
+            "key must be a non-empty string",
+        ),
+    ],
+)
+def test_s910_validation_rejects(metafields, fragment):
+    tools, fc = _build([])
+    out = tools["delete_product_metafields"](metafields=metafields)
+    assert out.startswith("Error:")
+    assert fragment in out
+    assert fc.calls == []  # No network call before validation passes.
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert tail["deleted"] == []
+
+
+def test_s910_25_cap_enforced():
+    tools, fc = _build([])
+    over_cap = [{"metafieldId": _S910_METAFIELD_GID}] * (METAFIELDS_DELETE_MAX + 1)
+    out = tools["delete_product_metafields"](metafields=over_cap)
+    assert "exceeds the 25-entry" in out
+    assert fc.calls == []
+
+
+def test_s910_fail_fast_on_first_invalid_entry():
+    # Mixed batch: entry 0 is valid, entry 1 is the bad one — call halts
+    # at entry 1 and emits no network calls (AC #4).
+    tools, fc = _build([])
+    out = tools["delete_product_metafields"](
+        metafields=[
+            {"metafieldId": _S910_METAFIELD_GID},
+            {"metafieldId": "not-a-gid"},
+        ]
+    )
+    assert "metafields[1]" in out
+    assert fc.calls == []
+
+
+# --- metafieldId path --------------------------------------------------------
+
+
+def test_s910_metafieldId_path_deletes_one():
+    tools, fc = _build(
+        [
+            _s910_batch_resolve(_s910_gid_alias()),
+            _s910_delete_response(
+                deleted=[
+                    {
+                        "ownerId": _S910_PRODUCT_GID,
+                        "namespace": "custom",
+                        "key": "fabric_weight_oz",
+                    }
+                ]
+            ),
+        ]
+    )
+    out = tools["delete_product_metafields"](
+        metafields=[{"metafieldId": _S910_METAFIELD_GID}], confirm=True
+    )
+    assert "CONFIRMED —" in out
+    # 1 batched resolution + 1 mutation = 2 calls.
+    assert len(fc.calls) == 2
+    assert "BatchResolveMetafields" in fc.calls[0][0]
+    assert fc.calls[0][1] == {"id0": _S910_METAFIELD_GID}
+    assert fc.calls[1][0] == METAFIELDS_DELETE_MUTATION
+    # Mutation input is the triple, not the GID — `metafieldsDelete` takes
+    # MetafieldIdentifierInput, not metafield GIDs.
+    assert fc.calls[1][1]["metafields"] == [
+        {"ownerId": _S910_PRODUCT_GID, "namespace": "custom", "key": "fabric_weight_oz"}
+    ]
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+    assert tail["preview"] is False
+    assert tail["deleted"] == [
+        {
+            "id": _S910_METAFIELD_GID,
+            "namespace": "custom",
+            "key": "fabric_weight_oz",
+            "ownerType": "PRODUCT",
+            "ownerId": _S910_PRODUCT_GID,
+        }
+    ]
+
+
+def test_s910_variant_owner_dispatches_to_node_query():
+    # Variant owner — alias lookup returns the metafield with ownerType
+    # PRODUCT_VARIANT. Mutation input still uses the variant GID as ownerId.
+    tools, fc = _build(
+        [
+            _s910_batch_resolve(
+                _s910_gid_alias(
+                    owner_type="PRODUCT_VARIANT",
+                    owner_gid=_S910_VARIANT_GID,
+                )
+            ),
+            _s910_delete_response(
+                deleted=[
+                    {
+                        "ownerId": _S910_VARIANT_GID,
+                        "namespace": "custom",
+                        "key": "fabric_weight_oz",
+                    }
+                ]
+            ),
+        ]
+    )
+    out = tools["delete_product_metafields"](
+        metafields=[{"metafieldId": _S910_METAFIELD_GID}], confirm=True
+    )
+    assert fc.calls[1][1]["metafields"][0]["ownerId"] == _S910_VARIANT_GID
+    tail = _parse_tail(out)
+    assert tail["deleted"][0]["ownerType"] == "PRODUCT_VARIANT"
+
+
+# --- triple path -------------------------------------------------------------
+
+
+def test_s910_triple_path_resolves_then_deletes():
+    tools, fc = _build(
+        [
+            _s910_batch_resolve(_s910_triple_alias()),
+            _s910_delete_response(
+                deleted=[
+                    {
+                        "ownerId": _S910_PRODUCT_GID,
+                        "namespace": "custom",
+                        "key": "fabric_weight_oz",
+                    }
+                ]
+            ),
+        ]
+    )
+    out = tools["delete_product_metafields"](
+        metafields=[
+            {
+                "ownerId": _S910_PRODUCT_GID,
+                "namespace": "custom",
+                "key": "fabric_weight_oz",
+            }
+        ],
+        confirm=True,
+    )
+    assert "CONFIRMED —" in out
+    assert len(fc.calls) == 2
+    assert "BatchResolveMetafields" in fc.calls[0][0]
+    assert fc.calls[0][1] == {
+        "ownerId0": _S910_PRODUCT_GID,
+        "ns0": "custom",
+        "k0": "fabric_weight_oz",
+    }
+    assert fc.calls[1][0] == METAFIELDS_DELETE_MUTATION
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+    assert tail["deleted"][0]["id"] == _S910_METAFIELD_GID
+
+
+# --- Dry-run -----------------------------------------------------------------
+
+
+def test_s910_dryrun_resolves_but_no_mutation():
+    # Triple input → 1 batched resolve call. confirm=False short-circuits
+    # the mutation.
+    tools, fc = _build([_s910_batch_resolve(_s910_triple_alias())])
+    out = tools["delete_product_metafields"](
+        metafields=[
+            {
+                "ownerId": _S910_PRODUCT_GID,
+                "namespace": "custom",
+                "key": "fabric_weight_oz",
+            }
+        ],
+        confirm=False,
+    )
+    assert "PREVIEW —" in out
+    assert "To apply, call again with confirm=True" in out
+    assert len(fc.calls) == 1
+    assert "BatchResolveMetafields" in fc.calls[0][0]
+    tail = _parse_tail(out)
+    assert tail["preview"] is True
+    assert tail["ok"] is True
+    assert tail["deleted"] == [
+        {
+            "id": _S910_METAFIELD_GID,
+            "namespace": "custom",
+            "key": "fabric_weight_oz",
+            "ownerType": "PRODUCT",
+            "ownerId": _S910_PRODUCT_GID,
+        }
+    ]
+
+
+# --- Idempotent NOT_FOUND ----------------------------------------------------
+
+
+def test_s910_idempotent_not_found_via_resolution_is_success_with_note():
+    # Triple resolution returns metafield=None — owner exists but metafield
+    # doesn't. Tool short-circuits the mutation entirely; no second call.
+    tools, fc = _build([_s910_batch_resolve(_s910_triple_alias(metafield_id=None))])
+    out = tools["delete_product_metafields"](
+        metafields=[
+            {
+                "ownerId": _S910_PRODUCT_GID,
+                "namespace": "custom",
+                "key": "fabric_weight_oz",
+            }
+        ],
+        confirm=True,
+    )
+    assert "CONFIRMED —" in out
+    assert len(fc.calls) == 1  # Batched resolution only, no mutation.
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+    assert tail["deleted"][0]["note"] == ("Metafield not found — treated as idempotent success")
+
+
+def test_s910_idempotent_not_found_from_shopify_user_error_is_success_with_note():
+    # Resolution succeeds, mutation returns NOT_FOUND — also idempotent.
+    tools, fc = _build(
+        [
+            _s910_batch_resolve(_s910_gid_alias()),
+            _s910_delete_response(
+                user_errors=[
+                    {
+                        "field": ["metafields", "0"],
+                        "message": "Metafield not found",
+                        "code": "NOT_FOUND",
+                    }
+                ]
+            ),
+        ]
+    )
+    out = tools["delete_product_metafields"](
+        metafields=[{"metafieldId": _S910_METAFIELD_GID}], confirm=True
+    )
+    assert "CONFIRMED —" in out
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+    assert tail["deleted"][0]["note"] == ("Metafield not found — treated as idempotent success")
+
+
+# --- Per-entry errors keyed by index ----------------------------------------
+
+
+def test_s910_errors_keyed_by_entry_index():
+    # Two-entry batch where entry 1 fails with a non-idempotent error
+    # (ACCESS_DENIED). One batched resolve + one mutation = 2 calls.
+    tools, fc = _build(
+        [
+            _s910_batch_resolve(
+                _s910_gid_alias(),
+                _s910_gid_alias(metafield_id=_S910_METAFIELD_GID_2, key="care_instructions"),
+            ),
+            _s910_delete_response(
+                user_errors=[
+                    {
+                        "field": ["metafields", "1"],
+                        "message": "Access denied",
+                        "code": "ACCESS_DENIED",
+                    }
+                ]
+            ),
+        ]
+    )
+    out = tools["delete_product_metafields"](
+        metafields=[
+            {"metafieldId": _S910_METAFIELD_GID},
+            {"metafieldId": _S910_METAFIELD_GID_2},
+        ],
+        confirm=True,
+    )
+    assert out.startswith("Error: metafieldsDelete userErrors")
+    assert len(fc.calls) == 2  # 1 batched resolve + 1 mutation.
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    # Verbatim — including the `code` field per AC #6.
+    assert tail["errors"][0]["code"] == "ACCESS_DENIED"
+    assert "1" in tail["errorsByIndex"]
+    assert tail["errorsByIndex"]["1"][0]["code"] == "ACCESS_DENIED"
+
+
+# --- Network exception path --------------------------------------------------
+
+
+def test_s910_resolution_network_exception_returns_structured_error():
+    # Batched resolution call raises. Note: the batched call covers the whole
+    # input, so the error message doesn't pinpoint a specific entry — that's
+    # acceptable for a transport-level failure (the whole batch is the unit
+    # of work).
+    tools, fc = _build([RuntimeError("boom")])
+    out = tools["delete_product_metafields"](
+        metafields=[{"metafieldId": _S910_METAFIELD_GID}], confirm=True
+    )
+    assert "Error resolving metafields" in out
+    assert "RuntimeError" in out
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+
+
+# --- Helper-level pins -------------------------------------------------------
+
+
+def test_s910_parse_metafield_gid_happy_and_sad():
+    assert catalog_hygiene._parse_metafield_gid(_S910_METAFIELD_GID) is None
+    assert "must be a non-empty string" in catalog_hygiene._parse_metafield_gid(None)
+    assert "must be a non-empty string" in catalog_hygiene._parse_metafield_gid("   ")
+    assert "must be a Metafield GID" in catalog_hygiene._parse_metafield_gid("12345")
+    assert "must be a Metafield GID" in catalog_hygiene._parse_metafield_gid(_S910_PRODUCT_GID)
+    assert "empty GID body" in catalog_hygiene._parse_metafield_gid("gid://shopify/Metafield/")
+
+
+def test_s910_resolve_owner_gid_rejects_numeric_as_ambiguous():
+    fc = FakeClient([])
+    gid, ot, err = catalog_hygiene._resolve_owner_gid_for_metafield(fc, "12345")
+    assert gid is None
+    assert ot is None
+    assert "ambiguous" in err
+    # Confirm no GraphQL call was issued — numeric short-circuits.
+    assert fc.calls == []
+
+
+def test_s910_resolve_owner_gid_accepts_product_handle():
+    # Product handle → triggers _resolve_product_gid → productByHandle query.
+    fc = FakeClient([{"productByHandle": {"id": _S910_PRODUCT_GID, "title": "Test"}}])
+    gid, ot, err = catalog_hygiene._resolve_owner_gid_for_metafield(fc, "test-handle")
+    assert gid == _S910_PRODUCT_GID
+    assert ot == "PRODUCT"
+    assert err is None
+
+
+def test_s910_resolve_owner_gid_rejects_non_string_and_empty():
+    # Two distinct branches of the "not a non-empty string" guard.
+    fc = FakeClient([])
+    _, _, err_none = catalog_hygiene._resolve_owner_gid_for_metafield(fc, None)
+    _, _, err_empty = catalog_hygiene._resolve_owner_gid_for_metafield(fc, "   ")
+    assert "non-empty string" in err_none
+    assert "non-empty string" in err_empty
+    assert fc.calls == []
+
+
+def test_s910_resolve_owner_gid_rejects_empty_product_and_variant_gid_bodies():
+    fc = FakeClient([])
+    _, _, err_p = catalog_hygiene._resolve_owner_gid_for_metafield(fc, "gid://shopify/Product/")
+    _, _, err_v = catalog_hygiene._resolve_owner_gid_for_metafield(
+        fc, "gid://shopify/ProductVariant/"
+    )
+    assert "empty GID body" in err_p
+    assert "empty GID body" in err_v
+    assert fc.calls == []
+
+
+def test_s910_resolve_owner_gid_accepts_variant_gid_short_circuit():
+    # Variant GID short-circuits — no GraphQL call.
+    fc = FakeClient([])
+    gid, ot, err = catalog_hygiene._resolve_owner_gid_for_metafield(fc, _S910_VARIANT_GID)
+    assert gid == _S910_VARIANT_GID
+    assert ot == "PRODUCT_VARIANT"
+    assert err is None
+    assert fc.calls == []
+
+
+def test_s910_metafieldId_path_not_found_is_idempotent_success_with_note():
+    # Batched alias returns null for the metafieldId entry → metafield doesn't
+    # exist. No mutation issued; per-entry note explains the idempotent behavior.
+    tools, fc = _build([_s910_batch_resolve(None)])
+    out = tools["delete_product_metafields"](
+        metafields=[{"metafieldId": _S910_METAFIELD_GID}], confirm=True
+    )
+    assert "CONFIRMED —" in out
+    assert len(fc.calls) == 1  # Resolution only, no mutation.
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+    assert tail["deleted"][0]["note"] == ("Metafield not found — treated as idempotent success")
+    assert tail["deleted"][0]["id"] == _S910_METAFIELD_GID
+
+
+def test_s910_metafieldId_path_empty_alias_dict_is_idempotent_success_with_note():
+    # When the supplied GID points to a non-Metafield node, the `... on
+    # Metafield` fragment doesn't match and the alias resolves to {} rather
+    # than null. Both shapes route to the idempotent-success branch.
+    tools, fc = _build([_s910_batch_resolve({})])
+    out = tools["delete_product_metafields"](
+        metafields=[{"metafieldId": _S910_METAFIELD_GID}], confirm=True
+    )
+    assert "CONFIRMED —" in out
+    assert len(fc.calls) == 1
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+    assert tail["deleted"][0]["note"] == ("Metafield not found — treated as idempotent success")
+
+
+def test_s910_triple_path_owner_not_found_returns_hard_error():
+    # Triple ownerId resolves but the batched alias returns null →
+    # owner GID itself didn't resolve. Tool surfaces this under
+    # `Error resolving metafields[N]:` and emits no mutation call.
+    tools, fc = _build([_s910_batch_resolve(None)])
+    out = tools["delete_product_metafields"](
+        metafields=[
+            {
+                "ownerId": _S910_PRODUCT_GID,
+                "namespace": "custom",
+                "key": "fabric_weight_oz",
+            }
+        ],
+        confirm=True,
+    )
+    assert "Error resolving metafields[0]" in out
+    assert "not found" in out
+    assert len(fc.calls) == 1  # Only batched resolution, no mutation.
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+
+
+def test_s910_handle_resolution_failure_propagates_before_batched_resolve():
+    # ownerId is a handle that productByHandle returns null for. Handle
+    # resolution is per-entry (it can't be aliased into the metafield batch
+    # because the metafield batch depends on its output). The error surfaces
+    # without the batched resolve call being issued.
+    tools, fc = _build([{"productByHandle": None}])
+    out = tools["delete_product_metafields"](
+        metafields=[
+            {
+                "ownerId": "ghost-handle",
+                "namespace": "custom",
+                "key": "fabric_weight_oz",
+            }
+        ],
+        confirm=True,
+    )
+    assert "Error resolving metafields[0]" in out
+    assert "No product found" in out
+    assert len(fc.calls) == 1  # Only the productByHandle call — no batched resolve.
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+
+
+def test_s910_mutation_network_exception_returns_structured_error():
+    # Resolution succeeds, mutation network call raises.
+    tools, fc = _build([_s910_batch_resolve(_s910_gid_alias()), RuntimeError("kaboom")])
+    out = tools["delete_product_metafields"](
+        metafields=[{"metafieldId": _S910_METAFIELD_GID}], confirm=True
+    )
+    assert "Error calling metafieldsDelete" in out
+    assert "RuntimeError" in out
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+
+
+# --- Batched query builder ---------------------------------------------------
+
+
+def test_s910_build_batch_resolve_query_mixed_modes():
+    # Mixed gid + triple input → one query with two aliases, each variable
+    # uniquely numbered.
+    classified = [
+        {"idx": 0, "mode": "gid", "gid": _S910_METAFIELD_GID},
+        {
+            "idx": 1,
+            "mode": "triple",
+            "ownerId": _S910_PRODUCT_GID,
+            "ownerType": "PRODUCT",
+            "namespace": "custom",
+            "key": "fabric_weight_oz",
+        },
+    ]
+    query, variables = catalog_hygiene._build_batch_resolve_query(classified)
+    assert "BatchResolveMetafields" in query
+    assert "$id0: ID!" in query
+    assert "$ownerId1: ID!" in query
+    assert "$ns1: String!" in query
+    assert "$k1: String!" in query
+    assert "e0: node(id: $id0)" in query
+    assert "e1: node(id: $ownerId1)" in query
+    assert "... on Metafield" in query  # gid mode fragment
+    assert "... on Product" in query  # triple mode fragment
+    assert "... on ProductVariant" in query
+    assert variables == {
+        "id0": _S910_METAFIELD_GID,
+        "ownerId1": _S910_PRODUCT_GID,
+        "ns1": "custom",
+        "k1": "fabric_weight_oz",
+    }
+
+
+def test_s910_build_batch_resolve_query_all_gid_mode():
+    classified = [
+        {"idx": 0, "mode": "gid", "gid": _S910_METAFIELD_GID},
+        {"idx": 1, "mode": "gid", "gid": _S910_METAFIELD_GID_2},
+    ]
+    query, variables = catalog_hygiene._build_batch_resolve_query(classified)
+    assert query.count("... on Metafield") == 2
+    assert variables == {
+        "id0": _S910_METAFIELD_GID,
+        "id1": _S910_METAFIELD_GID_2,
+    }
+
+
+def test_s910_build_batch_resolve_query_all_triple_mode():
+    classified = [
+        {
+            "idx": 0,
+            "mode": "triple",
+            "ownerId": _S910_PRODUCT_GID,
+            "ownerType": "PRODUCT",
+            "namespace": "custom",
+            "key": "a",
+        },
+        {
+            "idx": 1,
+            "mode": "triple",
+            "ownerId": _S910_VARIANT_GID,
+            "ownerType": "PRODUCT_VARIANT",
+            "namespace": "custom",
+            "key": "b",
+        },
+    ]
+    query, variables = catalog_hygiene._build_batch_resolve_query(classified)
+    # Two triple-mode selections — each contributes a Product and ProductVariant
+    # fragment, so 2 of each.
+    assert query.count("... on Product {") == 2
+    assert query.count("... on ProductVariant {") == 2
+    assert variables == {
+        "ownerId0": _S910_PRODUCT_GID,
+        "ns0": "custom",
+        "k0": "a",
+        "ownerId1": _S910_VARIANT_GID,
+        "ns1": "custom",
+        "k1": "b",
     }

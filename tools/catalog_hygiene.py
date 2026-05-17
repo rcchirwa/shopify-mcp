@@ -402,6 +402,43 @@ _NUMBER_INTEGER_RE = re.compile(r"^-?\d+$")
 _NUMBER_DECIMAL_RE = re.compile(r"^-?\d+(\.\d+)?$")
 
 # ---------------------------------------------------------------------------
+# GraphQL + constants — Story 9.10 (delete_product_metafields)
+# ---------------------------------------------------------------------------
+
+# Shopify's `metafieldsDelete` accepts up to 25 entries per call. Same idiom
+# as METAFIELDS_SET_MAX — enforced client-side so the cap-exceeded path emits
+# a structured tool error before any network round-trip.
+METAFIELDS_DELETE_MAX = 25
+
+# Metafield GID prefix — used to validate `metafieldId` inputs to
+# delete_product_metafields. Distinct from the Product / ProductVariant
+# owner prefixes so a caller swapping inputs (passing a Product GID where a
+# Metafield GID was expected) fails in validation, not at the mutation.
+_METAFIELD_GID_PREFIX = "gid://shopify/Metafield/"
+
+# Resolution is batched via dynamic alias-based query construction (see
+# `_build_batch_resolve_query`). One round-trip resolves the whole input
+# batch — drops the resolve phase from O(N) round-trips to O(1) for any
+# batch of N ≤ 25. The single-query approach replaces what would have been
+# two static queries (GET_METAFIELD_BY_GID + GET_OWNER_METAFIELD_BY_TRIPLE)
+# and removes the need to special-case the mode dispatch at execute time.
+
+# `userErrors { code }` is REQUIRED so the idempotent NOT_FOUND-as-success
+# branch can detect the signal without falling back to message-string matching.
+METAFIELDS_DELETE_MUTATION = """
+mutation metafieldsDelete($metafields: [MetafieldIdentifierInput!]!) {
+  metafieldsDelete(metafields: $metafields) {
+    deletedMetafields {
+      ownerId
+      namespace
+      key
+    }
+    userErrors { field message code }
+  }
+}
+"""
+
+# ---------------------------------------------------------------------------
 # GraphQL + constants — Story 9.5 (update_product_options)
 # ---------------------------------------------------------------------------
 
@@ -816,6 +853,172 @@ def _format_metafields_payload(
         payload["errorsByIndex"] = errors_by_index
     if remediation:
         payload["remediation"] = remediation
+    return "```json\n" + json.dumps(payload, indent=2) + "\n```"
+
+
+# ---------------------------------------------------------------------------
+# Story 9.10 helpers — delete_product_metafields
+# ---------------------------------------------------------------------------
+
+
+def _parse_metafield_gid(gid: object) -> str | None:
+    """Return None if `gid` is a well-formed Metafield GID, else an error string.
+
+    Validates the `gid://shopify/Metafield/<numeric-body>` shape — the body is
+    not parsed beyond non-empty. Distinct from `_parse_owner_gid` so a caller
+    accidentally passing a Product or ProductVariant GID where a Metafield GID
+    was expected fails fast in validation.
+    """
+    if not isinstance(gid, str) or not gid.strip():
+        return "metafieldId must be a non-empty string"
+    stripped = gid.strip()
+    if not stripped.startswith(_METAFIELD_GID_PREFIX):
+        return f"metafieldId must be a Metafield GID (got {stripped!r})"
+    if not stripped[len(_METAFIELD_GID_PREFIX) :]:
+        return f"metafieldId has empty GID body: {stripped!r}"
+    return None
+
+
+def _resolve_owner_gid_for_metafield(
+    client: ShopifyClient,
+    owner_id: object,
+) -> tuple[str | None, str | None, str | None]:
+    """Map an `ownerId` to (gid, ownerType, error) for the triple-resolution path.
+
+    `ownerId` may be a Product GID, a ProductVariant GID, or a Product handle.
+    Pure numeric strings are rejected — the type prefix is the only way to
+    disambiguate Product vs ProductVariant when the owner is identified by ID.
+
+    Related but distinct from Story 9.7's `_parse_owner_gid`: that one parses
+    a GID-only input (no handle support, no network call) and returns just
+    `(ownerType, error)` — used by `set_product_metafields` where the input
+    has already been canonicalized to a GID. This one accepts handles and
+    issues a `productByHandle` lookup when needed, returning the resolved
+    GID alongside the ownerType. They co-exist intentionally; if a future
+    refactor consolidates them, the merged helper needs both the network
+    path and the GID-only short-circuit.
+    """
+    if not isinstance(owner_id, str) or not owner_id.strip():
+        return None, None, "ownerId must be a non-empty string"
+    stripped = owner_id.strip()
+    if stripped.startswith("gid://shopify/Product/"):
+        if not stripped[len("gid://shopify/Product/") :]:
+            return None, None, f"ownerId has empty GID body: {stripped!r}"
+        return stripped, "PRODUCT", None
+    if stripped.startswith("gid://shopify/ProductVariant/"):
+        if not stripped[len("gid://shopify/ProductVariant/") :]:
+            return None, None, f"ownerId has empty GID body: {stripped!r}"
+        return stripped, "PRODUCT_VARIANT", None
+    if stripped.isdigit():
+        return (
+            None,
+            None,
+            (
+                f"ownerId {stripped!r} is ambiguous — supply a Product or ProductVariant "
+                f"GID (with type prefix) or a Product handle"
+            ),
+        )
+    # Treat as Product handle — variants have no handle, and reusing
+    # _resolve_product_gid keeps the lookup behavior consistent with Story 9.1+.
+    gid, err = _resolve_product_gid(client, stripped)
+    if err:
+        return None, None, err
+    return gid, "PRODUCT", None
+
+
+def _build_batch_resolve_query(
+    classified: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any]]:
+    """Build a single GraphQL query that resolves every classified entry.
+
+    `classified` is the per-entry intermediate produced by the tool's
+    classification phase. Each entry's `mode` selects the resolution shape:
+      - mode='gid'    : {idx, mode, gid}                    → look up the metafield
+                        directly by Metafield GID; the response carries the
+                        triple + ownerType + parent GID.
+      - mode='triple' : {idx, mode, ownerId, ownerType,     → look up the metafield
+                        namespace, key}                       via the owner's
+                                                              `metafield(namespace, key)`
+                                                              field. `ownerId` is
+                                                              expected to be a
+                                                              fully-resolved GID
+                                                              (handles must be
+                                                              pre-resolved by the
+                                                              caller).
+
+    Returns `(query_string, variables_dict)`. The response uses sequentially
+    numbered aliases `e0`, `e1`, … (one per entry, in classified order). The
+    per-alias shape under each mode:
+      - mode='gid'    → `{id, namespace, key, ownerType, owner: {id}}`
+                        OR `null` / `{}` when the metafield doesn't exist.
+      - mode='triple' → `{metafield: {id, namespace, key, ownerType}}`
+                        OR `{metafield: null}` (owner exists, metafield doesn't)
+                        OR `null` (owner GID didn't resolve — hard error).
+
+    Building the query dynamically keeps the resolve phase to one round-trip
+    regardless of batch size; the alternative (separate static queries per
+    mode + per-entry execution) was O(N) round-trips, which dominates the
+    tool's latency for batched hygiene passes.
+    """
+    var_decls: list[str] = []
+    selections: list[str] = []
+    variables: dict[str, Any] = {}
+    for i, c in enumerate(classified):
+        if c["mode"] == "gid":
+            var_decls.append(f"$id{i}: ID!")
+            variables[f"id{i}"] = c["gid"]
+            selections.append(
+                f"  e{i}: node(id: $id{i}) {{\n"
+                f"    ... on Metafield {{\n"
+                f"      id namespace key ownerType\n"
+                f"      owner {{ ... on Product {{ id }} ... on ProductVariant {{ id }} }}\n"
+                f"    }}\n"
+                f"  }}"
+            )
+        else:  # mode == "triple"
+            var_decls.append(f"$ownerId{i}: ID!")
+            var_decls.append(f"$ns{i}: String!")
+            var_decls.append(f"$k{i}: String!")
+            variables[f"ownerId{i}"] = c["ownerId"]
+            variables[f"ns{i}"] = c["namespace"]
+            variables[f"k{i}"] = c["key"]
+            selections.append(
+                f"  e{i}: node(id: $ownerId{i}) {{\n"
+                f"    ... on Product {{ metafield(namespace: $ns{i}, key: $k{i}) "
+                f"{{ id namespace key ownerType }} }}\n"
+                f"    ... on ProductVariant {{ metafield(namespace: $ns{i}, key: $k{i}) "
+                f"{{ id namespace key ownerType }} }}\n"
+                f"  }}"
+            )
+    query = (
+        f"query BatchResolveMetafields({', '.join(var_decls)}) {{\n" + "\n".join(selections) + "\n}"
+    )
+    return query, variables
+
+
+def _format_delete_metafields_payload(
+    *,
+    deleted: list[dict[str, Any]],
+    errors: list[dict[str, Any]],
+    ok: bool,
+    preview: bool,
+    errors_by_index: dict[str, list[dict[str, Any]]] | None = None,
+) -> str:
+    """Serialize the JSON tail block for `delete_product_metafields`.
+
+    Mirrors `_format_metafields_payload` (Story 9.7) — distinct data key
+    (`deleted` vs `metafields`) and no `remediation` slot (this tool's scope
+    block path uses the standard userError mapping, not a separate
+    remediation surface).
+    """
+    payload: dict[str, Any] = {
+        "ok": ok,
+        "deleted": deleted,
+        "errors": errors,
+        "preview": preview,
+    }
+    if errors_by_index:
+        payload["errorsByIndex"] = errors_by_index
     return "```json\n" + json.dumps(payload, indent=2) + "\n```"
 
 
@@ -3011,6 +3214,374 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             + "\n\n"
             + _format_metafields_payload(
                 metafields=success_metafields,
+                errors=[],
+                ok=True,
+                preview=False,
+            )
+        )
+
+    @server.tool()
+    def delete_product_metafields(
+        metafields: list[dict[str, Any]] | None = None,
+        confirm: bool = False,
+    ) -> str:
+        """
+        Delete one or more metafields from Products or ProductVariants.
+
+        metafields : non-empty list of up to 25 entries. Each entry is a dict
+                     addressed either by:
+            - `metafieldId` : str — the metafield GID
+              (`gid://shopify/Metafield/...`), OR
+            - the triple `{ownerId, namespace, key}` — `ownerId` accepts a
+              Product or ProductVariant GID, or a Product handle. (Variants
+              have no handle; pure-numeric ownerIds are rejected as ambiguous.)
+
+          Exactly one of `metafieldId` or the triple per entry — not both,
+          not neither. The first invalid entry rejects the whole call
+          (no partial deletes per AC #4).
+
+        confirm    : if False (default) validates inputs, resolves any GIDs
+                     from triples, and returns the resolved deletion list
+                     without executing. If True, calls `metafieldsDelete`.
+
+        Validation runs in two phases. Phase 1 is purely client-side and
+        rejects on the first invalid entry — top-level shape, 25-entry cap,
+        addressing-mode mutual exclusion, Metafield GID format,
+        namespace/key being non-empty strings. Phase 2 hits the network and
+        resolves owner GIDs (handles via `productByHandle`) plus the
+        metafield identity itself; failures here also fail-fast with the
+        offending entry index in the error message. The two-phase split
+        keeps GID-only calls a single round-trip (resolve + mutate = 2
+        calls) without re-validating already-checked structure.
+
+        Re-running with identical inputs against already-deleted metafields
+        is a no-op success — Shopify's NOT_FOUND signal is treated as
+        success-with-note, not a hard error (idempotent per AC #7).
+
+        Returns the dual head + ```json``` tail —
+        `{ok, deleted[{id, namespace, key, ownerType, ownerId, note?}],
+        errors[], preview, errorsByIndex?}`.
+        """
+        # ---- Top-level shape gate ---------------------------------------
+        if not isinstance(metafields, list) or not metafields:
+            msg = "metafields must be a non-empty list (up to 25 entries)."
+            return _render(f"Error: {msg}", _err_payload(msg, key="deleted"))
+        if len(metafields) > METAFIELDS_DELETE_MAX:
+            msg = (
+                f"metafields exceeds the {METAFIELDS_DELETE_MAX}-entry "
+                f"per-call cap (got {len(metafields)})."
+            )
+            return _render(f"Error: {msg}", _err_payload(msg, key="deleted"))
+
+        # ---- Per-entry validation (fail-fast on first invalid per AC #4) -
+        # AC #4 mandates the whole call rejects on the first invalid entry —
+        # no partial deletes, no network calls. We iterate input entries and
+        # bail at the first error; the head includes the entry index so the
+        # caller knows exactly which one to fix.
+        for idx, entry in enumerate(metafields):
+            if not isinstance(entry, dict):
+                msg = f"metafields[{idx}] must be an object"
+                return _render(f"Error: {msg}", _err_payload(msg, key="deleted"))
+            has_gid = "metafieldId" in entry and entry.get("metafieldId") is not None
+            triple_keys = ("ownerId", "namespace", "key")
+            has_triple = all(k in entry and entry.get(k) is not None for k in triple_keys)
+            if has_gid and has_triple:
+                msg = (
+                    f"metafields[{idx}] has both `metafieldId` and the "
+                    f"`{{ownerId, namespace, key}}` triple — supply exactly one"
+                )
+                return _render(f"Error: {msg}", _err_payload(msg, key="deleted"))
+            if not has_gid and not has_triple:
+                msg = (
+                    f"metafields[{idx}] needs either `metafieldId` or the "
+                    f"full triple `{{ownerId, namespace, key}}`"
+                )
+                return _render(f"Error: {msg}", _err_payload(msg, key="deleted"))
+            if has_gid:
+                gid_err = _parse_metafield_gid(entry.get("metafieldId"))
+                if gid_err:
+                    msg = f"metafields[{idx}].{gid_err}"
+                    return _render(f"Error: {msg}", _err_payload(msg, key="deleted"))
+            else:
+                # Triple validation — strings only; full owner resolution
+                # happens in the resolve phase below (it costs a network call).
+                for k in ("namespace", "key"):
+                    v = entry.get(k)
+                    if not isinstance(v, str) or not v.strip():
+                        msg = f"metafields[{idx}].{k} must be a non-empty string"
+                        return _render(f"Error: {msg}", _err_payload(msg, key="deleted"))
+
+        # ---- Phase 2a: classify entries + resolve owner handles (per-entry).
+        # Handle resolution remains per-entry because `productByHandle` is a
+        # distinct query that can't be aliased into the metafield batch (its
+        # output feeds INTO that batch's variables). The typical hygiene-pass
+        # caller uses GIDs, so the loop usually issues zero network calls.
+        classified: list[dict[str, Any]] = []
+        for idx, entry in enumerate(metafields):
+            if "metafieldId" in entry and entry.get("metafieldId") is not None:
+                classified.append(
+                    {
+                        "idx": idx,
+                        "mode": "gid",
+                        "gid": entry["metafieldId"].strip(),
+                    }
+                )
+                continue
+            owner_gid, owner_type, err = _resolve_owner_gid_for_metafield(client, entry["ownerId"])
+            if err:
+                msg = f"Error resolving metafields[{idx}]: {err}"
+                return _render(msg, _err_payload(err, key="deleted"))
+            classified.append(
+                {
+                    "idx": idx,
+                    "mode": "triple",
+                    "ownerId": owner_gid,
+                    "ownerType": owner_type,
+                    "namespace": entry["namespace"].strip(),
+                    "key": entry["key"].strip(),
+                }
+            )
+
+        # ---- Phase 2b: ONE batched GraphQL call resolves every entry's
+        # metafield identity via aliased `node(id:)` selections. Drops the
+        # resolve phase from O(N) round-trips to O(1) regardless of input
+        # mix (metafieldId-mode and triple-mode entries are aliased into
+        # the same query). See `_build_batch_resolve_query` for the per-
+        # alias response shape.
+        batch_query, batch_vars = _build_batch_resolve_query(classified)
+        try:
+            batch_data = client.execute(batch_query, batch_vars)
+        except Exception as exc:
+            msg = f"Error resolving metafields ({type(exc).__name__}): {exc}"
+            return _render(msg, _err_payload(str(exc), key="deleted"))
+
+        # ---- Phase 2c: parse the batched response into per-entry resolved
+        # records. NOT_FOUND in either addressing mode is treated as
+        # idempotent (AC #7). Owner-not-found in the triple path is the one
+        # hard error from this phase — distinct from metafield-not-on-owner.
+        #
+        # Note on response-shape asymmetry: a metafieldId-path NOT_FOUND
+        # records `namespace`/`key`/`ownerType`/`ownerId` as None because we
+        # never had those values (the caller supplied only the metafield
+        # GID, and Shopify returned no metadata to fill them in). The
+        # triple-path NOT_FOUND records the caller-supplied namespace/key
+        # plus the resolved ownerType/ownerId. This is intentional — we do
+        # not fabricate metadata we never had — and is documented as
+        # `note?` in the tool's return-shape spec.
+        resolved: list[dict[str, Any]] = []
+        for i, c in enumerate(classified):
+            alias_data = (batch_data or {}).get(f"e{i}")
+            if c["mode"] == "gid":
+                if not alias_data or not alias_data.get("id"):
+                    resolved.append(
+                        {
+                            "index": c["idx"],
+                            "id": c["gid"],
+                            "namespace": None,
+                            "key": None,
+                            "ownerType": None,
+                            "ownerId": None,
+                            "skip_mutation": True,
+                            "note": "Metafield not found — treated as idempotent success",
+                        }
+                    )
+                    continue
+                owner = alias_data.get("owner") or {}
+                resolved.append(
+                    {
+                        "index": c["idx"],
+                        "id": alias_data.get("id"),
+                        "namespace": alias_data.get("namespace"),
+                        "key": alias_data.get("key"),
+                        "ownerType": alias_data.get("ownerType"),
+                        "ownerId": owner.get("id"),
+                        "skip_mutation": False,
+                    }
+                )
+                continue
+
+            # mode == "triple"
+            if alias_data is None:
+                # Owner GID didn't resolve — hard error so the caller can fix.
+                msg = f"Error resolving metafields[{c['idx']}]: Owner {c['ownerId']} not found"
+                return _render(
+                    msg,
+                    _err_payload(f"Owner {c['ownerId']} not found", key="deleted"),
+                )
+            mf = alias_data.get("metafield")
+            if not mf:
+                resolved.append(
+                    {
+                        "index": c["idx"],
+                        "id": None,
+                        "namespace": c["namespace"],
+                        "key": c["key"],
+                        "ownerType": c["ownerType"],
+                        "ownerId": c["ownerId"],
+                        "skip_mutation": True,
+                        "note": "Metafield not found — treated as idempotent success",
+                    }
+                )
+                continue
+            resolved.append(
+                {
+                    "index": c["idx"],
+                    "id": mf.get("id"),
+                    "namespace": c["namespace"],
+                    "key": c["key"],
+                    "ownerType": c["ownerType"],
+                    "ownerId": c["ownerId"],
+                    "skip_mutation": False,
+                }
+            )
+
+        # ---- Per-entry preview line (used by preview AND post-mutation head). -
+        def _entry_line(r: dict[str, Any]) -> str:
+            ownership = (
+                f"{r['ownerType']} {r['ownerId']}" if r.get("ownerType") else "(owner unknown)"
+            )
+            tag = (
+                f"  [{r['index']}] {ownership} | {r.get('namespace') or '?'}.{r.get('key') or '?'}"
+            )
+            if r.get("note"):
+                tag += f"  ⚠ {r['note']}"
+            return tag
+
+        entry_lines = [_entry_line(r) for r in resolved]
+
+        # ---- Preview branch ---------------------------------------------
+        if not confirm:
+            preview_head = (
+                f"PREVIEW — Delete product metafields\n"
+                f"  Entries ({len(resolved)}):\n" + "\n".join(entry_lines)
+            )
+            preview_deleted = [
+                {
+                    "id": r["id"],
+                    "namespace": r["namespace"],
+                    "key": r["key"],
+                    "ownerType": r["ownerType"],
+                    "ownerId": r["ownerId"],
+                    **({"note": r["note"]} if r.get("note") else {}),
+                }
+                for r in resolved
+            ]
+            return with_confirm_hint(
+                preview_head
+                + "\n\n"
+                + _format_delete_metafields_payload(
+                    deleted=preview_deleted,
+                    errors=[],
+                    ok=True,
+                    preview=True,
+                )
+            )
+
+        # ---- Mutation branch --------------------------------------------
+        # Only entries with skip_mutation=False go into the Shopify call;
+        # NOT_FOUND entries are reported as success-with-note in the response
+        # without round-tripping. The map_back list preserves the original
+        # entry index so userErrors keyed by mutation-input position can be
+        # re-keyed back to the caller's entry index.
+        mutation_input = []
+        map_back: list[int] = []
+        for r in resolved:
+            if r.get("skip_mutation"):
+                continue
+            mutation_input.append(
+                {
+                    "ownerId": r["ownerId"],
+                    "namespace": r["namespace"],
+                    "key": r["key"],
+                }
+            )
+            map_back.append(r["index"])
+
+        user_errors: list[dict[str, Any]] = []
+        if mutation_input:
+            try:
+                result = client.execute(
+                    METAFIELDS_DELETE_MUTATION,
+                    {"metafields": mutation_input},
+                )
+            except Exception as exc:
+                msg = f"Error calling metafieldsDelete ({type(exc).__name__}): {exc}"
+                return _render(msg, _err_payload(str(exc), key="deleted"))
+            user_errors = extract_user_errors(result, "metafieldsDelete")
+
+        # ---- Map Shopify userErrors back to original entry index --------
+        # Shopify keys `field` as ["metafields", "<mut-idx>", "<attr>?"] where
+        # `mut-idx` is the position in our mutation_input — translate back to
+        # the caller's original entry index via map_back. NOT_FOUND-class
+        # codes are treated as idempotent success-with-note (AC #7).
+        not_found_indices: set[int] = set()
+        non_idempotent_errors: list[dict[str, Any]] = []
+        by_index: dict[str, list[dict[str, Any]]] = {}
+        for e in user_errors:
+            field = e.get("field") or []
+            orig_idx: int | None = None
+            if len(field) >= 2 and isinstance(field[1], str) and field[1].isdigit():
+                mut_idx = int(field[1])
+                if 0 <= mut_idx < len(map_back):
+                    orig_idx = map_back[mut_idx]
+            code = (e.get("code") or "").upper()
+            if code in {"NOT_FOUND", "METAFIELD_NOT_FOUND"} and orig_idx is not None:
+                not_found_indices.add(orig_idx)
+                continue
+            non_idempotent_errors.append(e)
+            idx_key = str(orig_idx) if orig_idx is not None else "_"
+            by_index.setdefault(idx_key, []).append(dict(e))
+
+        # ---- Build per-entry deleted shape ------------------------------
+        deleted_payload: list[dict[str, Any]] = []
+        for r in resolved:
+            row: dict[str, Any] = {
+                "id": r["id"],
+                "namespace": r["namespace"],
+                "key": r["key"],
+                "ownerType": r["ownerType"],
+                "ownerId": r["ownerId"],
+            }
+            if r.get("note"):
+                row["note"] = r["note"]
+            elif r["index"] in not_found_indices:
+                row["note"] = "Metafield not found — treated as idempotent success"
+            deleted_payload.append(row)
+
+        if non_idempotent_errors:
+
+            def _fmt(e: dict[str, Any]) -> str:
+                field_path = ".".join(str(f) for f in (e.get("field") or []))
+                return f"{field_path or '(no field)'}: {e.get('message', '')}"
+
+            msgs = "; ".join(_fmt(e) for e in non_idempotent_errors)
+            head = f"Error: metafieldsDelete userErrors: {msgs}"
+            return (
+                head
+                + "\n\n"
+                + _format_delete_metafields_payload(
+                    deleted=[],
+                    errors=list(non_idempotent_errors),
+                    ok=False,
+                    preview=False,
+                    errors_by_index=by_index,
+                )
+            )
+
+        log_write(
+            "delete_product_metafields",
+            f"entries={len(resolved)} mutated={len(mutation_input)} "
+            f"idempotent={len(resolved) - len(mutation_input) + len(not_found_indices)}",
+        )
+
+        head = f"CONFIRMED — Delete product metafields\n  Entries ({len(resolved)}):\n" + "\n".join(
+            entry_lines
+        )
+        return (
+            head
+            + "\n\n"
+            + _format_delete_metafields_payload(
+                deleted=deleted_payload,
                 errors=[],
                 ok=True,
                 preview=False,
