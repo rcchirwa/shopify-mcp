@@ -6641,7 +6641,7 @@ def test_s910_build_batch_resolve_query_all_triple_mode():
 #   AC #5  default returns all namespaces     → test_s911_default_sends_null_filters
 #   AC #6  namespace filter                   → test_s911_namespace_filter_passes_through
 #   AC #7  namespace + keys filter            → test_s911_namespace_and_keys_filter_passes_through
-#   AC #8  keys without namespace warning     → test_s911_keys_without_namespace_warns
+#   AC #8  keys without namespace pass through (S9.12) → test_s912_keys_alone_pass_through_unqualified
 #   AC #9  include_variants=True              → test_s911_include_variants_returns_variant_block
 #   AC #10 empty-state, no crash              → test_s911_empty_metafields_no_crash
 #   AC #11 product not found                  → test_s911_product_not_found_returns_structured_error
@@ -6875,9 +6875,11 @@ def test_s911_default_sends_null_filters():
         ]
     )
     out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID)
-    _, variables = fc.calls[0]
-    assert variables["namespace"] is None
-    assert variables["keys"] is None
+    query, variables = fc.calls[0]
+    assert "namespace" not in variables
+    assert "keys" not in variables
+    assert "$namespace" not in query
+    assert "$keys" not in query
     tail = _parse_tail(out)
     assert tail["totalFound"] == 2
     assert {m["namespace"] for m in tail["metafields"]} == {"google", "custom"}
@@ -6904,9 +6906,10 @@ def test_s911_namespace_filter_passes_through():
         ]
     )
     out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID, namespace="google")
-    _, variables = fc.calls[0]
+    query, variables = fc.calls[0]
     assert variables["namespace"] == "google"
-    assert variables["keys"] is None
+    assert "keys" not in variables
+    assert "$keys" not in query
     assert "Namespace: google" in out
     assert "• age_group" in out
     assert "• gender" in out
@@ -6916,7 +6919,8 @@ def test_s911_namespace_filter_passes_through():
 
 
 def test_s911_namespace_and_keys_filter_passes_through():
-    """Both filters forwarded; only the listed keys come back."""
+    """Both filters supplied → keys are qualified as `<ns>.<key>` and the
+    query runs in keys-only mode (S9.12 bug-fix shape)."""
     tools, fc = _build(
         [
             _s911_product_response(
@@ -6937,13 +6941,15 @@ def test_s911_namespace_and_keys_filter_passes_through():
         namespace="google",
         keys=["age_group", "gender"],
     )
-    _, variables = fc.calls[0]
-    assert variables["namespace"] == "google"
-    assert variables["keys"] == ["age_group", "gender"]
+    query, variables = fc.calls[0]
+    assert variables["keys"] == ["google.age_group", "google.gender"]
+    assert "namespace" not in variables
+    assert "$namespace" not in query
 
 
 def test_s911_keys_with_whitespace_are_stripped_and_empties_dropped():
-    """Defensive normalization — whitespace is stripped, empty entries dropped."""
+    """Defensive normalization — whitespace is stripped, empty entries dropped,
+    and the surviving keys are qualified with the namespace prefix."""
     tools, fc = _build([_s911_product_response([])])
     tools["get_product_metafields"](
         product_id=_S911_PRODUCT_GID,
@@ -6951,20 +6957,23 @@ def test_s911_keys_with_whitespace_are_stripped_and_empties_dropped():
         keys=["  age_group  ", "", "   ", "gender"],
     )
     _, variables = fc.calls[0]
-    assert variables["keys"] == ["age_group", "gender"]
+    assert variables["keys"] == ["google.age_group", "google.gender"]
 
 
-# ----- AC #8 — keys without namespace warning -------------------------------
+# ----- AC #8 — keys without namespace (S9.12: now valid, no warning) -------
 
 
-def test_s911_keys_without_namespace_warns():
-    """Warning surfaces; keys filter dropped; query still runs."""
+def test_s912_keys_alone_pass_through_unqualified():
+    """Keys without namespace are now valid (S9.12) — they pass through as
+    given (callers should supply fully-qualified strings) and no warning
+    surfaces. Replaces the deprecated S9.11 warning behavior."""
     tools, fc = _build([_s911_product_response([_s911_metafield_node()])])
     out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID, keys=["age_group"])
-    assert "keys filter is ignored when namespace is not set." in out
-    _, variables = fc.calls[0]
-    assert variables["namespace"] is None
-    assert variables["keys"] is None
+    assert "keys filter is ignored" not in out
+    query, variables = fc.calls[0]
+    assert variables["keys"] == ["age_group"]
+    assert "namespace" not in variables
+    assert "$namespace" not in query
     tail = _parse_tail(out)
     assert tail["ok"] is True
 
@@ -7302,29 +7311,35 @@ def test_s911_success_json_tail_key_order_pinned():
 
 
 def test_s911_normalize_filters_helper_empty_namespace_becomes_none():
-    ns, keys, warn = catalog_hygiene._normalize_metafield_read_filters("   ", [])
-    assert ns is None and keys is None and warn is None
+    mode, ns, keys = catalog_hygiene._normalize_metafield_read_filters("   ", [])
+    assert mode == "none"
+    assert ns is None and keys is None
 
 
-def test_s911_normalize_filters_helper_keys_without_namespace_warns():
-    ns, keys, warn = catalog_hygiene._normalize_metafield_read_filters("", ["age_group"])
+def test_s912_normalize_filters_helper_keys_without_namespace_passes_through():
+    """S9.12: keys alone are valid (no warning); they pass through as-is
+    so the caller can supply fully-qualified strings (`"google.age_group"`)."""
+    mode, ns, keys = catalog_hygiene._normalize_metafield_read_filters("", ["age_group"])
+    assert mode == "keys"
     assert ns is None
-    assert keys is None
-    assert warn is not None and "ignored" in warn
+    assert keys == ["age_group"]
 
 
 def test_s911_normalize_filters_helper_non_list_keys_ignored():
-    ns, keys, warn = catalog_hygiene._normalize_metafield_read_filters("google", None)
-    assert ns == "google" and keys is None and warn is None
+    mode, ns, keys = catalog_hygiene._normalize_metafield_read_filters("google", None)
+    assert mode == "namespace"
+    assert ns == "google" and keys is None
 
 
-def test_s911_normalize_filters_helper_non_string_keys_dropped():
-    ns, keys, warn = catalog_hygiene._normalize_metafield_read_filters(
+def test_s911_normalize_filters_helper_non_string_keys_dropped_and_qualified():
+    """Non-string entries are dropped; survivors are qualified with the
+    namespace prefix so the query can run in keys-only mode."""
+    mode, ns, keys = catalog_hygiene._normalize_metafield_read_filters(
         "google", ["age_group", 42, None, "  ", "gender"]
     )
-    assert ns == "google"
-    assert keys == ["age_group", "gender"]
-    assert warn is None
+    assert mode == "keys"
+    assert ns is None
+    assert keys == ["google.age_group", "google.gender"]
 
 
 def test_s911_group_metafields_by_namespace_preserves_first_seen_order():
@@ -7452,3 +7467,141 @@ def test_s911_metafield_node_to_dict_preserves_documented_key_order():
         "createdAt",
         "updatedAt",
     ]
+
+
+# =============================================================================
+# Story 9.12 — bug fix: namespace + keys conflict on Shopify metafields(...)
+# =============================================================================
+# Shopify's Admin API rejects the simultaneous presence of `namespace` and
+# `keys` on the `metafields(...)` connection — the *declaration* of both args
+# in the query string triggers the rejection, not just non-null runtime
+# values. Story 9.12 replaces the static query constants with mode-driven
+# builders so each call emits only the args its filter mode declares.
+#
+# Source of truth: context/get_product_metafields_bug_fix.md
+
+
+def test_s912_namespace_plus_keys_emits_keys_only_query():
+    """When both filters were supplied, the emitted query must use keys-only
+    mode — neither `$namespace` nor `namespace:` may appear anywhere. The
+    keys must be qualified as `<ns>.<key>` so the result is still scoped to
+    the requested namespace."""
+    tools, fc = _build([_s911_product_response([_s911_metafield_node()])])
+    tools["get_product_metafields"](
+        product_id=_S911_PRODUCT_GID,
+        namespace="google",
+        keys=["age_group", "gender"],
+    )
+    query, variables = fc.calls[0]
+    assert "$namespace" not in query
+    assert "namespace:" not in query
+    assert "$keys" in query
+    assert "keys: $keys" in query
+    assert variables["keys"] == ["google.age_group", "google.gender"]
+    assert "namespace" not in variables
+
+
+def test_s912_fully_qualified_keys_alone_pass_through():
+    """Caller can scope to a single namespace by passing pre-qualified keys
+    without a `namespace` argument — keys-only mode runs as-is."""
+    tools, fc = _build([_s911_product_response([_s911_metafield_node()])])
+    tools["get_product_metafields"](
+        product_id=_S911_PRODUCT_GID,
+        keys=["google.age_group"],
+    )
+    query, variables = fc.calls[0]
+    assert "$namespace" not in query
+    assert "keys: $keys" in query
+    assert variables["keys"] == ["google.age_group"]
+    assert "namespace" not in variables
+
+
+def test_s912_no_filters_emits_filter_free_query():
+    """No filters → the `metafields(...)` connection must not declare or pass
+    `namespace:` or `keys:` arguments at all."""
+    tools, fc = _build([_s911_product_response([_s911_metafield_node()])])
+    tools["get_product_metafields"](product_id=_S911_PRODUCT_GID)
+    query, variables = fc.calls[0]
+    assert "$namespace" not in query
+    assert "$keys" not in query
+    assert "namespace:" not in query
+    # `keys:` would only appear as an argument — the `keys` GraphQL field on
+    # `MetafieldEdge` does not exist, so this is safe as a substring check.
+    assert "keys:" not in query
+    assert "namespace" not in variables
+    assert "keys" not in variables
+
+
+def test_s912_include_variants_with_namespace_plus_keys_qualifies_both_connections():
+    """The combined product+variants query has TWO `metafields(...)`
+    connections (one on `product`, one on each `variant`). S9.12 requires
+    both to use the same keys-only mode with qualified keys — Shopify
+    enforces the exclusivity rule on each connection independently, so
+    leaving either one in the old shape would still 400."""
+    tools, fc = _build(
+        [
+            _s911_product_with_variants_response(
+                metafields=[_s911_metafield_node()],
+                variants=[
+                    _s911_variant_node(
+                        metafields=[
+                            _s911_metafield_node(
+                                mid="gid://shopify/Metafield/v1",
+                                namespace="google",
+                                key="age_group",
+                            )
+                        ]
+                    )
+                ],
+            )
+        ]
+    )
+    tools["get_product_metafields"](
+        product_id=_S911_PRODUCT_GID,
+        namespace="google",
+        keys=["age_group"],
+        include_variants=True,
+    )
+    query, variables = fc.calls[0]
+    assert "GetProductAndVariantMetafields" in query
+    # Neither connection may carry namespace args.
+    assert "$namespace" not in query
+    assert "namespace:" not in query
+    # Both connections (product-level + variant-level) emit `keys: $keys`.
+    assert query.count("keys: $keys") == 2
+    assert variables["keys"] == ["google.age_group"]
+    assert "namespace" not in variables
+
+
+def test_s912_pagination_with_keys_only_mode_carries_keys_on_page2():
+    """Multi-page keys-only request keeps the qualified `keys` and forwards
+    the `after:` cursor on the second round-trip — pagination must not
+    regress to the old static-query shape that would re-introduce both
+    args."""
+    tools, fc = _build(
+        [
+            _s911_product_response(
+                [_s911_metafield_node(mid="gid://shopify/Metafield/p1", key="age_group")],
+                has_next=True,
+                end_cursor="CURSOR_PAGE_2",
+            ),
+            _s911_product_response(
+                [_s911_metafield_node(mid="gid://shopify/Metafield/p2", key="gender")],
+                has_next=False,
+            ),
+        ]
+    )
+    tools["get_product_metafields"](
+        product_id=_S911_PRODUCT_GID,
+        namespace="google",
+        keys=["age_group", "gender"],
+    )
+    assert len(fc.calls) == 2
+    for page_query, page_vars in fc.calls:
+        assert "$namespace" not in page_query
+        assert "namespace:" not in page_query
+        assert "keys: $keys" in page_query
+        assert page_vars["keys"] == ["google.age_group", "google.gender"]
+        assert "namespace" not in page_vars
+    _, page2_vars = fc.calls[1]
+    assert page2_vars["after"] == "CURSOR_PAGE_2"

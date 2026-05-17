@@ -451,141 +451,154 @@ METAFIELDS_READ_PAGE_SIZE = 100
 # include_variants path paginates the variants connection itself when needed.
 VARIANTS_READ_PAGE_SIZE = 50
 
-# Product-only metafields read. `namespace` / `keys` are nullable in the
-# Admin schema — passing `null` means "no filter", which is the default
-# behavior when the caller leaves the filters unset.
-GET_PRODUCT_METAFIELDS_QUERY = """
+# Metafield read queries are built per-call from the helpers below. Shopify's
+# Admin API rejects the simultaneous presence of `namespace` and `keys` on the
+# `metafields(...)` connection — the *declaration* of both args in the query
+# string triggers the rejection, not just non-null runtime values. So the
+# query is emitted in one of three modes driven by the caller's filter input:
+#   "keys"      → metafields(keys: $keys, ...)         (keys are fully qualified
+#                                                       as "<namespace>.<key>"
+#                                                       when both filters were
+#                                                       supplied)
+#   "namespace" → metafields(namespace: $namespace, ...)
+#   "none"      → metafields(...)                       (no filter args)
+#
+# The same mode is reused for product-level and variant-level connections in
+# the combined query — Shopify enforces the exclusivity rule independently
+# on each connection.
+
+_METAFIELD_NODE_FIELDS = """
+            id
+            namespace
+            key
+            value
+            type
+            createdAt
+            updatedAt
+"""
+
+
+def _metafield_filter_decls(mode: str) -> str:
+    """GraphQL variable declarations for the chosen filter mode."""
+    if mode == "keys":
+        return "  $keys: [String!]\n"
+    if mode == "namespace":
+        return "  $namespace: String\n"
+    return ""
+
+
+def _metafield_filter_args(mode: str) -> str:
+    """GraphQL argument fragment (with trailing comma+space) for the chosen mode."""
+    if mode == "keys":
+        return "keys: $keys, "
+    if mode == "namespace":
+        return "namespace: $namespace, "
+    return ""
+
+
+def _build_get_product_metafields_query(mode: str) -> str:
+    """Emit the product-only metafields read query for the chosen filter mode."""
+    return f"""
 query GetProductMetafields(
   $id: ID!
-  $namespace: String
-  $keys: [String!]
-  $first: Int!
+{_metafield_filter_decls(mode)}  $first: Int!
   $after: String
-) {
-  product(id: $id) {
+) {{
+  product(id: $id) {{
     id
     title
     handle
-    metafields(namespace: $namespace, keys: $keys, first: $first, after: $after) {
-      pageInfo { hasNextPage endCursor }
-      edges {
-        node {
-          id
-          namespace
-          key
-          value
-          type
-          createdAt
-          updatedAt
-        }
-      }
-    }
-  }
-}
+    metafields({_metafield_filter_args(mode)}first: $first, after: $after) {{
+      pageInfo {{ hasNextPage endCursor }}
+      edges {{
+        node {{{_METAFIELD_NODE_FIELDS}        }}
+      }}
+    }}
+  }}
+}}
 """
 
-# Product + variant metafields read. The variants connection itself paginates
-# via its own pageInfo; per-variant metafields use a fixed page (the read tool
-# does not currently follow variant-metafield cursors beyond the first page
-# per variant — Shopify products with > 100 metafields per variant are rare
-# enough that the simpler single-page read is acceptable).
-GET_PRODUCT_AND_VARIANT_METAFIELDS_QUERY = """
+
+def _build_get_product_and_variant_metafields_query(mode: str) -> str:
+    """Emit the combined product + variants metafields read query.
+
+    Both the product-level and variant-level `metafields(...)` connections
+    use the same `mode` argument set.
+    """
+    return f"""
 query GetProductAndVariantMetafields(
   $id: ID!
-  $namespace: String
-  $keys: [String!]
-  $first: Int!
+{_metafield_filter_decls(mode)}  $first: Int!
   $after: String
   $variantsFirst: Int!
   $variantsAfter: String
-) {
-  product(id: $id) {
+) {{
+  product(id: $id) {{
     id
     title
     handle
-    metafields(namespace: $namespace, keys: $keys, first: $first, after: $after) {
-      pageInfo { hasNextPage endCursor }
-      edges {
-        node {
-          id
-          namespace
-          key
-          value
-          type
-          createdAt
-          updatedAt
-        }
-      }
-    }
-    variants(first: $variantsFirst, after: $variantsAfter) {
-      pageInfo { hasNextPage endCursor }
-      edges {
-        node {
+    metafields({_metafield_filter_args(mode)}first: $first, after: $after) {{
+      pageInfo {{ hasNextPage endCursor }}
+      edges {{
+        node {{{_METAFIELD_NODE_FIELDS}        }}
+      }}
+    }}
+    variants(first: $variantsFirst, after: $variantsAfter) {{
+      pageInfo {{ hasNextPage endCursor }}
+      edges {{
+        node {{
           id
           title
           sku
-          metafields(namespace: $namespace, keys: $keys, first: $first) {
-            edges {
-              node {
-                id
-                namespace
-                key
-                value
-                type
-                createdAt
-                updatedAt
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
+          metafields({_metafield_filter_args(mode)}first: $first) {{
+            edges {{
+              node {{{_METAFIELD_NODE_FIELDS}              }}
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
 """
 
-# Variants-only continuation page. Used when the metafields connection is
-# already exhausted but `include_variants=True` still needs more variant pages
-# — avoids re-requesting an empty metafields slice each round-trip.
-GET_PRODUCT_VARIANT_METAFIELDS_PAGE_QUERY = """
+
+def _build_get_product_variant_metafields_page_query(mode: str) -> str:
+    """Emit the variants-only continuation page query.
+
+    Used when the metafields connection is already exhausted but
+    `include_variants=True` still needs more variant pages.
+    """
+    return f"""
 query GetProductVariantMetafieldsPage(
   $id: ID!
-  $namespace: String
-  $keys: [String!]
-  $first: Int!
+{_metafield_filter_decls(mode)}  $first: Int!
   $variantsFirst: Int!
   $variantsAfter: String
-) {
-  product(id: $id) {
+) {{
+  product(id: $id) {{
     id
     title
     handle
-    variants(first: $variantsFirst, after: $variantsAfter) {
-      pageInfo { hasNextPage endCursor }
-      edges {
-        node {
+    variants(first: $variantsFirst, after: $variantsAfter) {{
+      pageInfo {{ hasNextPage endCursor }}
+      edges {{
+        node {{
           id
           title
           sku
-          metafields(namespace: $namespace, keys: $keys, first: $first) {
-            edges {
-              node {
-                id
-                namespace
-                key
-                value
-                type
-                createdAt
-                updatedAt
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
+          metafields({_metafield_filter_args(mode)}first: $first) {{
+            edges {{
+              node {{{_METAFIELD_NODE_FIELDS}              }}
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
 """
+
 
 # ---------------------------------------------------------------------------
 # GraphQL + constants — Story 9.5 (update_product_options)
@@ -1179,14 +1192,26 @@ def _format_delete_metafields_payload(
 def _normalize_metafield_read_filters(
     namespace: str,
     keys: list[str] | None,
-) -> tuple[str | None, list[str] | None, str | None]:
+) -> tuple[str, str | None, list[str] | None]:
     """Normalize (namespace, keys) filter input for the read query.
 
-    Empty/whitespace strings become `None` so the GraphQL variable carries the
-    "no filter" signal Shopify expects (`null`). When `keys` is supplied but
-    `namespace` is empty, Shopify ignores the keys filter — the spec mandates
-    surfacing a warning in the head and dropping the unused filter. Returns
-    `(namespace_or_none, keys_or_none, warning_or_none)`.
+    Resolves the (namespace, keys) caller inputs to a Shopify-safe filter
+    mode. Shopify's `metafields(...)` connection rejects the simultaneous
+    presence of `namespace` and `keys`, so the tool picks exactly one of
+    three modes:
+
+    - "keys"      → caller supplied `keys` (possibly with `namespace`).
+                    When both were supplied, the keys are returned as
+                    fully-qualified `"<namespace>.<key>"` strings and the
+                    namespace return value is `None`. This is the only path
+                    that lets a caller filter to "these specific keys inside
+                    this specific namespace" in one round-trip.
+    - "namespace" → caller supplied `namespace` only. `keys` is `None`.
+    - "none"      → caller supplied neither. Both return values are `None`.
+
+    Returns `(mode, namespace_or_none, keys_or_none)`. Whitespace is stripped
+    and empty entries are dropped from `keys` defensively; Shopify rejects
+    empty strings inside the `keys` array.
     """
     ns: str | None = None
     if isinstance(namespace, str) and namespace.strip():
@@ -1194,17 +1219,21 @@ def _normalize_metafield_read_filters(
 
     keys_clean: list[str] | None = None
     if isinstance(keys, list) and keys:
-        # Filter out empty / non-string entries defensively; Shopify rejects
-        # empty strings in `keys`. Strip whitespace for caller convenience.
         cleaned = [k.strip() for k in keys if isinstance(k, str) and k.strip()]
         keys_clean = cleaned or None
 
-    warning: str | None = None
-    if keys_clean and ns is None:
-        warning = "Warning: keys filter is ignored when namespace is not set."
-        keys_clean = None
+    if keys_clean:
+        if ns is not None:
+            # Qualify each key with the namespace prefix so the query can use
+            # keys-only mode and still scope the result to <ns>.<key>.
+            qualified = [f"{ns}.{k}" for k in keys_clean]
+            return "keys", None, qualified
+        return "keys", None, keys_clean
 
-    return ns, keys_clean, warning
+    if ns is not None:
+        return "namespace", ns, None
+
+    return "none", None, None
 
 
 def _metafield_node_to_dict(node: dict[str, Any]) -> dict[str, Any]:
@@ -3849,11 +3878,16 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         handle     : product handle slug. Used when product_id is empty.
                      Resolved via productByHandle before the metafield query.
         namespace  : optional metafield namespace filter (e.g. 'google',
-                     'custom'). Empty means "all namespaces".
-        keys       : optional list of keys within the namespace. Only takes
-                     effect when `namespace` is set — if `keys` is supplied
-                     without a namespace, a warning surfaces in the head and
-                     the keys filter is dropped (Shopify ignores it anyway).
+                     'custom'). Empty means "all namespaces". Shopify's Admin
+                     API forbids the simultaneous use of `namespace` and
+                     `keys` on the metafields connection — when both are
+                     supplied, the tool transparently qualifies each key as
+                     `"<namespace>.<key>"` and runs a keys-only query.
+        keys       : optional list of keys. When `namespace` is also set,
+                     entries are bare keys (`"age_group"`) and are qualified
+                     in-tool. When `namespace` is empty, entries are passed
+                     through as-is — pass fully-qualified strings
+                     (`"google.age_group"`) to scope to a single namespace.
         include_variants : if True, also fetch metafields on each variant.
                      Each entry in `variantMetafields[]` carries the variant
                      id/title/sku plus its own metafields list.
@@ -3893,7 +3927,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             msg = "At least one of product_id or handle is required."
             return _render(f"Error: {msg}", _err_payload(msg, key="metafields"))
 
-        ns_filter, keys_filter, filter_warning = _normalize_metafield_read_filters(namespace, keys)
+        filter_mode, ns_filter, keys_filter = _normalize_metafield_read_filters(namespace, keys)
 
         # ---- Phase 2 — resolve owner GID --------------------------------
         # `_resolve_product_gid` short-circuits for numeric IDs and GIDs;
@@ -3907,10 +3941,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # Track per-connection "still fetching" flags. After each round-trip,
         # the flag flips off when that connection's pageInfo.hasNextPage is
         # false. The query is picked per-iteration so we never re-request a
-        # connection that already exhausted (CR suggestion #1):
-        #   both pending → GET_PRODUCT_AND_VARIANT_METAFIELDS_QUERY
-        #   metafields only → GET_PRODUCT_METAFIELDS_QUERY
-        #   variants only  → GET_PRODUCT_VARIANT_METAFIELDS_PAGE_QUERY
+        # connection that already exhausted:
+        #   both pending → combined product + variants query
+        #   metafields only → product-only query
+        #   variants only  → variants-only continuation query
+        # Each of those three operations is emitted in the filter mode chosen
+        # above so the namespace/keys-exclusivity rule is respected.
         product_node: dict[str, Any] = {}
         all_metafield_nodes: list[dict[str, Any]] = []
         variant_buckets: list[dict[str, Any]] = []
@@ -3923,18 +3959,20 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             while fetch_metafields or fetch_variants:
                 if fetch_metafields and fetch_variants:
-                    query = GET_PRODUCT_AND_VARIANT_METAFIELDS_QUERY
+                    query = _build_get_product_and_variant_metafields_query(filter_mode)
                 elif fetch_metafields:
-                    query = GET_PRODUCT_METAFIELDS_QUERY
+                    query = _build_get_product_metafields_query(filter_mode)
                 else:
-                    query = GET_PRODUCT_VARIANT_METAFIELDS_PAGE_QUERY
+                    query = _build_get_product_variant_metafields_page_query(filter_mode)
 
                 variables: dict[str, Any] = {
                     "id": product_gid,
-                    "namespace": ns_filter,
-                    "keys": keys_filter,
                     "first": METAFIELDS_READ_PAGE_SIZE,
                 }
+                if filter_mode == "keys":
+                    variables["keys"] = keys_filter
+                elif filter_mode == "namespace":
+                    variables["namespace"] = ns_filter
                 if fetch_metafields:
                     variables["after"] = metafields_cursor
                 if fetch_variants:
@@ -4022,12 +4060,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"Product: {title} ({pid_display})",
             f"Handle: {handle_display}",
         ]
-        if filter_warning:
-            head_lines.append(filter_warning)
 
         if total_found == 0:
-            if ns_filter:
+            if filter_mode == "namespace":
                 head_lines.append(f'No metafields found for namespace: "{ns_filter}"')
+            elif filter_mode == "keys":
+                head_lines.append(f"No metafields found for keys: {keys_filter}")
             else:
                 head_lines.append("No metafields found.")
         else:
