@@ -467,15 +467,27 @@ VARIANTS_READ_PAGE_SIZE = 50
 # the combined query — Shopify enforces the exclusivity rule independently
 # on each connection.
 
-_METAFIELD_NODE_FIELDS = """
-            id
-            namespace
-            key
-            value
-            type
-            createdAt
-            updatedAt
-"""
+_VALID_FILTER_MODES = ("keys", "namespace", "none")
+
+_METAFIELD_NODE_FIELD_NAMES = (
+    "id",
+    "namespace",
+    "key",
+    "value",
+    "type",
+    "createdAt",
+    "updatedAt",
+)
+
+
+def _metafield_node_fields(indent: int) -> str:
+    """Selection-set fields for a Metafield node, each indented `indent` spaces.
+
+    Used by the read-query builders so the same field list renders at the
+    right depth for both the product-level and variant-level connections.
+    """
+    pad = " " * indent
+    return "\n".join(pad + f for f in _METAFIELD_NODE_FIELD_NAMES)
 
 
 def _metafield_filter_decls(mode: str) -> str:
@@ -496,8 +508,18 @@ def _metafield_filter_args(mode: str) -> str:
     return ""
 
 
+def _check_filter_mode(mode: str) -> None:
+    """Defense in depth: each `_build_*` entry point validates `mode` so a
+    future refactor that forgets to thread the closed-enum contract through
+    fails loudly instead of silently emitting a no-filter query."""
+    if mode not in _VALID_FILTER_MODES:
+        raise ValueError(f"unknown metafield filter mode: {mode!r}")
+
+
 def _build_get_product_metafields_query(mode: str) -> str:
     """Emit the product-only metafields read query for the chosen filter mode."""
+    _check_filter_mode(mode)
+    node_fields = _metafield_node_fields(10)
     return f"""
 query GetProductMetafields(
   $id: ID!
@@ -511,7 +533,9 @@ query GetProductMetafields(
     metafields({_metafield_filter_args(mode)}first: $first, after: $after) {{
       pageInfo {{ hasNextPage endCursor }}
       edges {{
-        node {{{_METAFIELD_NODE_FIELDS}        }}
+        node {{
+{node_fields}
+        }}
       }}
     }}
   }}
@@ -525,6 +549,9 @@ def _build_get_product_and_variant_metafields_query(mode: str) -> str:
     Both the product-level and variant-level `metafields(...)` connections
     use the same `mode` argument set.
     """
+    _check_filter_mode(mode)
+    product_node_fields = _metafield_node_fields(10)
+    variant_node_fields = _metafield_node_fields(16)
     return f"""
 query GetProductAndVariantMetafields(
   $id: ID!
@@ -540,7 +567,9 @@ query GetProductAndVariantMetafields(
     metafields({_metafield_filter_args(mode)}first: $first, after: $after) {{
       pageInfo {{ hasNextPage endCursor }}
       edges {{
-        node {{{_METAFIELD_NODE_FIELDS}        }}
+        node {{
+{product_node_fields}
+        }}
       }}
     }}
     variants(first: $variantsFirst, after: $variantsAfter) {{
@@ -552,7 +581,9 @@ query GetProductAndVariantMetafields(
           sku
           metafields({_metafield_filter_args(mode)}first: $first) {{
             edges {{
-              node {{{_METAFIELD_NODE_FIELDS}              }}
+              node {{
+{variant_node_fields}
+              }}
             }}
           }}
         }}
@@ -569,6 +600,8 @@ def _build_get_product_variant_metafields_page_query(mode: str) -> str:
     Used when the metafields connection is already exhausted but
     `include_variants=True` still needs more variant pages.
     """
+    _check_filter_mode(mode)
+    variant_node_fields = _metafield_node_fields(16)
     return f"""
 query GetProductVariantMetafieldsPage(
   $id: ID!
@@ -589,7 +622,9 @@ query GetProductVariantMetafieldsPage(
           sku
           metafields({_metafield_filter_args(mode)}first: $first) {{
             edges {{
-              node {{{_METAFIELD_NODE_FIELDS}              }}
+              node {{
+{variant_node_fields}
+              }}
             }}
           }}
         }}
@@ -3946,7 +3981,21 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         #   metafields only → product-only query
         #   variants only  → variants-only continuation query
         # Each of those three operations is emitted in the filter mode chosen
-        # above so the namespace/keys-exclusivity rule is respected.
+        # above so the namespace/keys-exclusivity rule is respected. The
+        # query strings are built once up-front — `filter_mode` is fixed for
+        # the duration of the call so the bodies are stable across rounds,
+        # and the combined/variants-only variants are only relevant when
+        # `include_variants=True`.
+        mf_only_query = _build_get_product_metafields_query(filter_mode)
+        combined_query = (
+            _build_get_product_and_variant_metafields_query(filter_mode) if include_variants else ""
+        )
+        variants_only_query = (
+            _build_get_product_variant_metafields_page_query(filter_mode)
+            if include_variants
+            else ""
+        )
+
         product_node: dict[str, Any] = {}
         all_metafield_nodes: list[dict[str, Any]] = []
         variant_buckets: list[dict[str, Any]] = []
@@ -3959,11 +4008,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             while fetch_metafields or fetch_variants:
                 if fetch_metafields and fetch_variants:
-                    query = _build_get_product_and_variant_metafields_query(filter_mode)
+                    query = combined_query
                 elif fetch_metafields:
-                    query = _build_get_product_metafields_query(filter_mode)
+                    query = mf_only_query
                 else:
-                    query = _build_get_product_variant_metafields_page_query(filter_mode)
+                    query = variants_only_query
 
                 variables: dict[str, Any] = {
                     "id": product_gid,
@@ -4065,7 +4114,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             if filter_mode == "namespace":
                 head_lines.append(f'No metafields found for namespace: "{ns_filter}"')
             elif filter_mode == "keys":
-                head_lines.append(f"No metafields found for keys: {keys_filter}")
+                keys_display = ", ".join(f'"{k}"' for k in keys_filter or [])
+                head_lines.append(f"No metafields found for keys: {keys_display}")
             else:
                 head_lines.append("No metafields found.")
         else:

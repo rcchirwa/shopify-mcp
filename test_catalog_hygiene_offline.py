@@ -7605,3 +7605,29 @@ def test_s912_pagination_with_keys_only_mode_carries_keys_on_page2():
         assert "namespace" not in page_vars
     _, page2_vars = fc.calls[1]
     assert page2_vars["after"] == "CURSOR_PAGE_2"
+
+
+def test_s912_builders_reject_unknown_filter_mode():
+    """Defense in depth: each query builder validates `mode` at entry. A
+    future refactor that forgets to thread the closed-enum contract through
+    fails loudly here instead of silently emitting a no-filter query."""
+    builders = (
+        catalog_hygiene._build_get_product_metafields_query,
+        catalog_hygiene._build_get_product_and_variant_metafields_query,
+        catalog_hygiene._build_get_product_variant_metafields_page_query,
+    )
+    for builder in builders:
+        with pytest.raises(ValueError, match="unknown metafield filter mode"):
+            builder("invalid_mode")
+
+
+def test_s912_empty_keys_mode_lists_qualified_keys_in_head():
+    """Empty result under a keys filter lists the qualified keys in the head
+    using the same quoted style as the namespace-mode empty message."""
+    tools, _ = _build([_s911_product_response([])])
+    out = tools["get_product_metafields"](
+        product_id=_S911_PRODUCT_GID,
+        namespace="google",
+        keys=["age_group", "gender"],
+    )
+    assert 'No metafields found for keys: "google.age_group", "google.gender"' in out
