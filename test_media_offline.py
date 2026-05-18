@@ -970,6 +970,58 @@ def test_upload_ssrf_private_host_labels_download_stage():
     assert "SSRF" in out and "10.0.0.5" in out
 
 
+def test_upload_redirect_response_labels_download_stage():
+    """Regression for the redirect-bypass SSRF (security review H1): a public
+    host that returns 302 with a private-IP Location must NOT be followed —
+    `requests.get(..., allow_redirects=False)` keeps the SSRF guard meaningful
+    by refusing the redirect before the second request is issued."""
+    tools, fc = _build([_product_media_read([])])
+    redirect_resp = FakeHTTPResponse(
+        status_code=302,
+        headers={"Location": "http://10.0.0.5/latest/meta-data/iam/security-credentials/"},
+    )
+    with (
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=redirect_resp) as mock_get,
+    ):
+        out = tools["upload_product_image"](
+            product_id="123",
+            source="https://attacker.example/redirect-to-imds.jpg",
+            confirm=True,
+        )
+    assert out.startswith("Error at stage=download:"), out
+    assert "302" in out
+    assert "10.0.0.5" in out
+    assert "SSRF" in out
+    # Crucial: `requests.get` was called exactly once with allow_redirects=False —
+    # if a future refactor flips that flag, the bypass returns.
+    assert mock_get.call_count == 1
+    assert mock_get.call_args.kwargs.get("allow_redirects") is False
+
+
+def test_upload_redirect_to_public_host_also_refused():
+    """We refuse ALL 3xx, not just SSRF-shaped ones. Documents the intent so a
+    future contributor who 'fixes' this test by re-enabling redirect-following
+    for public-to-public hops re-opens the bypass surface."""
+    tools, fc = _build([_product_media_read([])])
+    redirect_resp = FakeHTTPResponse(
+        status_code=301,
+        headers={"Location": "https://other-public.example/hero.jpg"},
+    )
+    with (
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", return_value=redirect_resp),
+    ):
+        out = tools["upload_product_image"](
+            product_id="123",
+            source="https://cdn.example.com/moved.jpg",
+            confirm=True,
+        )
+    assert out.startswith("Error at stage=download:"), out
+    assert "301" in out
+    assert "other-public.example" in out
+
+
 # ---------- helper-level coverage: _as_product_gid, _format_bytes ----------
 
 

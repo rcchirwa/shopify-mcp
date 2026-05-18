@@ -75,9 +75,23 @@ def _download_image(url: str) -> tuple[bytes, str, str]:
     """
     _reject_if_private_host(url)
     try:
-        resp = requests.get(url, stream=True, timeout=_IMAGE_DOWNLOAD_TIMEOUT_S)
+        resp = requests.get(
+            url, stream=True, timeout=_IMAGE_DOWNLOAD_TIMEOUT_S, allow_redirects=False
+        )
     except requests.RequestException as e:
         raise RuntimeError(f"request failed: {e}") from e
+
+    # `allow_redirects=False` is load-bearing: the SSRF guard ran on `url`,
+    # but `requests` would otherwise follow a 302 to an internal IP without
+    # re-validating. Refuse all 3xx and ask the operator to supply the final
+    # URL directly — image hosts that redirect are uncommon.
+    if 300 <= resp.status_code < 400:
+        raise RuntimeError(
+            f"HTTP {resp.status_code} redirect to "
+            f"{resp.headers.get('Location', '(no Location header)')} — "
+            f"refused; redirects can bypass the SSRF guard. "
+            f"Supply the final URL directly."
+        )
 
     if resp.status_code >= 400:
         raise RuntimeError(f"HTTP {resp.status_code} from source URL")
