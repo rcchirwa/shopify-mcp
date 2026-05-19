@@ -4,7 +4,30 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-05-12.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-05-18.
+
+---
+
+## 2026-05-18 — M2 security review follow-ups (PR #65)
+
+Items surfaced by the mcp-server-security-review.md (2026-05-18) and the subsequent `/engineering:code-review` + `/security-review` pass on the M2 implementation PR. The blocklist-based advisory warning shipped in PR #65 is a solid first layer; the items below track its known gaps for future hardening.
+
+### Active
+
+| # | Item | Where | Score |
+|---|------|-------|-------|
+| SEC-M2-sanitizer | **Advisory blocklist should migrate to a proper HTML sanitizer** — `dangerous_html_patterns()` in `tools/_filters.py` detects a curated set of dangerous substrings and regex patterns (`on\w+=`, `<script`, `javascript:`, etc.) and emits an advisory warning in the preview. This is defence-in-depth, not a true sanitizer. A sufficiently creative payload (CSS injection via `<style>`, attribute injection in unexpected HTML contexts, Unicode lookalike characters) can slip through without a warning and be written to `descriptionHtml` / `seo.*` without operator friction. **Recommended path:** replace or wrap `dangerous_html_patterns()` with `nh3` (Rust-backed port of `ammonia`) or `bleach` (Python) in an allow-list mode: strip everything except an explicitly allowed tag+attribute set before calling Shopify. This changes the written content semantics (stripped tags), so it requires product sign-off before landing. Trigger: any Epic that touches bulk description writes or introduces a new HTML-bearing field. | `tools/_filters.py`, `tools/products.py`, `tools/collections.py` | 16 |
+| SEC-M2-collection-seo | **`update_collection` description preview warning uses inline suffix format inconsistent with `update_product_description`** — the warning for collections appears as `\n  ⚠ DANGEROUS HTML DETECTED: ...` appended to the preview line, while the product description warning is a distinct block with bullet-pointed pattern names. Minor UX inconsistency; low priority but should be unified when either path is next touched. | `tools/collections.py:update_collection`, `tools/products.py:update_product_description` | 4 (note) |
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|---------------|
+| SEC-M2-truncation | ~~`update_product_description` preview truncated new content to 120 chars — operator couldn't see full payload before confirming~~ | PR #65 — preview now shows full `new_description` under `New (full):` label. |
+| SEC-M2-collection-placeholder | ~~`update_collection` showed `(new description provided)` placeholder — operator saw nothing of the actual new content~~ | PR #65 — old excerpt + full new description now shown. |
+| SEC-M2-redirect | ~~SSRF redirect bypass (`allow_redirects=True` default in `_download_image`)~~ | PR #64 (HIGH finding H1, 2026-05-18). |
+| SEC-M2-onstar-fixed | ~~Fixed `onerror=` / `onload=` as discrete strings — missed `onload =` (space before `=`) and all other `on*=` handlers (`onclick=`, `ontoggle=`, `onfocus=`, etc.)~~ | PR #65 — switched to `re.compile(r"\bon\w+\s*=", re.IGNORECASE)` regex; all event-handler variants now caught. |
+| SEC-M2-schemes | ~~`vbscript:`, `data:text/html`, `</title>` not in danger pattern list~~ | PR #65 — added to `_DANGEROUS_HTML_EXACT` tuple. |
 
 ---
 

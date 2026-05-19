@@ -606,3 +606,50 @@ def test_update_collection_user_errors_surfaced():
     )
     assert out.startswith("Error:")
     assert "title: too long" in out
+
+
+def test_update_collection_preview_shows_full_new_description():
+    long_desc = "<p>" + "A" * 200 + "</p>"
+    tools, fc = _build([_manual_collection(handle="vanish", title="Vanish")])
+    out = tools["update_collection"](
+        handle="vanish",
+        new_description=long_desc,
+    )
+    assert "PREVIEW" in out
+    assert long_desc in out
+    assert "New desc (full)" in out
+
+
+def test_update_collection_warns_on_script_tag():
+    new_desc = '<p>hi</p><script>fetch("https://evil.example")</script>'
+    tools, fc = _build([_manual_collection(handle="vanish", title="Vanish")])
+    out = tools["update_collection"](
+        handle="vanish",
+        new_description=new_desc,
+    )
+    assert "⚠ DANGEROUS HTML DETECTED" in out
+    assert "'<script'" in out
+    assert "confirm=True" in out
+    assert len(fc.calls) == 1
+
+
+def test_update_collection_warns_on_iframe():
+    new_desc = '<iframe src="https://evil.example"></iframe>'
+    tools, fc = _build([_manual_collection(handle="vanish", title="Vanish")])
+    out = tools["update_collection"](handle="vanish", new_description=new_desc)
+    assert "⚠ DANGEROUS HTML DETECTED" in out
+    assert "'<iframe'" in out
+
+
+def test_update_collection_no_warning_for_safe_html():
+    new_desc = "<p>Safe <b>content</b></p>"
+    tools, fc = _build([_manual_collection(handle="vanish", title="Vanish")])
+    out = tools["update_collection"](handle="vanish", new_description=new_desc)
+    assert "DANGEROUS" not in out
+
+
+def test_update_collection_old_desc_excerpt_shown():
+    tools, fc = _build([_manual_collection(handle="vanish", title="Vanish")])
+    out = tools["update_collection"](handle="vanish", new_description="<p>new</p>")
+    assert "Old desc (excerpt)" in out
+    assert "manual" in out
