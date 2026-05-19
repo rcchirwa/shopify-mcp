@@ -92,13 +92,14 @@ def test_list_webhooks_clamps_limit_to_250():
 # ---------- register_webhook ----------
 
 
-def test_register_preview_does_not_mutate():
+def test_register_preview_does_not_mutate(monkeypatch):
+    monkeypatch.delenv("WEBHOOK_ALLOWLIST_HOSTS", raising=False)
     tools, fc = _build([])
     out = tools["register_webhook"](
         topic="ORDERS_CREATE",
         endpoint_url="https://example.com/hook",
     )
-    assert out.startswith("PREVIEW — Register webhook")
+    assert "PREVIEW — Register webhook" in out
     assert "ORDERS_CREATE" in out
     assert "https://example.com/hook" in out
     assert "JSON" in out
@@ -106,7 +107,8 @@ def test_register_preview_does_not_mutate():
     assert len(fc.calls) == 0
 
 
-def test_register_confirmed_submits_create():
+def test_register_confirmed_submits_create(monkeypatch):
+    monkeypatch.delenv("WEBHOOK_ALLOWLIST_HOSTS", raising=False)
     tools, fc = _build(
         [
             {
@@ -143,7 +145,8 @@ def test_register_confirmed_submits_create():
     }
 
 
-def test_register_confirmed_surfaces_user_errors():
+def test_register_confirmed_surfaces_user_errors(monkeypatch):
+    monkeypatch.delenv("WEBHOOK_ALLOWLIST_HOSTS", raising=False)
     tools, fc = _build(
         [
             {
@@ -168,7 +171,8 @@ def test_register_confirmed_surfaces_user_errors():
     assert "must be https" in out
 
 
-def test_register_forwards_xml_format():
+def test_register_forwards_xml_format(monkeypatch):
+    monkeypatch.delenv("WEBHOOK_ALLOWLIST_HOSTS", raising=False)
     tools, fc = _build(
         [
             {
@@ -286,3 +290,85 @@ def test_delete_confirmed_missing_id_and_no_errors_is_error():
     out = tools["delete_webhook"](subscription_id="123", confirm=True)
     assert "Error" in out
     assert "deletedWebhookSubscriptionId" in out
+
+
+# ---------- register_webhook — endpoint allowlist (M3) ----------
+
+
+def test_register_preview_no_allowlist_shows_external_domain_warning(monkeypatch):
+    monkeypatch.delenv("WEBHOOK_ALLOWLIST_HOSTS", raising=False)
+    tools, fc = _build([])
+    out = tools["register_webhook"](
+        topic="ORDERS_CREATE",
+        endpoint_url="https://example.com/hook",
+    )
+    assert "⚠ EXTERNAL DOMAIN" in out
+    assert "ORDERS_CREATE" in out
+    assert len(fc.calls) == 0
+
+
+def test_register_preview_hostname_in_allowlist_no_warning(monkeypatch):
+    monkeypatch.setenv("WEBHOOK_ALLOWLIST_HOSTS", "example.com")
+    tools, fc = _build([])
+    out = tools["register_webhook"](
+        topic="ORDERS_CREATE",
+        endpoint_url="https://example.com/hook",
+    )
+    assert "⚠" not in out
+    assert "ORDERS_CREATE" in out
+    assert len(fc.calls) == 0
+
+
+def test_register_preview_hostname_not_in_allowlist_returns_error(monkeypatch):
+    monkeypatch.setenv("WEBHOOK_ALLOWLIST_HOSTS", "allowed.example.com")
+    tools, fc = _build([])
+    out = tools["register_webhook"](
+        topic="ORDERS_CREATE",
+        endpoint_url="https://attacker.example.com/hook",
+    )
+    assert out.startswith("Error:")
+    assert "attacker.example.com" in out
+    assert "WEBHOOK_ALLOWLIST_HOSTS" in out
+    assert len(fc.calls) == 0
+
+
+def test_register_confirmed_hostname_in_allowlist_proceeds(monkeypatch):
+    monkeypatch.setenv("WEBHOOK_ALLOWLIST_HOSTS", "example.com")
+    tools, fc = _build(
+        [
+            {
+                "webhookSubscriptionCreate": {
+                    "webhookSubscription": {
+                        "id": "gid://shopify/WebhookSubscription/42",
+                        "topic": "ORDERS_CREATE",
+                        "format": "JSON",
+                        "endpoint": {
+                            "__typename": "WebhookHttpEndpoint",
+                            "callbackUrl": "https://example.com/hook",
+                        },
+                    },
+                    "userErrors": [],
+                }
+            }
+        ]
+    )
+    out = tools["register_webhook"](
+        topic="ORDERS_CREATE",
+        endpoint_url="https://example.com/hook",
+        confirm=True,
+    )
+    assert out.startswith("Done.")
+    assert len(fc.calls) == 1
+
+
+def test_register_confirmed_hostname_not_in_allowlist_blocked(monkeypatch):
+    monkeypatch.setenv("WEBHOOK_ALLOWLIST_HOSTS", "allowed.example.com")
+    tools, fc = _build([])
+    out = tools["register_webhook"](
+        topic="ORDERS_CREATE",
+        endpoint_url="https://attacker.example.com/hook",
+        confirm=True,
+    )
+    assert out.startswith("Error:")
+    assert "attacker.example.com" in out
+    assert len(fc.calls) == 0
