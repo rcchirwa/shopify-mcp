@@ -1511,7 +1511,7 @@ def test_update_description_confirmed_dangerous_shows_warning_prefix():
     )
     out = tools["update_product_description"](
         product_id="7",
-        new_description='<script>alert(1)</script>',
+        new_description="<script>alert(1)</script>",
         confirm=True,
     )
     assert out.startswith("Done ⚠")
