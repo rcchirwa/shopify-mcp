@@ -5,6 +5,9 @@ subscriptions on the store.
 Write operations require confirm=True and log to aon_mcp_log.txt.
 """
 
+import os
+from urllib.parse import urlparse
+
 from mcp.server.fastmcp import FastMCP
 
 from shopify_client import (
@@ -61,6 +64,37 @@ mutation DeleteWebhook($id: ID!) {
 """
 
 
+_EXTERNAL_DOMAIN_WARNING = (
+    "⚠ EXTERNAL DOMAIN — verify this is the intended receiver before confirming.\n"
+)
+
+
+def _get_allowlist() -> frozenset:
+    raw = os.environ.get("WEBHOOK_ALLOWLIST_HOSTS", "").strip()
+    if not raw:
+        return frozenset()
+    return frozenset(h.strip().lower() for h in raw.split(",") if h.strip())
+
+
+def _check_endpoint(endpoint_url: str) -> tuple:
+    """
+    Returns (allowed, annotation).
+    allowed=False: return annotation as an error.
+    allowed=True, annotation non-empty: prepend as warning to preview.
+    allowed=True, annotation="": hostname is in allowlist; proceed silently.
+    """
+    hostname = (urlparse(endpoint_url).hostname or "").lower()
+    allowlist = _get_allowlist()
+    if allowlist:
+        if hostname not in allowlist:
+            return False, (
+                f"Error: endpoint hostname '{hostname}' is not in WEBHOOK_ALLOWLIST_HOSTS. "
+                f"Add it to the env var to permit this receiver."
+            )
+        return True, ""
+    return True, _EXTERNAL_DOMAIN_WARNING
+
+
 def _endpoint_url(endpoint: dict) -> str:
     if not endpoint:
         return "(no endpoint)"
@@ -105,7 +139,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         message_format: JSON (default) or XML.
         Returns a preview unless confirm=True.
         """
+        allowed, annotation = _check_endpoint(endpoint_url)
+        if not allowed:
+            return annotation
+
         preview = (
+            f"{annotation}"
             f"PREVIEW — Register webhook\n"
             f"  Topic    : {topic}\n"
             f"  Endpoint : {endpoint_url}\n"
