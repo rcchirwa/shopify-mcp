@@ -21,6 +21,7 @@ from shopify_client import (
     to_gid,
     with_confirm_hint,
 )
+from tools._filters import dangerous_html_patterns
 from tools._log import log_write
 
 GET_COLLECTION_BY_HANDLE = """
@@ -146,8 +147,22 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if new_title:
             preview_lines.append(f"  Title  : '{col['title']}' → '{new_title}'")
         if new_description:
-            old_desc = (col.get("descriptionHtml") or "")[:80]
-            preview_lines.append(f"  Desc   : '{old_desc}...' → (new description provided)")
+            raw_old = col.get("descriptionHtml") or ""
+            old_desc_excerpt = raw_old[:80] + ("..." if len(raw_old) > 80 else "")
+            danger = dangerous_html_patterns(new_description)
+            warning_suffix = (
+                (
+                    "\n  ⚠ DANGEROUS HTML DETECTED: "
+                    + ", ".join(repr(p) for p in danger)
+                    + "\n  Storefront themes render descriptionHtml without escaping."
+                )
+                if danger
+                else ""
+            )
+            preview_lines.append(
+                f"  Old desc (excerpt): '{old_desc_excerpt}'\n"
+                f"  New desc (full)   :\n{new_description}" + warning_suffix
+            )
 
         preview = "\n".join(preview_lines)
 

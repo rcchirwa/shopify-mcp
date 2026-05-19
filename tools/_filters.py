@@ -2,9 +2,50 @@
 Shared filtering helpers used by multiple tool modules.
 """
 
+import re
 from typing import Any
 
 from shopify_client import to_gid
+
+# Exact substrings checked case-insensitively.  Event-handler attributes
+# (onclick=, onload=, onmouseover=, etc.) are handled separately by the regex
+# below so that space-before-= variants ("onload =") and any future on* names
+# are caught without maintaining an exhaustive list.
+_DANGEROUS_HTML_EXACT = (
+    "<script",
+    "javascript:",
+    "vbscript:",
+    "data:text/html",
+    "<iframe",
+    "<object",
+    "<embed",
+    "</title>",
+)
+
+# Matches any HTML event-handler attribute, including space before "=" and
+# mixed-case names.  Examples: onclick=, onLoad =, ONMOUSEOVER=, ontoggle=.
+_RE_ON_HANDLER = re.compile(r"\bon\w+\s*=", re.IGNORECASE)
+
+
+def dangerous_html_patterns(text: str) -> list[str]:
+    """Return dangerous HTML substrings / patterns found in *text* (case-insensitive).
+
+    Returns a deduplicated list of matched strings suitable for display in
+    operator-facing warning messages.  The list combines:
+    - exact substring matches (lower-cased pattern names), and
+    - on*= event-handler attribute matches (lower-cased actual matches).
+    """
+    lower = text.lower()
+    found: list[str] = [p for p in _DANGEROUS_HTML_EXACT if p in lower]
+
+    seen: set[str] = set(found)
+    for match in _RE_ON_HANDLER.findall(text):
+        key = match.lower().rstrip()  # normalise trailing space before "="
+        if key not in seen:
+            found.append(key)
+            seen.add(key)
+
+    return found
 
 
 def filter_variant_targets(

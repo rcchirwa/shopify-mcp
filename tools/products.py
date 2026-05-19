@@ -17,7 +17,7 @@ from shopify_client import (
     to_gid,
     with_confirm_hint,
 )
-from tools._filters import filter_variant_targets
+from tools._filters import dangerous_html_patterns, filter_variant_targets
 from tools._log import log_write
 from validators.naming import format_validation_diff
 from validators.seo import SEO_DESCRIPTION_MAX_CHARS, SEO_TITLE_MAX_CHARS
@@ -389,11 +389,22 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         product = data.get("product", {})
         old_desc = product.get("bodyHtml", "")
 
+        danger = dangerous_html_patterns(new_description)
+        warning_block = (
+            (
+                "\n\n⚠ DANGEROUS HTML DETECTED in new description:\n"
+                + "\n".join(f"  • {p!r}" for p in danger)
+                + "\n  Storefront themes render descriptionHtml without escaping."
+            )
+            if danger
+            else ""
+        )
+
         preview = (
             f"PREVIEW — Product description update\n"
             f"  Product ID   : {product_id}\n"
             f"  Old (excerpt): {old_desc[:120]}{'...' if len(old_desc) > 120 else ''}\n"
-            f"  New (excerpt): {new_description[:120]}{'...' if len(new_description) > 120 else ''}"
+            f"  New (full)   :\n{new_description}" + warning_block
         )
 
         if not confirm:
@@ -408,7 +419,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return err
 
         log_write("update_product_description", f"id={product_id}")
-        return f"Done. {preview}"
+        done_prefix = (
+            "Done ⚠ — dangerous HTML patterns were written to Shopify. Verify the storefront."
+            if danger
+            else "Done."
+        )
+        return f"{done_prefix}\n{preview}"
 
     @server.tool()
     def update_product_seo(
@@ -444,6 +460,16 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             warnings.append(
                 f"SEO description is {len(new_seo_description)} chars "
                 f"(> {SEO_DESCRIPTION_MAX_CHARS}, may be truncated in Google SERPs)"
+            )
+
+        seo_danger = dangerous_html_patterns(new_seo_title or "") + dangerous_html_patterns(
+            new_seo_description or ""
+        )
+        if seo_danger:
+            warnings.append(
+                "⚠ DANGEROUS HTML pattern detected in SEO field(s): "
+                + ", ".join(repr(p) for p in seo_danger)
+                + " — SEO fields are rendered in <head>; verify intent."
             )
 
         old_title_line = old_title if old_title else "(empty)"
