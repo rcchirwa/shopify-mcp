@@ -221,6 +221,40 @@ def test_seo_preview_shows_old_empty_and_unchanged_field():
     assert "(unchanged)" in new_desc_val, out
 
 
+def test_update_seo_warns_on_dangerous_pattern_in_description():
+    tools, fc = _build([_seo_read()])
+    out = tools["update_product_seo"](
+        product_id="123",
+        new_seo_description="click here javascript:void(0)",
+        confirm=False,
+    )
+    assert "⚠ DANGEROUS HTML pattern detected" in out
+    assert "'javascript:'" in out
+    assert "confirm=True" in out
+    assert len(fc.calls) == 1, "preview must not issue the mutation"
+
+
+def test_update_seo_warns_on_dangerous_pattern_in_title():
+    tools, fc = _build([_seo_read()])
+    out = tools["update_product_seo"](
+        product_id="123",
+        new_seo_title="<script>bad</script>",
+        confirm=False,
+    )
+    assert "⚠ DANGEROUS HTML pattern detected" in out
+
+
+def test_update_seo_no_warning_for_safe_fields():
+    tools, fc = _build([_seo_read()])
+    out = tools["update_product_seo"](
+        product_id="123",
+        new_seo_title="Clean title",
+        new_seo_description="Clean description with no danger",
+        confirm=False,
+    )
+    assert "DANGEROUS" not in out
+
+
 # ---------- update_product_title handle logic ----------
 
 PROD_ID = "7330113421465"
@@ -1361,7 +1395,7 @@ def test_update_description_preview_shows_old_and_new_excerpts_no_mutation():
     assert fc.calls[0][0] == GET_PRODUCT_BY_ID
 
 
-def test_update_description_truncates_long_excerpts_with_ellipsis():
+def test_update_description_old_excerpt_truncated_new_shown_in_full():
     long_old = "x" * 200
     long_new = "y" * 200
     tools, fc = _build([{"product": {"bodyHtml": long_old}}])
@@ -1369,9 +1403,135 @@ def test_update_description_truncates_long_excerpts_with_ellipsis():
         product_id="7",
         new_description=long_new,
     )
-    # Excerpt capped at 120 chars + ellipsis
+    # Old excerpt still capped at 120 chars + ellipsis
     assert "x" * 120 + "..." in out
-    assert "y" * 120 + "..." in out
+    # New value shown in full — no truncation
+    assert "y" * 200 in out
+    assert "y" * 200 + "..." not in out
+
+
+def test_update_description_preview_shows_full_new_description():
+    new_desc = "<p>" + "A" * 200 + "</p>"
+    tools, fc = _build([{"product": {"bodyHtml": "<p>old</p>"}}])
+    out = tools["update_product_description"](product_id="7", new_description=new_desc)
+    assert new_desc in out
+    assert "New (full)" in out
+
+
+def test_update_description_warns_on_script_tag():
+    new_desc = '<p>hi</p><script>fetch("https://evil.example")</script>'
+    tools, fc = _build([{"product": {"bodyHtml": ""}}])
+    out = tools["update_product_description"](product_id="7", new_description=new_desc)
+    assert "⚠ DANGEROUS HTML DETECTED" in out
+    assert "'<script'" in out
+    assert "confirm=True" in out
+    assert len(fc.calls) == 1
+
+
+def test_update_description_warns_on_javascript_uri():
+    new_desc = '<a href="javascript:alert(1)">click</a>'
+    tools, fc = _build([{"product": {"bodyHtml": ""}}])
+    out = tools["update_product_description"](product_id="7", new_description=new_desc)
+    assert "⚠ DANGEROUS HTML DETECTED" in out
+    assert "'javascript:'" in out
+
+
+def test_update_description_warns_on_iframe():
+    new_desc = '<iframe src="https://evil.example"></iframe>'
+    tools, fc = _build([{"product": {"bodyHtml": ""}}])
+    out = tools["update_product_description"](product_id="7", new_description=new_desc)
+    assert "⚠ DANGEROUS HTML DETECTED" in out
+    assert "'<iframe'" in out
+
+
+def test_update_description_no_warning_for_safe_html():
+    new_desc = "<p>Hello <b>world</b></p>"
+    tools, fc = _build([{"product": {"bodyHtml": ""}}])
+    out = tools["update_product_description"](product_id="7", new_description=new_desc)
+    assert "DANGEROUS" not in out
+
+
+def test_update_description_case_insensitive_detection():
+    new_desc = "<SCRIPT>alert(1)</SCRIPT>"
+    tools, fc = _build([{"product": {"bodyHtml": ""}}])
+    out = tools["update_product_description"](product_id="7", new_description=new_desc)
+    assert "⚠ DANGEROUS HTML DETECTED" in out
+
+
+def test_update_description_warns_on_onclick():
+    """onclick= caught by regex — not in the exact-match list."""
+    new_desc = '<a href="#" onclick=alert(1)>click</a>'
+    tools, fc = _build([{"product": {"bodyHtml": ""}}])
+    out = tools["update_product_description"](product_id="7", new_description=new_desc)
+    assert "⚠ DANGEROUS HTML DETECTED" in out
+    assert "onclick=" in out
+
+
+def test_update_description_warns_on_onload_with_space_before_equals():
+    """onload = (space before =) is the variant that the old fixed-string missed."""
+    new_desc = "<svg onload =alert(1)>"
+    tools, fc = _build([{"product": {"bodyHtml": ""}}])
+    out = tools["update_product_description"](product_id="7", new_description=new_desc)
+    assert "⚠ DANGEROUS HTML DETECTED" in out
+    assert "onload" in out
+
+
+def test_update_description_warns_on_vbscript():
+    new_desc = '<a href="vbscript:msgbox(1)">click</a>'
+    tools, fc = _build([{"product": {"bodyHtml": ""}}])
+    out = tools["update_product_description"](product_id="7", new_description=new_desc)
+    assert "⚠ DANGEROUS HTML DETECTED" in out
+    assert "'vbscript:'" in out
+
+
+def test_update_description_warns_on_data_text_html():
+    new_desc = '<a href="data:text/html,<script>alert(1)</script>">click</a>'
+    tools, fc = _build([{"product": {"bodyHtml": ""}}])
+    out = tools["update_product_description"](product_id="7", new_description=new_desc)
+    assert "⚠ DANGEROUS HTML DETECTED" in out
+    assert "'data:text/html'" in out
+
+
+def test_update_description_warns_on_title_breakout():
+    """</title> breakout pattern that the old list missed."""
+    new_desc = "foo</title><h1>injected</h1>"
+    tools, fc = _build([{"product": {"bodyHtml": ""}}])
+    out = tools["update_product_description"](product_id="7", new_description=new_desc)
+    assert "⚠ DANGEROUS HTML DETECTED" in out
+    assert "'</title>'" in out
+
+
+def test_update_description_confirmed_dangerous_shows_warning_prefix():
+    """When confirm=True succeeds with dangerous HTML, done prefix calls it out."""
+    tools, fc = _build(
+        [
+            {"product": {"bodyHtml": ""}},
+            _update_ok(pid="7"),
+        ]
+    )
+    out = tools["update_product_description"](
+        product_id="7",
+        new_description="<script>alert(1)</script>",
+        confirm=True,
+    )
+    assert out.startswith("Done ⚠")
+    assert "dangerous HTML" in out
+
+
+def test_update_description_confirmed_safe_shows_plain_done():
+    """When confirm=True succeeds with safe HTML, done prefix is the normal 'Done.'"""
+    tools, fc = _build(
+        [
+            {"product": {"bodyHtml": ""}},
+            _update_ok(pid="7"),
+        ]
+    )
+    out = tools["update_product_description"](
+        product_id="7",
+        new_description="<p>Safe content</p>",
+        confirm=True,
+    )
+    assert out.startswith("Done.")
 
 
 def test_update_description_confirm_sends_update_mutation():
