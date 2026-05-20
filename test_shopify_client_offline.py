@@ -529,17 +529,36 @@ def test_is_retryable_http_no_false_positive_on_embedded_digits():
     assert _is_retryable_http(TransportServerError(msg)) is False
 
 
+def test_is_retryable_http_no_false_positive_on_bare_numeric_path_segment():
+    # A 404 error whose URL contains "/503/" as a bare path segment (no
+    # letter prefix, but preceded by "/") must NOT be retried.  The leading
+    # \b in the original regex allowed this match because "/" is \W; the
+    # tightened (?<![/\w]) lookbehind blocks it explicitly.
+    msg = "404 Not Found for url: https://api.myshopify.com/resource/503/details"
+    assert _is_retryable_http(TransportServerError(msg)) is False
+
+
 # ===========================================================================
 # _backoff_delay helper
 # ===========================================================================
 
 
-def test_backoff_delay_jitter_true_within_ceiling(monkeypatch):
-    # With real random, the delay must be in [0, ceiling] for every attempt.
-    for attempt in range(6):
-        ceiling = min(30.0, 0.5 * (2**attempt))
-        delay = _backoff_delay(attempt, base=0.5, cap=30.0, jitter=True)
-        assert 0.0 <= delay <= ceiling, f"attempt={attempt}: {delay} not in [0, {ceiling}]"
+def test_backoff_delay_jitter_true_uses_random_uniform(monkeypatch):
+    # Pin random.uniform to a known fraction so the test is hermetic.
+    # Also verifies that _backoff_delay passes (0, ceiling) to uniform and
+    # forwards its return value unchanged.
+    monkeypatch.setattr(sc.random, "uniform", lambda lo, hi: (lo + hi) / 2)
+    # attempt=1: ceiling = min(30, 0.5 * 2^1) = 1.0; midpoint = 0.5
+    assert _backoff_delay(1, base=0.5, cap=30.0, jitter=True) == 0.5
+
+
+def test_backoff_delay_jitter_true_passes_zero_and_ceiling_to_uniform(monkeypatch):
+    # Verify the exact (lo, hi) arguments forwarded to random.uniform.
+    calls: list[tuple[float, float]] = []
+    monkeypatch.setattr(sc.random, "uniform", lambda lo, hi: calls.append((lo, hi)) or hi)
+    _backoff_delay(2, base=0.5, cap=30.0, jitter=True)
+    # attempt=2: ceiling = min(30, 0.5 * 4) = 2.0
+    assert calls == [(0, 2.0)]
 
 
 def test_backoff_delay_jitter_false_returns_ceiling():

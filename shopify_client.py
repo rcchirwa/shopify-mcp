@@ -48,11 +48,18 @@ _POLL_CAP_S = 5.0
 
 # HTTP status codes that should trigger a retry rather than a hard fail.
 _RETRYABLE_HTTP_STATUSES = (429, 500, 502, 503, 504)
-# Pre-compiled word-boundary regex derived from the tuple above. Using \b
-# prevents false-positives when the status code digits appear as a substring
-# inside a URL path or error body (e.g. /api/v500/ in a 404 response body).
+# Pre-compiled regex derived from the tuple above.
+#
+# Pattern: (?<![/\w])(<codes>)\b
+#
+# The leading negative lookbehind rejects digits that are immediately preceded
+# by "/" (bare URL path segment, e.g. /resource/503/details) or by a word
+# character (e.g. v503, api503).  \b at the end rejects trailing word chars
+# (e.g. 503abc).  Together these ensure only a "standalone" status code in the
+# error message — typically at the very start of gql's TransportServerError
+# string, e.g. "503 Service Unavailable for url: …" — is treated as retryable.
 _RETRYABLE_HTTP_RE = re.compile(
-    r"\b(" + "|".join(str(c) for c in _RETRYABLE_HTTP_STATUSES) + r")\b"
+    r"(?<![/\w])(" + "|".join(str(c) for c in _RETRYABLE_HTTP_STATUSES) + r")\b"
 )
 
 # Pin .env to the repo root (next to this file) so loading is independent of
