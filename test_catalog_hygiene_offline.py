@@ -3448,7 +3448,7 @@ def test_s96_empty_product_id_rejected():
     out = tools["update_variant_image_binding"](
         product_id="", variant_media=[{"variantId": "1", "mediaIds": [_S96_MEDIA_1]}]
     )
-    assert out.startswith("Error: provide product_id")
+    assert "product_id must be a non-empty string" in out
     assert fc.calls == []
     tail = _parse_tail(out)
     assert tail["ok"] is False
@@ -3460,8 +3460,64 @@ def test_s96_wrong_gid_type_product_id_rejected():
         product_id="gid://shopify/Order/1",
         variant_media=[{"variantId": "1", "mediaIds": [_S96_MEDIA_1]}],
     )
-    assert out.startswith("Error: provide product_id")
+    assert "non-Product GID" in out
     assert fc.calls == []
+
+
+# ---------- handle resolution ----------
+
+
+def test_s96_handle_resolves_and_combined_query_uses_resolved_gid():
+    tools, fc = _build(
+        [
+            {"productByHandle": {"id": _S96_PRODUCT_GID}},
+            _s96_combined_response([_S96_MEDIA_1], [(_S96_VARIANT_A, "SKU-A", [])]),
+            _s96_mutation_response(productVariants=[(_S96_VARIANT_A, [(_S96_MEDIA_1, "", None)])]),
+        ]
+    )
+    out = tools["update_variant_image_binding"](
+        product_id="test-product-handle",
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    assert len(fc.calls) == 3
+    assert fc.calls[0][0] == GET_PRODUCT_BY_HANDLE_MIN
+    assert fc.calls[0][1] == {"handle": "test-product-handle"}
+    assert fc.calls[1][0] == GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA
+    assert fc.calls[1][1] == {"id": _S96_PRODUCT_GID}
+    assert fc.calls[2][0] == PRODUCT_VARIANT_APPEND_MEDIA
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+
+
+def test_s96_handle_not_found_errors_cleanly():
+    tools, fc = _build([{"productByHandle": None}])
+    out = tools["update_variant_image_binding"](
+        product_id="ghost-handle",
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+    )
+    assert "No product found with handle" in out
+    assert "ghost-handle" in out
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == GET_PRODUCT_BY_HANDLE_MIN
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+
+
+def test_s96_gid_input_skips_handle_lookup():
+    tools, fc = _build(
+        [
+            _s96_combined_response([_S96_MEDIA_1], [(_S96_VARIANT_A, "SKU-A", [])]),
+            _s96_mutation_response(productVariants=[(_S96_VARIANT_A, [(_S96_MEDIA_1, "", None)])]),
+        ]
+    )
+    tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    assert len(fc.calls) == 2
+    assert fc.calls[0][0] == GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA
 
 
 def test_s96_empty_variant_media_rejected():
