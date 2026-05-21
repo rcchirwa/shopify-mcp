@@ -4,7 +4,7 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-05-18.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-05-21.
 
 ---
 
@@ -71,6 +71,16 @@ Items surfaced during code review of Story 9.6 (`update_variant_image_binding`) 
 | T-9.6-handle | ~~Product-ID handle resolution missing~~ | PR #71 — wired `update_variant_image_binding` through `_resolve_product_gid`; added wrong-GID-type guard to that resolver to preserve zero-network-call invariant for non-Product GID inputs. |
 
 No active item lands above the priority list. T-9.6-unknown-variant is the highest-scored remaining item; pre-existing (predates #52) and deferred-pending-trigger.
+
+### Follow-up (added 2026-05-21, PR #71)
+
+T-9.6-handle closed. Beyond the handle-wiring itself, PR #71 made three additional improvements worth tracking:
+
+1. **Wrong-GID-type guard added to `_resolve_product_gid`** — inputs like `gid://shopify/Order/1` now short-circuit before the handle path with no network call. This benefit extends to all callers: `update_product_category` (9.1), `update_product_vendor` (9.2 via its own twin), `update_product_type` (9.4 via its own twin), `update_product_options` (9.5 via its own twin), and now `update_variant_image_binding` (9.6). The four near-twin resolvers noted in T-9.5-resolver-fanout each have identical `startswith("gid://")` entry points — the guard should be added to the other three twins too, either now or as part of the T-9.5-resolver-fanout consolidation.
+
+2. **`GET_PRODUCT_BY_HANDLE_MIN` trimmed to `id` only** — `title` and `category { id fullName name }` were fetched but never read by `_resolve_product_gid`. Query is now minimal. The other three "by-handle" queries (`GET_PRODUCT_VENDOR_BY_HANDLE`, `GET_PRODUCT_TYPE_BY_HANDLE`, `GET_PRODUCT_OPTIONS_BY_HANDLE`) fetch only what their respective tools need and are not affected.
+
+3. **`_resolve_product_gid` now shared across 9.1 and 9.6** — previously only `update_product_category` used it; `update_variant_image_binding` is the second caller. The T-9.5-resolver-fanout consolidation (if it lands) will absorb all four twins into one; the 9.6 call site will naturally migrate at that point.
 
 ---
 
