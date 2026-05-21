@@ -4,7 +4,8 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from shopify_client import ShopifyClient, from_gid
+from shopify_client import ShopifyClient
+from tools._gid import from_gid
 from tools.media._common import _as_product_gid
 from tools.media._constants import _MEDIA_PAGE_CAP
 from tools.media._graphql import GET_PRODUCT_MEDIA

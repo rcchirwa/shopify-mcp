@@ -14,14 +14,10 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from shopify_client import (
-    ShopifyClient,
-    extract_user_errors,
-    from_gid,
-    to_gid,
-    with_confirm_hint,
-)
+from shopify_client import ShopifyClient
+from tools._gid import from_gid, to_gid
 from tools._log import log_write
+from tools._response import extract_user_errors, with_confirm_hint
 
 LIST_PUBLICATIONS = """
 query ListPublications($first: Int!) {

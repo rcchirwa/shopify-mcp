@@ -9,16 +9,11 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from shopify_client import (
-    ShopifyClient,
-    extract_user_errors,
-    format_user_errors,
-    from_gid,
-    to_gid,
-    with_confirm_hint,
-)
+from shopify_client import ShopifyClient
 from tools._filters import dangerous_html_patterns, filter_variant_targets
+from tools._gid import from_gid, to_gid
 from tools._log import log_write
+from tools._response import extract_user_errors, format_user_errors, with_confirm_hint
 from validators.naming import format_validation_diff
 from validators.seo import SEO_DESCRIPTION_MAX_CHARS, SEO_TITLE_MAX_CHARS
 

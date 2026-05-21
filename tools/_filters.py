@@ -5,7 +5,7 @@ Shared filtering helpers used by multiple tool modules.
 import re
 from typing import Any
 
-from shopify_client import to_gid
+from tools._gid import to_gid
 
 # Exact substrings checked case-insensitively.  Event-handler attributes
 # (onclick=, onload=, onmouseover=, etc.) are handled separately by the regex

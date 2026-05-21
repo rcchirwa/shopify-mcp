@@ -71,25 +71,6 @@ _RETRYABLE_HTTP_RE = re.compile(
 _ENV_PATH = Path(__file__).resolve().parent / ".env"
 
 
-def to_gid(resource_type: str, numeric_id: int | str) -> str:
-    return f"gid://shopify/{resource_type}/{numeric_id}"
-
-
-def from_gid(gid: str) -> str:
-    # Tolerate None/empty so callers can pass `obj.get("id")` or
-    # `obj.get("id", "")` without a pre-check — Shopify responses may
-    # return `id: null` on partial/permissions-trimmed fields, and the
-    # dict .get(..., "") default doesn't catch the "key present, value None" case.
-    if not gid:
-        return ""
-    return gid.split("/")[-1]
-
-
-def with_confirm_hint(preview: str) -> str:
-    """Append the confirm hint used by every write-tool preview branch."""
-    return preview + "\n\nTo apply, call again with confirm=True."
-
-
 def _mask_token(token: str) -> str:
     """Mask an access token for logging: preserve prefix + last 4 chars."""
     if not token:
@@ -327,65 +308,3 @@ def _format_one_error(err: Any) -> str:
     if isinstance(err, str):
         return err
     return str(err)
-
-
-def extract_user_errors(
-    result: dict,
-    mutation_key: str,
-    *,
-    error_key: str = "userErrors",
-) -> list:
-    """
-    Pull the userErrors list out of a mutation response, or [] if absent/null.
-
-    Shared by every tool that needs to inspect userErrors — including callers
-    that can't use `format_user_errors` because they iterate each error (e.g.
-    publications.py bulk flows, media.py stage-aware reporting) or format
-    non-string field paths (products.py variant bulk update).
-
-    - `error_key` overrides the default `userErrors` slot; `priceRuleCreate`
-      returns `priceRuleUserErrors` instead.
-    """
-    return (result.get(mutation_key) or {}).get(error_key) or []
-
-
-def format_user_errors_joined(
-    result: dict,
-    mutation_key: str,
-    *,
-    error_key: str = "userErrors",
-) -> str | None:
-    """
-    Join a mutation's userErrors as 'field: message; field: message', or None if absent.
-
-    Like `format_user_errors`, but without the canonical 'Error: ' prefix.
-    Use when the output is embedded inside another sentence or report row
-    where the prefix reads awkwardly — e.g. per-variant failure bullets in
-    a bulk-op summary (rendered as `• {variant}: {error}`).
-    """
-    errors = extract_user_errors(result, mutation_key, error_key=error_key)
-    if not errors:
-        return None
-    return "; ".join(f"{e.get('field')}: {e.get('message')}" for e in errors)
-
-
-def format_user_errors(
-    result: dict,
-    mutation_key: str,
-    *,
-    error_key: str = "userErrors",
-    prefix: str = "Error",
-) -> str | None:
-    """
-    Extract and format a mutation's userErrors payload.
-
-    Returns an 'Error: field: message; …' string if the mutation reported
-    any userErrors, else None. Callers guard with `if err: return err`.
-
-    - `error_key` overrides the default `userErrors` slot.
-    - `prefix` customizes the leading token (e.g. 'Error creating price rule').
-    """
-    msgs = format_user_errors_joined(result, mutation_key, error_key=error_key)
-    if msgs is None:
-        return None
-    return f"{prefix}: {msgs}"

@@ -9,13 +9,10 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from shopify_client import (
-    ShopifyClient,
-    format_user_errors,
-    from_gid,
-    with_confirm_hint,
-)
+from shopify_client import ShopifyClient
+from tools._gid import from_gid
 from tools._log import log_write
+from tools._response import format_user_errors, with_confirm_hint
 
 GET_PRICE_RULES = """
 query GetPriceRules($first: Int!) {

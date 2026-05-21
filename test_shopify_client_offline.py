@@ -25,11 +25,6 @@ from shopify_client import (
     _is_retryable_http,
     _is_throttled,
     _mask_token,
-    extract_user_errors,
-    format_user_errors,
-    format_user_errors_joined,
-    from_gid,
-    with_confirm_hint,
 )
 
 
@@ -174,39 +169,6 @@ def test_mask_token_empty_or_none():
     assert _mask_token(None) == "(empty)"
 
 
-# ---------- from_gid helper ----------
-
-
-def test_from_gid_extracts_trailing_numeric_id():
-    assert from_gid("gid://shopify/Product/123") == "123"
-
-
-def test_from_gid_tolerates_none():
-    # Shopify can return `id: null` on partial / permissions-trimmed fields,
-    # and callers that do `from_gid(obj.get("id", ""))` still pass None through
-    # because .get only applies the default for missing keys. Must not crash.
-    assert from_gid(None) == ""
-
-
-def test_from_gid_tolerates_empty_string():
-    assert from_gid("") == ""
-
-
-# ---------- with_confirm_hint helper ----------
-
-
-def test_with_confirm_hint_appends_exact_contract_string():
-    # The tail is asserted verbatim by tool-level tests (test_inventory_offline,
-    # test_discounts_offline). Pin it here too so drift is caught at the source.
-    assert with_confirm_hint("PREVIEW — Something") == (
-        "PREVIEW — Something\n\nTo apply, call again with confirm=True."
-    )
-
-
-def test_with_confirm_hint_on_empty_preview():
-    assert with_confirm_hint("") == "\n\nTo apply, call again with confirm=True."
-
-
 # ---------- .env loading: override=True + script-relative path ----------
 
 
@@ -260,162 +222,6 @@ def test_init_missing_credentials_raises(monkeypatch, tmp_path):
 
     with pytest.raises(ValueError, match="SHOPIFY_STORE_URL and SHOPIFY_ACCESS_TOKEN"):
         sc.ShopifyClient()
-
-
-# ---------------------------------------------------------------------------
-# format_user_errors
-# ---------------------------------------------------------------------------
-
-
-def test_format_user_errors_happy_path():
-    result = {
-        "productUpdate": {
-            "userErrors": [
-                {"field": "title", "message": "can't be blank"},
-                {"field": "handle", "message": "already taken"},
-            ]
-        }
-    }
-    assert format_user_errors(result, "productUpdate") == (
-        "Error: title: can't be blank; handle: already taken"
-    )
-
-
-def test_format_user_errors_no_errors_returns_none():
-    result = {"productUpdate": {"userErrors": []}}
-    assert format_user_errors(result, "productUpdate") is None
-
-
-def test_format_user_errors_missing_mutation_key_returns_none():
-    # Whole mutation slot absent (e.g. partial/permissions-trimmed response).
-    assert format_user_errors({}, "productUpdate") is None
-
-
-def test_format_user_errors_missing_user_errors_slot_returns_none():
-    # Mutation returned, but the userErrors key was omitted entirely.
-    assert format_user_errors({"productUpdate": {}}, "productUpdate") is None
-
-
-def test_format_user_errors_mutation_slot_is_none_returns_none():
-    # GraphQL can return explicit null for a mutation payload — `or {}` guard.
-    assert format_user_errors({"productUpdate": None}, "productUpdate") is None
-
-
-def test_format_user_errors_alt_error_key():
-    # priceRuleCreate uses priceRuleUserErrors instead of userErrors.
-    result = {
-        "priceRuleCreate": {"priceRuleUserErrors": [{"field": "value", "message": "out of range"}]}
-    }
-    assert (
-        format_user_errors(result, "priceRuleCreate", error_key="priceRuleUserErrors")
-        == "Error: value: out of range"
-    )
-
-
-def test_format_user_errors_custom_prefix():
-    result = {
-        "priceRuleDiscountCodeCreate": {
-            "userErrors": [{"field": "code", "message": "already exists"}]
-        }
-    }
-    assert (
-        format_user_errors(
-            result, "priceRuleDiscountCodeCreate", prefix="Error attaching discount code"
-        )
-        == "Error attaching discount code: code: already exists"
-    )
-
-
-def test_format_user_errors_tolerates_missing_field_or_message():
-    # Defensive: Shopify's contract guarantees both keys, but an unexpected
-    # response shape yields "None: None" rather than a KeyError.
-    result = {"productUpdate": {"userErrors": [{}]}}
-    assert format_user_errors(result, "productUpdate") == "Error: None: None"
-
-
-# ---------------------------------------------------------------------------
-# format_user_errors_joined
-# ---------------------------------------------------------------------------
-
-
-def test_format_user_errors_joined_happy_path():
-    # Same payload as format_user_errors — but no "Error: " prefix. Used by
-    # bulk-op summaries that embed the formatted string inside a bullet row.
-    result = {
-        "productUpdate": {
-            "userErrors": [
-                {"field": "title", "message": "can't be blank"},
-                {"field": "handle", "message": "already taken"},
-            ]
-        }
-    }
-    assert format_user_errors_joined(result, "productUpdate") == (
-        "title: can't be blank; handle: already taken"
-    )
-
-
-def test_format_user_errors_joined_no_errors_returns_none():
-    assert format_user_errors_joined({"productUpdate": {"userErrors": []}}, "productUpdate") is None
-
-
-def test_format_user_errors_joined_missing_mutation_key_returns_none():
-    assert format_user_errors_joined({}, "productUpdate") is None
-
-
-def test_format_user_errors_joined_missing_user_errors_slot_returns_none():
-    # Mutation returned, but the userErrors key was omitted entirely.
-    assert format_user_errors_joined({"productUpdate": {}}, "productUpdate") is None
-
-
-def test_format_user_errors_joined_mutation_slot_is_none_returns_none():
-    assert format_user_errors_joined({"productUpdate": None}, "productUpdate") is None
-
-
-def test_format_user_errors_joined_alt_error_key():
-    result = {
-        "priceRuleCreate": {"priceRuleUserErrors": [{"field": "value", "message": "out of range"}]}
-    }
-    assert (
-        format_user_errors_joined(result, "priceRuleCreate", error_key="priceRuleUserErrors")
-        == "value: out of range"
-    )
-
-
-def test_format_user_errors_joined_tolerates_missing_field_or_message():
-    result: dict = {"productUpdate": {"userErrors": [{}]}}
-    assert format_user_errors_joined(result, "productUpdate") == "None: None"
-
-
-# ---------------------------------------------------------------------------
-# extract_user_errors
-# ---------------------------------------------------------------------------
-
-
-def test_extract_user_errors_returns_list():
-    errors = [{"field": "title", "message": "blank"}]
-    result = {"productUpdate": {"userErrors": errors}}
-    assert extract_user_errors(result, "productUpdate") == errors
-
-
-def test_extract_user_errors_missing_mutation_returns_empty_list():
-    assert extract_user_errors({}, "productUpdate") == []
-
-
-def test_extract_user_errors_null_mutation_returns_empty_list():
-    # Shopify can return explicit null for a mutation payload.
-    assert extract_user_errors({"productUpdate": None}, "productUpdate") == []
-
-
-def test_extract_user_errors_null_list_returns_empty_list():
-    # Mutation returned, userErrors slot is explicit null rather than [].
-    assert extract_user_errors({"productUpdate": {"userErrors": None}}, "productUpdate") == []
-
-
-def test_extract_user_errors_alt_error_key():
-    result = {"publishablePublish": {"mediaUserErrors": [{"field": "media", "message": "bad"}]}}
-    assert extract_user_errors(result, "publishablePublish", error_key="mediaUserErrors") == [
-        {"field": "media", "message": "bad"}
-    ]
 
 
 # ===========================================================================
@@ -708,7 +514,7 @@ def test_execute_non_dict_raises_shopify_error_no_retry(no_sleep):
 
 
 # ===========================================================================
-# poll_job() backoff
+# poll_job()
 # ===========================================================================
 
 

@@ -8,6 +8,43 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-05-21 — Q3 follow-up (shopify_client.py split)
+
+Item Q3 from the 2026-04-24 audit was implemented this session. A `/engineering:code-review` + `/security-review` pass surfaced three suggestions, all applied before closing.
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|---------------|
+| Q3 | ~~`shopify_client.py` becoming a utility grab-bag~~ | Extracted `to_gid`/`from_gid` → `tools/_gid.py`; `with_confirm_hint`, `extract_user_errors`, `format_user_errors_joined`, `format_user_errors` → `tools/_response.py`. 19 modified files, 2 new modules, 2 new test files (`test_gid_offline.py`, `test_response_offline.py`). `shopify_client.py` trimmed 391 → 310 lines. CI (ruff + mypy + pytest + 100% coverage) clean throughout. Three code-review suggestions also applied: `extract_user_errors` return type widened to `list[dict[str, Any]]`; inline `to_gid` import hoisted to module top in `tools/orders.py`; defensive `None: None` fallback documented in `format_user_errors_joined` docstring. |
+
+### New items found
+
+| # | Item | Where | Score |
+|---|------|-------|-------|
+| Q6 | **`from_gid` type widened to `str \| None`** — the original `shopify_client.py` signature declared `gid: str` but callers pass `None` from `obj.get("id")` patterns; the body handled it silently. The split corrected this to `str \| None`. Downstream callers that now type-check cleanly may have been masking `None`-propagation bugs. No action needed — note for the next mypy tightening pass (O1). | `tools/_gid.py` | 4 (note) |
+
+### Current active backlog (after Q3 closes)
+
+| Rank | Item | Score | Status |
+|------|------|-------|--------|
+| 1 | SEC-M2-sanitizer — advisory blocklist → proper HTML sanitizer | 16 | active |
+| 2 | T-9.6-unknown-variant — unknown variant IDs slip past resolution | 10 | watch |
+| 3 | T-9.5-resolver-fanout — 4 near-twin `_resolve_product_id_*` helpers | 8 | watch |
+| 4 | N4 — two HTTP stacks, no shared policy | 9 | watch |
+| 5 | T-9.6-media-cap — `media(first: 100)` silent truncation | 6 | watch |
+| 6 | T-9.5-variants-cap — `variants(first: 50)` post-write snapshot cap | 6 | partial |
+| 7 | O1 — mypy permissive on test files (pre-existing) | — | watch |
+| 8 | T-9.6-resolver-orphan — `resolve_variant_ids_to_gids` has no callers | 4 | confirmed |
+| 9 | SEC-M2-collection-seo — collections warning format inconsistent with products | 4 | note |
+| 10 | Q4 — `format_user_errors_joined()` single caller | 4 | note |
+| 11 | Q5 — `dict[str, Any]` baseline for GraphQL payloads | 4 | watch |
+| 12 | Q6 — `from_gid` type widening note | 4 | note |
+
+Q3 closes; active backlog top item is now SEC-M2-sanitizer (score 16).
+
+---
+
 ## 2026-05-18 — M2 security review follow-ups (PR #65)
 
 Items surfaced by the mcp-server-security-review.md (2026-05-18) and the subsequent `/engineering:code-review` + `/security-review` pass on the M2 implementation PR. The blocklist-based advisory warning shipped in PR #65 is a solid first layer; the items below track its known gaps for future hardening.

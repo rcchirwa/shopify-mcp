@@ -2,14 +2,10 @@
 
 from mcp.server.fastmcp import FastMCP
 
-from shopify_client import (
-    JOB_POLL_TIMEOUT_S,
-    ShopifyClient,
-    from_gid,
-    poll_job,
-    with_confirm_hint,
-)
+from shopify_client import JOB_POLL_TIMEOUT_S, ShopifyClient, poll_job
+from tools._gid import from_gid
 from tools._log import log_write
+from tools._response import with_confirm_hint
 from tools.media._common import (
     _as_product_gid,
     _extract_media_user_errors,
