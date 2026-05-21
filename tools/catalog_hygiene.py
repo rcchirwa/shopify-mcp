@@ -2951,8 +2951,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         """
         # Step 1 — resolve product_id (numeric / GID short-circuit; handle via network)
         gid, resolve_err = _resolve_product_gid(client, product_id)
-        if resolve_err:
-            return _render(f"Error: {resolve_err}", _err_payload(resolve_err))
+        if resolve_err or not gid:
+            err = resolve_err or "product_id could not be resolved."
+            return _render(f"Error: {err}", _err_payload(err))
 
         if not variant_media:
             msg = "variant_media must be a non-empty list."
