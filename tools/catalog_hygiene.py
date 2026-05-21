@@ -1506,7 +1506,7 @@ def _resolve_product_gid(
 
     Rejects with (None, error_string):
         empty / non-string  → "product_id must be a non-empty string."
-        wrong-type GID      → "... got non-Product GID: ..." (no network)
+        wrong-type GID      → "product_id must be … — got non-Product GID: '<v>'" (no network)
         handle not found    → "No product found with handle '...'."
         transport failure   → "Handle lookup failed (...): ..."
 

@@ -3470,13 +3470,7 @@ def test_s96_wrong_gid_type_product_id_rejected():
 def test_s96_handle_resolves_and_combined_query_uses_resolved_gid():
     tools, fc = _build(
         [
-            {
-                "productByHandle": {
-                    "id": _S96_PRODUCT_GID,
-                    "title": "Test Product",
-                    "category": None,
-                }
-            },
+            {"productByHandle": {"id": _S96_PRODUCT_GID}},
             _s96_combined_response([_S96_MEDIA_1], [(_S96_VARIANT_A, "SKU-A", [])]),
             _s96_mutation_response(productVariants=[(_S96_VARIANT_A, [(_S96_MEDIA_1, "", None)])]),
         ]
