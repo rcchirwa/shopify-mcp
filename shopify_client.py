@@ -4,6 +4,8 @@ Loads credentials from .env — never hardcode secrets here.
 """
 
 import os
+import random
+import re
 import sys
 import time
 from pathlib import Path
@@ -32,6 +34,34 @@ query JobStatus($id: ID!) {
 # in user-visible timeout messages without re-declaring it.
 JOB_POLL_TIMEOUT_S = 10
 
+# --- Retry/backoff knobs (M5 security finding) ----------------------------
+# Applied internally by ShopifyClient.execute() — callers only see success
+# or a final RuntimeError after retries are exhausted. Full jitter prevents
+# thundering-herd from parallel callers racing the same cost bucket.
+_RETRY_MAX_ATTEMPTS = 5  # initial try + 5 retries = 6 total executions
+_RETRY_BASE_S = 0.5
+_RETRY_CAP_S = 30.0
+
+# poll_job() backoff: tighter cap since polls are informational.
+_POLL_BASE_S = 0.5
+_POLL_CAP_S = 5.0
+
+# HTTP status codes that should trigger a retry rather than a hard fail.
+_RETRYABLE_HTTP_STATUSES = (429, 500, 502, 503, 504)
+# Pre-compiled regex derived from the tuple above.
+#
+# Pattern: (?<![/\w])(<codes>)\b
+#
+# The leading negative lookbehind rejects digits that are immediately preceded
+# by "/" (bare URL path segment, e.g. /resource/503/details) or by a word
+# character (e.g. v503, api503).  \b at the end rejects trailing word chars
+# (e.g. 503abc).  Together these ensure only a "standalone" status code in the
+# error message — typically at the very start of gql's TransportServerError
+# string, e.g. "503 Service Unavailable for url: …" — is treated as retryable.
+_RETRYABLE_HTTP_RE = re.compile(
+    r"(?<![/\w])(" + "|".join(str(c) for c in _RETRYABLE_HTTP_STATUSES) + r")\b"
+)
+
 # Pin .env to the repo root (next to this file) so loading is independent of
 # the working directory the MCP process is launched with. Claude Desktop
 # launches subprocesses with CWD=/, which makes the default `load_dotenv()`
@@ -39,25 +69,6 @@ JOB_POLL_TIMEOUT_S = 10
 # on-disk file the source of truth — so a token rotated in .env wins over
 # stale values injected by the launcher's config.
 _ENV_PATH = Path(__file__).resolve().parent / ".env"
-
-
-def to_gid(resource_type: str, numeric_id: int | str) -> str:
-    return f"gid://shopify/{resource_type}/{numeric_id}"
-
-
-def from_gid(gid: str) -> str:
-    # Tolerate None/empty so callers can pass `obj.get("id")` or
-    # `obj.get("id", "")` without a pre-check — Shopify responses may
-    # return `id: null` on partial/permissions-trimmed fields, and the
-    # dict .get(..., "") default doesn't catch the "key present, value None" case.
-    if not gid:
-        return ""
-    return gid.split("/")[-1]
-
-
-def with_confirm_hint(preview: str) -> str:
-    """Append the confirm hint used by every write-tool preview branch."""
-    return preview + "\n\nTo apply, call again with confirm=True."
 
 
 def _mask_token(token: str) -> str:
@@ -69,6 +80,69 @@ def _mask_token(token: str) -> str:
     # Shopify admin tokens start with `shpat_`; preserve that hint if present.
     prefix = "shpat_" if token.startswith("shpat_") else token[:4]
     return f"{prefix}…{token[-4:]}"
+
+
+class ShopifyError(RuntimeError):
+    """Permanent Shopify failure — do not retry (4xx other than 429,
+    schema/permission errors, malformed mutations)."""
+
+
+class TransientShopifyError(RuntimeError):
+    """Transient Shopify failure — safe to retry (THROTTLED, 429, 5xx).
+    Surfaces to callers only after retries are exhausted."""
+
+
+def _is_throttled(errors: Any) -> bool:
+    """Return True iff a TransportQueryError.errors payload signals THROTTLED.
+
+    Checks both `extensions.code == "THROTTLED"` (dict shape) and
+    "THROTTLED" substring (string-shaped fallback).
+    """
+    if errors is None:
+        return False
+    if isinstance(errors, str):
+        return "THROTTLED" in errors
+    if not isinstance(errors, list):
+        return "THROTTLED" in str(errors)
+    for err in errors:
+        if isinstance(err, dict):
+            ext = err.get("extensions") or {}
+            if isinstance(ext, dict) and ext.get("code") == "THROTTLED":
+                return True
+            msg = err.get("message") or ""
+            if isinstance(msg, str) and "THROTTLED" in msg:
+                return True
+        elif "THROTTLED" in (err if isinstance(err, str) else str(err)):
+            return True
+    return False
+
+
+def _is_retryable_http(exc: TransportServerError) -> bool:
+    """Return True iff a TransportServerError is retryable (429 or 5xx).
+
+    Uses a word-boundary regex on str(exc) to avoid false-positives from
+    status-code digits appearing in URL paths or error bodies (e.g. /v500/).
+    gql 4.0 has no structured status attribute, so string matching is
+    unavoidable; \b ensures "v503" or "503abc" are not treated as status codes.
+    """
+    return bool(_RETRYABLE_HTTP_RE.search(str(exc)))
+
+
+def _backoff_delay(attempt: int, *, base: float, cap: float, jitter: bool) -> float:
+    """Compute the capped exponential backoff delay without sleeping.
+
+    `attempt` is 0-indexed (first retry = attempt 0). Returns uniform [0,
+    ceiling] when `jitter=True` (AWS full-jitter, recommended for contention
+    recovery), or the ceiling itself when `jitter=False` (deterministic, used
+    by poll_job where a single caller needs no herd-smearing).
+    """
+    ceiling = min(cap, base * (2**attempt))
+    return random.uniform(0, ceiling) if jitter else ceiling
+
+
+def _backoff_sleep(attempt: int, *, base: float, cap: float, jitter: bool) -> None:
+    """Compute and perform one backoff sleep. See `_backoff_delay` for params."""
+    time.sleep(_backoff_delay(attempt, base=base, cap=cap, jitter=jitter))
 
 
 class ShopifyClient:
@@ -109,28 +183,47 @@ class ShopifyClient:
         )
 
     def execute(self, query_str: str, variables: dict | None = None) -> dict:
-        try:
-            result = self._client.execute(gql(query_str), variable_values=variables or {})
-        except TransportQueryError as e:
-            raise RuntimeError(f"Shopify GraphQL error: {_format_errors(e.errors)}") from e
-        except TransportServerError as e:
-            raise RuntimeError(f"Shopify HTTP error: {e!s}") from e
+        gql_query = gql(query_str)
+        for attempt in range(_RETRY_MAX_ATTEMPTS + 1):
+            try:
+                result = self._client.execute(gql_query, variable_values=variables or {})
+            except TransportQueryError as e:
+                if _is_throttled(e.errors):
+                    if attempt < _RETRY_MAX_ATTEMPTS:
+                        _backoff_sleep(attempt, base=_RETRY_BASE_S, cap=_RETRY_CAP_S, jitter=True)
+                        continue
+                    raise TransientShopifyError(
+                        f"Shopify GraphQL THROTTLED after {attempt + 1} attempts: "
+                        f"{_format_errors(e.errors)}"
+                    ) from e
+                raise ShopifyError(f"Shopify GraphQL error: {_format_errors(e.errors)}") from e
+            except TransportServerError as e:
+                if _is_retryable_http(e):
+                    if attempt < _RETRY_MAX_ATTEMPTS:
+                        _backoff_sleep(attempt, base=_RETRY_BASE_S, cap=_RETRY_CAP_S, jitter=True)
+                        continue
+                    raise TransientShopifyError(
+                        f"Shopify HTTP error after {attempt + 1} attempts: {e!s}"
+                    ) from e
+                raise ShopifyError(f"Shopify HTTP error: {e!s}") from e
 
-        if not isinstance(result, dict):
-            # Surface the real payload (scope error text, HTML error page, etc.)
-            # so callers don't crash downstream with 'str' object has no attribute 'get'.
-            preview = str(result)[:500]
-            raise RuntimeError(
-                f"Shopify returned non-dict response (type={type(result).__name__}): {preview}"
-            )
-        return result
+            if not isinstance(result, dict):
+                # Surface the real payload (scope error text, HTML error page, etc.)
+                # so callers don't crash downstream with 'str' object has no attribute 'get'.
+                preview = str(result)[:500]
+                raise ShopifyError(
+                    f"Shopify returned non-dict response (type={type(result).__name__}): {preview}"
+                )
+            return result
+
+        raise TransientShopifyError("Shopify retry loop exhausted")  # pragma: no cover
 
 
 def poll_job(
     client: "ShopifyClient",
     job_gid: str,
     timeout_s: int = JOB_POLL_TIMEOUT_S,
-    interval_s: float = 1.0,
+    interval_s: float | None = None,
 ) -> dict:
     """
     Poll a Shopify Job node until `done=true` or the budget is exhausted.
@@ -142,12 +235,17 @@ def poll_job(
       - timed_out: bool    — True iff the budget was exhausted before done
       - error: str or None — transport error from the last failed poll
 
+    When `interval_s` is None (default), uses capped exponential backoff
+    (0.5s, 1s, 2s, 4s, 5s, 5s …). Pass an explicit float to override with
+    a fixed sleep interval.
+
     Does NOT raise. The underlying mutation has already succeeded by the time
     the caller invokes this — polling is strictly informational.
     """
     start = time.monotonic()
     last_error: str | None = None
     last_done: bool = False
+    attempt = 0
     while True:
         try:
             result = client.execute(JOB_STATUS_QUERY, {"id": job_gid})
@@ -169,7 +267,14 @@ def poll_job(
                 "timed_out": False,
                 "error": None,
             }
-        if elapsed + interval_s > timeout_s:
+
+        next_sleep = (
+            interval_s
+            if interval_s is not None
+            else _backoff_delay(attempt, base=_POLL_BASE_S, cap=_POLL_CAP_S, jitter=False)
+        )
+
+        if elapsed + next_sleep > timeout_s:
             return {
                 "id": job_gid,
                 "done": False,
@@ -177,7 +282,8 @@ def poll_job(
                 "timed_out": True,
                 "error": last_error,
             }
-        time.sleep(interval_s)
+        time.sleep(next_sleep)
+        attempt += 1
 
 
 def _format_errors(errors: Any) -> str:
@@ -202,65 +308,3 @@ def _format_one_error(err: Any) -> str:
     if isinstance(err, str):
         return err
     return str(err)
-
-
-def extract_user_errors(
-    result: dict,
-    mutation_key: str,
-    *,
-    error_key: str = "userErrors",
-) -> list:
-    """
-    Pull the userErrors list out of a mutation response, or [] if absent/null.
-
-    Shared by every tool that needs to inspect userErrors — including callers
-    that can't use `format_user_errors` because they iterate each error (e.g.
-    publications.py bulk flows, media.py stage-aware reporting) or format
-    non-string field paths (products.py variant bulk update).
-
-    - `error_key` overrides the default `userErrors` slot; `priceRuleCreate`
-      returns `priceRuleUserErrors` instead.
-    """
-    return (result.get(mutation_key) or {}).get(error_key) or []
-
-
-def format_user_errors_joined(
-    result: dict,
-    mutation_key: str,
-    *,
-    error_key: str = "userErrors",
-) -> str | None:
-    """
-    Join a mutation's userErrors as 'field: message; field: message', or None if absent.
-
-    Like `format_user_errors`, but without the canonical 'Error: ' prefix.
-    Use when the output is embedded inside another sentence or report row
-    where the prefix reads awkwardly — e.g. per-variant failure bullets in
-    a bulk-op summary (rendered as `• {variant}: {error}`).
-    """
-    errors = extract_user_errors(result, mutation_key, error_key=error_key)
-    if not errors:
-        return None
-    return "; ".join(f"{e.get('field')}: {e.get('message')}" for e in errors)
-
-
-def format_user_errors(
-    result: dict,
-    mutation_key: str,
-    *,
-    error_key: str = "userErrors",
-    prefix: str = "Error",
-) -> str | None:
-    """
-    Extract and format a mutation's userErrors payload.
-
-    Returns an 'Error: field: message; …' string if the mutation reported
-    any userErrors, else None. Callers guard with `if err: return err`.
-
-    - `error_key` overrides the default `userErrors` slot.
-    - `prefix` customizes the leading token (e.g. 'Error creating price rule').
-    """
-    msgs = format_user_errors_joined(result, mutation_key, error_key=error_key)
-    if msgs is None:
-        return None
-    return f"{prefix}: {msgs}"

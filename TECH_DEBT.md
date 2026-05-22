@@ -4,7 +4,44 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-05-18.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-05-21.
+
+---
+
+## 2026-05-21 — Q3 follow-up (shopify_client.py split)
+
+Item Q3 from the 2026-04-24 audit was implemented this session. A `/engineering:code-review` + `/security-review` pass surfaced three suggestions, all applied before closing.
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|---------------|
+| Q3 | ~~`shopify_client.py` becoming a utility grab-bag~~ | Extracted `to_gid`/`from_gid` → `tools/_gid.py`; `with_confirm_hint`, `extract_user_errors`, `format_user_errors_joined`, `format_user_errors` → `tools/_response.py`. 19 modified files, 2 new modules, 2 new test files (`test_gid_offline.py`, `test_response_offline.py`). `shopify_client.py` trimmed 391 → 310 lines. CI (ruff + mypy + pytest + 100% coverage) clean throughout. Three code-review suggestions also applied: `extract_user_errors` return type widened to `list[dict[str, Any]]`; inline `to_gid` import hoisted to module top in `tools/orders.py`; defensive `None: None` fallback documented in `format_user_errors_joined` docstring. |
+
+### New items found
+
+| # | Item | Where | Score |
+|---|------|-------|-------|
+| Q6 | **`from_gid` type widened to `str \| None`** — the original `shopify_client.py` signature declared `gid: str` but callers pass `None` from `obj.get("id")` patterns; the body handled it silently. The split corrected this to `str \| None`. Downstream callers that now type-check cleanly may have been masking `None`-propagation bugs. No action needed — note for the next mypy tightening pass (O1). | `tools/_gid.py` | 4 (note) |
+
+### Current active backlog (after Q3 closes)
+
+| Rank | Item | Score | Status |
+|------|------|-------|--------|
+| 1 | SEC-M2-sanitizer — advisory blocklist → proper HTML sanitizer | 16 | active |
+| 2 | T-9.6-unknown-variant — unknown variant IDs slip past resolution | 10 | watch |
+| 3 | T-9.5-resolver-fanout — 4 near-twin `_resolve_product_id_*` helpers | 8 | watch |
+| 4 | N4 — two HTTP stacks, no shared policy | 9 | watch |
+| 5 | T-9.6-media-cap — `media(first: 100)` silent truncation | 6 | watch |
+| 6 | T-9.5-variants-cap — `variants(first: 50)` post-write snapshot cap | 6 | partial |
+| 7 | O1 — mypy permissive on test files (pre-existing) | — | watch |
+| 8 | T-9.6-resolver-orphan — `resolve_variant_ids_to_gids` has no callers | 4 | confirmed |
+| 9 | SEC-M2-collection-seo — collections warning format inconsistent with products | 4 | note |
+| 10 | Q4 — `format_user_errors_joined()` single caller | 4 | note |
+| 11 | Q5 — `dict[str, Any]` baseline for GraphQL payloads | 4 | watch |
+| 12 | Q6 — `from_gid` type widening note | 4 | note |
+
+Q3 closes; active backlog top item is now SEC-M2-sanitizer (score 16).
 
 ---
 
@@ -58,7 +95,6 @@ Items surfaced during code review of Story 9.6 (`update_variant_image_binding`) 
 
 | # | Item | Where | Score |
 |---|------|-------|-------|
-| T-9.6-handle | **Product-ID handle resolution missing** — `_as_product_gid` accepts numeric ID and Product GID only. The Epic 9 spec's AC #1 lists product handles as a valid input form across all 7 tools. Fix path: add a `handle → GID` resolver alongside `_as_product_gid` (the existing `productByHandle` query in `tools/products.py` already does the lookup); apply uniformly across catalog-hygiene tools. Trigger: the first Story 9.x where a merchant asks "why can't I pass the handle?" | `tools/media/_common.py:8`, all catalog-hygiene callers | 12 |
 | T-9.6-unknown-variant | **Unknown numeric/GID variantIds slip past resolution into the mutation** — both `resolve_variant_ids_with_variants` (now used) and `resolve_variant_ids_to_gids` (previously) short-circuit numeric/GID inputs without verifying the variant exists on the product. Story 9.6's flow then falls through to `productVariantAppendMedia`, where Shopify rejects via userError — instead of failing fast with a structured tool-side error. Story 9.3's `update_product_pricing` already catches this: after resolution it iterates `resolved_gids` against the pre-fetched variants and collects `unknown_gids` for a clean tool-side error (see `tools/catalog_hygiene.py` `update_product_pricing` body). Fix path: mirror that check in `update_variant_image_binding` between Step 3 (resolve) and Step 5 (delta). Trigger: a caller passes a variant ID belonging to a different product and the Shopify userError reads worse than a tool-side rejection would. Pre-existing in #50; not introduced by #52. | `tools/catalog_hygiene.py:update_variant_image_binding` | 10 (watch) |
 | T-9.6-media-cap | **`media(first: 100)` silent truncation** — `update_variant_image_binding` validates input mediaIds against the first 100 product-media nodes only; a valid media GID past that window would be falsely rejected as not-on-product. Matches the existing cap in `tools/media/_graphql.py:GET_PRODUCT_MEDIA`. Fix path: paginate, or surface a "first-100-only" warning when `pageInfo.hasNextPage` is true. Trigger: a real product hits >100 media. | `tools/catalog_hygiene.py`, `tools/media/_graphql.py` | 6 (watch) |
 | T-9.6-resolver-orphan | **Story 9.0's `resolve_variant_ids_to_gids` / `resolve_variant_id_to_gid` now have no production callers** — confirmed via `grep -rn "resolve_variant_ids_to_gids" tools/ validators/ shopify_client.py` (no matches outside `tools/_resolvers.py` itself). Story 9.3 and Story 9.6 both use `resolve_variant_ids_with_variants`. The fetching resolver is exercised only by `test_resolvers_offline.py`. Don't remove in #52 — it's a public helper and future stories may want the fetch-on-its-own variant. But flag for a quick cleanup PR if no caller materializes by Story 9.7. | `tools/_resolvers.py` | 4 (note) |
@@ -69,8 +105,19 @@ Items surfaced during code review of Story 9.6 (`update_variant_image_binding`) 
 | # | Item | How it closed |
 |---|------|---------------|
 | T-9.6-rt | ~~Worst-case 3 round-trips when SKUs are supplied~~ | [#52](https://github.com/rcchirwa/shopify-mcp/pull/52) — switched to Story 9.3's `resolve_variant_ids_with_variants` enabler. Variant resolution now runs in-memory against the combined query's `variants.nodes`, collapsing SKU-input round-trips from 3 to 2 (combined + mutation). |
+| T-9.6-handle | ~~Product-ID handle resolution missing~~ | PR #71 — wired `update_variant_image_binding` through `_resolve_product_gid`; added wrong-GID-type guard to that resolver to preserve zero-network-call invariant for non-Product GID inputs. |
 
-No active item lands above the priority list. T-9.6-handle and T-9.6-unknown-variant are the highest scored; both are pre-existing (predate #52) and deferred-pending-trigger.
+No active item lands above the priority list. T-9.6-unknown-variant is the highest-scored remaining item; pre-existing (predates #52) and deferred-pending-trigger.
+
+### Follow-up (added 2026-05-21, PR #71)
+
+T-9.6-handle closed. Beyond the handle-wiring itself, PR #71 made three additional improvements worth tracking:
+
+1. **Wrong-GID-type guard added to `_resolve_product_gid`** — inputs like `gid://shopify/Order/1` now short-circuit before the handle path with no network call. This benefit extends to all callers: `update_product_category` (9.1), `update_product_vendor` (9.2 via its own twin), `update_product_type` (9.4 via its own twin), `update_product_options` (9.5 via its own twin), and now `update_variant_image_binding` (9.6). The four near-twin resolvers noted in T-9.5-resolver-fanout each have identical `startswith("gid://")` entry points — the guard should be added to the other three twins too, either now or as part of the T-9.5-resolver-fanout consolidation.
+
+2. **`GET_PRODUCT_BY_HANDLE_MIN` trimmed to `id` only** — `title` and `category { id fullName name }` were fetched but never read by `_resolve_product_gid`. Query is now minimal. The other three "by-handle" queries (`GET_PRODUCT_VENDOR_BY_HANDLE`, `GET_PRODUCT_TYPE_BY_HANDLE`, `GET_PRODUCT_OPTIONS_BY_HANDLE`) fetch only what their respective tools need and are not affected.
+
+3. **`_resolve_product_gid` now shared across 9.1 and 9.6** — previously only `update_product_category` used it; `update_variant_image_binding` is the second caller. The T-9.5-resolver-fanout consolidation (if it lands) will absorb all four twins into one; the 9.6 call site will naturally migrate at that point.
 
 ---
 

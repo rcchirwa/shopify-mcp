@@ -25,8 +25,6 @@ Return shape — human-readable head + fenced ```json``` tail:
     output and keeps the JSON serialization consistent across tools.
 
 Story 9.6 (`update_variant_image_binding`) known limitations:
-    - product_id accepts numeric ID or Product GID only — handle resolution
-      is not wired through `_as_product_gid` (T-9.6-handle).
     - GraphQL pagination caps: 100 product media, 250 variants, 100 media
       per variant. A media GID past the first 100 product-media nodes would
       be falsely rejected as not-on-product (T-9.6-media-cap).
@@ -39,17 +37,11 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from shopify_client import (
-    ShopifyClient,
-    extract_user_errors,
-    format_user_errors,
-    from_gid,
-    to_gid,
-    with_confirm_hint,
-)
+from shopify_client import ShopifyClient
+from tools._gid import from_gid, to_gid
 from tools._log import log_write
 from tools._resolvers import resolve_variant_ids_with_variants
-from tools.media._common import _as_product_gid
+from tools._response import extract_user_errors, format_user_errors, with_confirm_hint
 
 # Page cap mirrors `productVariantsBulkUpdate`'s 250-variant window; same idiom
 # as tools/products.py:247. A product hitting this cap would need paginated
@@ -184,8 +176,6 @@ GET_PRODUCT_BY_HANDLE_MIN = """
 query GetProductByHandleMin($handle: String!) {
   productByHandle(handle: $handle) {
     id
-    title
-    category { id fullName name }
   }
 }
 """
@@ -1502,17 +1492,30 @@ def _resolve_product_gid(
     client: ShopifyClient,
     product_id: str,
 ) -> tuple[str | None, str | None]:
-    """Map a numeric ID / GID / handle to a Product GID.
+    """Map a product_id string to a Product GID.
 
-    Returns (gid, error). On success, error is None. On failure (handle not
-    found, malformed input, transport failure), gid is None and error is a
-    human-readable string. Numeric and GID inputs short-circuit without a
-    network call; handle inputs trigger a `productByHandle` query (wrapped
-    in try/except so non-200 HTTP surfaces as a structured error per AC #8).
+    Accepts (no network call unless noted):
+        numeric string  → wraps to gid://shopify/Product/<id>
+        Product GID     → passes through unchanged
+        handle string   → productByHandle lookup (one network call)
+
+    Rejects with (None, error_string):
+        empty / non-string  → "product_id must be a non-empty string."
+        wrong-type GID      → "product_id must be … — got non-Product GID: '<v>'" (no network)
+        handle not found    → "No product found with handle '...'."
+        transport failure   → "Handle lookup failed (...): ..."
+
+    Returns (gid, error). On success error is None; on failure gid is None.
     """
     if not isinstance(product_id, str) or not product_id.strip():
         return None, "product_id must be a non-empty string."
     stripped = product_id.strip()
+
+    if stripped.startswith("gid://") and not stripped.startswith(_PRODUCT_GID_PREFIX):
+        return None, (
+            f"product_id must be a numeric ID, Product GID, or handle"
+            f" — got non-Product GID: {stripped!r}"
+        )
 
     if stripped.startswith(_PRODUCT_GID_PREFIX):
         if not stripped[len(_PRODUCT_GID_PREFIX) :]:
@@ -2923,7 +2926,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         """
         Bind existing product media to one or more product variants.
 
-        product_id  : numeric ID or GID of the product (handle not supported in v1).
+        product_id  : numeric ID, Product GID, or handle of the product.
         variant_media: non-empty list of entries. Each entry is a dict with:
             - variantId : str — numeric ID, ProductVariant GID, or SKU on this product
             - mediaIds  : list[str] — non-empty list of MediaImage / Video / Model3d GIDs
@@ -2941,11 +2944,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         `{ok: false, variants: [], errors: [{message}]}` on validation or
         resolver errors; Shopify userErrors pass through verbatim.
         """
-        # Step 1 — input validation (no network)
-        gid = _as_product_gid(product_id)
-        if not gid:
-            msg = "provide product_id (numeric ID or Product GID)."
-            return _render(f"Error: {msg}", _err_payload(msg))
+        # Step 1 — resolve product_id (numeric / GID short-circuit; handle via network)
+        gid, resolve_err = _resolve_product_gid(client, product_id)
+        if resolve_err or not gid:
+            err = resolve_err or "product_id could not be resolved."
+            return _render(f"Error: {err}", _err_payload(err))
 
         if not variant_media:
             msg = "variant_media must be a non-empty list."

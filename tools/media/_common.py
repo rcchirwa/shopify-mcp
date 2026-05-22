@@ -2,7 +2,8 @@
 
 from typing import Any
 
-from shopify_client import extract_user_errors, to_gid
+from tools._gid import to_gid
+from tools._response import extract_user_errors
 
 
 def _as_product_gid(pid: str) -> str:

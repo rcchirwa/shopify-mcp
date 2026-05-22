@@ -2,8 +2,9 @@
 
 from mcp.server.fastmcp import FastMCP
 
-from shopify_client import ShopifyClient, extract_user_errors, with_confirm_hint
+from shopify_client import ShopifyClient
 from tools._log import log_write
+from tools._response import extract_user_errors, with_confirm_hint
 from tools.media._common import _as_product_gid, _fmt_media_user_errors
 from tools.media._graphql import GET_PRODUCT_MEDIA, PRODUCT_DELETE_MEDIA
 

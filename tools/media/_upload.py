@@ -18,15 +18,10 @@ from urllib.parse import urlparse
 import requests
 from mcp.server.fastmcp import FastMCP
 
-from shopify_client import (
-    JOB_POLL_TIMEOUT_S,
-    ShopifyClient,
-    extract_user_errors,
-    from_gid,
-    poll_job,
-    with_confirm_hint,
-)
+from shopify_client import JOB_POLL_TIMEOUT_S, ShopifyClient, poll_job
+from tools._gid import from_gid
 from tools._log import log_write
+from tools._response import extract_user_errors, with_confirm_hint
 from tools._url_safety import _reject_if_private_host
 from tools.media._common import (
     _as_product_gid,
