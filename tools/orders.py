@@ -6,7 +6,8 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from shopify_client import ShopifyClient, from_gid
+from shopify_client import ShopifyClient
+from tools._gid import from_gid, to_gid
 
 # .format() does not re-parse substituted text, so curly braces in values are safe.
 _UNTRUSTED = "<UNTRUSTED-DATA>{}</UNTRUSTED-DATA>"
@@ -93,8 +94,6 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def get_order(order_id: str) -> str:
         """Get a single order by id."""
-        from shopify_client import to_gid
-
         data = client.execute(GET_ORDER_BY_ID, {"id": to_gid("Order", order_id)})
         o = data.get("order")
         if not o:

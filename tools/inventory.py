@@ -8,16 +8,11 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from shopify_client import (
-    ShopifyClient,
-    format_user_errors,
-    format_user_errors_joined,
-    from_gid,
-    to_gid,
-    with_confirm_hint,
-)
+from shopify_client import ShopifyClient
 from tools._filters import filter_variant_targets
+from tools._gid import from_gid, to_gid
 from tools._log import log_write
+from tools._response import format_user_errors, format_user_errors_joined, with_confirm_hint
 
 # GET_PRODUCT_INVENTORY fetches `variants(first: 50)` — Shopify returns up to
 # this many variants per request and silently truncates the rest. When a read

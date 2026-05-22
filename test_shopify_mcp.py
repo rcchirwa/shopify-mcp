@@ -10,7 +10,8 @@ Usage:
 
 import sys
 
-from shopify_client import ShopifyClient, from_gid
+from shopify_client import ShopifyClient
+from tools._gid import from_gid
 
 SHOP_QUERY = """
 query {

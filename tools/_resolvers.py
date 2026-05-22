@@ -15,7 +15,8 @@ price + compareAtPrice in the same round-trip).
 
 from typing import Any
 
-from shopify_client import ShopifyClient, to_gid
+from shopify_client import ShopifyClient
+from tools._gid import to_gid
 
 # Narrower than GET_PRODUCT_FULL_BY_ID — only what's needed to map SKU → variant GID.
 # Cap of 250 matches Shopify's `productVariantsBulkUpdate` window; products with

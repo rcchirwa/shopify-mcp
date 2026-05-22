@@ -37,16 +37,11 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from shopify_client import (
-    ShopifyClient,
-    extract_user_errors,
-    format_user_errors,
-    from_gid,
-    to_gid,
-    with_confirm_hint,
-)
+from shopify_client import ShopifyClient
+from tools._gid import from_gid, to_gid
 from tools._log import log_write
 from tools._resolvers import resolve_variant_ids_with_variants
+from tools._response import extract_user_errors, format_user_errors, with_confirm_hint
 
 # Page cap mirrors `productVariantsBulkUpdate`'s 250-variant window; same idiom
 # as tools/products.py:247. A product hitting this cap would need paginated
