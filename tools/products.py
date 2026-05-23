@@ -13,7 +13,8 @@ from shopify_client import ShopifyClient
 from tools._filters import dangerous_html_patterns, filter_variant_targets
 from tools._gid import from_gid, to_gid
 from tools._log import log_write
-from tools._response import extract_user_errors, format_user_errors, with_confirm_hint
+from tools._response import extract_user_errors, with_confirm_hint
+from tools._write_tool import write_gate
 from validators.naming import format_validation_diff
 from validators.seo import SEO_DESCRIPTION_MAX_CHARS, SEO_TITLE_MAX_CHARS
 
@@ -355,21 +356,15 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"Naming validation:\n{validation}"
         )
 
-        if not confirm:
-            return with_confirm_hint(preview)
-
         inp = {"id": to_gid("Product", product_id), "title": new_title, "handle": target_handle}
-
-        result = client.execute(UPDATE_PRODUCT, {"input": inp})
-        err = format_user_errors(result, "productUpdate")
-        if err:
-            return err
-
-        log_write(
-            "update_product_title",
-            f"id={product_id} | '{old_title}' → '{new_title}' | handle '{old_handle}' → '{target_handle}'",
+        return write_gate(
+            preview=preview,
+            confirm=confirm,
+            execute=lambda: client.execute(UPDATE_PRODUCT, {"input": inp}),
+            mutation_key="productUpdate",
+            log_name="update_product_title",
+            log_description=f"id={product_id} | '{old_title}' → '{new_title}' | handle '{old_handle}' → '{target_handle}'",
         )
-        return f"Done. {preview}"
 
     @server.tool()
     def update_product_description(
@@ -402,24 +397,28 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"  New (full)   :\n{new_description}" + warning_block
         )
 
-        if not confirm:
-            return with_confirm_hint(preview)
-
-        result = client.execute(
-            UPDATE_PRODUCT,
-            {"input": {"id": to_gid("Product", product_id), "descriptionHtml": new_description}},
+        return write_gate(
+            preview=preview,
+            confirm=confirm,
+            execute=lambda: client.execute(
+                UPDATE_PRODUCT,
+                {
+                    "input": {
+                        "id": to_gid("Product", product_id),
+                        "descriptionHtml": new_description,
+                    }
+                },
+            ),
+            mutation_key="productUpdate",
+            log_name="update_product_description",
+            log_description=f"id={product_id}",
+            done_text=(
+                "Done ⚠ — dangerous HTML patterns were written to Shopify. Verify the storefront."
+                if danger
+                else "Done."
+            )
+            + f"\n{preview}",
         )
-        err = format_user_errors(result, "productUpdate")
-        if err:
-            return err
-
-        log_write("update_product_description", f"id={product_id}")
-        done_prefix = (
-            "Done ⚠ — dangerous HTML patterns were written to Shopify. Verify the storefront."
-            if danger
-            else "Done."
-        )
-        return f"{done_prefix}\n{preview}"
 
     @server.tool()
     def update_product_seo(
@@ -488,29 +487,36 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if warnings:
             body += "\n\nWarnings:\n" + "\n".join(f"  • {w}" for w in warnings)
 
-        if not confirm:
-            return with_confirm_hint(f"PREVIEW — Product SEO update\n{body}")
+        def _seo_input() -> dict[str, str]:
+            inp: dict[str, str] = {}
+            if new_seo_title:
+                inp["title"] = new_seo_title
+            if new_seo_description:
+                inp["description"] = new_seo_description
+            return inp
 
-        seo_input = {}
-        if new_seo_title:
-            seo_input["title"] = new_seo_title
-        if new_seo_description:
-            seo_input["description"] = new_seo_description
+        def _log_desc() -> str:
+            parts: list[str] = []
+            if new_seo_title:
+                parts.append(f"title: {len(old_title)} chars → {len(new_seo_title)} chars")
+            if new_seo_description:
+                parts.append(
+                    f"description: {len(old_desc)} chars → {len(new_seo_description)} chars"
+                )
+            return f"id={product_id} | " + " | ".join(parts)
 
-        result = client.execute(
-            UPDATE_PRODUCT, {"input": {"id": to_gid("Product", product_id), "seo": seo_input}}
+        return write_gate(
+            preview=f"PREVIEW — Product SEO update\n{body}",
+            confirm=confirm,
+            execute=lambda: client.execute(
+                UPDATE_PRODUCT,
+                {"input": {"id": to_gid("Product", product_id), "seo": _seo_input()}},
+            ),
+            mutation_key="productUpdate",
+            log_name="update_product_seo",
+            log_description=_log_desc,
+            done_text=f"CONFIRMED — Product SEO updated\n{body}",
         )
-        err = format_user_errors(result, "productUpdate")
-        if err:
-            return err
-
-        changed = []
-        if new_seo_title:
-            changed.append(f"title: {len(old_title)} chars → {len(new_seo_title)} chars")
-        if new_seo_description:
-            changed.append(f"description: {len(old_desc)} chars → {len(new_seo_description)} chars")
-        log_write("update_product_seo", f"id={product_id} | " + " | ".join(changed))
-        return f"CONFIRMED — Product SEO updated\n{body}"
 
     @server.tool()
     def get_products_by_collection(collection_handle: str) -> str:
@@ -756,19 +762,17 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"  Removed    : {', '.join(removed) if removed else '(none)'}"
             )
 
-        if not confirm:
-            return with_confirm_hint(f"PREVIEW — Product tags update\n{body}")
-
-        result = client.execute(UPDATE_PRODUCT_TAGS, {"input": {"id": gid, "tags": target}})
-        err = format_user_errors(result, "productUpdate")
-        if err:
-            return err
-
-        log_write(
-            "update_product_tags",
-            f"id={product_id} mode={mode} | {len(old_tags)} tags → {len(target)} tags",
+        return write_gate(
+            preview=f"PREVIEW — Product tags update\n{body}",
+            confirm=confirm,
+            execute=lambda: client.execute(
+                UPDATE_PRODUCT_TAGS, {"input": {"id": gid, "tags": target}}
+            ),
+            mutation_key="productUpdate",
+            log_name="update_product_tags",
+            log_description=f"id={product_id} mode={mode} | {len(old_tags)} tags → {len(target)} tags",
+            done_text=f"CONFIRMED — Product tags updated\n{body}",
         )
-        return f"CONFIRMED — Product tags updated\n{body}"
 
     @server.tool()
     def update_product_status(
@@ -797,19 +801,17 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"  New status : {new_status}{no_op_suffix}"
         )
 
-        if not confirm:
-            return with_confirm_hint(f"PREVIEW — Product status update\n{body}")
-
-        result = client.execute(UPDATE_PRODUCT_STATUS, {"input": {"id": gid, "status": new_status}})
-        err = format_user_errors(result, "productUpdate")
-        if err:
-            return err
-
-        log_write(
-            "update_product_status",
-            f"id={product_id} | {old_status} → {new_status}",
+        return write_gate(
+            preview=f"PREVIEW — Product status update\n{body}",
+            confirm=confirm,
+            execute=lambda: client.execute(
+                UPDATE_PRODUCT_STATUS, {"input": {"id": gid, "status": new_status}}
+            ),
+            mutation_key="productUpdate",
+            log_name="update_product_status",
+            log_description=f"id={product_id} | {old_status} → {new_status}",
+            done_text=f"CONFIRMED — Product status updated\n{body}",
         )
-        return f"CONFIRMED — Product status updated\n{body}"
 
     @server.tool()
     def update_variant_inventory_policy(

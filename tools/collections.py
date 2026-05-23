@@ -17,6 +17,7 @@ from tools._filters import dangerous_html_patterns
 from tools._gid import from_gid, to_gid
 from tools._log import log_write
 from tools._response import format_user_errors, with_confirm_hint
+from tools._write_tool import write_gate
 
 GET_COLLECTION_BY_HANDLE = """
 query GetCollectionByHandle($handle: String!) {
@@ -160,24 +161,20 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         preview = "\n".join(preview_lines)
 
-        if not confirm:
-            return with_confirm_hint(preview)
-
         inp = {"id": col_id}
         if new_title:
             inp["title"] = new_title
         if new_description:
             inp["descriptionHtml"] = new_description
 
-        result = client.execute(UPDATE_COLLECTION, {"input": inp})
-        err = format_user_errors(result, "collectionUpdate")
-        if err:
-            return err
-
-        log_write(
-            "update_collection", f"handle={handle} | changes: {[k for k in inp if k != 'id']}"
+        return write_gate(
+            preview=preview,
+            confirm=confirm,
+            execute=lambda: client.execute(UPDATE_COLLECTION, {"input": inp}),
+            mutation_key="collectionUpdate",
+            log_name="update_collection",
+            log_description=f"handle={handle} | changes: {[k for k in inp if k != 'id']}",
         )
-        return f"Done. {preview}"
 
     def _membership_mutation(direction: str, handle: str, product_id: str, confirm: bool) -> str:
         """Shared flow for add / remove — both follow preview → confirm →
