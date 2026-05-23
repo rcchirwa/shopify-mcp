@@ -13,6 +13,7 @@ from tools._filters import filter_variant_targets
 from tools._gid import from_gid, to_gid
 from tools._log import log_write
 from tools._response import format_user_errors, format_user_errors_joined, with_confirm_hint
+from tools._write_tool import write_gate
 
 # GET_PRODUCT_INVENTORY fetches `variants(first: 50)` — Shopify returns up to
 # this many variants per request and silently truncates the rest. When a read
@@ -186,33 +187,28 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"  New quantity      : {quantity}"
         )
 
-        if not confirm:
-            return with_confirm_hint(preview)
-
-        result = client.execute(
-            SET_INVENTORY,
-            {
-                "input": {
-                    "reason": "correction",
-                    "setQuantities": [
-                        {
-                            "inventoryItemId": to_gid("InventoryItem", inventory_item_id),
-                            "locationId": location_gid,
-                            "quantity": quantity,
-                        }
-                    ],
-                }
-            },
+        return write_gate(
+            preview=preview,
+            confirm=confirm,
+            execute=lambda: client.execute(
+                SET_INVENTORY,
+                {
+                    "input": {
+                        "reason": "correction",
+                        "setQuantities": [
+                            {
+                                "inventoryItemId": to_gid("InventoryItem", inventory_item_id),
+                                "locationId": location_gid,
+                                "quantity": quantity,
+                            }
+                        ],
+                    }
+                },
+            ),
+            mutation_key="inventorySetOnHandQuantities",
+            log_name="update_inventory",
+            log_description=f"item={inventory_item_id} location={location_id} | {current_qty} → {quantity}",
         )
-        err = format_user_errors(result, "inventorySetOnHandQuantities")
-        if err:
-            return err
-
-        log_write(
-            "update_inventory",
-            f"item={inventory_item_id} location={location_id} | {current_qty} → {quantity}",
-        )
-        return f"Done. {preview}"
 
     @server.tool()
     def update_variant_inventory_tracking(

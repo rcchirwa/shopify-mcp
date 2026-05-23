@@ -6,7 +6,7 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 
 **Format:** static ledger, updated when the architecture genuinely shifts (not after every PR). The journal-style triage workflow lives in TECH_DEBT.md; this document captures the long-arc design concerns that don't move on a daily cadence.
 
-**Scoring:** `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted. Same framework as TECH_DEBT.md so items can be triaged together when needed.
+**Scoring:** `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted. Same framework as TECH_DEBT.md so items can be triaged together when needed. **Ties broken by Impact descending, then by ID ascending.**
 
 **Source:** initial inventory derived from the 2026-04-25 architecture review (10 evaluation areas across organization, tool surface, error handling, auth, caching, rate limiting, reuse, deps, config, observability).
 
@@ -16,15 +16,14 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 
 | Rank | ID | Item | Category | I | R | E | Score |
 |------|----|------|----------|---|---|---|-------|
-| 1 | A1 | Throttle-aware `ShopifyClient.execute()` — retry/backoff/cost tracking | Architecture | 4 | 4 | 3 | **24** |
-| 2 | A2 | `@write_tool` decorator collapsing preview/confirm/error/audit boilerplate | Code | 4 | 2 | 3 | **18** |
-| 3 | A3 | Pagination helper for list reads | Code | 2 | 3 | 3 | **15** |
-| 4 | A4 | Stdlib `logging` adoption (per-module loggers, JSON output, rotating audit handler) | Infrastructure | 3 | 3 | 4 | **12** |
-| 5 | A5 | `shopify/` subpackage extraction (`queries/` + `operations/`) with GraphQL fragments | Architecture | 2 | 1 | 2 | **12** |
-| 6 | A6 | HTTP client unification (single wrapper for `gql` + `requests`) — *links to N4 in TECH_DEBT.md* | Architecture | 2 | 2 | 3 | **12** |
-| 7 | A7 | `Settings` class via `pydantic-settings` + startup validation | Architecture | 3 | 2 | 4 | **10** |
-| 8 | A8 | Metadata `TTLCache` for locations / channels / shop info | Code | 2 | 2 | 4 | **8** |
-| 9 | A10 | Committed `uv.lock` for CI reproducibility | Dependency | 1 | 1 | 5 | **2** |
+| 1 | A4 | Stdlib `logging` adoption (per-module loggers, JSON output) — *audit-log rotation done (PR #69)* | Infrastructure | 3 | 3 | 3 | **18** |
+| 2 | A3 | Pagination helper for list reads | Code | 2 | 3 | 3 | **15** |
+| 3 | A2 | `write_gate()` helper collapsing preview/confirm/error/audit boilerplate — *helper + 7 tools migrated on branch `claude/magical-northcutt-d3977f`* | Code | 4 | 2 | 4 | **12** |
+| 4 | A5 | `shopify/` subpackage extraction (`queries/` + `operations/`) with GraphQL fragments | Architecture | 2 | 1 | 2 | **12** |
+| 5 | A6 | HTTP client unification (single wrapper for `gql` + `requests`) — *links to N4 in TECH_DEBT.md* | Architecture | 2 | 2 | 3 | **12** |
+| 6 | A7 | `Settings` class via `pydantic-settings` + startup validation | Architecture | 3 | 2 | 4 | **10** |
+| 7 | A8 | Metadata `TTLCache` for locations / channels / shop info | Code | 2 | 2 | 4 | **8** |
+| 8 | A10 | Committed `uv.lock` for CI reproducibility | Dependency | 1 | 1 | 5 | **2** |
 
 **Categories not represented in current backlog:** Test debt, Documentation debt. The 2026-04-25 review didn't probe these areas in depth — coverage is at 100% and TECH_DEBT.md plus README cover most documentation needs. Re-evaluate during the next architecture pass.
 
@@ -32,24 +31,31 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 
 ## Items
 
-### A1 — Throttle-aware `ShopifyClient.execute()` with retry/backoff and cost tracking
-
-- **Category:** Architecture
-- **Impact (4):** every Shopify call benefits; unblocks moving from interactive Claude to automation-grade use.
-- **Risk (4):** Shopify's GraphQL API is cost-bucketed. A bursty automation today returns "Shopify HTTP error: 429…" and fails the tool — the user has to retry by hand. Transient 5xx and network blips fail outright. The longer this is absent, the more workflow brittleness accumulates.
-- **Effort (3):** centralized in [shopify_client.py:104](shopify_client.py:104) `execute()`. ~1 day including tests. Use `tenacity` (small dep) or hand-roll ~30 lines.
-- **Plan:** parse `extensions.cost.throttleStatus.currentlyAvailable`; sleep until the bucket has capacity; retry on `THROTTLED`, 429, 5xx with capped exponential backoff + jitter; bound retries (≤5); categorize errors as `TransientShopifyError` vs `ShopifyError`. Switch [shopify_client.py:140](shopify_client.py:140) `poll_job` to exponential backoff (start 0.5s, cap 5s).
-- **Business justification:** the single biggest reliability lift on the codebase. Without it, any Claude-driven workflow with >3 sequential mutations is one bad luck timeslot away from a user-visible failure.
-
-### A2 — `@write_tool` decorator
+### A2 — `write_gate()` helper
 
 - **Category:** Code
+- **Status:** partially done. Helper + 7 tools migrated on branch `claude/magical-northcutt-d3977f` (pending PR). Remaining: 11 standard-pattern tools that could adopt the helper incrementally; 8 complex tools (job-polling, per-item isolation, multi-stage mutations, custom error formatters) intentionally excluded.
 - **Cross-reference:** TECH_DEBT.md item **#7** (closed by [#33](https://github.com/rcchirwa/shopify-mcp/pull/33)) collapsed only the hint-string duplication via `with_confirm_hint`. A2 wraps the wider write-tool flow (execute → error check → `log_write`) that #7 left untouched.
 - **Impact (4):** every write tool benefits; future tools become 10–20 lines instead of 60–100.
-- **Risk (2):** boilerplate duplication is the largest source of subtle drift between tools. A typo silently skips `log_write` or the confirm gate. Today these failures are caught by tests, but the pattern invites them.
-- **Effort (3):** decorator + 25-tool migration. Mechanical, but each migration needs test verification.
-- **Plan:** a `@write_tool(name, description)` decorator that centralizes the preview/confirm gate, `format_user_errors` check, and `log_write` call. Tool body becomes "build preview → build mutation variables → return result"; the decorator handles the rest. Migrate write tools one domain at a time (products → inventory → collections → discounts → media → publications → webhooks).
-- **Business justification:** write surface is the highest-risk part of the server (irreversible Shopify mutations). Centralizing the safety scaffolding is worth more than just LOC reduction.
+- **Risk (2):** boilerplate duplication is the largest source of subtle drift between tools. A typo silently skips `log_write` or the confirm gate. The helper makes that omission structurally impossible in tools that adopt it.
+- **Effort (4):** reduced from 3 — helper is shipped; remaining is mechanical per-tool migration with test verification.
+- **Design choice:** helper function, not a decorator. A `@write_tool` decorator that fully owns the flow would require tool bodies to return structured data (preview + execute callable + log description) rather than `str` — that's a bigger API change. The `write_gate()` helper called at the return site achieves the same drift-prevention with zero framework magic; the name at the call site is self-documenting.
+- **Shipped this session (branch `claude/magical-northcutt-d3977f`):**
+  - `tools/_write_tool.py` — `write_gate()` helper centralising confirm gate, `format_user_errors` check, `log_write`, and done-string return. Accepts `done_text` for tools whose done string differs from preview, and `log_description: str | Callable[[], str]` so non-trivial descriptions aren't computed on the preview path.
+  - `test_write_tool_offline.py` — 8 tests covering preview path, default done text, custom `done_text`, callable `log_description` (preview vs confirm, suppression on userErrors), userErrors short-circuit, custom `error_key`, `TransientShopifyError` propagation.
+  - `conftest.py` — session-wide autouse fixture patching `_write_tool.log_write` so migrated tools don't pollute the audit log during tests.
+  - Migrated tools: `products.update_product_title`, `update_product_description`, `update_product_seo`, `update_product_tags`, `update_product_status`; `collections.update_collection`; `inventory.update_inventory`.
+- **Remaining standard-pattern tools** (could adopt the helper):
+  - `publications.{publish,unpublish,set}_product_publications` — currently use `extract_user_errors` with custom field-index mapping; would need a partial migration or a richer helper variant.
+  - `webhooks.{register,delete}_webhook` — done string depends on mutation result (`numeric_id`, `deletedWebhookSubscriptionId`); would benefit from a `done_text` callable variant.
+  - `catalog_hygiene.{update_product_category,update_product_vendor,update_product_type,update_product_pricing}` — use `_format_payload()` JSON-tail format; would need a payload-aware variant.
+- **Intentionally NOT migrated** (control flow incompatible with the helper):
+  - `products.update_variant_inventory_policy` — custom dotted-field-path error formatter
+  - `collections.{add,remove}_product_to_collection` — async job polling via `poll_job()`
+  - `inventory.{update_variant_inventory_tracking,update_variant_inventory_quantity}` — per-variant try/except isolation
+  - `discounts.create_discount_code` — two-stage mutation with `priceRuleUserErrors` custom key
+  - `catalog_hygiene.{set,delete}_product_metafields`, `update_variant_image_binding`, `update_product_options` — multi-step orchestration, JSON-tail format
+- **Business justification:** write surface is the highest-risk part of the server (irreversible Shopify mutations). Centralising the safety scaffolding is worth more than just LOC reduction.
 
 ### A3 — Pagination helper for list reads
 
@@ -63,9 +69,10 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 ### A4 — Stdlib `logging` adoption
 
 - **Category:** Infrastructure
-- **Impact (3):** transformative the day a tool starts misbehaving in a user's session. Today there's no `import logging` anywhere — debugging requires adding ad-hoc prints.
-- **Risk (3):** the audit log [tools/_log.py:12](tools/_log.py:12) has no rotation or size cap (will grow unbounded); read tools leave no trace; every contributor reinvents logging.
-- **Effort (4):** ~half a day. `logging.getLogger(__name__)` per module; `LOG_LEVEL` and `LOG_FORMAT` env vars; switch the audit log to a `RotatingFileHandler` (10MB × 5 files); configure JSON output via `python-json-logger` when `LOG_FORMAT=json`.
+- **Status:** partially done. Audit-log `RotatingFileHandler` (10 MB × 5 files) shipped in PR #69. Remaining: per-module `logging.getLogger(__name__)`, `LOG_LEVEL` / `LOG_FORMAT` env vars, JSON output.
+- **Impact (3):** transformative the day a tool starts misbehaving in a user's session. No module outside `tools/_log.py` imports `logging` today — debugging requires adding ad-hoc prints.
+- **Risk (3):** read tools leave no trace; every contributor reinvents logging; `LOG_LEVEL` can't be tuned at runtime.
+- **Effort (3):** ~3 hours remaining. `logging.getLogger(__name__)` per module; `LOG_LEVEL` and `LOG_FORMAT` env vars; configure JSON output via `python-json-logger` when `LOG_FORMAT=json`. (Rotation done; effort adjusted from original 4.)
 - **Plan:** log every `client.execute()` at DEBUG with redacted variables; errors at WARNING; startup at INFO. Defer OpenTelemetry — overkill for a single-process MCP server today.
 - **Business justification:** observability you don't need until you do, then you need it badly. Cheap to add up-front; expensive to retrofit during an incident.
 
@@ -134,22 +141,25 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 
 Designed to interleave with feature work, not block it. No phase is more than ~3 days of focused effort.
 
-### Phase 1 — Foundational (next sprint, ~3 days)
+### Phase 1 — Foundational (~2 days remaining)
 
-Order matters: A7 first, then A1 builds on it, A4 is independent and can land in parallel.
-
-| Day | Item | Why first |
-|-----|------|-----------|
-| 1 | **A7** Settings class | Every later item wants config in one place. Doing this first prevents rework. Field validators bake in env-var format checks. |
-| 1–2 | **A1** Throttle-aware `execute()` | Highest score (24); unblocks automation use cases; uses Settings for `request_timeout_s` and retry caps. |
-| 2–3 | **A4** Logging adoption | Cheap to add now; transformative the day debugging is needed. Audit-log rotation closes a real risk. |
-
-### Phase 2 — Tool surface (sprint after, ~2 days)
+A1 shipped out of order (PR #70, as security fix M5). A4's rotation shipped (PR #69, security fix M4). Remaining work:
 
 | Day | Item | Why |
 |-----|------|-----|
-| 1–2 | **A2** `@write_tool` decorator | Pays back on every future write tool; reduces drift risk. |
-| 2 | **A3** Pagination helper | Quick win; prevents silent truncation. |
+| 1 | **A7** Settings class | A1's retry knobs (`_RETRY_BASE_S`, `_MAX_ATTEMPTS`, etc.) are currently hardcoded. A7 makes them env-configurable and provides a home for A4's LOG_LEVEL/LOG_FORMAT. |
+| 1–2 | **A4** Logging (remainder) | Per-module loggers + env vars. Pairs with A7 (LOG_LEVEL config). Rotation already done. |
+
+~~**A1** — closed, PR #70~~
+
+### Phase 2 — Tool surface (~1 day remaining)
+
+A2's helper and proof-of-pattern migration (7 tools) shipped on branch `claude/magical-northcutt-d3977f` this session. Remaining:
+
+| Day | Item | Why |
+|-----|------|-----|
+| 0.5 | **A2 (remainder)** Migrate the remaining standard-pattern tools — publications, webhooks (needs `done_text` callable variant), catalog_hygiene standard tools (needs JSON-tail variant) | Pattern is proven; remaining is mechanical per-tool work with test verification. |
+| 0.5 | **A3** Pagination helper | Quick win; prevents silent truncation. |
 
 ### Phase 3 — Restructure (do before reaching ~12 domains or starting multi-store work, ~3 days)
 
@@ -164,6 +174,17 @@ Order matters: A7 first, then A1 builds on it, A4 is independent and can land in
 |------|---------|
 | **A8** Caching | Call volume rises, or first real Shopify quota miss. |
 | **A10** Lockfile | First CI-vs-dev divergence caused by a floated dep. |
+
+---
+
+## Closed
+
+### A1 — Throttle-aware `ShopifyClient.execute()` with retry/backoff and cost tracking *(closed PR #70)*
+
+- **Category:** Architecture
+- **Closed:** 2026-05-23, PR #70 (`fix(security): M5 — throttle-aware backoff in ShopifyClient.execute()`)
+- **What shipped:** `TransientShopifyError` / `ShopifyError` error taxonomy; `_is_throttled` / `_is_retryable_http` classifiers; capped exponential backoff with jitter via `_backoff_sleep`; ≤5-attempt retry loop on `THROTTLED`, 429, and 5xx; `poll_job` switched to exponential backoff (start `_POLL_BASE_S`, cap `_POLL_CAP_S`). Retry knobs are module-level constants (A7 can promote them to env-configurable once the Settings class lands).
+- **Original plan:** parse `extensions.cost.throttleStatus.currentlyAvailable`; sleep until the bucket has capacity; retry on `THROTTLED`, 429, 5xx with capped exponential backoff + jitter; bound retries (≤5); categorize errors as `TransientShopifyError` vs `ShopifyError`. Switch `poll_job` to exponential backoff.
 
 ---
 
