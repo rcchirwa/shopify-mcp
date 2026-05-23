@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 import requests
 from mcp.server.fastmcp import FastMCP
 
-from shopify_client import JOB_POLL_TIMEOUT_S, ShopifyClient, poll_job
+from shopify_client import ShopifyClient, poll_job
 from tools._gid import from_gid
 from tools._log import log_write
 from tools._response import extract_user_errors, with_confirm_hint
@@ -285,7 +285,7 @@ def _maybe_reorder_new_media(
     job_id = job.get("id")
     initial_done = bool(job.get("done"))
     if job_id and not initial_done:
-        pr = poll_job(client, job_id, timeout_s=JOB_POLL_TIMEOUT_S)
+        pr = poll_job(client, job_id)
         return (
             f"\n  Reorder    : job {from_gid(job_id)} "
             f"done={pr['done']} elapsed={pr['elapsed_s']:.1f}s"

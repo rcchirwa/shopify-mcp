@@ -5,7 +5,6 @@ subscriptions on the store.
 Write operations require confirm=True and log to aon_mcp_log.txt.
 """
 
-import os
 from urllib.parse import urlparse
 
 from mcp.server.fastmcp import FastMCP
@@ -65,14 +64,7 @@ _EXTERNAL_DOMAIN_WARNING = (
 )
 
 
-def _get_allowlist() -> frozenset:
-    raw = os.environ.get("WEBHOOK_ALLOWLIST_HOSTS", "").strip()
-    if not raw:
-        return frozenset()
-    return frozenset(h.strip().lower() for h in raw.split(",") if h.strip())
-
-
-def _check_endpoint(endpoint_url: str) -> tuple:
+def _check_endpoint(endpoint_url: str, client: ShopifyClient) -> tuple:
     """
     Returns (allowed, annotation).
     allowed=False: return annotation as an error.
@@ -80,7 +72,7 @@ def _check_endpoint(endpoint_url: str) -> tuple:
     allowed=True, annotation="": hostname is in allowlist; proceed silently.
     """
     hostname = (urlparse(endpoint_url).hostname or "").lower()
-    allowlist = _get_allowlist()
+    allowlist = client._settings.webhook_allowlist_set
     if allowlist:
         if hostname not in allowlist:
             return False, (
@@ -135,7 +127,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         message_format: JSON (default) or XML.
         Returns a preview unless confirm=True.
         """
-        allowed, annotation = _check_endpoint(endpoint_url)
+        allowed, annotation = _check_endpoint(endpoint_url, client)
         if not allowed:
             return annotation
 

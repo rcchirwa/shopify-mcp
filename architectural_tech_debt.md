@@ -21,9 +21,8 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 | 3 | A2 | `write_gate()` helper collapsing preview/confirm/error/audit boilerplate — *helper + 7 tools migrated on branch `claude/magical-northcutt-d3977f`* | Code | 4 | 2 | 4 | **12** |
 | 4 | A5 | `shopify/` subpackage extraction (`queries/` + `operations/`) with GraphQL fragments | Architecture | 2 | 1 | 2 | **12** |
 | 5 | A6 | HTTP client unification (single wrapper for `gql` + `requests`) — *links to N4 in TECH_DEBT.md* | Architecture | 2 | 2 | 3 | **12** |
-| 6 | A7 | `Settings` class via `pydantic-settings` + startup validation | Architecture | 3 | 2 | 4 | **10** |
-| 7 | A8 | Metadata `TTLCache` for locations / channels / shop info | Code | 2 | 2 | 4 | **8** |
-| 8 | A10 | Committed `uv.lock` for CI reproducibility | Dependency | 1 | 1 | 5 | **2** |
+| 6 | A8 | Metadata `TTLCache` for locations / channels / shop info | Code | 2 | 2 | 4 | **8** |
+| 7 | A10 | Committed `uv.lock` for CI reproducibility | Dependency | 1 | 1 | 5 | **2** |
 
 **Categories not represented in current backlog:** Test debt, Documentation debt. The 2026-04-25 review didn't probe these areas in depth — coverage is at 100% and TECH_DEBT.md plus README cover most documentation needs. Re-evaluate during the next architecture pass.
 
@@ -95,28 +94,6 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 - **Plan:** unify under a single client wrapper exposing both GraphQL execution and arbitrary HTTP fetches. Image download in `tools/media/_upload.py` becomes `client.fetch_bytes(url, max_size=...)`. Pairs naturally with A1 (shared retry policy across both).
 - **Business justification:** rolls together with A1 — once the throttle-aware policy exists, having two HTTP stacks means only half of calls benefit.
 
-### A7 — `Settings` class via `pydantic-settings`
-
-- **Category:** Architecture
-- **Impact (3):** foundational — A1 (cost thresholds), A4 (log level/format), A8 (cache TTLs) all want config in one place.
-- **Risk (2):** today `os.getenv` calls are scattered across [shopify_client.py](shopify_client.py) and likely future modules. No single source of truth, no startup validation.
-- **Effort (4):** ~half a day. Small dep, large payoff.
-- **Plan:**
-  ```python
-  class Settings(BaseSettings):
-      shopify_store_url: str
-      shopify_access_token: SecretStr
-      shopify_api_version: str = "2026-01"
-      request_timeout_s: float = 15.0
-      job_poll_timeout_s: float = 60.0
-      log_level: str = "INFO"
-      log_format: Literal["text", "json"] = "text"
-      cache_ttl_locations_s: int = 3600
-      model_config = SettingsConfigDict(env_file=".env")
-  ```
-  Inject via `ShopifyClient(settings=Settings())`. Centralizes validation; makes test overrides trivial; replaces every `os.getenv` call. Add Pydantic field validators on `shopify_store_url` (regex `*.myshopify.com`), `shopify_api_version` (regex `YYYY-MM`), and a warn-only check that `shopify_access_token` starts with `shpat_` — catches misconfigs at startup instead of on the first GraphQL call. (Folded in from former A9.)
-- **Business justification:** every other item on this backlog (A1, A4, A8) wants somewhere to put config. Doing this first prevents a second round of "now plumb the new config through" later.
-
 ### A8 — Metadata `TTLCache`
 
 - **Category:** Code
@@ -141,16 +118,16 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 
 Designed to interleave with feature work, not block it. No phase is more than ~3 days of focused effort.
 
-### Phase 1 — Foundational (~2 days remaining)
+### Phase 1 — Foundational (~1 day remaining)
 
-A1 shipped out of order (PR #70, as security fix M5). A4's rotation shipped (PR #69, security fix M4). Remaining work:
+A1 shipped out of order (PR #70, as security fix M5). A4's rotation shipped (PR #69, security fix M4). A7's `Settings` class landed on branch `claude/relaxed-hertz-8f050d`. Remaining work:
 
 | Day | Item | Why |
 |-----|------|-----|
-| 1 | **A7** Settings class | A1's retry knobs (`_RETRY_BASE_S`, `_MAX_ATTEMPTS`, etc.) are currently hardcoded. A7 makes them env-configurable and provides a home for A4's LOG_LEVEL/LOG_FORMAT. |
-| 1–2 | **A4** Logging (remainder) | Per-module loggers + env vars. Pairs with A7 (LOG_LEVEL config). Rotation already done. |
+| 1 | **A4** Logging (remainder) | Per-module loggers + env vars. `log_level` and `log_format` fields already exist on `Settings` — wiring is all that's left. Rotation already done. |
 
 ~~**A1** — closed, PR #70~~
+~~**A7** — closed, branch `claude/relaxed-hertz-8f050d`~~
 
 ### Phase 2 — Tool surface (~1 day remaining)
 
@@ -178,6 +155,14 @@ A2's helper and proof-of-pattern migration (7 tools) shipped on branch `claude/m
 ---
 
 ## Closed
+
+### A7 — `Settings` class via `pydantic-settings` *(closed branch `claude/relaxed-hertz-8f050d`)*
+
+- **Category:** Architecture
+- **Closed:** 2026-05-23, branch `claude/relaxed-hertz-8f050d`
+- **What shipped:** `settings.py` with `Settings(BaseSettings)` exposing credentials (`shopify_store_url`, `shopify_access_token: SecretStr`, `shopify_api_version`), HTTP/retry/poll knobs (`request_timeout_s`, `job_poll_timeout_s`, `retry_max_attempts`, `retry_base_s`, `retry_cap_s`, `poll_base_s`, `poll_cap_s`), webhook allowlist (`webhook_allowlist_hosts` + `webhook_allowlist_set` computed property), and reserved fields for A4/A8 (`log_level`, `log_format`, `cache_ttl_locations_s`). Pydantic field validators on `shopify_store_url` (regex `<shop>.myshopify.com`) and `shopify_api_version` (regex `YYYY-MM`); warn-only stderr print when token does not start with `shpat_`. `ShopifyClient(settings: Settings | None = None)` lets tests pass a custom Settings without monkeypatching module constants. Promoted constants (`JOB_POLL_TIMEOUT_S`, `_RETRY_*`, `_POLL_*`) deleted from `shopify_client.py`; `tools/collections.py`, `tools/media/_reorder.py`, `tools/media/_upload.py`, and `tools/webhooks.py` migrated to read from `client._settings`. `_testing/fake_client.py` carries a default Settings so tool offline tests work without a real `.env`.
+- **Deviation from original plan:** `job_poll_timeout_s` default kept at `10.0` instead of the doc's `60.0` — `poll_job` is informational (the mutation has already succeeded), so 10s gives the user faster feedback for a job that already worked.
+- **Test footprint:** 925 offline tests pass; 100% coverage gate held (6 new tests in `test_settings_offline.py` cover the validator failure branches and the `webhook_allowlist_set` parsing).
 
 ### A1 — Throttle-aware `ShopifyClient.execute()` with retry/backoff and cost tracking *(closed PR #70)*
 

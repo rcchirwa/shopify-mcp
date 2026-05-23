@@ -388,8 +388,11 @@ class RaisingFakeClient:
     """FakeClient variant where some responses are exceptions to be raised."""
 
     def __init__(self, responses):
+        from _testing.fake_client import _default_test_settings
+
         self.responses = list(responses)
         self.calls = []
+        self._settings = _default_test_settings()
 
     def execute(self, query, variables=None):
         self.calls.append((query, variables))

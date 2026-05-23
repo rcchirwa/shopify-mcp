@@ -12,7 +12,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from shopify_client import JOB_POLL_TIMEOUT_S, ShopifyClient, poll_job
+from shopify_client import ShopifyClient, poll_job
 from tools._filters import dangerous_html_patterns
 from tools._gid import from_gid, to_gid
 from tools._log import log_write
@@ -41,8 +41,8 @@ mutation UpdateCollection($input: CollectionInput!) {
 """
 
 # Both membership mutations return an async `job` in 2024-07+. If the initial
-# response has done=false, poll_job() blocks up to JOB_POLL_TIMEOUT_S so the
-# caller sees a final done state instead of an indeterminate one.
+# response has done=false, poll_job() blocks up to settings.job_poll_timeout_s
+# so the caller sees a final done state instead of an indeterminate one.
 ADD_PRODUCTS_TO_COLLECTION = """
 mutation AddProductsToCollection($id: ID!, $productIds: [ID!]!) {
   collectionAddProductsV2(id: $id, productIds: $productIds) {
@@ -226,7 +226,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # product writes), the extra round-trip is pure overhead.
         poll_result = None
         if job_id and not initial_done:
-            poll_result = poll_job(client, job_id, timeout_s=JOB_POLL_TIMEOUT_S)
+            poll_result = poll_job(client, job_id)
 
         final_done = poll_result["done"] if poll_result else initial_done
         elapsed_s = poll_result["elapsed_s"] if poll_result else 0.0
@@ -255,7 +255,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             elif timed_out:
                 body += (
                     f"\n  Job        : {numeric} (done=False, still running "
-                    f"server-side after {JOB_POLL_TIMEOUT_S}s timeout — "
+                    f"server-side after {client._settings.job_poll_timeout_s:g}s timeout — "
                     f"operation likely completed, verify via get_collection)"
                 )
         return body
