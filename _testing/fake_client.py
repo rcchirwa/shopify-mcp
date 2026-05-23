@@ -17,6 +17,19 @@ test's behavior changes.
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from pydantic import SecretStr
+
+from settings import Settings
+
+
+def _default_test_settings() -> Settings:
+    """Synthetic creds + default knobs. Tool tests don't need real values —
+    they exercise the tool surface, not the HTTP client."""
+    return Settings(
+        shopify_store_url="test.myshopify.com",
+        shopify_access_token=SecretStr("shpat_test00000000000000000000000"),
+    )
+
 
 class CapturingServer:
     """Stand-in for FastMCP that records decorated tool functions."""
@@ -40,9 +53,12 @@ class FakeClient:
     exception-path handling in write-path tools.
     """
 
-    def __init__(self, responses: Iterable[Any]) -> None:
+    def __init__(self, responses: Iterable[Any], settings: Settings | None = None) -> None:
         self.responses: list[Any] = list(responses)
         self.calls: list[tuple[str, dict[str, Any] | None]] = []
+        # Tools that consult client._settings (webhook allowlist, poll_job
+        # backoff/timeout) need a real Settings here, not a sentinel.
+        self._settings: Settings = settings or _default_test_settings()
 
     def execute(self, query: str, variables: dict[str, Any] | None = None) -> Any:
         self.calls.append((query, variables))

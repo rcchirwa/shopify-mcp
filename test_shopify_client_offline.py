@@ -14,8 +14,10 @@ import os
 
 import pytest
 from gql.transport.exceptions import TransportQueryError, TransportServerError
+from pydantic import ValidationError
 
 import shopify_client as sc
+from settings import Settings
 from shopify_client import (
     ShopifyClient,
     ShopifyError,
@@ -26,6 +28,19 @@ from shopify_client import (
     _is_throttled,
     _mask_token,
 )
+
+
+def _test_settings(**overrides) -> Settings:
+    """Build a Settings with synthetic creds; tests override knobs via kwargs."""
+    from pydantic import SecretStr
+
+    defaults: dict = {
+        "shopify_store_url": "test.myshopify.com",
+        "shopify_access_token": SecretStr("shpat_test00000000000000000000000"),
+        "shopify_api_version": "2026-01",
+    }
+    defaults.update(overrides)
+    return Settings(**defaults)
 
 
 class _StubGqlClient:
@@ -41,10 +56,11 @@ class _StubGqlClient:
         return self._result
 
 
-def _make_client(result=None, exc=None):
+def _make_client(result=None, exc=None, settings=None):
     """Build a ShopifyClient without invoking __init__ (skips .env load)."""
     client = object.__new__(ShopifyClient)
     client._client = _StubGqlClient(result=result, exc=exc)
+    client._settings = settings or _test_settings()
     return client
 
 
@@ -213,15 +229,20 @@ def test_init_env_override_wins_over_process_env(tmp_path, monkeypatch, capsys):
 
 
 def test_init_missing_credentials_raises(monkeypatch, tmp_path):
-    """No .env on disk + no process env → clear ValueError."""
+    """No .env on disk + no process env → ValidationError naming both fields."""
     import shopify_client as sc
 
     monkeypatch.delenv("SHOPIFY_STORE_URL", raising=False)
     monkeypatch.delenv("SHOPIFY_ACCESS_TOKEN", raising=False)
     monkeypatch.setattr(sc, "_ENV_PATH", tmp_path / "nonexistent.env")
 
-    with pytest.raises(ValueError, match="SHOPIFY_STORE_URL and SHOPIFY_ACCESS_TOKEN"):
+    with pytest.raises(ValidationError) as exc_info:
         sc.ShopifyClient()
+    # Assert against structured errors rather than rendered text — Pydantic's
+    # error-list API is stable across minor releases; the str form is not.
+    missing = {(".".join(str(p) for p in e["loc"]), e["type"]) for e in exc_info.value.errors()}
+    assert ("shopify_store_url", "missing") in missing
+    assert ("shopify_access_token", "missing") in missing
 
 
 # ===========================================================================
@@ -248,10 +269,11 @@ class _ScriptedGqlClient:
         return item
 
 
-def _make_scripted(script):
+def _make_scripted(script, settings=None):
     """Build a ShopifyClient backed by a scripted stub, without invoking __init__."""
     client = object.__new__(ShopifyClient)
     client._client = _ScriptedGqlClient(script)
+    client._settings = settings or _test_settings()
     return client
 
 
@@ -494,12 +516,11 @@ def test_execute_backoff_schedule_exponential(no_sleep, deterministic_jitter):
     assert no_sleep == [0.5, 1.0, 2.0, 4.0, 8.0]
 
 
-def test_execute_backoff_respects_cap(no_sleep, deterministic_jitter, monkeypatch):
-    monkeypatch.setattr(sc, "_RETRY_CAP_S", 2.0)
+def test_execute_backoff_respects_cap(no_sleep, deterministic_jitter):
     throttled_err = TransportQueryError(
         "t", errors=[{"extensions": {"code": "THROTTLED"}, "message": "Throttled"}]
     )
-    client = _make_scripted([throttled_err] * 6)
+    client = _make_scripted([throttled_err] * 6, settings=_test_settings(retry_cap_s=2.0))
     with pytest.raises(TransientShopifyError):
         client.execute("{ __typename }")
     assert no_sleep == [0.5, 1.0, 2.0, 2.0, 2.0]
@@ -533,7 +554,7 @@ class _SleepTrackingClock:
         self.t += s
 
 
-def _make_always_not_done_client():
+def _make_always_not_done_client(settings=None):
     """ShopifyClient stub whose execute() always returns done=False."""
 
     class _AlwaysNotDone:
@@ -542,10 +563,11 @@ def _make_always_not_done_client():
 
     client = object.__new__(ShopifyClient)
     client._client = _AlwaysNotDone()
+    client._settings = settings or _test_settings()
     return client
 
 
-def _make_done_after_n_client(n: int):
+def _make_done_after_n_client(n: int, settings=None):
     """ShopifyClient stub that returns done=True on the n-th execute call (1-indexed)."""
 
     class _DoneAfterN:
@@ -559,6 +581,7 @@ def _make_done_after_n_client(n: int):
 
     client = object.__new__(ShopifyClient)
     client._client = _DoneAfterN()
+    client._settings = settings or _test_settings()
     return client
 
 

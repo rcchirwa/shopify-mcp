@@ -3,7 +3,6 @@ Shopify Admin GraphQL API wrapper.
 Loads credentials from .env — never hardcode secrets here.
 """
 
-import os
 import random
 import re
 import sys
@@ -15,6 +14,8 @@ from dotenv import load_dotenv
 from gql import Client, gql
 from gql.transport.exceptions import TransportQueryError, TransportServerError
 from gql.transport.requests import RequestsHTTPTransport
+
+from settings import Settings
 
 # Some Shopify mutations (collectionAddProductsV2, collectionRemoveProducts, …)
 # return a Job node rather than completing inline. `node(id)` lets us resolve
@@ -28,23 +29,9 @@ query JobStatus($id: ID!) {
 }
 """
 
-# Default budget for poll_job(). Single-item Shopify jobs usually come back
-# done-on-first-response; this budget only matters for jobs that genuinely
-# run async. Exposed as a constant so tool modules can cite the same value
-# in user-visible timeout messages without re-declaring it.
-JOB_POLL_TIMEOUT_S = 10
-
-# --- Retry/backoff knobs (M5 security finding) ----------------------------
-# Applied internally by ShopifyClient.execute() — callers only see success
-# or a final RuntimeError after retries are exhausted. Full jitter prevents
-# thundering-herd from parallel callers racing the same cost bucket.
-_RETRY_MAX_ATTEMPTS = 5  # initial try + 5 retries = 6 total executions
-_RETRY_BASE_S = 0.5
-_RETRY_CAP_S = 30.0
-
-# poll_job() backoff: tighter cap since polls are informational.
-_POLL_BASE_S = 0.5
-_POLL_CAP_S = 5.0
+# Retry/backoff and poll-timeout knobs now live on Settings (item A7). The
+# constants below were promoted to Settings fields so tests can override via
+# a Settings instance and ops can tune them via env vars without code edits.
 
 # HTTP status codes that should trigger a retry rather than a hard fail.
 _RETRYABLE_HTTP_STATUSES = (429, 500, 502, 503, 504)
@@ -146,36 +133,35 @@ def _backoff_sleep(attempt: int, *, base: float, cap: float, jitter: bool) -> No
 
 
 class ShopifyClient:
-    def __init__(self) -> None:
+    def __init__(self, settings: Settings | None = None) -> None:
+        # load_dotenv stays first so process env reflects on-disk .env before
+        # Settings() reads it. _ENV_PATH override=True preserves the existing
+        # semantic that .env wins over stale env vars injected by the launcher.
         load_dotenv(dotenv_path=_ENV_PATH, override=True)
-        store_url = os.getenv("SHOPIFY_STORE_URL")
-        access_token = os.getenv("SHOPIFY_ACCESS_TOKEN")
-        # 2026-01: current stable, one release behind the edge. Every mutation
-        # and query we use has a response shape unchanged since 2024-07 (where
-        # `InventoryLevel.available` was removed in favor of
-        # `quantities(names: ["available"])`), so older pins will fail the
-        # inventory queries.
-        api_version = os.getenv("SHOPIFY_API_VERSION", "2026-01")
-
-        if not store_url or not access_token:
-            raise ValueError("SHOPIFY_STORE_URL and SHOPIFY_ACCESS_TOKEN must be set in .env")
+        # pydantic-settings populates required fields from env vars — mypy
+        # can't see that, so the bare Settings() call needs a type-ignore.
+        self._settings = settings or Settings()  # type: ignore[call-arg]
 
         # Log the active credential fingerprint to stderr so operators can tell
         # at a glance which token is live without reading .env. Goes to stderr
         # (not stdout) to keep MCP's stdout JSON-RPC channel clean.
         env_src = ".env" if _ENV_PATH.is_file() else "process env"
+        access_token = self._settings.shopify_access_token.get_secret_value()
         print(
-            f"[shopify_client] store={store_url} "
-            f"api_version={api_version} "
+            f"[shopify_client] store={self._settings.shopify_store_url} "
+            f"api_version={self._settings.shopify_api_version} "
             f"token={_mask_token(access_token)} "
             f"source={env_src}",
             file=sys.stderr,
         )
 
         transport = RequestsHTTPTransport(
-            url=f"https://{store_url}/admin/api/{api_version}/graphql.json",
+            url=(
+                f"https://{self._settings.shopify_store_url}"
+                f"/admin/api/{self._settings.shopify_api_version}/graphql.json"
+            ),
             headers={"X-Shopify-Access-Token": access_token},
-            timeout=15,
+            timeout=self._settings.request_timeout_s,
         )
         self._client = Client(
             transport=transport,
@@ -184,13 +170,16 @@ class ShopifyClient:
 
     def execute(self, query_str: str, variables: dict | None = None) -> dict:
         gql_query = gql(query_str)
-        for attempt in range(_RETRY_MAX_ATTEMPTS + 1):
+        max_attempts = self._settings.retry_max_attempts
+        base_s = self._settings.retry_base_s
+        cap_s = self._settings.retry_cap_s
+        for attempt in range(max_attempts + 1):
             try:
                 result = self._client.execute(gql_query, variable_values=variables or {})
             except TransportQueryError as e:
                 if _is_throttled(e.errors):
-                    if attempt < _RETRY_MAX_ATTEMPTS:
-                        _backoff_sleep(attempt, base=_RETRY_BASE_S, cap=_RETRY_CAP_S, jitter=True)
+                    if attempt < max_attempts:
+                        _backoff_sleep(attempt, base=base_s, cap=cap_s, jitter=True)
                         continue
                     raise TransientShopifyError(
                         f"Shopify GraphQL THROTTLED after {attempt + 1} attempts: "
@@ -199,8 +188,8 @@ class ShopifyClient:
                 raise ShopifyError(f"Shopify GraphQL error: {_format_errors(e.errors)}") from e
             except TransportServerError as e:
                 if _is_retryable_http(e):
-                    if attempt < _RETRY_MAX_ATTEMPTS:
-                        _backoff_sleep(attempt, base=_RETRY_BASE_S, cap=_RETRY_CAP_S, jitter=True)
+                    if attempt < max_attempts:
+                        _backoff_sleep(attempt, base=base_s, cap=cap_s, jitter=True)
                         continue
                     raise TransientShopifyError(
                         f"Shopify HTTP error after {attempt + 1} attempts: {e!s}"
@@ -222,7 +211,7 @@ class ShopifyClient:
 def poll_job(
     client: "ShopifyClient",
     job_gid: str,
-    timeout_s: int = JOB_POLL_TIMEOUT_S,
+    timeout_s: float | None = None,
     interval_s: float | None = None,
 ) -> dict:
     """
@@ -242,6 +231,9 @@ def poll_job(
     Does NOT raise. The underlying mutation has already succeeded by the time
     the caller invokes this — polling is strictly informational.
     """
+    effective_timeout = timeout_s if timeout_s is not None else client._settings.job_poll_timeout_s
+    poll_base = client._settings.poll_base_s
+    poll_cap = client._settings.poll_cap_s
     start = time.monotonic()
     last_error: str | None = None
     last_done: bool = False
@@ -271,10 +263,10 @@ def poll_job(
         next_sleep = (
             interval_s
             if interval_s is not None
-            else _backoff_delay(attempt, base=_POLL_BASE_S, cap=_POLL_CAP_S, jitter=False)
+            else _backoff_delay(attempt, base=poll_base, cap=poll_cap, jitter=False)
         )
 
-        if elapsed + next_sleep > timeout_s:
+        if elapsed + next_sleep > effective_timeout:
             return {
                 "id": job_gid,
                 "done": False,

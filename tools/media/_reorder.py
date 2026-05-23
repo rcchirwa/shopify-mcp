@@ -2,7 +2,7 @@
 
 from mcp.server.fastmcp import FastMCP
 
-from shopify_client import JOB_POLL_TIMEOUT_S, ShopifyClient, poll_job
+from shopify_client import ShopifyClient, poll_job
 from tools._gid import from_gid
 from tools._log import log_write
 from tools._response import with_confirm_hint
@@ -97,7 +97,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         initial_done = bool(job.get("done"))
         poll_result = None
         if job_id and not initial_done:
-            poll_result = poll_job(client, job_id, timeout_s=JOB_POLL_TIMEOUT_S)
+            poll_result = poll_job(client, job_id)
 
         log_write(
             "reorder_product_media",
@@ -118,7 +118,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             elif poll_result["timed_out"]:
                 job_line = (
                     f"\n  Job        : {numeric} (still running after "
-                    f"{JOB_POLL_TIMEOUT_S}s timeout — verify via "
+                    f"{client._settings.job_poll_timeout_s:g}s timeout — verify via "
                     f"list_product_media)"
                 )
         return f"CONFIRMED — Reorder product media\n{body}{job_line}"
