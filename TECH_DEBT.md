@@ -4,7 +4,7 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-05-21.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-05-24.
 
 ---
 
@@ -29,17 +29,18 @@ Item Q3 from the 2026-04-24 audit was implemented this session. A `/engineering:
 | Rank | Item | Score | Status |
 |------|------|-------|--------|
 | 1 | SEC-M2-sanitizer — advisory blocklist → proper HTML sanitizer | 16 | active |
-| 2 | T-9.6-unknown-variant — unknown variant IDs slip past resolution | 10 | watch |
+| 2 | N4 — two HTTP stacks, no shared policy | 9 | watch |
 | 3 | T-9.5-resolver-fanout — 4 near-twin `_resolve_product_id_*` helpers | 8 | watch |
-| 4 | N4 — two HTTP stacks, no shared policy | 9 | watch |
-| 5 | T-9.6-media-cap — `media(first: 100)` silent truncation | 6 | watch |
-| 6 | T-9.5-variants-cap — `variants(first: 50)` post-write snapshot cap | 6 | partial |
-| 7 | O1 — mypy permissive on test files (pre-existing) | — | watch |
-| 8 | T-9.6-resolver-orphan — `resolve_variant_ids_to_gids` has no callers | 4 | confirmed |
-| 9 | SEC-M2-collection-seo — collections warning format inconsistent with products | 4 | note |
-| 10 | Q4 — `format_user_errors_joined()` single caller | 4 | note |
-| 11 | Q5 — `dict[str, Any]` baseline for GraphQL payloads | 4 | watch |
-| 12 | Q6 — `from_gid` type widening note | 4 | note |
+| 4 | T-9.6-media-cap — `media(first: 100)` silent truncation | 6 | watch |
+| 5 | T-9.5-variants-cap — `variants(first: 50)` post-write snapshot cap | 6 | partial |
+| 6 | O1 — mypy permissive on test files (pre-existing) | — | watch |
+| 7 | T-9.6-resolver-orphan — `resolve_variant_ids_to_gids` has no callers | 4 | confirmed |
+| 8 | SEC-M2-collection-seo — collections warning format inconsistent with products | 4 | note |
+| 9 | Q4 — `format_user_errors_joined()` single caller | 4 | note |
+| 10 | Q5 — `dict[str, Any]` baseline for GraphQL payloads | 4 | watch |
+| 11 | Q6 — `from_gid` type widening note | 4 | note |
+
+(T-9.6-unknown-variant closed 2026-05-24 — see 2026-05-12 Story 9.6 section follow-up.)
 
 Q3 closes; active backlog top item is now SEC-M2-sanitizer (score 16).
 
@@ -95,7 +96,7 @@ Items surfaced during code review of Story 9.6 (`update_variant_image_binding`) 
 
 | # | Item | Where | Score |
 |---|------|-------|-------|
-| T-9.6-unknown-variant | **Unknown numeric/GID variantIds slip past resolution into the mutation** — both `resolve_variant_ids_with_variants` (now used) and `resolve_variant_ids_to_gids` (previously) short-circuit numeric/GID inputs without verifying the variant exists on the product. Story 9.6's flow then falls through to `productVariantAppendMedia`, where Shopify rejects via userError — instead of failing fast with a structured tool-side error. Story 9.3's `update_product_pricing` already catches this: after resolution it iterates `resolved_gids` against the pre-fetched variants and collects `unknown_gids` for a clean tool-side error (see `tools/catalog_hygiene.py` `update_product_pricing` body). Fix path: mirror that check in `update_variant_image_binding` between Step 3 (resolve) and Step 5 (delta). Trigger: a caller passes a variant ID belonging to a different product and the Shopify userError reads worse than a tool-side rejection would. Pre-existing in #50; not introduced by #52. | `tools/catalog_hygiene.py:update_variant_image_binding` | 10 (watch) |
+| ~~T-9.6-unknown-variant~~ | **Closed 2026-05-24** — see Follow-up below. | — | — |
 | T-9.6-media-cap | **`media(first: 100)` silent truncation** — `update_variant_image_binding` validates input mediaIds against the first 100 product-media nodes only; a valid media GID past that window would be falsely rejected as not-on-product. Matches the existing cap in `tools/media/_graphql.py:GET_PRODUCT_MEDIA`. Fix path: paginate, or surface a "first-100-only" warning when `pageInfo.hasNextPage` is true. Trigger: a real product hits >100 media. | `tools/catalog_hygiene.py`, `tools/media/_graphql.py` | 6 (watch) |
 | T-9.6-resolver-orphan | **Story 9.0's `resolve_variant_ids_to_gids` / `resolve_variant_id_to_gid` now have no production callers** — confirmed via `grep -rn "resolve_variant_ids_to_gids" tools/ validators/ shopify_client.py` (no matches outside `tools/_resolvers.py` itself). Story 9.3 and Story 9.6 both use `resolve_variant_ids_with_variants`. The fetching resolver is exercised only by `test_resolvers_offline.py`. Don't remove in #52 — it's a public helper and future stories may want the fetch-on-its-own variant. But flag for a quick cleanup PR if no caller materializes by Story 9.7. | `tools/_resolvers.py` | 4 (note) |
 | T-9.6-error-msg-shift | **Product-not-found message changed in PR #52** — pre-swap, SKU lookup against a missing product surfaced the resolver's `ValueError("Product not found: <gid>")`; post-swap, the combined query's null `product` produces `"No product found with id <product_id>"` (echoes the user's raw input rather than the resolved GID). Functionally equivalent and probably more helpful for debugging, but a behavioral shift to track in case any downstream string-matching consumer relied on the old form. No action expected — note-only for trend-watch. | `tools/catalog_hygiene.py:update_variant_image_binding` | 2 (note) |
@@ -106,8 +107,19 @@ Items surfaced during code review of Story 9.6 (`update_variant_image_binding`) 
 |---|------|---------------|
 | T-9.6-rt | ~~Worst-case 3 round-trips when SKUs are supplied~~ | [#52](https://github.com/rcchirwa/shopify-mcp/pull/52) — switched to Story 9.3's `resolve_variant_ids_with_variants` enabler. Variant resolution now runs in-memory against the combined query's `variants.nodes`, collapsing SKU-input round-trips from 3 to 2 (combined + mutation). |
 | T-9.6-handle | ~~Product-ID handle resolution missing~~ | PR #71 — wired `update_variant_image_binding` through `_resolve_product_gid`; added wrong-GID-type guard to that resolver to preserve zero-network-call invariant for non-Product GID inputs. |
+| T-9.6-unknown-variant | ~~Unknown numeric/GID variantIds slip past resolution into the mutation~~ | Follow-up 2026-05-24 — added Step 3b in `update_variant_image_binding` (`tools/catalog_hygiene.py`). Mirrors the existing fail-fast check at Step 4 (media-GID rejection): walks `resolved_variant_gids` against the pre-fetched `variant_media_map`, dedupes, and emits `Error: variant GIDs not on product <product_id>: <gid>, ...` before either `productVariantDetachMedia` or `productVariantAppendMedia` runs. Four new offline tests added (`test_s96_unknown_numeric_variant_id_rejected`, `test_s96_unknown_variant_gid_rejected`, `test_s96_multiple_unknown_variants_listed_once_each`, `test_s96_mixed_valid_and_unknown_variant_rejected_wholesale`). `/engineering:code-review` + `/security-review` pass clean (security review: no findings — change is itself a hardening). Full CI clean (ruff + mypy + 929 tests + 100% coverage). |
 
 No active item lands above the priority list. T-9.6-unknown-variant is the highest-scored remaining item; pre-existing (predates #52) and deferred-pending-trigger.
+
+### Follow-up (added 2026-05-24, T-9.6-unknown-variant)
+
+T-9.6-unknown-variant closed. Two-agent review pass (`/engineering:code-review` + `/security-review`) ran on the diff before commit:
+
+1. **Code-review verdict:** Approve. One actionable suggestion — add a *mixed-batch* test (one valid + one unknown variant) to harden against a future refactor that accidentally partitions valid/invalid and proceeds with the valid subset. Applied: `test_s96_mixed_valid_and_unknown_variant_rejected_wholesale` asserts the whole batch errors and zero mutations run. Other notes were cosmetic (error-message rendering convention asymmetry vs. the adjacent media-GID check; cross-reference anchor in this ledger; a possible future-coupling with T-9.5-resolver-fanout where the guard could move into the resolver itself) — not acted on.
+
+2. **Security-review verdict:** No findings. The change is itself a security/correctness hardening — it converts an authorization-adjacent fail-late (a cross-product variant GID flowing into a Shopify write mutation, rejected only server-side) into a clean tool-side rejection before any mutation runs. No new injection, deserialization, SSRF, or data-exposure surface introduced.
+
+3. **Forward note for T-9.5-resolver-fanout:** the new guard exists *because* `resolve_variant_ids_with_variants` short-circuits numeric/GID inputs without product-membership validation. If/when the four `_resolve_product_id_*` twins are consolidated, consider also tightening `resolve_variant_ids_with_variants` to perform the membership check itself — at which point Step 3b in `update_variant_image_binding` (and the equivalent block in `update_product_pricing`) becomes redundant and can collapse into the resolver. Not in scope today.
 
 ### Follow-up (added 2026-05-21, PR #71)
 

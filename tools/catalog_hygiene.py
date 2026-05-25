@@ -3014,6 +3014,22 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         except ValueError as exc:
             return _render(f"Error: {exc}", _err_payload(str(exc)))
 
+        # Step 3b — reject resolved variant GIDs that don't belong to this product.
+        # resolve_variant_ids_with_variants short-circuits numeric/GID inputs
+        # without consulting the variants list, so a caller-supplied ID belonging
+        # to another product slips through. Catch it here instead of letting
+        # productVariantAppendMedia / productVariantDetachMedia reject after a
+        # network round-trip. Fail-fast mirrors the media-GID check below.
+        unknown_variant_gids: list[str] = []
+        for resolved_gid in resolved_variant_gids:
+            if resolved_gid not in variant_media_map and resolved_gid not in unknown_variant_gids:
+                unknown_variant_gids.append(resolved_gid)
+        if unknown_variant_gids:
+            msg = f"variant GIDs not on product {product_id}: " + ", ".join(
+                from_gid(g) for g in unknown_variant_gids
+            )
+            return _render(f"Error: {msg}", _err_payload(msg))
+
         # Step 4 — validate every requested media GID belongs to this product
         unknown: list[str] = []
         for _, media_ids in normalized:
