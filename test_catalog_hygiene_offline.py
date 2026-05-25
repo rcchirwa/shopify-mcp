@@ -3683,6 +3683,108 @@ def test_s96_multiple_unknown_media_gids_listed_once_each():
     assert other in human_prefix
 
 
+# ---------- cross-product variant GID rejection (T-9.6-unknown-variant) ----------
+
+
+def test_s96_unknown_numeric_variant_id_rejected():
+    # A numeric variantId belonging to a different product short-circuits
+    # resolution (no SKU lookup needed) and would slip through to
+    # productVariantAppendMedia. Guard rejects before any mutation runs.
+    tools, fc = _build(
+        [
+            _s96_combined_response(
+                media_ids=[_S96_MEDIA_1],
+                variants=[(_S96_VARIANT_A, "SKU-A", [])],
+            )
+        ]
+    )
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": "999", "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    assert out.startswith(f"Error: variant GIDs not on product {_S96_PRODUCT_GID}")
+    assert "999" in out
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+
+
+def test_s96_unknown_variant_gid_rejected():
+    cross_variant = "gid://shopify/ProductVariant/777"
+    tools, fc = _build(
+        [
+            _s96_combined_response(
+                media_ids=[_S96_MEDIA_1],
+                variants=[(_S96_VARIANT_A, "SKU-A", [])],
+            )
+        ]
+    )
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": cross_variant, "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    assert out.startswith(f"Error: variant GIDs not on product {_S96_PRODUCT_GID}")
+    assert "777" in out
+    assert len(fc.calls) == 1
+
+
+def test_s96_multiple_unknown_variants_listed_once_each():
+    other = "gid://shopify/ProductVariant/888"
+    tools, fc = _build(
+        [
+            _s96_combined_response(
+                media_ids=[_S96_MEDIA_1],
+                variants=[(_S96_VARIANT_A, "SKU-A", [])],
+            )
+        ]
+    )
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[
+            {"variantId": "999", "mediaIds": [_S96_MEDIA_1]},
+            {"variantId": other, "mediaIds": [_S96_MEDIA_1]},
+            {"variantId": "999", "mediaIds": [_S96_MEDIA_1]},
+        ],
+        confirm=True,
+    )
+    human_prefix = out.split("```json")[0]
+    assert human_prefix.count("999") == 1
+    assert "888" in human_prefix
+    assert len(fc.calls) == 1
+
+
+def test_s96_mixed_valid_and_unknown_variant_rejected_wholesale():
+    # Regression guard against a refactor that partitions valid/invalid and
+    # proceeds with the valid subset: a batch containing one resolvable
+    # on-product variant AND one cross-product variant must error and run
+    # zero mutations.
+    tools, fc = _build(
+        [
+            _s96_combined_response(
+                media_ids=[_S96_MEDIA_1],
+                variants=[(_S96_VARIANT_A, "SKU-A", [])],
+            )
+        ]
+    )
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[
+            {"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]},
+            {"variantId": "999", "mediaIds": [_S96_MEDIA_1]},
+        ],
+        confirm=True,
+    )
+    assert out.startswith(f"Error: variant GIDs not on product {_S96_PRODUCT_GID}")
+    assert "999" in out
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+
+
 # ---------- preview path ----------
 
 
