@@ -18,10 +18,13 @@ import tools.orders as orders_module
 import tools.products as products_module
 import tools.publications as publications_module
 import tools.webhooks as webhooks_module
+from logging_config import configure_logging
+from settings import Settings
 from shopify_client import ShopifyClient
 
 
 def create_server() -> FastMCP:
+    configure_logging(Settings())  # type: ignore[call-arg]
     server = FastMCP("shopify-aon")
     client = ShopifyClient()
 
