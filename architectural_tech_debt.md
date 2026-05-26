@@ -16,13 +16,12 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 
 | Rank | ID | Item | Category | I | R | E | Score |
 |------|----|------|----------|---|---|---|-------|
-| 1 | A4 | Stdlib `logging` adoption (per-module loggers, JSON output) — *audit-log rotation done (PR #69)* | Infrastructure | 3 | 3 | 3 | **18** |
-| 2 | A3 | Pagination helper for list reads | Code | 2 | 3 | 3 | **15** |
-| 3 | A2 | `write_gate()` helper collapsing preview/confirm/error/audit boilerplate — *helper + 7 tools migrated on branch `claude/magical-northcutt-d3977f`* | Code | 4 | 2 | 4 | **12** |
-| 4 | A5 | `shopify/` subpackage extraction (`queries/` + `operations/`) with GraphQL fragments | Architecture | 2 | 1 | 2 | **12** |
-| 5 | A6 | HTTP client unification (single wrapper for `gql` + `requests`) — *links to N4 in TECH_DEBT.md* | Architecture | 2 | 2 | 3 | **12** |
-| 6 | A8 | Metadata `TTLCache` for locations / channels / shop info | Code | 2 | 2 | 4 | **8** |
-| 7 | A10 | Committed `uv.lock` for CI reproducibility | Dependency | 1 | 1 | 5 | **2** |
+| 1 | A3 | Pagination helper for list reads | Code | 2 | 3 | 3 | **15** |
+| 2 | A2 | `write_gate()` helper collapsing preview/confirm/error/audit boilerplate — *helper + 7 tools migrated on branch `claude/magical-northcutt-d3977f`* | Code | 4 | 2 | 4 | **12** |
+| 3 | A5 | `shopify/` subpackage extraction (`queries/` + `operations/`) with GraphQL fragments | Architecture | 2 | 1 | 2 | **12** |
+| 4 | A6 | HTTP client unification (single wrapper for `gql` + `requests`) — *links to N4 in TECH_DEBT.md* | Architecture | 2 | 2 | 3 | **12** |
+| 5 | A8 | Metadata `TTLCache` for locations / channels / shop info | Code | 2 | 2 | 4 | **8** |
+| 6 | A10 | Committed `uv.lock` for CI reproducibility | Dependency | 1 | 1 | 5 | **2** |
 
 **Categories not represented in current backlog:** Test debt, Documentation debt. The 2026-04-25 review didn't probe these areas in depth — coverage is at 100% and TECH_DEBT.md plus README cover most documentation needs. Re-evaluate during the next architecture pass.
 
@@ -64,16 +63,6 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 - **Effort (3):** ~half a day. New helper in `shopify_client.py`; opt-in adoption per tool.
 - **Plan:** `paginate(query, variables, page_size, max_pages=10)` walks `pageInfo.hasNextPage` / `endCursor`. Hard-cap on `max_pages` to prevent runaway calls. Tools that risk the cap migrate; tools that genuinely never approach it stay as-is.
 - **Business justification:** silent data truncation in a tool that mutates Shopify state is the worst possible failure mode — user thinks they updated all variants, only the first 50 changed.
-
-### A4 — Stdlib `logging` adoption
-
-- **Category:** Infrastructure
-- **Status:** partially done. Audit-log `RotatingFileHandler` (10 MB × 5 files) shipped in PR #69. Remaining: per-module `logging.getLogger(__name__)`, `LOG_LEVEL` / `LOG_FORMAT` env vars, JSON output.
-- **Impact (3):** transformative the day a tool starts misbehaving in a user's session. No module outside `tools/_log.py` imports `logging` today — debugging requires adding ad-hoc prints.
-- **Risk (3):** read tools leave no trace; every contributor reinvents logging; `LOG_LEVEL` can't be tuned at runtime.
-- **Effort (3):** ~3 hours remaining. `logging.getLogger(__name__)` per module; `LOG_LEVEL` and `LOG_FORMAT` env vars; configure JSON output via `python-json-logger` when `LOG_FORMAT=json`. (Rotation done; effort adjusted from original 4.)
-- **Plan:** log every `client.execute()` at DEBUG with redacted variables; errors at WARNING; startup at INFO. Defer OpenTelemetry — overkill for a single-process MCP server today.
-- **Business justification:** observability you don't need until you do, then you need it badly. Cheap to add up-front; expensive to retrofit during an incident.
 
 ### A5 — `shopify/` subpackage extraction
 
@@ -118,15 +107,10 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 
 Designed to interleave with feature work, not block it. No phase is more than ~3 days of focused effort.
 
-### Phase 1 — Foundational (~1 day remaining)
-
-A1 shipped out of order (PR #70, as security fix M5). A4's rotation shipped (PR #69, security fix M4). A7's `Settings` class landed on branch `claude/relaxed-hertz-8f050d`. Remaining work:
-
-| Day | Item | Why |
-|-----|------|-----|
-| 1 | **A4** Logging (remainder) | Per-module loggers + env vars. `log_level` and `log_format` fields already exist on `Settings` — wiring is all that's left. Rotation already done. |
+### Phase 1 — Foundational (complete)
 
 ~~**A1** — closed, PR #70~~
+~~**A4** — closed, branch `claude/elated-kirch-43a66a`~~
 ~~**A7** — closed, branch `claude/relaxed-hertz-8f050d`~~
 
 ### Phase 2 — Tool surface (~1 day remaining)
@@ -163,6 +147,14 @@ A2's helper and proof-of-pattern migration (7 tools) shipped on branch `claude/m
 - **What shipped:** `settings.py` with `Settings(BaseSettings)` exposing credentials (`shopify_store_url`, `shopify_access_token: SecretStr`, `shopify_api_version`), HTTP/retry/poll knobs (`request_timeout_s`, `job_poll_timeout_s`, `retry_max_attempts`, `retry_base_s`, `retry_cap_s`, `poll_base_s`, `poll_cap_s`), webhook allowlist (`webhook_allowlist_hosts` + `webhook_allowlist_set` computed property), and reserved fields for A4/A8 (`log_level`, `log_format`, `cache_ttl_locations_s`). Pydantic field validators on `shopify_store_url` (regex `<shop>.myshopify.com`) and `shopify_api_version` (regex `YYYY-MM`); warn-only stderr print when token does not start with `shpat_`. `ShopifyClient(settings: Settings | None = None)` lets tests pass a custom Settings without monkeypatching module constants. Promoted constants (`JOB_POLL_TIMEOUT_S`, `_RETRY_*`, `_POLL_*`) deleted from `shopify_client.py`; `tools/collections.py`, `tools/media/_reorder.py`, `tools/media/_upload.py`, and `tools/webhooks.py` migrated to read from `client._settings`. `_testing/fake_client.py` carries a default Settings so tool offline tests work without a real `.env`.
 - **Deviation from original plan:** `job_poll_timeout_s` default kept at `10.0` instead of the doc's `60.0` — `poll_job` is informational (the mutation has already succeeded), so 10s gives the user faster feedback for a job that already worked.
 - **Test footprint:** 925 offline tests pass; 100% coverage gate held (6 new tests in `test_settings_offline.py` cover the validator failure branches and the `webhook_allowlist_set` parsing).
+
+### A4 — Stdlib `logging` adoption *(closed branch `claude/elated-kirch-43a66a`)*
+
+- **Category:** Infrastructure
+- **Closed:** 2026-05-25, branch `claude/elated-kirch-43a66a`
+- **What shipped:** `logging_config.py` (new) — `configure_logging(settings: Settings) -> None` with `StreamHandler(sys.stderr)`, text formatter (`%(asctime)s %(levelname)s %(name)s %(message)s`) or JSON formatter (`pythonjsonlogger.json.JsonFormatter`) selected by `settings.log_format`; idempotent via module-level `_configured: bool` flag (not `if root.handlers` — pytest attaches its own `LogCaptureHandler` subclasses, which would cause the handler-count guard to fire immediately). `settings.py` `log_level` field promoted from `str` to `Literal["DEBUG","INFO","WARNING","ERROR","CRITICAL"]` for parity with `log_format`'s `Literal` constraint; `getattr` fallback removed from `configure_logging`. `shopify_client.py`: removed `import sys` and `_backoff_sleep()` (inlined as `delay = _backoff_delay(...)` + `logger.warning(...)` + `time.sleep(delay)` in both retry branches so the sleep duration appears in the warning log); added `logger = logging.getLogger(__name__)`; `configure_logging(self._settings)` called in `__init__()` after settings resolved; bare `print(..., file=sys.stderr)` fingerprint replaced with `logger.info("store=%s ...", ...)`; `logger.debug("gql op=%s variables=%s", op_name, list(variables.keys()))` before retry loop (variable keys only — never values); `logger.warning("throttled ...")` and `logger.warning("retryable_http ...")` on each retry sleep. `shopify_mcp.py`: `logger = logging.getLogger(__name__)` + `logger.info("shopify-aon MCP server initialized")` in `create_server()`. `conftest.py`: `_reset_root_logger` autouse fixture — teardown resets `_configured = False` and removes `type(h) is logging.StreamHandler` handlers from root. `test_logging_config_offline.py` (new): 7 tests covering text formatter, JSON formatter, idempotency, root level propagation, DEBUG emit, DEBUG suppression, and audit logger `propagate` non-mutation. `pyproject.toml`: `python-json-logger>=3,<4` dep; `logging_config` added to `py-modules`, `[tool.coverage.run] source`, and `[tool.mypy] files`.
+- **Test footprint:** 936 offline tests pass; 100% coverage gate held (3201 statements); mypy clean (34 files); ruff clean.
+- **Design decisions:** all output to `sys.stderr` (stdout is the MCP JSON-RPC channel); `_configured` flag beats `if root.handlers` for idempotency under pytest; variable values never logged (only keys) to prevent PII/product-data leakage; `pythonjsonlogger.json.JsonFormatter` lazy-imported only when `log_format="json"`; audit logger `shopify_aon.audit` untouched — its `RotatingFileHandler` and `propagate=False` remain owned by `tools/_log.py`.
 
 ### A1 — Throttle-aware `ShopifyClient.execute()` with retry/backoff and cost tracking *(closed PR #70)*
 

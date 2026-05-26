@@ -15,6 +15,7 @@ dependencies = [
     "gql[requests]>=3.4.0,<4",
     "pydantic>=2.0,<3",
     "pydantic-settings>=2.0,<3",
+    "python-json-logger>=3,<4",
 ]
 
 [project.optional-dependencies]
@@ -33,7 +34,7 @@ dev = [
 shopify-mcp = "shopify_mcp:main"
 
 [tool.setuptools]
-py-modules = ["settings", "shopify_client", "shopify_mcp"]
+py-modules = ["logging_config", "settings", "shopify_client", "shopify_mcp"]
 packages = ["tools", "validators", "_testing"]
 
 [tool.pytest.ini_options]
@@ -48,7 +49,7 @@ addopts = "--ignore=test_shopify_mcp.py --ignore=test_webhooks.py"
 # `coverage run` locally and the CI workflow, so the two can't drift.
 # `_testing/` is intentionally excluded: it holds test doubles exercised
 # only through the offline suites, not production code worth gating on.
-source = ["settings", "shopify_client", "tools", "validators"]
+source = ["logging_config", "settings", "shopify_client", "tools", "validators"]
 
 [tool.ruff]
 line-length = 100
@@ -82,7 +83,7 @@ quote-style = "double"
 # annotations. Added tools should carry types from the first commit — mypy will
 # reject the PR otherwise.
 python_version = "3.10"
-files = ["settings.py", "shopify_client.py", "shopify_mcp.py", "tools", "validators", "_testing"]
+files = ["logging_config.py", "settings.py", "shopify_client.py", "shopify_mcp.py", "tools", "validators", "_testing"]
 ignore_missing_imports = true
 disallow_untyped_defs = true
 # Belt-and-suspenders: if anyone later bypasses the gate with
