@@ -147,9 +147,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             danger = dangerous_html_patterns(new_description)
             warning_suffix = (
                 (
-                    "\n  ⚠ DANGEROUS HTML DETECTED: "
-                    + ", ".join(repr(p) for p in danger)
-                    + "\n  Storefront themes render descriptionHtml without escaping."
+                    "\n\n⚠ DANGEROUS HTML DETECTED in new description:\n"
+                    + "\n".join(f"  • {p!r}" for p in danger)
+                    + "\nStorefront themes render descriptionHtml without escaping."
                 )
                 if danger
                 else ""
