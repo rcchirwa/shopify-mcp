@@ -7,6 +7,7 @@ Run via: python shopify_mcp.py
 All credentials loaded from .env — never hardcoded here.
 """
 
+from logging_config import configure_logging
 from mcp.server.fastmcp import FastMCP
 
 import tools.catalog_hygiene as catalog_hygiene_module
@@ -18,7 +19,6 @@ import tools.orders as orders_module
 import tools.products as products_module
 import tools.publications as publications_module
 import tools.webhooks as webhooks_module
-from logging_config import configure_logging
 from settings import Settings
 from shopify_client import ShopifyClient
 
