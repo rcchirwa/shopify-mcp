@@ -74,6 +74,26 @@ def test_with_variants_validates_inputs_before_consulting_list():
         )
 
 
+def test_with_variants_non_string_id_raises():
+    # _validate_variant_id rejects non-string inputs (line 19 coverage).
+    with pytest.raises(ValueError):
+        resolve_variant_ids_with_variants(
+            [42],  # type: ignore[list-item]
+            variants=[],
+            product_gid=PRODUCT_GID,
+        )
+
+
+def test_with_variants_empty_tail_gid_raises():
+    # _classify_no_fetch rejects a GID with no numeric tail (line 34 coverage).
+    with pytest.raises(ValueError, match="Malformed variant GID"):
+        resolve_variant_ids_with_variants(
+            ["gid://shopify/ProductVariant/"],
+            variants=[],
+            product_gid=PRODUCT_GID,
+        )
+
+
 def test_with_variants_mixed_inputs_preserve_order():
     out = resolve_variant_ids_with_variants(
         ["SKU-A", "42", "gid://shopify/ProductVariant/9", "SKU-B"],
