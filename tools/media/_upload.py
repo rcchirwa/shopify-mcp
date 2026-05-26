@@ -31,6 +31,7 @@ from tools.media._common import (
 from tools.media._constants import (
     _IMAGE_DOWNLOAD_TIMEOUT_S,
     _MAX_IMAGE_BYTES,
+    _MEDIA_PAGE_CAP,
     _MEDIA_PROCESSING_POLL_INTERVAL_S,
     _MEDIA_PROCESSING_POLL_TIMEOUT_S,
 )
@@ -336,13 +337,17 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # worth re-reading for this cost — preview accuracy isn't a
         # correctness guarantee.
         try:
-            current = client.execute(GET_PRODUCT_MEDIA, {"id": gid})
+            first_response, current_nodes, _ = client.paginate(
+                GET_PRODUCT_MEDIA,
+                {"id": gid},
+                connection_path=["product", "media"],
+                page_size=_MEDIA_PAGE_CAP,
+            )
         except Exception as e:
             return f"Error at stage=read: {e}"
-        product = current.get("product")
+        product = first_response.get("product")
         if not product:
             return f"No product found with id {product_id}."
-        current_nodes = (product.get("media") or {}).get("nodes", []) or []
         current_count = len(current_nodes)
 
         if position and position < 1:

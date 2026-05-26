@@ -11,6 +11,7 @@ from tools.media._common import (
     _extract_media_user_errors,
     _fmt_media_user_errors,
 )
+from tools.media._constants import _MEDIA_PAGE_CAP
 from tools.media._graphql import GET_PRODUCT_MEDIA, PRODUCT_REORDER_MEDIA
 
 
@@ -45,11 +46,15 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             parsed_moves.append({"id": mid, "newPosition": pos})
 
         # Preview: show current order vs proposed, reject unknown ids.
-        data = client.execute(GET_PRODUCT_MEDIA, {"id": gid})
-        product = data.get("product")
+        first_response, current_nodes, _ = client.paginate(
+            GET_PRODUCT_MEDIA,
+            {"id": gid},
+            connection_path=["product", "media"],
+            page_size=_MEDIA_PAGE_CAP,
+        )
+        product = first_response.get("product")
         if not product:
             return f"No product found with id {product_id}."
-        current_nodes = (product.get("media") or {}).get("nodes", []) or []
         current_ids = [n.get("id") for n in current_nodes]
         unknown = [m["id"] for m in parsed_moves if m["id"] not in current_ids]
         if unknown:

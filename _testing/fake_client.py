@@ -68,3 +68,34 @@ class FakeClient:
         if isinstance(item, BaseException):
             raise item
         return item
+
+    def paginate(
+        self,
+        query_str: str,
+        variables: dict[str, Any],
+        *,
+        connection_path: list[str],
+        page_size: int = 50,
+        max_pages: int = 10,
+    ) -> tuple[dict[str, Any], list[Any], bool]:
+        """Mirror of ShopifyClient.paginate() — calls self.execute() in a loop
+        so scripted FakeClient responses are consumed in page order."""
+        all_nodes: list[Any] = []
+        first_response: dict[str, Any] = {}
+        cursor: str | None = None
+        for page in range(max_pages):
+            page_vars: dict[str, Any] = {**variables, "first": page_size, "after": cursor}
+            result = self.execute(query_str, page_vars)
+            if page == 0:
+                first_response = result
+            connection: Any = result
+            for key in connection_path:
+                connection = (connection or {}).get(key) or {}
+            all_nodes.extend(list(connection.get("nodes") or []))
+            page_info: dict[str, Any] = connection.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                return first_response, all_nodes, False
+            cursor = page_info.get("endCursor")
+            if cursor is None:
+                break
+        return first_response, all_nodes, True

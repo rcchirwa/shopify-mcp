@@ -221,6 +221,54 @@ class ShopifyClient:
 
         raise TransientShopifyError("Shopify retry loop exhausted")  # pragma: no cover
 
+    def paginate(
+        self,
+        query_str: str,
+        variables: dict[str, Any],
+        *,
+        connection_path: list[str],
+        page_size: int = 50,
+        max_pages: int = 10,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], bool]:
+        """Walk pageInfo cursor pagination across multiple Shopify requests.
+
+        The query must accept $first: Int! and $after: String variables and
+        select pageInfo { hasNextPage endCursor } on the paginated connection.
+
+        Returns (first_page_response, all_nodes, capped) where capped=True
+        when max_pages was exhausted before hasNextPage turned False. Callers
+        can extract non-paginated fields (e.g. product.title) from first_page_response.
+        """
+        all_nodes: list[dict[str, Any]] = []
+        first_response: dict[str, Any] = {}
+        cursor: str | None = None
+        for page in range(max_pages):
+            page_vars: dict[str, Any] = {**variables, "first": page_size, "after": cursor}
+            result = self.execute(query_str, page_vars)
+            if page == 0:
+                first_response = result
+            connection: Any = result
+            for key in connection_path:
+                connection = (connection or {}).get(key) or {}
+            all_nodes.extend(list(connection.get("nodes") or []))
+            page_info: dict[str, Any] = connection.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                return first_response, all_nodes, False
+            cursor = page_info.get("endCursor")
+            if cursor is None:
+                logger.warning(
+                    "paginate: hasNextPage=True but endCursor=null on connection=%s; aborting",
+                    connection_path,
+                )
+                break
+        logger.warning(
+            "paginate capped connection=%s max_pages=%d nodes=%d",
+            connection_path,
+            max_pages,
+            len(all_nodes),
+        )
+        return first_response, all_nodes, True
+
 
 def poll_job(
     client: "ShopifyClient",

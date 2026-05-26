@@ -122,7 +122,7 @@ def test_get_inventory_renders_variant_lines_with_available_quantity():
     assert "variant_id: 101" in out
     # Query is the new 2024-07+ shape and was called with a full GID
     assert fc.calls[0][0] == GET_PRODUCT_INVENTORY
-    assert fc.calls[0][1] == {"id": "gid://shopify/Product/555"}
+    assert fc.calls[0][1] == {"id": "gid://shopify/Product/555", "first": 50, "after": None}
 
 
 def test_get_inventory_falls_back_to_na_when_no_levels():
@@ -208,6 +208,27 @@ def test_get_inventory_returns_not_found_on_missing_product():
     tools, fc = _build([{"product": None}])
     out = tools["get_inventory"](product_id="999")
     assert out == "Product 999 not found."
+
+
+def test_get_inventory_warns_when_variant_pagination_is_capped():
+    """After max_pages (10) pages with hasNextPage=True, paginate() returns
+    capped=True and get_inventory appends a WARNING line."""
+
+    def _paged_product(cursor):
+        return {
+            "product": {
+                "title": "Huge Product",
+                "variants": {
+                    "nodes": [_variant("100", "S", "S-SKU", [_level(1)])],
+                    "pageInfo": {"hasNextPage": True, "endCursor": cursor},
+                },
+            }
+        }
+
+    tools, fc = _build([_paged_product(f"c{i}") for i in range(10)])
+    out = tools["get_inventory"](product_id="555")
+    assert "WARNING" in out and "additional variants" in out
+    assert len(fc.calls) == 10
 
 
 # ---- update_inventory ----
@@ -558,11 +579,11 @@ def test_tracking_transport_error_mid_loop_does_not_abort_batch():
         _variant("102", "L", "REEF-L", [], tracked=False),
     ]
 
-    class FlakyFakeClient:
-        def __init__(self):
-            self.calls = []
+    class FlakyFakeClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__([])
 
-        def execute(self, query, variables=None):
+        def execute(self, query: str, variables: dict | None = None) -> object:
             self.calls.append((query, variables))
             if len(self.calls) == 1:
                 return _product_with_variants(variants)
@@ -570,6 +591,7 @@ def test_tracking_transport_error_mid_loop_does_not_abort_batch():
                 # Variant 101's mutation throws
                 raise RuntimeError("upstream 502")
             # Variants 100 and 102 succeed
+            assert variables is not None
             return _tracked_update_ok(variables["id"], True)
 
     srv = CapturingServer()
