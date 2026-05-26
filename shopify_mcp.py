@@ -8,7 +8,9 @@ All credentials loaded from .env — never hardcoded here.
 """
 
 import logging
+from pathlib import Path
 
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
 import tools.catalog_hygiene as catalog_hygiene_module
@@ -26,8 +28,11 @@ from shopify_client import ShopifyClient
 
 logger = logging.getLogger(__name__)
 
+_ENV_PATH = Path(__file__).resolve().parent / ".env"
+
 
 def create_server() -> FastMCP:
+    load_dotenv(dotenv_path=_ENV_PATH, override=True)
     configure_logging(Settings())  # type: ignore[call-arg]
     server = FastMCP("shopify-aon")
     client = ShopifyClient()
