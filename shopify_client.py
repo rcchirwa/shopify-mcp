@@ -3,9 +3,9 @@ Shopify Admin GraphQL API wrapper.
 Loads credentials from .env — never hardcode secrets here.
 """
 
+import logging
 import random
 import re
-import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -15,6 +15,7 @@ from gql import Client, gql
 from gql.transport.exceptions import TransportQueryError, TransportServerError
 from gql.transport.requests import RequestsHTTPTransport
 
+from logging_config import configure_logging
 from settings import Settings
 
 # Some Shopify mutations (collectionAddProductsV2, collectionRemoveProducts, …)
@@ -49,6 +50,10 @@ _RETRYABLE_HTTP_RE = re.compile(
     r"(?<![/\w])(" + "|".join(str(c) for c in _RETRYABLE_HTTP_STATUSES) + r")\b"
 )
 
+# Extracts the operation name from a GQL query string. Matches the first named
+# query/mutation/subscription; falls back to "<anonymous>" for shorthand queries.
+_GQL_OP_NAME_RE = re.compile(r"(?:query|mutation|subscription)\s+(\w+)", re.IGNORECASE)
+
 # Pin .env to the repo root (next to this file) so loading is independent of
 # the working directory the MCP process is launched with. Claude Desktop
 # launches subprocesses with CWD=/, which makes the default `load_dotenv()`
@@ -56,6 +61,8 @@ _RETRYABLE_HTTP_RE = re.compile(
 # on-disk file the source of truth — so a token rotated in .env wins over
 # stale values injected by the launcher's config.
 _ENV_PATH = Path(__file__).resolve().parent / ".env"
+
+logger = logging.getLogger(__name__)
 
 
 def _mask_token(token: str) -> str:
@@ -127,11 +134,6 @@ def _backoff_delay(attempt: int, *, base: float, cap: float, jitter: bool) -> fl
     return random.uniform(0, ceiling) if jitter else ceiling
 
 
-def _backoff_sleep(attempt: int, *, base: float, cap: float, jitter: bool) -> None:
-    """Compute and perform one backoff sleep. See `_backoff_delay` for params."""
-    time.sleep(_backoff_delay(attempt, base=base, cap=cap, jitter=jitter))
-
-
 class ShopifyClient:
     def __init__(self, settings: Settings | None = None) -> None:
         # load_dotenv stays first so process env reflects on-disk .env before
@@ -141,18 +143,19 @@ class ShopifyClient:
         # pydantic-settings populates required fields from env vars — mypy
         # can't see that, so the bare Settings() call needs a type-ignore.
         self._settings = settings or Settings()  # type: ignore[call-arg]
+        configure_logging(self._settings)
 
         # Log the active credential fingerprint to stderr so operators can tell
         # at a glance which token is live without reading .env. Goes to stderr
         # (not stdout) to keep MCP's stdout JSON-RPC channel clean.
         env_src = ".env" if _ENV_PATH.is_file() else "process env"
         access_token = self._settings.shopify_access_token.get_secret_value()
-        print(
-            f"[shopify_client] store={self._settings.shopify_store_url} "
-            f"api_version={self._settings.shopify_api_version} "
-            f"token={_mask_token(access_token)} "
-            f"source={env_src}",
-            file=sys.stderr,
+        logger.info(
+            "store=%s api_version=%s token=%s source=%s",
+            self._settings.shopify_store_url,
+            self._settings.shopify_api_version,
+            _mask_token(access_token),
+            env_src,
         )
 
         transport = RequestsHTTPTransport(
@@ -173,13 +176,20 @@ class ShopifyClient:
         max_attempts = self._settings.retry_max_attempts
         base_s = self._settings.retry_base_s
         cap_s = self._settings.retry_cap_s
+        _m = _GQL_OP_NAME_RE.search(query_str)
+        op_name = _m.group(1) if _m else "<anonymous>"
+        logger.debug("gql op=%s variables=%s", op_name, list((variables or {}).keys()))
         for attempt in range(max_attempts + 1):
             try:
                 result = self._client.execute(gql_query, variable_values=variables or {})
             except TransportQueryError as e:
                 if _is_throttled(e.errors):
                     if attempt < max_attempts:
-                        _backoff_sleep(attempt, base=base_s, cap=cap_s, jitter=True)
+                        delay = _backoff_delay(attempt, base=base_s, cap=cap_s, jitter=True)
+                        logger.warning(
+                            "throttled op=%s attempt=%d sleep=%.2fs", op_name, attempt, delay
+                        )
+                        time.sleep(delay)
                         continue
                     raise TransientShopifyError(
                         f"Shopify GraphQL THROTTLED after {attempt + 1} attempts: "
@@ -189,7 +199,11 @@ class ShopifyClient:
             except TransportServerError as e:
                 if _is_retryable_http(e):
                     if attempt < max_attempts:
-                        _backoff_sleep(attempt, base=base_s, cap=cap_s, jitter=True)
+                        delay = _backoff_delay(attempt, base=base_s, cap=cap_s, jitter=True)
+                        logger.warning(
+                            "retryable_http op=%s attempt=%d sleep=%.2fs", op_name, attempt, delay
+                        )
+                        time.sleep(delay)
                         continue
                     raise TransientShopifyError(
                         f"Shopify HTTP error after {attempt + 1} attempts: {e!s}"

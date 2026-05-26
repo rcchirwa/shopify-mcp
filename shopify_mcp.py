@@ -7,6 +7,8 @@ Run via: python shopify_mcp.py
 All credentials loaded from .env — never hardcoded here.
 """
 
+import logging
+
 from mcp.server.fastmcp import FastMCP
 
 import tools.catalog_hygiene as catalog_hygiene_module
@@ -20,10 +22,13 @@ import tools.publications as publications_module
 import tools.webhooks as webhooks_module
 from shopify_client import ShopifyClient
 
+logger = logging.getLogger(__name__)
+
 
 def create_server() -> FastMCP:
     server = FastMCP("shopify-aon")
     client = ShopifyClient()
+    logger.info("shopify-aon MCP server initialized")
 
     products_module.register(server, client)
     inventory_module.register(server, client)

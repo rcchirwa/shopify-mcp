@@ -48,9 +48,9 @@ class Settings(BaseSettings):
 
     webhook_allowlist_hosts: str = ""
 
-    # Reserved for A4 (logging adoption) and A8 (metadata TTLCache); no
-    # consumer yet — fields exist so those items don't need a config touch-up.
-    log_level: str = "INFO"
+    # A8 (metadata TTLCache) — field exists so that item doesn't need a config
+    # touch-up when it lands. log_level / log_format wired by A4 (logging).
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     log_format: Literal["text", "json"] = "text"
     cache_ttl_locations_s: int = 3600
 
