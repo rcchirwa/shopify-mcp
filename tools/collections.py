@@ -149,7 +149,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 (
                     "\n\n⚠ DANGEROUS HTML DETECTED in new description:\n"
                     + "\n".join(f"  • {p!r}" for p in danger)
-                    + "\n  Storefront themes render descriptionHtml without escaping."
+                    + "\nStorefront themes render descriptionHtml without escaping."
                 )
                 if danger
                 else ""

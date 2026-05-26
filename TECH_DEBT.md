@@ -4,7 +4,7 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-05-24.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-05-26.
 
 ---
 
@@ -17,7 +17,7 @@ Two items from the 2026-05-21 backlog closed in a single PR.
 | # | Item | How it closed |
 |---|------|---------------|
 | T-9.6-resolver-orphan | ~~`resolve_variant_ids_to_gids` / `resolve_variant_id_to_gid` have no callers~~ | Deleted both functions and `GET_PRODUCT_VARIANTS_FOR_RESOLVE` from `tools/_resolvers.py`. Also removed now-unused `ShopifyClient` import from the module. Deleted 19 orphaned test cases from `test_resolvers_offline.py` (plus the stale `FakeClient` import). `_validate_variant_id` and `_classify_no_fetch` were confirmed still live (used by `resolve_variant_ids_with_variants`) and kept. CI clean: 924 tests, 100% coverage. |
-| SEC-M2-collection-seo | ~~`update_collection` warning format inconsistent with `update_product_description`~~ | Replaced the inline comma-joined `"\n  ⚠ DANGEROUS HTML DETECTED: ..."` suffix in `tools/collections.py` with the same bullet-point block used by `tools/products.py`: `"\n\n⚠ DANGEROUS HTML DETECTED in new description:\n" + "\n".join(f"  • {p!r}" ...)`. Existing test assertions (`assert "⚠ DANGEROUS HTML DETECTED" in out`, `assert "'<script'" in out`) survived unchanged — they use substring checks that hold under both formats. |
+| SEC-M2-collection-seo | ~~`update_collection` warning format inconsistent with `update_product_description`~~ | Replaced the inline comma-joined `"\n  ⚠ DANGEROUS HTML DETECTED: ..."` suffix in `tools/collections.py` with the same bullet-point block used by `tools/products.py`: `"\n\n⚠ DANGEROUS HTML DETECTED in new description:\n" + "\n".join(f"  • {p!r}" ...)`. Existing test assertions (`assert "⚠ DANGEROUS HTML DETECTED" in out`, `assert "'<script'" in out`) survived unchanged — they use substring checks that hold under both formats. Also removed orphaned 2-space indent from the trailing `"Storefront themes render..."` context line in both `tools/collections.py` and `tools/products.py` (follow-up from code-review Info finding — the indent made the line look like a missing bullet point). |
 
 ### Current active backlog (after Story 10.9)
 
