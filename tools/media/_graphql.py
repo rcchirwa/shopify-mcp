@@ -1,11 +1,11 @@
 """GraphQL query and mutation strings used by the media tools."""
 
 GET_PRODUCT_MEDIA = """
-query GetProductMedia($id: ID!) {
+query GetProductMedia($id: ID!, $first: Int!, $after: String) {
   product(id: $id) {
     id
     title
-    media(first: 100) {
+    media(first: $first, after: $after) {
       nodes {
         id
         alt
@@ -13,7 +13,7 @@ query GetProductMedia($id: ID!) {
         status
         preview { image { url } }
       }
-      pageInfo { hasNextPage }
+      pageInfo { hasNextPage endCursor }
     }
   }
 }

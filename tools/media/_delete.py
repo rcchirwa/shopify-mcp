@@ -6,6 +6,7 @@ from shopify_client import ShopifyClient
 from tools._log import log_write
 from tools._response import extract_user_errors, with_confirm_hint
 from tools.media._common import _as_product_gid, _fmt_media_user_errors
+from tools.media._constants import _MEDIA_PAGE_CAP
 from tools.media._graphql import GET_PRODUCT_MEDIA, PRODUCT_DELETE_MEDIA
 
 
@@ -26,11 +27,15 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not gid:
             return "Error: provide product_id."
 
-        data = client.execute(GET_PRODUCT_MEDIA, {"id": gid})
-        product = data.get("product")
+        first_response, nodes, _ = client.paginate(
+            GET_PRODUCT_MEDIA,
+            {"id": gid},
+            connection_path=["product", "media"],
+            page_size=_MEDIA_PAGE_CAP,
+        )
+        product = first_response.get("product")
         if not product:
             return f"No product found with id {product_id}."
-        nodes = (product.get("media") or {}).get("nodes", []) or []
         current_index = {n.get("id"): n for n in nodes}
 
         # Match caller-supplied ids to what's actually attached. Dedup while

@@ -11,12 +11,12 @@ from tools.media._constants import _MEDIA_PAGE_CAP
 from tools.media._graphql import GET_PRODUCT_MEDIA
 
 
-def _render_media_list(product: dict[str, Any]) -> str:
-    """Format a product's media list as a string. `product` is the GraphQL node."""
+def _render_media_list(
+    product: dict[str, Any], nodes: list[dict[str, Any]], capped: bool = False
+) -> str:
+    """Format a product's media list as a string."""
     if not product:
         return "No product found."
-    media = product.get("media") or {}
-    nodes = media.get("nodes", []) or []
     pid = from_gid(product.get("id", ""))
     header = f"Media for product {pid} ({product.get('title', '')}) — {len(nodes)} item(s):"
     if not nodes:
@@ -32,9 +32,9 @@ def _render_media_list(product: dict[str, Any]) -> str:
             f"  {idx}. {kind} {n.get('id', '')}  status={status}  alt={alt!r}\n"
             f"     preview: {preview}"
         )
-    if (media.get("pageInfo") or {}).get("hasNextPage"):
+    if capped:
         lines.append(
-            f"  WARNING: product has more than {_MEDIA_PAGE_CAP} media items — "
+            f"  WARNING: pagination cap reached ({len(nodes)} media shown) — "
             f"additional media exist but are not listed here."
         )
     return "\n".join(lines)
@@ -51,8 +51,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         gid = _as_product_gid(product_id)
         if not gid:
             return "Error: provide product_id."
-        data = client.execute(GET_PRODUCT_MEDIA, {"id": gid})
-        product = data.get("product")
+        first_response, media_nodes, capped = client.paginate(
+            GET_PRODUCT_MEDIA,
+            {"id": gid},
+            connection_path=["product", "media"],
+            page_size=_MEDIA_PAGE_CAP,
+        )
+        product = first_response.get("product")
         if not product:
             return f"No product found with id {product_id}."
-        return _render_media_list(product)
+        return _render_media_list(product, media_nodes, capped)

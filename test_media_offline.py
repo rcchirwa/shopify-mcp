@@ -69,12 +69,15 @@ def _media_node(mid, alt="", status="READY", kind="IMAGE", preview_url=None):
     }
 
 
-def _product_media_read(nodes, pid="123", title="Hoodie", has_next=False):
+def _product_media_read(nodes, pid="123", title="Hoodie", has_next=False, end_cursor=None):
     return {
         "product": {
             "id": f"gid://shopify/Product/{pid}",
             "title": title,
-            "media": {"nodes": nodes, "pageInfo": {"hasNextPage": has_next}},
+            "media": {
+                "nodes": nodes,
+                "pageInfo": {"hasNextPage": has_next, "endCursor": end_cursor},
+            },
         }
     }
 
@@ -111,7 +114,7 @@ def test_list_product_media_formats_output():
     assert MEDIA_B in out
     assert "IMAGE" in out and "status=READY" in out
     assert fc.calls[0][0] == GET_PRODUCT_MEDIA
-    assert fc.calls[0][1] == {"id": PRODUCT_GID}
+    assert fc.calls[0][1] == {"id": PRODUCT_GID, "first": 100, "after": None}
 
 
 def test_list_product_media_empty():
@@ -128,24 +131,22 @@ def test_list_product_media_product_not_found():
 
 
 def test_list_product_media_warns_at_page_cap():
-    """hasNextPage=True surfaces a truncation warning."""
-    tools, fc = _build(
-        [
-            _product_media_read(
-                [_media_node(MEDIA_A)],
-                has_next=True,
-            )
-        ]
-    )
+    """Exhausting max_pages=10 surfaces a truncation warning."""
+    responses = [
+        _product_media_read([_media_node(MEDIA_A)], has_next=True, end_cursor=f"c{i}")
+        for i in range(10)
+    ]
+    tools, fc = _build(responses)
     out = tools["list_product_media"](product_id="123")
-    assert "WARNING" in out and "100" in out
+    assert "WARNING" in out and "pagination cap reached" in out
+    assert len(fc.calls) == 10
 
 
 def test_list_product_media_accepts_full_gid_passthrough():
     """Callers may pass a full GID instead of a numeric id."""
     tools, fc = _build([_product_media_read([])])
     tools["list_product_media"](product_id=PRODUCT_GID)
-    assert fc.calls[0][1] == {"id": PRODUCT_GID}
+    assert fc.calls[0][1] == {"id": PRODUCT_GID, "first": 100, "after": None}
 
 
 # ---------- upload_product_image — input validation ----------
@@ -1229,7 +1230,7 @@ def test_upload_bytes_to_target_missing_url_rejected():
 def test_render_media_list_none_product_returns_placeholder():
     """Defensive branch — public callers already short-circuit on a None
     product, but the helper is still the single source of truth."""
-    assert _render_media_list(None) == "No product found."
+    assert _render_media_list(None, []) == "No product found."
 
 
 # ---------- _poll_media_ready: transient exception during poll must not abort ----------

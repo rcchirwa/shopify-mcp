@@ -15,7 +15,6 @@ _IMAGE_DOWNLOAD_TIMEOUT_S = 30
 _MEDIA_PROCESSING_POLL_TIMEOUT_S = 15
 _MEDIA_PROCESSING_POLL_INTERVAL_S = 2.0
 
-# Shopify's `media` connection page cap. A product with more than this in one
-# request needs pagination; emit an at-cap warning so operators see the
-# truncation instead of silently missing media.
+# Page size for media pagination via `paginate()`. Shopify's `media` connection
+# returns up to 250 nodes per request; 100 is a safe default.
 _MEDIA_PAGE_CAP = 100

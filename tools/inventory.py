@@ -15,19 +15,18 @@ from tools._log import log_write
 from tools._response import format_user_errors, format_user_errors_joined, with_confirm_hint
 from tools._write_tool import write_gate
 
-# GET_PRODUCT_INVENTORY fetches `variants(first: 50)` — Shopify returns up to
-# this many variants per request and silently truncates the rest. When a read
-# hits this cap we warn the operator so bulk writes don't miss variants.
+# Page size for variant pagination via `paginate()`. Controls how many variants
+# are fetched per Shopify request; passed as page_size= to client.paginate().
 _VARIANTS_PAGE_CAP = 50
 
 # 2024-07+ replaced InventoryLevel.available with
 # `quantities(names: [...]) { name quantity }`. The `available` name is the
 # direct equivalent of the old field.
 GET_PRODUCT_INVENTORY = """
-query GetProductInventory($id: ID!) {
+query GetProductInventory($id: ID!, $first: Int!, $after: String) {
   product(id: $id) {
     title
-    variants(first: 50) {
+    variants(first: $first, after: $after) {
       nodes {
         id
         title
@@ -43,6 +42,7 @@ query GetProductInventory($id: ID!) {
           }
         }
       }
+      pageInfo { hasNextPage endCursor }
     }
   }
 }
@@ -131,15 +131,18 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def get_inventory(product_id: str) -> str:
         """Get inventory levels for a product and all its variants."""
-        data = client.execute(GET_PRODUCT_INVENTORY, {"id": to_gid("Product", product_id)})
+        data, variants, capped = client.paginate(
+            GET_PRODUCT_INVENTORY,
+            {"id": to_gid("Product", product_id)},
+            connection_path=["product", "variants"],
+            page_size=_VARIANTS_PAGE_CAP,
+        )
         product = data.get("product")
         if not product:
             return f"Product {product_id} not found."
 
         lines = [f"Inventory for: {product['title']} (id: {product_id})\n"]
-        # `or {}` guards against Shopify returning `null` for any of these
-        # nested fields — `.get(key, default)` wouldn't apply the default.
-        for variant in (product.get("variants") or {}).get("nodes", []) or []:
+        for variant in variants:
             inv_item = variant.get("inventoryItem") or {}
             levels = (inv_item.get("inventoryLevels") or {}).get("nodes", []) or []
             # Preserve 0 as a legit qty — only fall back to "N/A" on missing.
@@ -149,6 +152,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             lines.append(
                 f"  • {variant['title']} — SKU: {variant.get('sku', 'N/A')} "
                 f"— available: {qty} — variant_id: {from_gid(variant['id'])}"
+            )
+        if capped:
+            lines.append(
+                "  WARNING: variant pagination hit the max-pages cap — "
+                "additional variants (if any) are not shown here."
             )
         return "\n".join(lines)
 
@@ -226,12 +234,15 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         them. Returns a preview unless confirm=True.
         """
         product_gid = to_gid("Product", product_id)
-        data = client.execute(GET_PRODUCT_INVENTORY, {"id": product_gid})
+        data, variants, capped = client.paginate(
+            GET_PRODUCT_INVENTORY,
+            {"id": product_gid},
+            connection_path=["product", "variants"],
+            page_size=_VARIANTS_PAGE_CAP,
+        )
         product = data.get("product")
         if not product:
             return f"No product found with id {product_id}."
-
-        variants = (product.get("variants") or {}).get("nodes", []) or []
         title = product.get("title", "")
 
         targets, unresolved = filter_variant_targets(variant_ids, variants)
@@ -273,6 +284,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             else ""
         )
 
+        cap_block = (
+            "\n  WARNING: variant pagination hit the max-pages cap — "
+            "additional variants may not be covered."
+            if capped
+            else ""
+        )
+
         preview = (
             f"PREVIEW — Variant inventory tracking update\n"
             f"  Product : {title} (id: {product_id})\n"
@@ -280,6 +298,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"  Would change ({len(to_change)}):\n{change_lines}\n"
             f"  Unchanged ({len(unchanged)}):\n{unchanged_lines}"
             f"{unresolved_block}"
+            f"{cap_block}"
         )
 
         if not confirm:
@@ -344,6 +363,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"  Unchanged ({len(unchanged)}):\n{unchanged_lines}"
             f"{failed_block}"
             f"{unresolved_block}"
+            f"{cap_block}"
         )
 
     @server.tool()
@@ -363,19 +383,20 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         Returns a preview unless confirm=True.
         """
         product_gid = to_gid("Product", product_id)
-        data = client.execute(GET_PRODUCT_INVENTORY, {"id": product_gid})
+        data, variants, capped = client.paginate(
+            GET_PRODUCT_INVENTORY,
+            {"id": product_gid},
+            connection_path=["product", "variants"],
+            page_size=_VARIANTS_PAGE_CAP,
+        )
         product = data.get("product")
         if not product:
             return f"No product found with id {product_id}."
-
-        variants = (product.get("variants") or {}).get("nodes", []) or []
         title = product.get("title", "")
         at_cap_warning = (
-            (
-                f"  WARNING: variant read hit the {_VARIANTS_PAGE_CAP}-variant page "
-                f"cap — additional variants (if any) are not covered by this call."
-            )
-            if len(variants) >= _VARIANTS_PAGE_CAP
+            "  WARNING: variant pagination hit the max-pages cap — "
+            "additional variants (if any) are not covered by this call."
+            if capped
             else ""
         )
 
