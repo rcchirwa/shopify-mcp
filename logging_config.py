@@ -30,7 +30,9 @@ def configure_logging(settings: Settings) -> None:
     if settings.log_format == "json":
         from pythonjsonlogger.json import JsonFormatter  # lazy import
 
-        formatter: logging.Formatter = JsonFormatter()
+        formatter: logging.Formatter = JsonFormatter(
+            "%(asctime)s %(levelname)s %(name)s %(message)s"
+        )
     else:
         formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
 
