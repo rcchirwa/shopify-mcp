@@ -1716,22 +1716,33 @@ def _shape_product_snapshot(product_node: dict[str, Any] | None) -> dict[str, An
 
 
 # ---------------------------------------------------------------------------
-# Helpers — Story 9.2 (update_product_vendor)
+# Helpers — shared resolver (Stories 9.2 / 9.4 / 9.5)
 # ---------------------------------------------------------------------------
 
 
-def _resolve_product_id(client: ShopifyClient, product_id: str) -> tuple[str | None, dict]:
-    """Resolve a numeric/GID/handle product_id to (product_gid, product_snapshot).
+def _resolve_product_with_queries(
+    client: ShopifyClient,
+    product_id: str,
+    query_by_id: str,
+    query_by_handle: str,
+) -> tuple[str | None, dict]:
+    """Shared dispatch used by the three snapshot-returning product-id resolvers.
 
-    Returns (None, {}) if no product was found for a handle/numeric/GID lookup
-    so callers can produce a clean "not found" error. Raises ValueError on
-    obvious-garbage inputs (empty string, empty GID body) so the caller's
-    try/except wrapper can surface them as a structured error WITHOUT issuing
-    a wasted Shopify call — mirrors Story 9.1's `_resolve_product_gid` guards.
+    Accepts numeric string, Product GID, or handle. Returns (gid, snapshot)
+    on success, (None, {}) when the product is not found. Raises ValueError
+    on obviously-garbage inputs (empty string, empty GID body, wrong-type GID)
+    so callers' try/except wrappers surface them as structured errors without
+    issuing a Shopify call.
     """
     if not isinstance(product_id, str) or not product_id.strip():
         raise ValueError("product_id must be a non-empty string")
     stripped = product_id.strip()
+
+    if stripped.startswith("gid://") and not stripped.startswith(_PRODUCT_GID_PREFIX):
+        raise ValueError(
+            f"product_id must be a numeric ID, Product GID, or handle"
+            f" — got non-Product GID: {stripped!r}"
+        )
 
     if stripped.startswith(_PRODUCT_GID_PREFIX):
         if not stripped[len(_PRODUCT_GID_PREFIX) :]:
@@ -1741,18 +1752,33 @@ def _resolve_product_id(client: ShopifyClient, product_id: str) -> tuple[str | N
         gid = to_gid("Product", stripped)
     else:
         # Handle path — separate query.
-        data = client.execute(GET_PRODUCT_VENDOR_BY_HANDLE, {"handle": stripped})
+        data = client.execute(query_by_handle, {"handle": stripped})
         product = (data or {}).get("productByHandle") or {}
         if not product:
             return None, {}
         return product.get("id"), product
 
     # Numeric / GID path shares the same query.
-    data = client.execute(GET_PRODUCT_VENDOR, {"id": gid})
+    data = client.execute(query_by_id, {"id": gid})
     product = (data or {}).get("product") or {}
     if not product:
         return None, {}
     return product.get("id") or gid, product
+
+
+# ---------------------------------------------------------------------------
+# Helpers — Story 9.2 (update_product_vendor)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_product_id(client: ShopifyClient, product_id: str) -> tuple[str | None, dict]:
+    """Resolve a numeric/GID/handle product_id to (product_gid, product_snapshot).
+
+    Delegates to _resolve_product_with_queries with the vendor query pair.
+    """
+    return _resolve_product_with_queries(
+        client, product_id, GET_PRODUCT_VENDOR, GET_PRODUCT_VENDOR_BY_HANDLE
+    )
 
 
 def _normalize_vendor(vendor: str | None) -> tuple[str | None, str | None]:
@@ -1808,34 +1834,11 @@ def _vendor_text(vendor: str | None) -> str:
 def _resolve_product_id_for_type(client: ShopifyClient, product_id: str) -> tuple[str | None, dict]:
     """Resolve a numeric/GID/handle product_id to (product_gid, product_snapshot).
 
-    Twin of `_resolve_product_id` but queries the productType field instead of
-    vendor. Kept separate (rather than parameterizing the vendor helper) so the
-    already-shipped Story 9.2 code path stays untouched.
+    Delegates to _resolve_product_with_queries with the productType query pair.
     """
-    if not isinstance(product_id, str) or not product_id.strip():
-        raise ValueError("product_id must be a non-empty string")
-    stripped = product_id.strip()
-
-    if stripped.startswith(_PRODUCT_GID_PREFIX):
-        if not stripped[len(_PRODUCT_GID_PREFIX) :]:
-            raise ValueError(f"Empty product GID body: {stripped!r}")
-        gid = stripped
-    elif stripped.isdigit():
-        gid = to_gid("Product", stripped)
-    else:
-        # Handle path — separate query.
-        data = client.execute(GET_PRODUCT_TYPE_BY_HANDLE, {"handle": stripped})
-        product = (data or {}).get("productByHandle") or {}
-        if not product:
-            return None, {}
-        return product.get("id"), product
-
-    # Numeric / GID path shares the same query.
-    data = client.execute(GET_PRODUCT_TYPE, {"id": gid})
-    product = (data or {}).get("product") or {}
-    if not product:
-        return None, {}
-    return product.get("id") or gid, product
+    return _resolve_product_with_queries(
+        client, product_id, GET_PRODUCT_TYPE, GET_PRODUCT_TYPE_BY_HANDLE
+    )
 
 
 def _normalize_product_type(product_type: str | None) -> tuple[str, str | None]:
@@ -1897,34 +1900,11 @@ def _resolve_product_id_for_options(
 ) -> tuple[str | None, dict]:
     """Resolve a numeric/GID/handle product_id to (product_gid, product_snapshot).
 
-    Twin of `_resolve_product_id_for_type` at the productType helper above —
-    same numeric/GID short-circuit, same `productByHandle` fallback for the
-    handle path, but reads the options + variants slice (vs. productType).
-    Returns (None, {}) when no product is found so callers emit a clean
-    "not found" head without raising.
+    Delegates to _resolve_product_with_queries with the options+variants query pair.
     """
-    if not isinstance(product_id, str) or not product_id.strip():
-        raise ValueError("product_id must be a non-empty string")
-    stripped = product_id.strip()
-
-    if stripped.startswith(_PRODUCT_GID_PREFIX):
-        if not stripped[len(_PRODUCT_GID_PREFIX) :]:
-            raise ValueError(f"Empty product GID body: {stripped!r}")
-        gid = stripped
-    elif stripped.isdigit():
-        gid = to_gid("Product", stripped)
-    else:
-        data = client.execute(GET_PRODUCT_OPTIONS_BY_HANDLE, {"handle": stripped})
-        product = (data or {}).get("productByHandle") or {}
-        if not product:
-            return None, {}
-        return product.get("id"), product
-
-    data = client.execute(GET_PRODUCT_OPTIONS, {"id": gid})
-    product = (data or {}).get("product") or {}
-    if not product:
-        return None, {}
-    return product.get("id") or gid, product
+    return _resolve_product_with_queries(
+        client, product_id, GET_PRODUCT_OPTIONS, GET_PRODUCT_OPTIONS_BY_HANDLE
+    )
 
 
 def _normalize_option_input(
