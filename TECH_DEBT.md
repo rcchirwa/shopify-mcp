@@ -4,7 +4,32 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-05-26.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-05-27.
+
+---
+
+## 2026-05-27 — Story 10.11 follow-up (resolver-fanout consolidation)
+
+T-9.5-resolver-fanout from the 2026-05-12 Story 9.5 backlog closed in a single PR.
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|---------------|
+| T-9.5-resolver-fanout | ~~4 near-twin `_resolve_product_id_*` helpers in `tools/catalog_hygiene.py`~~ | Added `_resolve_product_with_queries(client, product_id, query_by_id, query_by_handle)` as a shared private helper containing the common dispatch logic (input validation, wrong-GID-type guard, numeric/GID/handle routing). Collapsed `_resolve_product_id`, `_resolve_product_id_for_type`, and `_resolve_product_id_for_options` to single-line delegations. `_resolve_product_gid` is unchanged (different return type `(gid, error_str)`). Secondary fix: the wrong-GID-type guard (`startswith("gid://") and not startswith(_PRODUCT_GID_PREFIX)` → `ValueError`) was missing from all three twins and is now present via the shared helper, closing a silent error-handling gap in `update_product_vendor`, `update_product_type`, and `update_product_options`. Three new guard tests added (`test_update_product_vendor_rejects_non_product_gid`, `test_update_product_type_rejects_non_product_gid`, `test_s95_resolver_rejects_non_product_gid`). CI clean: 929 tests, 100% coverage. Trello: https://trello.com/c/FUBNkiRA (Story 10.11). |
+
+### Current active backlog (after Story 10.11)
+
+| Rank | Item | Score | Status |
+|------|------|-------|--------|
+| 1 | SEC-M2-sanitizer — advisory blocklist → proper HTML sanitizer | 16 | active (needs product sign-off) |
+| 2 | N4 — two HTTP stacks, no shared policy | 9 | watch |
+| 3 | T-9.6-media-cap — `media(first: 100)` silent truncation | 6 | watch |
+| 4 | T-9.5-variants-cap — `variants(first: 50)` post-write snapshot cap | 6 | partial |
+| 5 | O1 — mypy permissive on test files (pre-existing) | — | watch |
+| 6 | Q4 — `format_user_errors_joined()` single caller | 4 | note |
+| 7 | Q5 — `dict[str, Any]` baseline for GraphQL payloads | 4 | watch |
+| 8 | Q6 — `from_gid` type widening note | 4 | note |
 
 ---
 
@@ -25,7 +50,7 @@ Two items from the 2026-05-21 backlog closed in a single PR.
 |------|------|-------|--------|
 | 1 | SEC-M2-sanitizer — advisory blocklist → proper HTML sanitizer | 16 | active (needs product sign-off) |
 | 2 | N4 — two HTTP stacks, no shared policy | 9 | watch |
-| 3 | T-9.5-resolver-fanout — 4 near-twin `_resolve_product_id_*` helpers | 8 | watch |
+| 3 | ~~T-9.5-resolver-fanout — 4 near-twin `_resolve_product_id_*` helpers~~ | ~~8~~ | closed 2026-05-27 (Story 10.11) |
 | 4 | T-9.6-media-cap — `media(first: 100)` silent truncation | 6 | watch |
 | 5 | T-9.5-variants-cap — `variants(first: 50)` post-write snapshot cap | 6 | partial |
 | 6 | O1 — mypy permissive on test files (pre-existing) | — | watch |

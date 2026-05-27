@@ -2617,6 +2617,20 @@ def test_update_product_vendor_empty_gid_body_fast_fails_without_network():
     assert payload["errors"][0]["stage"] == "product-resolve"
 
 
+def test_update_product_vendor_rejects_non_product_gid():
+    tools, fc = _build([])
+    out = tools["update_product_vendor"](
+        product_id="gid://shopify/ProductVariant/123",
+        vendor="Vanish",
+        confirm=True,
+    )
+    assert fc.calls == []
+    assert "non-Product GID" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+    assert payload["errors"][0]["stage"] == "product-resolve"
+
+
 # ---------- vendor validation ----------
 
 
@@ -3048,6 +3062,20 @@ def test_update_product_type_empty_gid_body_fast_fails_without_network():
     )
     assert fc.calls == []
     assert "Empty product GID body" in out
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+    assert payload["errors"][0]["stage"] == "product-resolve"
+
+
+def test_update_product_type_rejects_non_product_gid():
+    tools, fc = _build([])
+    out = tools["update_product_type"](
+        product_id="gid://shopify/ProductVariant/123",
+        product_type="Crewneck Sweatshirt",
+        confirm=True,
+    )
+    assert fc.calls == []
+    assert "non-Product GID" in out
     payload = _extract_json(out)
     assert payload["ok"] is False
     assert payload["errors"][0]["stage"] == "product-resolve"
@@ -5709,6 +5737,16 @@ def test_s95_resolver_empty_gid_body_raises_caught():
         option={"id": _OPT_GID, "name": "Size"},
     )
     assert "Empty product GID body" in out
+    assert fc.calls == []
+
+
+def test_s95_resolver_rejects_non_product_gid():
+    tools, fc = _build([])
+    out = tools["update_product_options"](
+        product_id="gid://shopify/ProductVariant/123",
+        option={"id": _OPT_GID, "name": "Size"},
+    )
+    assert "non-Product GID" in out
     assert fc.calls == []
 
 
