@@ -5748,6 +5748,9 @@ def test_s95_resolver_rejects_non_product_gid():
     )
     assert "non-Product GID" in out
     assert fc.calls == []
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert tail["errors"][0]["stage"] == "product-resolve"
 
 
 def test_s95_no_product_found_numeric():

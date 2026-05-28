@@ -1740,7 +1740,7 @@ def _resolve_product_with_queries(
 
     if stripped.startswith("gid://") and not stripped.startswith(_PRODUCT_GID_PREFIX):
         raise ValueError(
-            f"product_id must be a numeric ID, Product GID, or handle"
+            "product_id must be a numeric ID, Product GID, or handle"
             f" — got non-Product GID: {stripped!r}"
         )
 
