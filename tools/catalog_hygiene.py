@@ -25,9 +25,14 @@ Return shape — human-readable head + fenced ```json``` tail:
     output and keeps the JSON serialization consistent across tools.
 
 Story 9.6 (`update_variant_image_binding`) known limitations:
-    - GraphQL pagination caps: 100 product media, 250 variants, 100 media
-      per variant. A media GID past the first 100 product-media nodes would
-      be falsely rejected as not-on-product (T-9.6-media-cap).
+    - Per-variant `media(first: 100)` cap: each variant's currently-bound
+      media set is fetched at up to 100 nodes. A variant with >100 bound media
+      would show an incomplete idempotency snapshot, causing a benign re-attach
+      attempt that Shopify's already-bound guard swallows harmlessly.
+    - Mutation-response `media(first: 100)` cap: the post-write snapshot from
+      `productVariantAppendMedia` is also limited to 100 nodes per variant.
+      When this limit is hit the confirmed head surfaces a truncation note;
+      re-read the variant for the full bound-media state.
 """
 
 import json
@@ -47,6 +52,10 @@ from tools._response import extract_user_errors, format_user_errors, with_confir
 # as tools/products.py:247. A product hitting this cap would need paginated
 # reads + chunked bulk updates, which Story 9.3 does not implement.
 VARIANTS_PAGE_CAP = 250
+# Page size for the paginated product-media fetch in update_variant_image_binding (Story 9.6 / T-9.6-media-cap).
+PRODUCT_MEDIA_READ_PAGE_SIZE = 50
+# Cap for the mutation-response media connection — used in PRODUCT_VARIANT_APPEND_MEDIA and the truncation note.
+VARIANT_MEDIA_RESPONSE_CAP = 100
 
 GET_PRODUCT_VARIANTS_FOR_PRICING = """
 query GetProductVariantsForPricing($id: ID!) {
@@ -237,17 +246,18 @@ _GID_DISPLAY_MAX = 200
 # round-trip. The SKU index also rides along — so if the caller mixes SKUs
 # in, no extra resolver fetch is needed (the variants list is already here).
 GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA = """
-query GetProductMediaAndVariantMedia($id: ID!) {
+query GetProductMediaAndVariantMedia($id: ID!, $mediaFirst: Int!, $mediaAfter: String) {
   product(id: $id) {
     id
     title
-    media(first: 100) {
+    media(first: $mediaFirst, after: $mediaAfter) {
       nodes {
         id
         alt
         mediaContentType
         ... on MediaImage { image { url } }
       }
+      pageInfo { hasNextPage endCursor }
     }
     variants(first: 250) {
       nodes {
@@ -260,26 +270,46 @@ query GetProductMediaAndVariantMedia($id: ID!) {
 }
 """
 
-PRODUCT_VARIANT_APPEND_MEDIA = """
+# Page-2+ companion to GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA — fetches only media
+# so variants are not re-fetched on every subsequent page.
+GET_PRODUCT_MEDIA_PAGE = """
+query GetProductMediaPage($id: ID!, $mediaFirst: Int!, $mediaAfter: String!) {
+  product(id: $id) {
+    id
+    media(first: $mediaFirst, after: $mediaAfter) {
+      nodes {
+        id
+        alt
+        mediaContentType
+        ... on MediaImage { image { url } }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+
+PRODUCT_VARIANT_APPEND_MEDIA = f"""
 mutation ProductVariantAppendMedia(
   $productId: ID!,
   $variantMedia: [ProductVariantAppendMediaInput!]!
-) {
-  productVariantAppendMedia(productId: $productId, variantMedia: $variantMedia) {
-    productVariants {
+) {{
+  productVariantAppendMedia(productId: $productId, variantMedia: $variantMedia) {{
+    productVariants {{
       id
-      media(first: 100) {
-        nodes {
+      media(first: {VARIANT_MEDIA_RESPONSE_CAP}) {{
+        nodes {{
           id
           alt
           mediaContentType
-          ... on MediaImage { image { url } }
-        }
-      }
-    }
-    userErrors { field message }
-  }
-}
+          ... on MediaImage {{ image {{ url }} }}
+        }}
+        pageInfo {{ hasNextPage }}
+      }}
+    }}
+    userErrors {{ field message }}
+  }}
+}}
 """
 
 # Sequential complement to PRODUCT_VARIANT_APPEND_MEDIA. Shopify rejects
@@ -1522,7 +1552,7 @@ def _resolve_product_gid(
 
     if stripped.startswith(_PRODUCT_GID_PREFIX):
         if not stripped[len(_PRODUCT_GID_PREFIX) :]:
-            return None, f"Empty product GID body: {stripped!r}"
+            return None, f"Empty product GID body: {stripped[:_GID_DISPLAY_MAX]!r}"
         return stripped, None
 
     if stripped.isdigit():
@@ -1749,7 +1779,7 @@ def _resolve_product_with_queries(
 
     if stripped.startswith(_PRODUCT_GID_PREFIX):
         if not stripped[len(_PRODUCT_GID_PREFIX) :]:
-            raise ValueError(f"Empty product GID body: {stripped!r}")
+            raise ValueError(f"Empty product GID body: {stripped[:_GID_DISPLAY_MAX]!r}")
         gid = stripped
     elif stripped.isdigit():
         gid = to_gid("Product", stripped)
@@ -2964,17 +2994,56 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # straight into Story 9.3's `resolve_variant_ids_with_variants` enabler
         # (in-memory SKU lookup) instead of paying for a second variants fetch.
         # Collapses worst-case SKU-input round-trips from 3 (resolver + combined
-        # + mutation) to 2 (combined + mutation).
-        data = client.execute(GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA, {"id": gid})
-        product = (data or {}).get("product")
-        if not product:
-            msg = f"No product found with id {product_id}."
-            return _render(msg, _err_payload(msg))
+        # + mutation) to 2 (combined + mutation). Products with >50 product-level
+        # media are paginated via GET_PRODUCT_MEDIA_PAGE (Story 10.12 / T-9.6-media-cap).
+        try:
+            data = client.execute(
+                GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA,
+                {"id": gid, "mediaFirst": PRODUCT_MEDIA_READ_PAGE_SIZE, "mediaAfter": None},
+            )
+            product = (data or {}).get("product")
+            if not product:
+                msg = f"No product found with id {product_id}."
+                return _render(msg, _err_payload(msg))
+
+            all_media_nodes: list[dict[str, Any]] = (product.get("media") or {}).get(
+                "nodes", []
+            ) or []
+            _page_info = (product.get("media") or {}).get("pageInfo") or {}
+            _media_cursor: str | None = _page_info.get("endCursor")
+            _has_next_media: bool = bool(_page_info.get("hasNextPage")) and bool(_media_cursor)
+
+            while _has_next_media:
+                _page_data = client.execute(
+                    GET_PRODUCT_MEDIA_PAGE,
+                    {
+                        "id": gid,
+                        "mediaFirst": PRODUCT_MEDIA_READ_PAGE_SIZE,
+                        "mediaAfter": _media_cursor,
+                    },
+                )
+                _page_product = (_page_data or {}).get("product")
+                if not _page_product:
+                    msg = f"No product found with id {product_id}."
+                    return _render(msg, _err_payload(msg))
+                _page_media = _page_product.get("media") or {}
+                all_media_nodes.extend(_page_media.get("nodes", []) or [])
+                _page_info = _page_media.get("pageInfo") or {}
+                _media_cursor = _page_info.get("endCursor")
+                # Guard: treat hasNextPage=true with a null cursor as done — a
+                # malformed response; passing None to String! would cause a
+                # GraphQL error that the outer except would catch with an opaque
+                # message, so bail early with a clean termination instead.
+                _has_next_media = bool(_page_info.get("hasNextPage")) and bool(_media_cursor)
+        except Exception as exc:
+            return _render(
+                f"Error calling Shopify ({type(exc).__name__}): {exc}",
+                _err_payload(str(exc)),
+            )
 
         title = product.get("title", "")
-        media_nodes = (product.get("media") or {}).get("nodes", []) or []
-        product_media_set = {n.get("id") for n in media_nodes if n.get("id")}
-        product_media_index = {n["id"]: n for n in media_nodes if n.get("id")}
+        product_media_set = {n.get("id") for n in all_media_nodes if n.get("id")}
+        product_media_index = {n["id"]: n for n in all_media_nodes if n.get("id")}
 
         variant_nodes = (product.get("variants") or {}).get("nodes", []) or []
         variant_media_map: dict[str, set[str]] = {}
@@ -3246,11 +3315,16 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         payload = append_result.get("productVariantAppendMedia") or {}
         returned_variants = payload.get("productVariants") or []
         post_state: dict[str, list[dict[str, Any]]] = {}
+        # Collect variant GIDs whose mutation-response media is truncated at 100;
+        # surfaced as a trailing note in the confirmed head so callers can re-read.
+        truncated_variants: list[str] = []
         for v in returned_variants:
             vid = v.get("id")
             if not vid:
                 continue
             post_state[vid] = (v.get("media") or {}).get("nodes", []) or []
+            if (v.get("media") or {}).get("pageInfo", {}).get("hasNextPage"):
+                truncated_variants.append(vid)
 
         def _success_nodes(r: dict[str, Any]) -> list[dict[str, Any]]:
             rgid = r["rgid"]
@@ -3275,6 +3349,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"  Variants ({len(routes)}) — net-new media bindings: {total_new}\n"
             + "\n".join(preview_blocks)
         )
+        if truncated_variants:
+            head += (
+                f"\n  Note: media response truncated at {VARIANT_MEDIA_RESPONSE_CAP} nodes for variants: "
+                + ", ".join(from_gid(v) for v in truncated_variants)
+                + " — re-read for full bound-media state."
+            )
         return _render(
             head,
             {"ok": True, "variants": success_variants, "errors": []},
