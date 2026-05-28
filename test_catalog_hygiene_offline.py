@@ -3518,6 +3518,27 @@ def test_s96_wrong_gid_type_product_id_rejected():
     assert fc.calls == []
 
 
+def test_s96_oversized_non_product_gid_is_capped_in_error():
+    """Security: a 10KB attacker-controlled non-Product GID is truncated at _GID_DISPLAY_MAX (200)
+    chars in the error response. Prevents log flooding through reflected user input.
+    Covers _resolve_product_gid (used by update_variant_image_binding).
+    """
+    from tools.catalog_hygiene import _GID_DISPLAY_MAX
+
+    oversized = "gid://shopify/Order/" + ("A" * 10_000)
+    tools, fc = _build([])
+    out = tools["update_variant_image_binding"](
+        product_id=oversized,
+        variant_media=[{"variantId": "1", "mediaIds": [_S96_MEDIA_1]}],
+    )
+    assert "non-Product GID" in out
+    assert fc.calls == []
+    # The reflected portion of the attacker-controlled string must not exceed _GID_DISPLAY_MAX.
+    # The raw oversized input must NOT appear in full.
+    assert oversized not in out
+    assert oversized[: _GID_DISPLAY_MAX + 1] not in out  # cap is strict, not off-by-one
+
+
 # ---------- handle resolution ----------
 
 
@@ -5947,6 +5968,23 @@ def test_s95_resolver_rejects_non_product_gid():
     tail = _parse_tail(out)
     assert tail["ok"] is False
     assert tail["errors"][0]["stage"] == "product-resolve"
+
+
+def test_s95_resolver_oversized_non_product_gid_is_capped_in_error():
+    """Security: 10KB attacker-controlled non-Product GID truncated at _GID_DISPLAY_MAX (200) in
+    error. Covers the shared _resolve_product_with_queries path (vendor, type, options)."""
+    from tools.catalog_hygiene import _GID_DISPLAY_MAX
+
+    oversized = "gid://shopify/Order/" + ("A" * 10_000)
+    tools, fc = _build([])
+    out = tools["update_product_options"](
+        product_id=oversized,
+        option={"id": _OPT_GID, "name": "Size"},
+    )
+    assert "non-Product GID" in out
+    assert fc.calls == []
+    assert oversized not in out
+    assert oversized[: _GID_DISPLAY_MAX + 1] not in out
 
 
 def test_s95_no_product_found_numeric():

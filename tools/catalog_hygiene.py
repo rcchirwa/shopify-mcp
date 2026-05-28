@@ -1552,7 +1552,7 @@ def _resolve_product_gid(
 
     if stripped.startswith(_PRODUCT_GID_PREFIX):
         if not stripped[len(_PRODUCT_GID_PREFIX) :]:
-            return None, f"Empty product GID body: {stripped!r}"
+            return None, f"Empty product GID body: {stripped[:_GID_DISPLAY_MAX]!r}"
         return stripped, None
 
     if stripped.isdigit():
@@ -1779,7 +1779,7 @@ def _resolve_product_with_queries(
 
     if stripped.startswith(_PRODUCT_GID_PREFIX):
         if not stripped[len(_PRODUCT_GID_PREFIX) :]:
-            raise ValueError(f"Empty product GID body: {stripped!r}")
+            raise ValueError(f"Empty product GID body: {stripped[:_GID_DISPLAY_MAX]!r}")
         gid = stripped
     elif stripped.isdigit():
         gid = to_gid("Product", stripped)

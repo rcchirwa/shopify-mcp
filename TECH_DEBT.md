@@ -30,6 +30,22 @@ T-9.6-media-cap from the 2026-05-12 Story 9.6 backlog closed in a single PR.
 | 6 | Q5 — `dict[str, Any]` baseline for GraphQL payloads | 4 | watch |
 | 7 | Q6 — `from_gid` type widening note | 4 | note |
 
+### Follow-up (added 2026-05-28, /gss-dual-review)
+
+Two-agent review pass (`code-review` + `security-review`) ran on the diff before commit. Pre-commit fixes were absorbed into commit `4c95873`; security follow-ups landed in a second commit on PR #84.
+
+1. **Code-review verdict:** Approve. Four actionable items, all applied pre-commit:
+   - **Low** — Defensive guard added: `hasNextPage=true` with `endCursor=null` (malformed Shopify response) now terminates pagination cleanly. Without this, `None` would be passed to a `String!` GraphQL variable and produce an opaque error caught only by the outer `except`.
+   - **Low** — Test assertion tightened from `assert "100" in out` to `assert "truncated at 100 nodes" in out`. Original would have matched stray "100"s in variant IDs or other numbers.
+   - **Info** — AC coverage map in `test_catalog_hygiene_offline.py` updated to add the AC-Functional-4 entry (`test_s96_product_media_pagination_null_product_on_page2_errors_cleanly`); previously jumped AC-3 → AC-5.
+   - **Info** — Hardcoded `100` literals replaced with `VARIANT_MEDIA_RESPONSE_CAP = 100` constant. The `PRODUCT_VARIANT_APPEND_MEDIA` mutation query is now an f-string referencing the constant; the truncation note in the confirmed head reads the same constant. If the cap ever changes, both sites update together.
+
+2. **Security-review verdict:** Two findings, both addressed in the follow-up commit:
+   - **Info** — `_GID_DISPLAY_MAX = 200` is a positive defence-in-depth addition (already in main from a prior commit); flagged as good behaviour, no action needed beyond regression coverage. Added `test_s96_oversized_non_product_gid_is_capped_in_error` and `test_s95_resolver_oversized_non_product_gid_is_capped_in_error` — both inject a 10KB attacker-controlled non-Product GID and assert the reflected portion in the error response stays within `_GID_DISPLAY_MAX`. Covers both resolver paths (`_resolve_product_gid` used by `update_variant_image_binding`, and `_resolve_product_with_queries` used by `update_product_vendor`/`update_product_type`/`update_product_options`).
+   - **Low** — User-supplied truncated GID is reflected in error responses. Cap was already applied at lines 1550 (`_resolve_product_gid`) and 1777 (`_resolve_product_with_queries`) but missing from the sibling "Empty product GID body" error at lines 1555 and 1782. Applied `stripped[:_GID_DISPLAY_MAX]` to both for consistency — the empty-body branch only fires when input is constrained to start with `gid://shopify/Product/`, so the attack surface was minimal, but consistent application means a future code change can't introduce a regression in only one branch.
+
+3. **Forward note:** The `_GID_DISPLAY_MAX` cap is not applied to handle/taxonomy reflection sites (lines ~1570, 1620, 1644, 1651, 1669) where user input is reflected without bound. Out of scope for this story but flagged as `SEC-resolver-reflect-cap` for future hardening (Score: 4, note-only — internal MCP tool, low risk).
+
 ---
 
 ## 2026-05-27 — Story 10.11 follow-up (resolver-fanout consolidation)
