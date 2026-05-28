@@ -224,6 +224,9 @@ mutation productUpdate($product: ProductUpdateInput!) {
 _VALID_RESOLVE_STRATEGIES = ("exact", "best-match", "reject-ambiguous")
 _TAXONOMY_GID_PREFIX = "gid://shopify/TaxonomyCategory/"
 _PRODUCT_GID_PREFIX = "gid://shopify/Product/"
+# Cap user-supplied values echoed into error messages / logs to prevent log
+# flooding from attacker-controlled inputs that start with "gid://".
+_GID_DISPLAY_MAX = 200
 
 # ---------------------------------------------------------------------------
 # GraphQL — Story 9.6 (update_variant_image_binding)
@@ -1513,8 +1516,8 @@ def _resolve_product_gid(
 
     if stripped.startswith("gid://") and not stripped.startswith(_PRODUCT_GID_PREFIX):
         return None, (
-            f"product_id must be a numeric ID, Product GID, or handle"
-            f" — got non-Product GID: {stripped!r}"
+            "product_id must be a numeric ID, Product GID, or handle"
+            f" — got non-Product GID: {stripped[:_GID_DISPLAY_MAX]!r}"
         )
 
     if stripped.startswith(_PRODUCT_GID_PREFIX):
@@ -1741,7 +1744,7 @@ def _resolve_product_with_queries(
     if stripped.startswith("gid://") and not stripped.startswith(_PRODUCT_GID_PREFIX):
         raise ValueError(
             "product_id must be a numeric ID, Product GID, or handle"
-            f" — got non-Product GID: {stripped!r}"
+            f" — got non-Product GID: {stripped[:_GID_DISPLAY_MAX]!r}"
         )
 
     if stripped.startswith(_PRODUCT_GID_PREFIX):
