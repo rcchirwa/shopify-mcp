@@ -8,6 +8,30 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-05-28 — Story 10.12 follow-up (media-cap pagination)
+
+T-9.6-media-cap from the 2026-05-12 Story 9.6 backlog closed in a single PR.
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|---------------|
+| T-9.6-media-cap | ~~`media(first: 100)` silent truncation in `update_variant_image_binding`~~ | Added `PRODUCT_MEDIA_READ_PAGE_SIZE = 50` constant and a new `GET_PRODUCT_MEDIA_PAGE` query (page-2+ companion to `GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA` that skips re-fetching variants). Updated `GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA` to accept `$mediaFirst: Int!` / `$mediaAfter: String` variables and select `media.pageInfo { hasNextPage endCursor }`. Replaced the single `client.execute()` call in Step 2 of `update_variant_image_binding` with a try/except-wrapped pagination loop that accumulates `all_media_nodes` across pages; `product_media_set` and `product_media_index` now reflect the full media set. Also added `pageInfo { hasNextPage }` to the `PRODUCT_VARIANT_APPEND_MEDIA` mutation response and a trailing truncation note to the confirmed head when any variant's response is capped. Module docstring updated to replace the `T-9.6-media-cap` known-limitation bullet with an accurate description of the remaining per-variant and mutation-response caps. Six new offline tests added: page-2 GID accepted, unknown GID still rejected, no-op idempotency via page-2 GID, mid-fetch error returns clean message, null-product on follow-up page, and mutation-response truncation note. Pre-existing `test_s96_runtime_error_propagates` updated — RuntimeError is now caught by the paginated fetch wrapper and returned as a clean `"Error calling Shopify (…)"` message rather than propagating. CI clean: 404 tests, 100% coverage. Trello: https://trello.com/c/ot3HqrH9 (Story 10.12). |
+
+### Current active backlog (after Story 10.12)
+
+| Rank | Item | Score | Status |
+|------|------|-------|--------|
+| 1 | SEC-M2-sanitizer — advisory blocklist → proper HTML sanitizer | 16 | active (needs product sign-off) |
+| 2 | N4 — two HTTP stacks, no shared policy | 9 | watch |
+| 3 | T-9.5-variants-cap — `variants(first: 50)` post-write snapshot cap | 6 | partial |
+| 4 | O1 — mypy permissive on test files (pre-existing) | — | watch |
+| 5 | Q4 — `format_user_errors_joined()` single caller | 4 | note |
+| 6 | Q5 — `dict[str, Any]` baseline for GraphQL payloads | 4 | watch |
+| 7 | Q6 — `from_gid` type widening note | 4 | note |
+
+---
+
 ## 2026-05-27 — Story 10.11 follow-up (resolver-fanout consolidation)
 
 T-9.5-resolver-fanout from the 2026-05-12 Story 9.5 backlog closed in a single PR.

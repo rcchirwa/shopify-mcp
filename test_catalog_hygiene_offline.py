@@ -3400,10 +3400,13 @@ def _s96_combined_response(
     alt_for_media=None,
     preview_url_for_media=None,
     title="Test Product",
+    media_has_next_page=False,
+    media_end_cursor=None,
 ):
     """Build a GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA response.
 
     variants: list of (variant_gid, sku, [bound_media_ids]).
+    media_has_next_page/media_end_cursor: control pageInfo for pagination tests.
     """
     alt_for_media = alt_for_media or {}
     preview_url_for_media = preview_url_for_media or {}
@@ -3430,17 +3433,38 @@ def _s96_combined_response(
         "product": {
             "id": _S96_PRODUCT_GID,
             "title": title,
-            "media": {"nodes": media_nodes},
+            "media": {
+                "nodes": media_nodes,
+                "pageInfo": {"hasNextPage": media_has_next_page, "endCursor": media_end_cursor},
+            },
             "variants": {"nodes": variant_nodes},
         }
     }
 
 
-def _s96_mutation_response(productVariants=None, user_errors=None):
+def _s96_media_page_response(media_ids, *, has_next=False, end_cursor=None):
+    """Build a GET_PRODUCT_MEDIA_PAGE response (page 2+ of product media)."""
+    nodes = [
+        {"id": mid, "alt": None, "mediaContentType": "IMAGE", "image": None} for mid in media_ids
+    ]
+    return {
+        "product": {
+            "id": _S96_PRODUCT_GID,
+            "media": {
+                "nodes": nodes,
+                "pageInfo": {"hasNextPage": has_next, "endCursor": end_cursor},
+            },
+        }
+    }
+
+
+def _s96_mutation_response(productVariants=None, user_errors=None, truncated_variant_gids=None):
     """Build a PRODUCT_VARIANT_APPEND_MEDIA response.
 
     productVariants: list of (variant_gid, [(media_id, alt, preview_url), ...]).
+    truncated_variant_gids: set/list of variant GIDs whose media.pageInfo.hasNextPage is True.
     """
+    truncated = set(truncated_variant_gids or [])
     pv = []
     for vgid, media in productVariants or []:
         nodes = []
@@ -3449,7 +3473,9 @@ def _s96_mutation_response(productVariants=None, user_errors=None):
             if preview_url is not None:
                 node["image"] = {"url": preview_url}
             nodes.append(node)
-        pv.append({"id": vgid, "media": {"nodes": nodes}})
+        pv.append(
+            {"id": vgid, "media": {"nodes": nodes, "pageInfo": {"hasNextPage": vgid in truncated}}}
+        )
     return {
         "productVariantAppendMedia": {
             "productVariants": pv,
@@ -3512,7 +3538,7 @@ def test_s96_handle_resolves_and_combined_query_uses_resolved_gid():
     assert fc.calls[0][0] == GET_PRODUCT_BY_HANDLE_MIN
     assert fc.calls[0][1] == {"handle": "test-product-handle"}
     assert fc.calls[1][0] == GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA
-    assert fc.calls[1][1] == {"id": _S96_PRODUCT_GID}
+    assert fc.calls[1][1] == {"id": _S96_PRODUCT_GID, "mediaFirst": 50, "mediaAfter": None}
     assert fc.calls[2][0] == PRODUCT_VARIANT_APPEND_MEDIA
     tail = _parse_tail(out)
     assert tail["ok"] is True
@@ -4279,13 +4305,18 @@ def test_s96_user_errors_only_already_bound_with_no_returned_variants_falls_thro
 
 
 def test_s96_runtime_error_propagates():
+    # RuntimeError from the combined query is now caught by the paginated fetch
+    # wrapper and returned as a clean "Error calling Shopify (…)" message rather
+    # than propagating as an unhandled exception (Story 10.12 / T-9.6-media-cap).
     tools, fc = _build([RuntimeError("Shopify HTTP error: 503")])
-    with pytest.raises(RuntimeError):
-        tools["update_variant_image_binding"](
-            product_id=_S96_PRODUCT_GID,
-            variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
-            confirm=True,
-        )
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    assert "Error calling Shopify (RuntimeError)" in out
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
 
 
 def test_s96_variant_node_without_id_is_skipped():
@@ -4540,6 +4571,171 @@ def test_s96_shopify_user_errors_pass_through_verbatim_in_tail():
     tail = _parse_tail(out)
     assert tail["ok"] is False
     assert tail["errors"] == user_errors
+
+
+# =============================================================================
+# Story 10.12 — update_variant_image_binding: paginated product-media fetch
+# (T-9.6-media-cap)
+# =============================================================================
+#
+# AC coverage map:
+#   AC-Functional-1 (page-2 GID accepted)          → test_s96_product_media_paginates_page_two_validates_gid
+#   AC-Functional-2 (unknown GID still rejected)   → test_s96_product_media_pagination_unknown_gid_still_rejected
+#   AC-Functional-3 (no-op idempotency)            → test_s96_product_media_pagination_idempotent_no_op
+#   AC-Functional-4 (null product on page 2)       → test_s96_product_media_pagination_null_product_on_page2_errors_cleanly
+#   AC-Functional-5 (mid-fetch error)              → test_s96_product_media_pagination_mid_fetch_error_returns_clean_error
+#   AC-Functional-6 (mutation truncation note)     → test_s96_mutation_response_truncation_note
+
+_S96_MEDIA_PAGE2 = "gid://shopify/MediaImage/51"  # a GID that only appears on page 2
+
+
+def test_s96_product_media_paginates_page_two_validates_gid():
+    """Page-2 media GID is accepted — no false 'not on product' rejection."""
+    page1_ids = [f"gid://shopify/MediaImage/{i}" for i in range(1, 51)]
+    combined = _s96_combined_response(
+        media_ids=page1_ids,
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+        media_has_next_page=True,
+        media_end_cursor="cursor-abc",
+    )
+    page2 = _s96_media_page_response([_S96_MEDIA_PAGE2], has_next=False, end_cursor=None)
+    mutation = _s96_mutation_response(
+        productVariants=[(_S96_VARIANT_A, [(_S96_MEDIA_PAGE2, "", None)])]
+    )
+    tools, fc = _build([combined, page2, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_PAGE2]}],
+        confirm=True,
+    )
+    tail = _parse_tail(out)
+    assert tail["ok"] is True, out
+    # call order: combined query → page-2 query → mutation
+    assert len(fc.calls) == 3
+    from tools.catalog_hygiene import (
+        GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA,
+        GET_PRODUCT_MEDIA_PAGE,
+        PRODUCT_VARIANT_APPEND_MEDIA,
+    )
+
+    assert fc.calls[0][0] == GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA
+    assert fc.calls[1][0] == GET_PRODUCT_MEDIA_PAGE
+    assert fc.calls[2][0] == PRODUCT_VARIANT_APPEND_MEDIA
+
+
+def test_s96_product_media_pagination_unknown_gid_still_rejected():
+    """A GID absent from all pages still produces 'media GIDs not on product' error."""
+    page1_ids = [f"gid://shopify/MediaImage/{i}" for i in range(1, 51)]
+    combined = _s96_combined_response(
+        media_ids=page1_ids,
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+        media_has_next_page=True,
+        media_end_cursor="cursor-abc",
+    )
+    page2 = _s96_media_page_response([_S96_MEDIA_PAGE2], has_next=False, end_cursor=None)
+    tools, fc = _build([combined, page2])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_CROSS]}],
+        confirm=True,
+    )
+    assert "media GIDs not on product" in out
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    # only the two read queries ran — no mutation
+    assert len(fc.calls) == 2
+
+
+def test_s96_product_media_pagination_idempotent_no_op():
+    """Page-2 GID already bound → all_no_op short-circuit, zero mutations."""
+    page1_ids = [f"gid://shopify/MediaImage/{i}" for i in range(1, 51)]
+    combined = _s96_combined_response(
+        media_ids=page1_ids,
+        variants=[(_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_PAGE2])],  # already bound
+        media_has_next_page=True,
+        media_end_cursor="cursor-abc",
+    )
+    page2 = _s96_media_page_response([_S96_MEDIA_PAGE2], has_next=False, end_cursor=None)
+    tools, fc = _build([combined, page2])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_PAGE2]}],
+        confirm=True,
+    )
+    tail = _parse_tail(out)
+    assert tail["ok"] is True, out
+    # two reads, zero mutations
+    assert len(fc.calls) == 2
+    from tools.catalog_hygiene import PRODUCT_VARIANT_APPEND_MEDIA
+
+    assert all(call[0] != PRODUCT_VARIANT_APPEND_MEDIA for call in fc.calls)
+
+
+def test_s96_product_media_pagination_mid_fetch_error_returns_clean_error():
+    """A RuntimeError mid-pagination surfaces as a clean error, not an uncaught exception."""
+    page1_ids = [f"gid://shopify/MediaImage/{i}" for i in range(1, 51)]
+    combined = _s96_combined_response(
+        media_ids=page1_ids,
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+        media_has_next_page=True,
+        media_end_cursor="cursor-abc",
+    )
+    tools, fc = _build([combined, RuntimeError("network boom")])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_PAGE2]}],
+        confirm=True,
+    )
+    assert out.startswith("Error calling Shopify (RuntimeError):")
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+
+
+def test_s96_product_media_pagination_null_product_on_page2_errors_cleanly():
+    """If the follow-up page query returns null product the function returns a clean error."""
+    page1_ids = [f"gid://shopify/MediaImage/{i}" for i in range(1, 51)]
+    combined = _s96_combined_response(
+        media_ids=page1_ids,
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+        media_has_next_page=True,
+        media_end_cursor="cursor-abc",
+    )
+    # page 2 returns null product
+    null_page = {"product": None}
+    tools, fc = _build([combined, null_page])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_PAGE2]}],
+        confirm=True,
+    )
+    assert "No product found" in out
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+
+
+def test_s96_mutation_response_truncation_note():
+    """When mutation response media is truncated the confirmed head includes a note."""
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1],
+        variants=[(_S96_VARIANT_A, "SKU-A", [])],
+    )
+    mutation = _s96_mutation_response(
+        productVariants=[(_S96_VARIANT_A, [(_S96_MEDIA_1, "", None)])],
+        truncated_variant_gids=[_S96_VARIANT_A],
+    )
+    tools, fc = _build([combined, mutation])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    assert "Note: media response truncated" in out
+    assert "truncated at 100 nodes" in out
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+    # JSON-tail variants shape is unchanged — still has id, sku, media keys
+    assert "id" in tail["variants"][0]
+    assert "media" in tail["variants"][0]
 
 
 # =============================================================================
