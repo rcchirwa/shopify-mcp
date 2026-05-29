@@ -16,7 +16,7 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 
 | Rank | ID | Item | Category | I | R | E | Score |
 |------|----|------|----------|---|---|---|-------|
-| 1 | A3 | Pagination helper for list reads | Code | 2 | 3 | 3 | **15** |
+| 1 | A3 | Pagination helper for list reads — *helper shipped + read-path adoption Story 10.16* | Code | 2 | 3 | 3 | **15** |
 | 2 | A2 | `write_gate()` helper collapsing preview/confirm/error/audit boilerplate — *helper + 7 tools migrated on branch `claude/magical-northcutt-d3977f`* | Code | 4 | 2 | 4 | **12** |
 | 3 | A5 | `shopify/` subpackage extraction (`queries/` + `operations/`) with GraphQL fragments | Architecture | 2 | 1 | 2 | **12** |
 | 4 | A6 | HTTP client unification (single wrapper for `gql` + `requests`) — *links to N4 in TECH_DEBT.md* | Architecture | 2 | 2 | 3 | **12** |
@@ -58,11 +58,20 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 ### A3 — Pagination helper for list reads
 
 - **Category:** Code
+- **Status:** helper shipped — `ShopifyClient.paginate()` at [shopify_client.py:224](shopify_client.py:224), tested in [test_paginate_offline.py](test_paginate_offline.py), mirrored in `_testing/fake_client.py`. Every cleanly-paginable single-object read has adopted it (inventory + media under Story 10.6; orders, products, publications under Story 10.16). Remaining gaps are the two structural exceptions below.
 - **Impact (2):** prevents silent truncation on stores with >50 variants per product or >100 media per product.
-- **Risk (3):** today, [tools/inventory.py](tools/inventory.py) caps at `_VARIANTS_PAGE_CAP = 50` and [tools/media/_constants.py](tools/media/_constants.py) at `_MEDIA_PAGE_CAP = 100` with no auto-continuation. A product with 100 variants returns the first 50 and the user has no way to know they got truncated.
-- **Effort (3):** ~half a day. New helper in `shopify_client.py`; opt-in adoption per tool.
-- **Plan:** `paginate(query, variables, page_size, max_pages=10)` walks `pageInfo.hasNextPage` / `endCursor`. Hard-cap on `max_pages` to prevent runaway calls. Tools that risk the cap migrate; tools that genuinely never approach it stay as-is.
+- **Risk (3):** the helper-adopted read paths now auto-continue across pages. The residual risk is the two connections `paginate()` structurally cannot walk — both documented, note-only items in TECH_DEBT.md (`A3-orders-lineitems-cap`, `A3-option-echo-cap`): `GET_ORDERS.nodes.lineItems` (a connection nested inside a list, so `get_orders` still caps per order) and the `UPDATE_PRODUCT_OPTION` mutation-response echo (mitigated by a pre-write at-cap warning).
+- **Effort (3):** historical estimate (~half a day). The helper and the read-path sweep are done; only the two structural exceptions remain, and neither is addressable by `paginate()` as designed.
+- **Plan:** ✅ delivered. `paginate(query, variables, *, connection_path, page_size=50, max_pages=10)` walks `pageInfo.hasNextPage` / `endCursor`, hard-capping `max_pages` to prevent runaway calls and returning a `capped` flag so tools surface a visible warning. Tools at risk of the cap migrated; tools that never approach it stayed as-is. The list-nested and mutation-echo connections are out of scope by construction.
 - **Business justification:** silent data truncation in a tool that mutates Shopify state is the worst possible failure mode — user thinks they updated all variants, only the first 50 changed.
+- **Shipped this session (Story 10.16):**
+  - `orders.get_order` — `GET_ORDER_BY_ID` migrated to `client.paginate()` with `connection_path=["order", "lineItems"]`, page_size=50. Warns when max-pages cap is hit.
+  - `products.get_product` — `GET_PRODUCT_BY_ID` / `GET_PRODUCT_BY_HANDLE` migrated to `client.paginate()` with `connection_path=["product"|"productByHandle", "variants"]`. Queries use `$first: Int = 50` default so non-paginating callers (`update_product_title`, `update_product_description`, `update_product_status`, `get_product_description`) remain unaffected.
+  - `products.get_product_full` — `GET_PRODUCT_FULL_BY_ID` / `GET_PRODUCT_FULL_BY_HANDLE` migrated similarly. Same `$first: Int = 50` default.
+  - `products.update_variant_inventory_policy` — `GET_PRODUCT_VARIANTS_POLICY` migrated with page_size=250 (full policy sweep). Real `capped` flag replaces the old `len()>=250` heuristic.
+  - `publications._load_channels` — `LIST_PUBLICATIONS` migrated to `client.paginate()` with `connection_path=["publications"]`.
+  - `publications._resolve_product_gid_and_meta` — `GET_PRODUCT_PUBLICATIONS_BY_ID` / `GET_PRODUCT_PUBLICATIONS_BY_HANDLE` migrated with `connection_path=["product"|"productByHandle", "resourcePublications"]`.
+  - `catalog_hygiene.update_product_options` — warn path (not full pagination): `pageInfo{hasNextPage}` added to `GET_PRODUCT_OPTIONS*`, at-cap warning emitted when product has >50 variants. Closes T-9.5-variants-cap.
 
 ### A5 — `shopify/` subpackage extraction
 

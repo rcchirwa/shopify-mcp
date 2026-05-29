@@ -1023,18 +1023,27 @@ def test_policy_user_errors_surfaced_with_null_field():
     assert "(no field)" in out
 
 
-def test_policy_at_cap_warning_surfaces_when_reading_250_variants():
-    """#1: when the variants read returns exactly 250 nodes (Shopify page cap),
-    the response must include the at-cap warning so operators see a product
-    that has exceeded Shopify's single-request ceiling."""
-    variants = [_variant_policy(str(1000 + i), f"v{i}", "CONTINUE") for i in range(250)]
-    tools, fc = _build([_variants_policy_read(variants)])
+def test_policy_at_cap_warning_surfaces_when_capped():
+    """When paginate hits max_pages, the at-cap warning appears in the response."""
+    # Build 10 identical page responses each pointing to a next page (max_pages default=10).
+    variant = _variant_policy("10", "S", "CONTINUE")
+    page_response = {
+        "product": {
+            "id": "gid://shopify/Product/123",
+            "title": "T",
+            "variants": {
+                "nodes": [variant],
+                "pageInfo": {"hasNextPage": True, "endCursor": "cur"},
+            },
+        }
+    }
+    tools, fc = _build([page_response] * 10)
     out = tools["update_variant_inventory_policy"](
         product_id="123",
         new_policy="DENY",
         confirm=False,
     )
-    assert "WARNING" in out and "250-variant" in out, out
+    assert "WARNING" in out and "max-pages cap" in out, out
 
 
 # ---------- get_product_collections ----------
@@ -1183,7 +1192,7 @@ def test_get_product_by_handle_uses_handle_query():
     out = tools["get_product"](handle="x")
     assert "Title: X" in out
     assert fc.calls[0][0] == GET_PRODUCT_BY_HANDLE
-    assert fc.calls[0][1] == {"handle": "x"}
+    assert fc.calls[0][1] == {"handle": "x", "first": 50, "after": None}
 
 
 def test_get_product_requires_id_or_handle():
@@ -1629,3 +1638,148 @@ def test_update_variant_inventory_policy_not_found_reports_clean_error():
         confirm=True,
     )
     assert out == "No product found with id nope."
+
+
+# ---- get_product pagination ----
+
+
+def _product_page(pid, title, handle, variants, has_next=False, end_cursor=None):
+    """Build a paginated GET_PRODUCT_BY_ID response with pageInfo."""
+    return {
+        "product": {
+            "id": f"gid://shopify/Product/{pid}",
+            "title": title,
+            "handle": handle,
+            "status": "ACTIVE",
+            "bodyHtml": "",
+            "variants": {
+                "nodes": variants,
+                "pageInfo": {"hasNextPage": has_next, "endCursor": end_cursor},
+            },
+        }
+    }
+
+
+def test_get_product_paginates_variants_across_pages():
+    """Two pages: page-0 has hasNextPage=True. Variants from both pages appear in output."""
+    v1 = {"id": "gid://shopify/ProductVariant/1", "title": "S", "sku": "S-SKU"}
+    v2 = {"id": "gid://shopify/ProductVariant/2", "title": "M", "sku": "M-SKU"}
+
+    page0 = _product_page("123", "Tee", "tee", [v1], has_next=True, end_cursor="p0cursor")
+    page1 = _product_page("123", "Tee", "tee", [v2], has_next=False)
+
+    tools, fc = _build([page0, page1])
+    out = tools["get_product"](product_id="123")
+    assert "SKU: S-SKU" in out and "SKU: M-SKU" in out
+    assert "WARNING" not in out
+    # Second call must carry the page-0 cursor
+    assert fc.calls[1][1]["after"] == "p0cursor"
+
+
+def test_get_product_warns_when_variants_capped():
+    """When paginate hits max_pages, WARNING is appended."""
+    v = {"id": "gid://shopify/ProductVariant/1", "title": "S", "sku": "S"}
+    page = _product_page("123", "Tee", "tee", [v], has_next=True, end_cursor="cur")
+    tools, fc = _build([page] * 10)
+    out = tools["get_product"](product_id="123")
+    assert "WARNING" in out and "max-pages cap" in out
+
+
+def _product_full_page(pid, title, handle, variants, has_next=False, end_cursor=None):
+    """Build a paginated GET_PRODUCT_FULL_BY_ID response with pageInfo."""
+    return {
+        "product": {
+            "id": f"gid://shopify/Product/{pid}",
+            "title": title,
+            "handle": handle,
+            "status": "ACTIVE",
+            "bodyHtml": "",
+            "tags": [],
+            "productType": None,
+            "vendor": None,
+            "seo": {},
+            "category": None,
+            "options": [],
+            "variants": {
+                "nodes": variants,
+                "pageInfo": {"hasNextPage": has_next, "endCursor": end_cursor},
+            },
+        }
+    }
+
+
+def test_get_product_full_paginates_variants_across_pages():
+    """Two pages of variants — both appear in the output, no WARNING."""
+    v1 = {"id": "gid://shopify/ProductVariant/1", "title": "S", "sku": "S-SKU"}
+    v2 = {"id": "gid://shopify/ProductVariant/2", "title": "M", "sku": "M-SKU"}
+
+    page0 = _product_full_page("123", "Tee", "tee", [v1], has_next=True, end_cursor="pc0")
+    page1 = _product_full_page("123", "Tee", "tee", [v2], has_next=False)
+
+    tools, fc = _build([page0, page1])
+    out = tools["get_product_full"](product_id="123")
+    assert "SKU: S-SKU" in out and "SKU: M-SKU" in out
+    assert "WARNING" not in out
+    assert fc.calls[1][1]["after"] == "pc0"
+
+
+def test_get_product_full_warns_when_variants_capped():
+    """When paginate hits max_pages, WARNING is appended."""
+    v = {"id": "gid://shopify/ProductVariant/1", "title": "S", "sku": "S"}
+    page = _product_full_page("123", "Tee", "tee", [v], has_next=True, end_cursor="cur")
+    tools, fc = _build([page] * 10)
+    out = tools["get_product_full"](product_id="123")
+    assert "WARNING" in out and "max-pages cap" in out
+
+
+def _policy_page(pid, variants, has_next=False, end_cursor=None, title="T"):
+    """Build a paginated GET_PRODUCT_VARIANTS_POLICY response with pageInfo."""
+    return {
+        "product": {
+            "id": f"gid://shopify/Product/{pid}",
+            "title": title,
+            "variants": {
+                "nodes": variants,
+                "pageInfo": {"hasNextPage": has_next, "endCursor": end_cursor},
+            },
+        }
+    }
+
+
+def test_update_variant_inventory_policy_paginates_variants():
+    """Two pages of variants: both must appear in the mutation input."""
+    v1 = _variant_policy("10", "S", "CONTINUE")
+    v2 = _variant_policy("11", "M", "CONTINUE")
+
+    page0 = _policy_page("123", [v1], has_next=True, end_cursor="pc0")
+    page1 = _policy_page("123", [v2], has_next=False)
+    bulk_ok = _bulk_policy_ok(
+        [
+            {"id": "gid://shopify/ProductVariant/10", "inventoryPolicy": "DENY"},
+            {"id": "gid://shopify/ProductVariant/11", "inventoryPolicy": "DENY"},
+        ]
+    )
+
+    tools, fc = _build([page0, page1, bulk_ok])
+    out = tools["update_variant_inventory_policy"](
+        product_id="123",
+        new_policy="DENY",
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED —"), out
+    # Both variants must be in the mutation
+    vars_put = fc.calls[2][1]
+    assert len(vars_put["variants"]) == 2
+
+
+def test_update_variant_inventory_policy_warns_when_capped():
+    """When paginate hits max_pages cap, the at-cap WARNING appears."""
+    v = _variant_policy("10", "S", "CONTINUE")
+    page = _policy_page("123", [v], has_next=True, end_cursor="cur")
+    tools, fc = _build([page] * 10)
+    out = tools["update_variant_inventory_policy"](
+        product_id="123",
+        new_policy="DENY",
+        confirm=False,
+    )
+    assert "WARNING" in out and "max-pages cap" in out

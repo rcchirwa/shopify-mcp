@@ -45,30 +45,32 @@ query GetProducts($first: Int!) {
 """
 
 GET_PRODUCT_BY_ID = """
-query GetProductById($id: ID!) {
+query GetProductById($id: ID!, $first: Int = 50, $after: String) {
   product(id: $id) {
     id
     title
     handle
     status
     bodyHtml
-    variants(first: 50) {
+    variants(first: $first, after: $after) {
       nodes { id title sku }
+      pageInfo { hasNextPage endCursor }
     }
   }
 }
 """
 
 GET_PRODUCT_BY_HANDLE = """
-query GetProductByHandle($handle: String!) {
+query GetProductByHandle($handle: String!, $first: Int = 50, $after: String) {
   productByHandle(handle: $handle) {
     id
     title
     handle
     status
     bodyHtml
-    variants(first: 50) {
+    variants(first: $first, after: $after) {
       nodes { id title sku }
+      pageInfo { hasNextPage endCursor }
     }
   }
 }
@@ -130,7 +132,7 @@ query GetProductsByCollectionWithDescriptions($handle: String!, $first: Int!) {
 """
 
 GET_PRODUCT_FULL_BY_ID = """
-query GetProductFullById($id: ID!) {
+query GetProductFullById($id: ID!, $first: Int = 50, $after: String) {
   product(id: $id) {
     id
     title
@@ -151,15 +153,16 @@ query GetProductFullById($id: ID!) {
       name
       optionValues { id name }
     }
-    variants(first: 50) {
+    variants(first: $first, after: $after) {
       nodes { id title sku }
+      pageInfo { hasNextPage endCursor }
     }
   }
 }
 """
 
 GET_PRODUCT_FULL_BY_HANDLE = """
-query GetProductFullByHandle($handle: String!) {
+query GetProductFullByHandle($handle: String!, $first: Int = 50, $after: String) {
   productByHandle(handle: $handle) {
     id
     title
@@ -180,8 +183,9 @@ query GetProductFullByHandle($handle: String!) {
       name
       optionValues { id name }
     }
-    variants(first: 50) {
+    variants(first: $first, after: $after) {
       nodes { id title sku }
+      pageInfo { hasNextPage endCursor }
     }
   }
 }
@@ -236,20 +240,25 @@ mutation UpdateProductStatus($input: ProductInput!) {
 }
 """
 
+# Page size for paginated variant reads in get_product / get_product_full.
+# Kept separate from VARIANTS_PAGE_CAP (policy path) so the two can diverge.
+_VARIANTS_PAGE_CAP = 50
+
 GET_PRODUCT_VARIANTS_POLICY = """
-query GetProductVariantsPolicy($id: ID!) {
+query GetProductVariantsPolicy($id: ID!, $first: Int!, $after: String) {
   product(id: $id) {
     id
     title
-    variants(first: 250) {
+    variants(first: $first, after: $after) {
       nodes { id title inventoryPolicy }
+      pageInfo { hasNextPage endCursor }
     }
   }
 }
 """
-# Shopify's per-request ceiling for the variants connection is 250; a product
-# that actually hits this cap would need paginated reads + chunked bulk updates.
-# Warn at-cap so operators can see they've hit a latent limit.
+# Shopify's per-request ceiling for the variants connection is 250. The policy
+# read is now fully paginated via client.paginate() with page_size=VARIANTS_PAGE_CAP.
+# The `capped` flag from paginate() replaces the old len()>=250 heuristic warning.
 VARIANTS_PAGE_CAP = 250
 
 UPDATE_PRODUCT_VARIANTS_POLICY = """
@@ -291,11 +300,23 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def get_product(product_id: str = "", handle: str = "") -> str:
         """Get a single product by id or handle."""
+        capped = False
+        variants_nodes: list[Any] = []
         if product_id:
-            data = client.execute(GET_PRODUCT_BY_ID, {"id": to_gid("Product", product_id)})
+            data, variants_nodes, capped = client.paginate(
+                GET_PRODUCT_BY_ID,
+                {"id": to_gid("Product", product_id)},
+                connection_path=["product", "variants"],
+                page_size=_VARIANTS_PAGE_CAP,
+            )
             p = data.get("product")
         elif handle:
-            data = client.execute(GET_PRODUCT_BY_HANDLE, {"handle": handle})
+            data, variants_nodes, capped = client.paginate(
+                GET_PRODUCT_BY_HANDLE,
+                {"handle": handle},
+                connection_path=["productByHandle", "variants"],
+                page_size=_VARIANTS_PAGE_CAP,
+            )
             p = data.get("productByHandle")
         else:
             return "Provide either product_id or handle."
@@ -305,15 +326,18 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         variants = "\n".join(
             f"  • {v['title']} — SKU: {v.get('sku', 'N/A')} — id: {from_gid(v['id'])}"
-            for v in p.get("variants", {}).get("nodes", [])
+            for v in variants_nodes
         )
-        return (
+        result = (
             f"ID: {from_gid(p['id'])}\n"
             f"Title: {p['title']}\n"
             f"Handle: {p['handle']}\n"
             f"Status: {p['status']}\n"
             f"Variants:\n{variants}"
         )
+        if capped:
+            result += "\nWARNING: variant pagination hit the max-pages cap — additional variants (if any) are not shown here."
+        return result
 
     @server.tool()
     def update_product_title(
@@ -612,11 +636,23 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         Get a full product record: id, title, handle, status, body_html, tags,
         product_type, vendor, seo, category, variants, and options.
         """
+        capped = False
+        variants_nodes: list[Any] = []
         if product_id:
-            data = client.execute(GET_PRODUCT_FULL_BY_ID, {"id": to_gid("Product", product_id)})
+            data, variants_nodes, capped = client.paginate(
+                GET_PRODUCT_FULL_BY_ID,
+                {"id": to_gid("Product", product_id)},
+                connection_path=["product", "variants"],
+                page_size=_VARIANTS_PAGE_CAP,
+            )
             p = data.get("product")
         elif handle:
-            data = client.execute(GET_PRODUCT_FULL_BY_HANDLE, {"handle": handle})
+            data, variants_nodes, capped = client.paginate(
+                GET_PRODUCT_FULL_BY_HANDLE,
+                {"handle": handle},
+                connection_path=["productByHandle", "variants"],
+                page_size=_VARIANTS_PAGE_CAP,
+            )
             p = data.get("productByHandle")
         else:
             return "Provide either product_id or handle."
@@ -626,7 +662,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         variants = "\n".join(
             f"  • {v['title']} — SKU: {v.get('sku', 'N/A')} — id: {from_gid(v['id'])}"
-            for v in p.get("variants", {}).get("nodes", [])
+            for v in variants_nodes
         )
         tags = ", ".join(p.get("tags") or []) or "(none)"
         seo = p.get("seo") or {}
@@ -650,7 +686,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         else:
             options_block = "  (none)"
 
-        return (
+        result = (
             f"ID: {from_gid(p['id'])}\n"
             f"Title: {p['title']}\n"
             f"Handle: {p['handle']}\n"
@@ -667,6 +703,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"Options:\n{options_block}\n"
             f"body_html:\n{p.get('bodyHtml') or ''}"
         )
+        if capped:
+            result += "\nWARNING: variant pagination hit the max-pages cap — additional variants (if any) are not shown here."
+        return result
 
     @server.tool()
     def get_product_collections(product_id: str) -> str:
@@ -831,19 +870,20 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return f"Error: new_policy must be one of {', '.join(INVENTORY_POLICY_VALUES)}."
 
         product_gid = to_gid("Product", product_id)
-        data = client.execute(GET_PRODUCT_VARIANTS_POLICY, {"id": product_gid})
+        data, variants, capped = client.paginate(
+            GET_PRODUCT_VARIANTS_POLICY,
+            {"id": product_gid},
+            connection_path=["product", "variants"],
+            page_size=VARIANTS_PAGE_CAP,
+        )
         product = data.get("product")
         if not product:
             return f"No product found with id {product_id}."
 
-        variants = (product.get("variants") or {}).get("nodes", []) or []
         title = product.get("title", "")
         at_cap_warning = (
-            (
-                f"  WARNING: variant read hit the {VARIANTS_PAGE_CAP}-variant page "
-                f"cap — additional variants (if any) are not covered by this call."
-            )
-            if len(variants) >= VARIANTS_PAGE_CAP
+            "  WARNING: variant pagination hit the max-pages cap — additional variants (if any) are not covered by this call."
+            if capped
             else ""
         )
 

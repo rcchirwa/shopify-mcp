@@ -6389,7 +6389,7 @@ def test_s95_confirm_success_with_null_returned_product():
     assert out.startswith("CONFIRMED —")
     tail = _parse_tail(out)
     assert tail["ok"] is True
-    assert tail["product"] == {"id": "", "options": [], "variants": []}
+    assert tail["product"] == {"id": "", "options": [], "variants": [], "variants_capped": False}
 
 
 # Helper sanity ---------------------------------------------------------------
@@ -6400,6 +6400,7 @@ def test_s95_shape_options_snapshot_handles_none():
         "id": "",
         "options": [],
         "variants": [],
+        "variants_capped": False,
     }
 
 
@@ -6408,7 +6409,157 @@ def test_s95_shape_options_snapshot_handles_empty_dict():
         "id": "",
         "options": [],
         "variants": [],
+        "variants_capped": False,
     }
+
+
+def test_s95_shape_options_snapshot_variants_capped_true_when_has_next_page():
+    """pageInfo.hasNextPage=True in variants → variants_capped=True in snapshot."""
+    node = {
+        "id": "gid://shopify/Product/1",
+        "options": [],
+        "variants": {
+            "nodes": [
+                {
+                    "id": "gid://shopify/ProductVariant/1",
+                    "title": "S",
+                    "selectedOptions": [],
+                }
+            ],
+            "pageInfo": {"hasNextPage": True},
+        },
+    }
+    snap = catalog_hygiene._shape_options_snapshot(node)
+    assert snap["variants_capped"] is True
+    assert len(snap["variants"]) == 1
+
+
+def test_s95_shape_options_snapshot_variants_capped_false_when_no_more_pages():
+    """pageInfo.hasNextPage=False → variants_capped=False in snapshot."""
+    node = {
+        "id": "gid://shopify/Product/1",
+        "options": [],
+        "variants": {
+            "nodes": [],
+            "pageInfo": {"hasNextPage": False},
+        },
+    }
+    snap = catalog_hygiene._shape_options_snapshot(node)
+    assert snap["variants_capped"] is False
+
+
+def test_update_product_options_warns_when_variants_capped():
+    """When product.variants.pageInfo.hasNextPage=True, the output includes the
+    at-cap WARNING and the JSON tail's variants_capped is True."""
+    read_resp = {
+        "product": {
+            "id": "gid://shopify/Product/100",
+            "title": "Tee",
+            "options": [
+                {
+                    "id": _OPT_GID,
+                    "name": "Size",
+                    "optionValues": [{"id": _OV_M, "name": "M-CRM"}],
+                }
+            ],
+            "variants": {
+                "nodes": [
+                    {
+                        "id": "gid://shopify/ProductVariant/501",
+                        "title": "M-CRM / Cream",
+                        "selectedOptions": [{"name": "Size", "value": "M-CRM"}],
+                    }
+                ],
+                "pageInfo": {"hasNextPage": True},
+            },
+        }
+    }
+    tools, fc = _build([read_resp])
+    out = tools["update_product_options"](
+        product_id="100",
+        option={"id": _OPT_GID, "name": "Sizing"},
+        confirm=False,
+    )
+    assert "WARNING" in out and "more than 50 variants" in out
+    tail = _parse_tail(out)
+    assert tail["product"]["variants_capped"] is True
+
+
+def test_update_product_options_no_variants_cap_warning_when_not_capped():
+    """When pageInfo.hasNextPage=False (or absent), no WARNING emitted and
+    variants_capped is False in the JSON tail."""
+    tools, fc = _build([_options_read_response()])
+    out = tools["update_product_options"](
+        product_id="100",
+        option={"id": _OPT_GID, "name": "Sizing"},
+        confirm=False,
+    )
+    assert "more than 50 variants" not in out
+    tail = _parse_tail(out)
+    assert tail["product"]["variants_capped"] is False
+
+
+def _capped_read_response(
+    *,
+    product_gid: str = "gid://shopify/Product/100",
+    title: str = "Test Product",
+    option_id: str = _OPT_GID,
+    option_name: str = "Size",
+    values: list[dict[str, str]] | None = None,
+    variants: list[dict[str, Any]] | None = None,
+    by_handle: bool = False,
+) -> dict:
+    """Like _options_read_response but with pageInfo.hasNextPage=True."""
+    node: dict[str, Any] = {
+        "id": product_gid,
+        "title": title,
+        "options": [
+            {
+                "id": option_id,
+                "name": option_name,
+                "optionValues": values
+                or [
+                    {"id": _OV_M, "name": "M-CRM"},
+                    {"id": _OV_L, "name": "L-CRM"},
+                ],
+            }
+        ],
+        "variants": {
+            "nodes": variants
+            or [
+                {
+                    "id": "gid://shopify/ProductVariant/501",
+                    "title": "M-CRM / Cream",
+                    "selectedOptions": [{"name": "Size", "value": "M-CRM"}],
+                }
+            ],
+            "pageInfo": {"hasNextPage": True},
+        },
+    }
+    return {"productByHandle": node} if by_handle else {"product": node}
+
+
+def test_update_product_options_no_op_no_changes_warns_when_capped():
+    """Step 5 no-op (no changes requested) must also emit the at-cap WARNING
+    when variants are capped — covers the head += branch at the no-op path."""
+    tools, fc = _build([_capped_read_response()])
+    out = tools["update_product_options"](
+        product_id="100",
+        option={"id": _OPT_GID},  # no name change, no values → empty-delta no-op
+        confirm=False,
+    )
+    assert "WARNING" in out and "more than 50 variants" in out
+
+
+def test_update_product_options_no_op_already_set_warns_when_capped():
+    """Step 6 no-op (already set) must also emit the at-cap WARNING when capped."""
+    tools, fc = _build([_capped_read_response()])
+    out = tools["update_product_options"](
+        product_id="100",
+        option={"id": _OPT_GID, "name": "Size"},  # name unchanged → already-set no-op
+        confirm=False,
+    )
+    assert "WARNING" in out and "more than 50 variants" in out
 
 
 # =============================================================================
