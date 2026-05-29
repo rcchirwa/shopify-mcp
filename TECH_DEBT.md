@@ -18,13 +18,13 @@ T-9.6-media-cap from the 2026-05-12 Story 9.6 backlog closed in a single PR.
 |---|------|---------------|
 | T-9.6-media-cap | ~~`media(first: 100)` silent truncation in `update_variant_image_binding`~~ | Added `PRODUCT_MEDIA_READ_PAGE_SIZE = 50` constant and a new `GET_PRODUCT_MEDIA_PAGE` query (page-2+ companion to `GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA` that skips re-fetching variants). Updated `GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA` to accept `$mediaFirst: Int!` / `$mediaAfter: String` variables and select `media.pageInfo { hasNextPage endCursor }`. Replaced the single `client.execute()` call in Step 2 of `update_variant_image_binding` with a try/except-wrapped pagination loop that accumulates `all_media_nodes` across pages; `product_media_set` and `product_media_index` now reflect the full media set. Also added `pageInfo { hasNextPage }` to the `PRODUCT_VARIANT_APPEND_MEDIA` mutation response and a trailing truncation note to the confirmed head when any variant's response is capped. Module docstring updated to replace the `T-9.6-media-cap` known-limitation bullet with an accurate description of the remaining per-variant and mutation-response caps. Six new offline tests added: page-2 GID accepted, unknown GID still rejected, no-op idempotency via page-2 GID, mid-fetch error returns clean message, null-product on follow-up page, and mutation-response truncation note. Pre-existing `test_s96_runtime_error_propagates` updated — RuntimeError is now caught by the paginated fetch wrapper and returned as a clean `"Error calling Shopify (…)"` message rather than propagating. CI clean: 404 tests, 100% coverage. Trello: https://trello.com/c/ot3HqrH9 (Story 10.12). |
 
-### Current active backlog (after Story 10.12)
+### Current active backlog (after Story 10.16)
 
 | Rank | Item | Score | Status |
 |------|------|-------|--------|
 | 1 | SEC-M2-sanitizer — advisory blocklist → proper HTML sanitizer | 16 | active (needs product sign-off) |
 | 2 | N4 — two HTTP stacks, no shared policy | 9 | watch |
-| 3 | T-9.5-variants-cap — `variants(first: 50)` post-write snapshot cap | 6 | partial |
+| 3 | ~~T-9.5-variants-cap — `variants(first: 50)` post-write snapshot cap~~ | ~~6~~ | closed 2026-05-29 (Story 10.16) |
 | 4 | O1 — mypy permissive on test files (pre-existing) | — | watch |
 | 5 | Q4 — `format_user_errors_joined()` single caller | 4 | note |
 | 6 | Q5 — `dict[str, Any]` baseline for GraphQL payloads | 4 | watch |
@@ -46,6 +46,22 @@ Two-agent review pass (`code-review` + `security-review`) ran on the diff before
 
 3. **Forward note:** The `_GID_DISPLAY_MAX` cap is not applied to handle/taxonomy reflection sites (lines ~1570, 1620, 1644, 1651, 1669) where user input is reflected without bound. Out of scope for this story but flagged as `SEC-resolver-reflect-cap` for future hardening (Score: 4, note-only — internal MCP tool, low risk).
 
+### Follow-up (added 2026-05-29, Story 10.16 /gss-dual-review)
+
+Two-agent review pass (`code-review` + `security-review`) ran on the Story 10.16 diff before commit. Five code-review items, all applied; security review found no defects (two Info verifications: parameterized GraphQL variables throughout, and `paginate()`'s `max_pages` hard cap + null-cursor abort prevent runaway loops — both confirmed intact).
+
+1. **Code-review verdict:** Approve. Five items, all applied pre-commit:
+   - **Low** (×2) — The ">50 variants" fact was computed twice from the same product node (once for the `update_product_options` at-cap warning, once inside `_shape_options_snapshot` for the JSON-tail `variants_capped` flag) with inconsistent null-handling (`.get("pageInfo", {})` vs `(... or {})`). Collapsed both into a single `_variants_capped_from_node()` helper in `tools/catalog_hygiene.py` — one source of truth, consistent `or {}` handling that tolerates an explicit `None` pageInfo.
+   - **Info** — Renamed the misleading `_first` binding in `publications.py:_load_channels` to `_resp` (it is the unused first-page *response dict*, not a page-size count).
+   - **Info** (×2, items #4–#5) — Documented the two intentionally-deferred caps below so they are not lost.
+
+2. **New note-only items (intentionally-deferred nested/echo caps):**
+
+| # | Item | Where | Score |
+|---|------|-------|-------|
+| A3-orders-lineitems-cap | **`orders.nodes.lineItems(first: N)` silently caps per order** — `get_orders` (list path) still truncates each order's line items with no warning, because `client.paginate()` walks only a *single top-level* connection and cannot paginate a connection nested inside a list. The single-order path (`get_order`) is fully paginated. Documented in-code at `tools/orders.py` (GET_ORDERS comment). Trigger: an order in a multi-order listing exceeds the line-item page size and the omission matters. | `tools/orders.py:GET_ORDERS` | 4 (note) |
+| A3-option-echo-cap | **`UPDATE_PRODUCT_OPTION` mutation-response echo `variants(first: 50)` is un-paginable** — mutation-response echoes cannot be walked by `client.paginate()`. Mitigated: the *pre-write* read in `update_product_options` now emits an at-cap warning at >50 variants, so the operator sees the warning before the (possibly truncated) echo. Documented at `tools/catalog_hygiene.py:GET_PRODUCT_OPTIONS` comment and the T-9.5-variants-cap closure row. | `tools/catalog_hygiene.py:UPDATE_PRODUCT_OPTION` | 2 (note) |
+
 ---
 
 ## 2026-05-27 — Story 10.11 follow-up (resolver-fanout consolidation)
@@ -65,7 +81,7 @@ T-9.5-resolver-fanout from the 2026-05-12 Story 9.5 backlog closed in a single P
 | 1 | SEC-M2-sanitizer — advisory blocklist → proper HTML sanitizer | 16 | active (needs product sign-off) |
 | 2 | N4 — two HTTP stacks, no shared policy | 9 | watch |
 | 3 | T-9.6-media-cap — `media(first: 100)` silent truncation | 6 | watch |
-| 4 | T-9.5-variants-cap — `variants(first: 50)` post-write snapshot cap | 6 | partial |
+| 4 | ~~T-9.5-variants-cap — `variants(first: 50)` post-write snapshot cap~~ | ~~6~~ | closed 2026-05-29 (Story 10.16) |
 | 5 | O1 — mypy permissive on test files (pre-existing) | — | watch |
 | 6 | Q4 — `format_user_errors_joined()` single caller | 4 | note |
 | 7 | Q5 — `dict[str, Any]` baseline for GraphQL payloads | 4 | watch |
@@ -124,7 +140,7 @@ Item Q3 from the 2026-04-24 audit was implemented this session. A `/engineering:
 | 2 | N4 — two HTTP stacks, no shared policy | 9 | watch |
 | 3 | T-9.5-resolver-fanout — 4 near-twin `_resolve_product_id_*` helpers | 8 | watch |
 | 4 | T-9.6-media-cap — `media(first: 100)` silent truncation | 6 | watch |
-| 5 | T-9.5-variants-cap — `variants(first: 50)` post-write snapshot cap | 6 | partial |
+| 5 | ~~T-9.5-variants-cap — `variants(first: 50)` post-write snapshot cap~~ | ~~6~~ | closed 2026-05-29 (Story 10.16) |
 | 6 | O1 — mypy permissive on test files (pre-existing) | — | watch |
 | 7 | T-9.6-resolver-orphan — `resolve_variant_ids_to_gids` has no callers | 4 | confirmed |
 | 8 | SEC-M2-collection-seo — collections warning format inconsistent with products | 4 | note |
@@ -169,7 +185,7 @@ Items surfaced during implementation of Story 9.5 (`update_product_options`). No
 
 | # | Item | Where | Score |
 |---|------|-------|-------|
-| T-9.5-variants-cap | **`variants(first: 50)` silent truncation in the post-write snapshot** — both `GET_PRODUCT_OPTIONS` and the `productOptionUpdate` mutation echo cap the returned variants slice at 50. A product with more than 50 variants would see the JSON tail's `product.variants` truncated without warning. Matches the pattern called out by T-9.6-media-cap. Fix path: paginate or emit a `hasNextPage` warning. Trigger: a real product hits > 50 variants. | `tools/catalog_hygiene.py:GET_PRODUCT_OPTIONS`, `:UPDATE_PRODUCT_OPTION` | 6 (watch) |
+| ~~T-9.5-variants-cap~~ | **Closed (Story 10.16, 2026-05-29).** Warn path implemented: `pageInfo{hasNextPage}` added to `GET_PRODUCT_OPTIONS` and `GET_PRODUCT_OPTIONS_BY_HANDLE`; `update_product_options` emits an at-cap warning when `hasNextPage=True` and sets `variants_capped=True` in the JSON tail. The `UPDATE_PRODUCT_OPTION` mutation echo (`variants(first: 50)`) remains an un-paginable known exception — mutation-response echoes cannot be paginated by `client.paginate()`. Separately, all single-object read paths (orders, products, publications) were migrated to `client.paginate()` in the same story, closing the A3 read-path sweep. Trello: Story 10.16. | `tools/catalog_hygiene.py:GET_PRODUCT_OPTIONS*`, `update_product_options`; `tools/orders.py`, `tools/products.py`, `tools/publications.py` | ~~6~~ closed |
 | T-9.5-resolver-fanout | **Per-story product-id resolvers proliferating** — `_resolve_product_gid` (9.1), `_resolve_product_id` (9.2), `_resolve_product_id_for_type` (9.4), and now `_resolve_product_id_for_options` (9.5) are near-twins differing only in the GraphQL query. Story 9.1's helper returns `(gid, error_str)` while 9.2/9.4/9.5 return `(gid, product_snapshot)` — two shapes but the same numeric/GID/handle dispatch logic. With Epic 9 effectively closed (9.1-9.7 all shipped), the trigger is now any Epic-10+ catalog-hygiene tool that needs a product read — that will fire on Story 10.1 unless that tool reuses one of the existing helpers. Fix path: a single `_resolve_product_id_with_query(client, product_id, query_id, query_by_handle)` that takes the two queries as args, or hoist a shared helper into a `tools/_product_resolvers.py`. Don't refactor in 9.5 — wait until the next net-new helper would land, then refactor it + the four existing twins in one PR. | `tools/catalog_hygiene.py:_resolve_product_gid, _resolve_product_id, _resolve_product_id_for_type, _resolve_product_id_for_options` | 8 (watch) |
 
 ### Closed

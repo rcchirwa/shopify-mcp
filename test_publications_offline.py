@@ -51,11 +51,24 @@ GOOGLE = {
 ALL_CHANNELS = [ONLINE, POS, SHOP, GOOGLE]
 
 
-def _channels_response(nodes=None):
-    return {"publications": {"nodes": nodes if nodes is not None else ALL_CHANNELS}}
+def _channels_response(nodes=None, has_next=False, end_cursor=None):
+    return {
+        "publications": {
+            "nodes": nodes if nodes is not None else ALL_CHANNELS,
+            "pageInfo": {"hasNextPage": has_next, "endCursor": end_cursor},
+        }
+    }
 
 
-def _product_pubs(pid="123", title="Tee", handle="tee", published_ids=None, not_published_ids=None):
+def _product_pubs(
+    pid="123",
+    title="Tee",
+    handle="tee",
+    published_ids=None,
+    not_published_ids=None,
+    has_next=False,
+    end_cursor=None,
+):
     published_ids = published_ids or []
     not_published_ids = not_published_ids or []
     nodes = []
@@ -80,7 +93,10 @@ def _product_pubs(pid="123", title="Tee", handle="tee", published_ids=None, not_
             "id": f"gid://shopify/Product/{pid}",
             "title": title,
             "handle": handle,
-            "resourcePublications": {"nodes": nodes},
+            "resourcePublications": {
+                "nodes": nodes,
+                "pageInfo": {"hasNextPage": has_next, "endCursor": end_cursor},
+            },
         }
     }
 
@@ -141,6 +157,9 @@ def test_list_sales_channels_empty():
 def test_list_sales_channels_scope_error_hint():
     class Exploding:
         def execute(self, q, v=None):
+            raise RuntimeError("Shopify GraphQL error: Access denied for publications")
+
+        def paginate(self, q, v, *, connection_path, page_size=50, max_pages=10):
             raise RuntimeError("Shopify GraphQL error: Access denied for publications")
 
     srv = CapturingServer()
@@ -1102,3 +1121,85 @@ def test_set_confirmed_body_renders_failed_block_for_unknown_channel():
     assert out.startswith("CONFIRMED")
     assert "Failed" in out
     assert "TikTok Shop" in out[out.index("Failed") :]
+
+
+# ---- pagination tests ----
+
+
+def test_list_publications_paginates_channels():
+    """Two pages of publications: both pages are concatenated into the cache."""
+    extra_channel = {
+        "id": "gid://shopify/Publication/5",
+        "name": "TikTok Shop",
+        "supportsFuturePublishing": False,
+    }
+    page0 = _channels_response([ONLINE, POS], has_next=True, end_cursor="p0cursor")
+    page1 = _channels_response([SHOP, extra_channel], has_next=False)
+
+    tools, fc = _build([page0, page1])
+    out = tools["list_sales_channels"]()
+    assert "Online Store" in out and "Point of Sale" in out
+    assert "Shop" in out and "TikTok Shop" in out
+    assert len(fc.calls) == 2
+    # Second call must carry the cursor from page-0
+    assert fc.calls[1][1]["after"] == "p0cursor"
+
+
+def test_resolve_product_publications_paginates_resource_publications():
+    """Two pages of resourcePublications: both pages are accumulated into rps."""
+    pub_node_p0 = {
+        "publication": {"id": "gid://shopify/Publication/1", "name": "Online Store"},
+        "publishDate": "2026-04-20T10:00:00Z",
+        "isPublished": True,
+    }
+    pub_node_p1 = {
+        "publication": {"id": "gid://shopify/Publication/2", "name": "Point of Sale"},
+        "publishDate": None,
+        "isPublished": False,
+    }
+
+    page0 = {
+        "product": {
+            "id": "gid://shopify/Product/123",
+            "title": "Tee",
+            "handle": "tee",
+            "resourcePublications": {
+                "nodes": [pub_node_p0],
+                "pageInfo": {"hasNextPage": True, "endCursor": "rp_cursor"},
+            },
+        }
+    }
+    page1 = {
+        "product": {
+            "id": "gid://shopify/Product/123",
+            "title": "Tee",
+            "handle": "tee",
+            "resourcePublications": {
+                "nodes": [pub_node_p1],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            },
+        }
+    }
+
+    fc = FakeClient([page0, page1])
+    gid, title, handle, rps = _resolve_product_gid_and_meta(fc, "123", "")
+    assert gid == "gid://shopify/Product/123"
+    assert len(rps) == 2
+    assert rps[0]["isPublished"] is True
+    assert rps[1]["isPublished"] is False
+    # Second call must carry the page-0 cursor
+    assert fc.calls[1][1]["after"] == "rp_cursor"
+
+
+def test_resolve_product_publications_single_page_not_capped():
+    """Single page: rps is returned with correct vars (first=50, after=None)."""
+    page0 = _product_pubs(pid="456", published_ids=[1], not_published_ids=[])
+    fc = FakeClient([page0])
+    gid, title, handle, rps = _resolve_product_gid_and_meta(fc, "456", "")
+    assert gid is not None
+    assert len(rps) == 1
+    assert fc.calls[0][1] == {
+        "id": "gid://shopify/Product/456",
+        "first": 50,
+        "after": None,
+    }

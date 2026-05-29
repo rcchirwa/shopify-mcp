@@ -20,46 +20,49 @@ from tools._log import log_write
 from tools._response import extract_user_errors, with_confirm_hint
 
 LIST_PUBLICATIONS = """
-query ListPublications($first: Int!) {
-  publications(first: $first) {
+query ListPublications($first: Int!, $after: String) {
+  publications(first: $first, after: $after) {
     nodes {
       id
       name
       supportsFuturePublishing
     }
+    pageInfo { hasNextPage endCursor }
   }
 }
 """
 
 GET_PRODUCT_PUBLICATIONS_BY_ID = """
-query GetProductPublicationsById($id: ID!) {
+query GetProductPublicationsById($id: ID!, $first: Int!, $after: String) {
   product(id: $id) {
     id
     title
     handle
-    resourcePublications(first: 50) {
+    resourcePublications(first: $first, after: $after) {
       nodes {
         publication { id name }
         publishDate
         isPublished
       }
+      pageInfo { hasNextPage endCursor }
     }
   }
 }
 """
 
 GET_PRODUCT_PUBLICATIONS_BY_HANDLE = """
-query GetProductPublicationsByHandle($handle: String!) {
+query GetProductPublicationsByHandle($handle: String!, $first: Int!, $after: String) {
   productByHandle(handle: $handle) {
     id
     title
     handle
-    resourcePublications(first: 50) {
+    resourcePublications(first: $first, after: $after) {
       nodes {
         publication { id name }
         publishDate
         isPublished
       }
+      pageInfo { hasNextPage endCursor }
     }
   }
 }
@@ -91,8 +94,9 @@ SCOPE_HINT = (
 
 def _load_channels(client: ShopifyClient, cache: dict) -> list:
     """Load publications from Shopify, populate cache, return raw list."""
-    data = client.execute(LIST_PUBLICATIONS, {"first": 50})
-    nodes = data.get("publications", {}).get("nodes", []) or []
+    _resp, nodes, _capped = client.paginate(
+        LIST_PUBLICATIONS, {}, connection_path=["publications"], page_size=50
+    )
     cache["by_lower_name"] = {n["name"].lower(): n for n in nodes}
     cache["by_id"] = {n["id"]: n for n in nodes}
     cache["loaded"] = True
@@ -171,24 +175,28 @@ def _resolve_product_gid_and_meta(
 ) -> tuple[str | None, str | None, str | None, list[dict[str, Any]]]:
     """Returns (gid, title, handle, current_published_nodes); first three
     are None when no product was resolved, rps is always a list."""
+    rps_nodes: list[dict[str, Any]] = []
     if product_id:
-        data = client.execute(
+        data, rps_nodes, _capped = client.paginate(
             GET_PRODUCT_PUBLICATIONS_BY_ID,
             {"id": to_gid("Product", product_id)},
+            connection_path=["product", "resourcePublications"],
+            page_size=50,
         )
         p = data.get("product")
     elif handle:
-        data = client.execute(
+        data, rps_nodes, _capped = client.paginate(
             GET_PRODUCT_PUBLICATIONS_BY_HANDLE,
             {"handle": handle},
+            connection_path=["productByHandle", "resourcePublications"],
+            page_size=50,
         )
         p = data.get("productByHandle")
     else:
         return None, None, None, []
     if not p:
         return None, None, None, []
-    rps = (p.get("resourcePublications") or {}).get("nodes", []) or []
-    return p["id"], p["title"], p["handle"], rps
+    return p["id"], p["title"], p["handle"], rps_nodes
 
 
 def _split_current(rps: list[dict[str, Any]]) -> tuple[set[str], set[str]]:

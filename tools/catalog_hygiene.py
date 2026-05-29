@@ -663,9 +663,12 @@ query GetProductVariantMetafieldsPage(
 # ---------------------------------------------------------------------------
 
 # Narrow read: option + value GIDs for the tool-side child-of-option validation
-# AND the post-write snapshot's variants slice. The variants(first: 50) cap
-# matches `get_product_full` in tools/products.py — products beyond that need
-# pagination (tracked as T-9.5-variants-cap).
+# AND the post-write snapshot's variants slice. variants(first: 50) is kept as a
+# fixed slice — the warn path (not full pagination) closes T-9.5-variants-cap.
+# pageInfo{hasNextPage} is selected so update_product_options can emit an at-cap
+# warning when a product has >50 variants. The UPDATE_PRODUCT_OPTION echo at line
+# ~727 (variants(first: 50)) is an un-paginable mutation-response echo, a known
+# remaining exception documented in the plan.
 GET_PRODUCT_OPTIONS = """
 query GetProductOptions($id: ID!) {
   product(id: $id) {
@@ -678,6 +681,7 @@ query GetProductOptions($id: ID!) {
     }
     variants(first: 50) {
       nodes { id title selectedOptions { name value } }
+      pageInfo { hasNextPage }
     }
   }
 }
@@ -698,6 +702,7 @@ query GetProductOptionsByHandle($handle: String!) {
     }
     variants(first: 50) {
       nodes { id title selectedOptions { name value } }
+      pageInfo { hasNextPage }
     }
   }
 }
@@ -2046,15 +2051,29 @@ def _normalize_option_input(
     )
 
 
+def _variants_capped_from_node(product_node: dict[str, Any] | None) -> bool:
+    """Single source of truth for "this product has >50 variants".
+
+    True when the pre-fetched variants slice reports a next page. Both the
+    at-cap warning and the JSON-tail `variants_capped` flag derive from here so
+    they cannot drift. Each layer (`product_node`, `variants`, `pageInfo`) falls
+    back to `{}` so a missing OR explicit-`None` value is handled uniformly.
+    """
+    variants_conn = (product_node or {}).get("variants") or {}
+    return bool((variants_conn.get("pageInfo") or {}).get("hasNextPage", False))
+
+
 def _shape_options_snapshot(product_node: dict[str, Any] | None) -> dict[str, Any]:
     """Build the JSON-tail `product` shape from a product node.
 
-    Returns `{id, options[{id, name, optionValues[{id, name}]}], variants[{id, title, selectedOptions[]}]}`.
+    Returns `{id, options[{id, name, optionValues[{id, name}]}], variants[{id, title, selectedOptions[]}], variants_capped}`.
     Missing top-level node yields a minimal `{"id": ""}` so the tail shape
     stays consistent across error / success paths.
+    `variants_capped` is True when the product has more than 50 variants
+    (variants.pageInfo.hasNextPage is True in the pre-fetch response).
     """
     if not product_node:
-        return {"id": "", "options": [], "variants": []}
+        return {"id": "", "options": [], "variants": [], "variants_capped": False}
     options = []
     for opt in product_node.get("options") or []:
         options.append(
@@ -2067,8 +2086,10 @@ def _shape_options_snapshot(product_node: dict[str, Any] | None) -> dict[str, An
                 ],
             }
         )
+    variants_conn = product_node.get("variants") or {}
+    has_more = _variants_capped_from_node(product_node)
     variants = []
-    for v in (product_node.get("variants") or {}).get("nodes") or []:
+    for v in variants_conn.get("nodes") or []:
         variants.append(
             {
                 "id": v.get("id"),
@@ -2083,6 +2104,7 @@ def _shape_options_snapshot(product_node: dict[str, Any] | None) -> dict[str, An
         "id": product_node.get("id") or "",
         "options": options,
         "variants": variants,
+        "variants_capped": bool(has_more),
     }
 
 
@@ -4324,6 +4346,15 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 ],
             )
 
+        # Step 2b — emit at-cap warning if variants slice is truncated. Same
+        # source of truth as the JSON-tail `variants_capped` flag.
+        _variants_capped = _variants_capped_from_node(product)
+        _variants_cap_warning = (
+            "  WARNING: product has more than 50 variants — the variants snapshot below is truncated to the first 50."
+            if _variants_capped
+            else ""
+        )
+
         # Step 3 — validate `option.id` is on this product. Index the options
         # by GID for O(1) lookup + child-of-option checks below.
         product_options = product.get("options") or []
@@ -4384,6 +4415,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"  Product ID : {from_gid(product_gid)}\n"
                 f"  Option     : {current_option_name} [id: {normalized['option_id']}]\n"
             )
+            if _variants_cap_warning:
+                head += _variants_cap_warning + "\n"
             return (
                 head
                 + "\n"
@@ -4409,6 +4442,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"  Product ID : {from_gid(product_gid)}\n"
                 f"  Option     : {current_option_name} [id: {normalized['option_id']}]\n"
             )
+            if _variants_cap_warning:
+                head += _variants_cap_warning + "\n"
             return (
                 head
                 + "\n"
@@ -4450,6 +4485,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"  Option ID     : {normalized['option_id']}\n"
             f"  Strategy      : {normalized['variant_strategy']}\n" + "\n".join(diff_lines) + "\n"
         )
+        if _variants_cap_warning:
+            body += _variants_cap_warning + "\n"
 
         # Step 8 — preview branch (confirm=False). No mutation; emit current
         # product snapshot so the caller can audit pre-state alongside the diff.
