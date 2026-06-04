@@ -8229,13 +8229,19 @@ def test_cap_helper_truncates_oversized_and_passes_short():
     oversized = "x" * (_GID_DISPLAY_MAX + 50)
     assert len(_cap(oversized)) == _GID_DISPLAY_MAX
     assert _cap("short") == "short"
+    # Exact-boundary: input of length _GID_DISPLAY_MAX is the no-truncation edge.
+    exact = "y" * _GID_DISPLAY_MAX
+    assert _cap(exact) == exact
+    assert len(_cap(exact)) == _GID_DISPLAY_MAX
+    # One past the boundary truncates by exactly one char.
+    assert len(_cap("z" * (_GID_DISPLAY_MAX + 1))) == _GID_DISPLAY_MAX
 
 
 def test_resolver_oversized_handle_is_capped_in_error():
     """Security: 10KB handle reflected via _resolve_product_gid is truncated at _GID_DISPLAY_MAX.
     Covers the handle-not-found path in update_product_category.
     """
-    from tools.catalog_hygiene import _GID_DISPLAY_MAX
+    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
 
     oversized = "a" * 10_000
     # taxonomy search returns empty → bails before product-resolve — so we must drive
@@ -8249,13 +8255,14 @@ def test_resolver_oversized_handle_is_capped_in_error():
     )
     assert "No product found with handle" in out
     assert oversized[: _GID_DISPLAY_MAX + 1] not in out
+    assert _cap(oversized) in out
 
 
 def test_resolver_oversized_taxonomy_search_is_capped_in_error():
     """Security: 10KB taxonomy search term reflected by _resolve_taxonomy_category is
     truncated at _GID_DISPLAY_MAX when 0 nodes are returned.
     """
-    from tools.catalog_hygiene import _GID_DISPLAY_MAX
+    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
 
     oversized = "b" * 10_000
     # Return an empty taxonomy response (0 nodes) to hit the 0-result message.
@@ -8266,6 +8273,7 @@ def test_resolver_oversized_taxonomy_search_is_capped_in_error():
     )
     assert "No taxonomy categories matched" in out
     assert oversized[: _GID_DISPLAY_MAX + 1] not in out
+    assert _cap(oversized) in out
 
 
 def test_resolver_oversized_owner_id_is_capped_in_error():
@@ -8273,7 +8281,7 @@ def test_resolver_oversized_owner_id_is_capped_in_error():
     is truncated at _GID_DISPLAY_MAX (hits the 'ambiguous' error branch via
     delete_product_metafields, which uses _resolve_owner_gid_for_metafield).
     """
-    from tools.catalog_hygiene import _GID_DISPLAY_MAX
+    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
 
     oversized = "9" * 10_000  # all digits → isdigit() → ambiguous branch
     tools, fc = _build([])
@@ -8283,13 +8291,14 @@ def test_resolver_oversized_owner_id_is_capped_in_error():
     assert "ambiguous" in out
     assert fc.calls == []
     assert oversized[: _GID_DISPLAY_MAX + 1] not in out
+    assert _cap(oversized) in out
 
 
 def test_resolver_oversized_metafield_id_is_capped_in_error():
     """Security: 10KB non-Metafield GID reflected by _validate_metafield_id
     is truncated at _GID_DISPLAY_MAX.
     """
-    from tools.catalog_hygiene import _GID_DISPLAY_MAX
+    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
 
     oversized = "gid://shopify/Product/" + ("C" * 10_000)
     tools, fc = _build([])
@@ -8297,6 +8306,7 @@ def test_resolver_oversized_metafield_id_is_capped_in_error():
     assert "metafieldId must be a Metafield GID" in out
     assert fc.calls == []
     assert oversized[: _GID_DISPLAY_MAX + 1] not in out
+    assert _cap(oversized) in out
 
 
 # ── Story 10.19 second-pass: additional reflection-cap regression tests ──────
