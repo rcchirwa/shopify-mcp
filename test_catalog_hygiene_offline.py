@@ -3523,7 +3523,7 @@ def test_s96_oversized_non_product_gid_is_capped_in_error():
     chars in the error response. Prevents log flooding through reflected user input.
     Covers _resolve_product_gid (used by update_variant_image_binding).
     """
-    from tools.catalog_hygiene import _GID_DISPLAY_MAX
+    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
 
     oversized = "gid://shopify/Order/" + ("A" * 10_000)
     tools, fc = _build([])
@@ -3533,10 +3533,13 @@ def test_s96_oversized_non_product_gid_is_capped_in_error():
     )
     assert "non-Product GID" in out
     assert fc.calls == []
-    # The reflected portion of the attacker-controlled string must not exceed _GID_DISPLAY_MAX.
-    # The raw oversized input must NOT appear in full.
+    # Reflection-cap is pinned by a PAIR of assertions that must stay together:
+    #   negative — the raw input (and anything past the cap) must NOT appear in full;
+    #   positive — the capped prefix MUST appear, so a refactor that drops the input
+    #              entirely can't make the negative assertion pass vacuously.
     assert oversized not in out
     assert oversized[: _GID_DISPLAY_MAX + 1] not in out  # cap is strict, not off-by-one
+    assert _cap(oversized) in out
 
 
 # ---------- handle resolution ----------
@@ -5973,7 +5976,7 @@ def test_s95_resolver_rejects_non_product_gid():
 def test_s95_resolver_oversized_non_product_gid_is_capped_in_error():
     """Security: 10KB attacker-controlled non-Product GID truncated at _GID_DISPLAY_MAX (200) in
     error. Covers the shared _resolve_product_with_queries path (vendor, type, options)."""
-    from tools.catalog_hygiene import _GID_DISPLAY_MAX
+    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
 
     oversized = "gid://shopify/Order/" + ("A" * 10_000)
     tools, fc = _build([])
@@ -5983,8 +5986,10 @@ def test_s95_resolver_oversized_non_product_gid_is_capped_in_error():
     )
     assert "non-Product GID" in out
     assert fc.calls == []
+    # Paired negative + positive cap assertions (see test_s96_oversized_… for rationale).
     assert oversized not in out
     assert oversized[: _GID_DISPLAY_MAX + 1] not in out
+    assert _cap(oversized) in out
 
 
 def test_s95_no_product_found_numeric():
