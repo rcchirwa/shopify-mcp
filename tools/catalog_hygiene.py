@@ -237,6 +237,12 @@ _PRODUCT_GID_PREFIX = "gid://shopify/Product/"
 # flooding from attacker-controlled inputs that start with "gid://".
 _GID_DISPLAY_MAX = 200
 
+
+def _cap(s: str) -> str:
+    """Bound user-supplied text reflected into error messages (log-flood / echo defence)."""
+    return s[:_GID_DISPLAY_MAX]
+
+
 # ---------------------------------------------------------------------------
 # GraphQL — Story 9.6 (update_variant_image_binding)
 # ---------------------------------------------------------------------------
@@ -897,9 +903,9 @@ def _parse_owner_gid(gid: object) -> tuple[str | None, str | None]:
     for prefix in METAFIELD_OWNER_PREFIXES:
         if stripped.startswith(prefix):
             if not stripped[len(prefix) :]:
-                return None, f"ownerId has empty GID body: {stripped!r}"
+                return None, f"ownerId has empty GID body: {_cap(stripped)!r}"
             return _OWNER_TYPE_BY_PREFIX[prefix], None
-    return None, (f"ownerId must be a Product or ProductVariant GID (got {stripped!r})")
+    return None, (f"ownerId must be a Product or ProductVariant GID (got {_cap(stripped)!r})")
 
 
 def _validate_metafield_value(value: str, mtype: str) -> str | None:
@@ -912,33 +918,33 @@ def _validate_metafield_value(value: str, mtype: str) -> str | None:
     """
     if mtype == "number_integer":
         if not _NUMBER_INTEGER_RE.match(value):
-            return f"value {value!r} is not a valid integer for type 'number_integer'"
+            return f"value {_cap(value)!r} is not a valid integer for type 'number_integer'"
         return None
     if mtype == "number_decimal":
         if not _NUMBER_DECIMAL_RE.match(value):
-            return f"value {value!r} is not a valid decimal for type 'number_decimal'"
+            return f"value {_cap(value)!r} is not a valid decimal for type 'number_decimal'"
         return None
     if mtype == "boolean":
         if value not in ("true", "false"):
-            return f"value {value!r} must be 'true' or 'false' for type 'boolean'"
+            return f"value {_cap(value)!r} must be 'true' or 'false' for type 'boolean'"
         return None
     if mtype == "json":
         try:
             json.loads(value)
         except (ValueError, TypeError):
-            return f"value {value!r} is not valid JSON for type 'json'"
+            return f"value {_cap(value)!r} is not valid JSON for type 'json'"
         return None
     if mtype.startswith("list."):
         try:
             parsed = json.loads(value)
         except (ValueError, TypeError):
             return (
-                f"value {value!r} is not valid JSON for list-type {mtype!r} "
+                f"value {_cap(value)!r} is not valid JSON for list-type {mtype!r} "
                 f"(expected a JSON-serialized array string)"
             )
         if not isinstance(parsed, list):
             return (
-                f"value for list-type {mtype!r} must decode to a JSON array "
+                f"value for list-type {_cap(mtype)!r} must decode to a JSON array "
                 f"(got {type(parsed).__name__})"
             )
         return None
@@ -986,7 +992,7 @@ def _normalize_metafield_entries(
             if ns_clean.startswith(RESERVED_NAMESPACE_PREFIX):
                 _push(
                     idx,
-                    f"metafields[{idx}].namespace {ns_clean!r} uses the reserved "
+                    f"metafields[{idx}].namespace {_cap(ns_clean)!r} uses the reserved "
                     f"'{RESERVED_NAMESPACE_PREFIX}' prefix (app-context only)",
                 )
 
@@ -1098,9 +1104,9 @@ def _parse_metafield_gid(gid: object) -> str | None:
         return "metafieldId must be a non-empty string"
     stripped = gid.strip()
     if not stripped.startswith(_METAFIELD_GID_PREFIX):
-        return f"metafieldId must be a Metafield GID (got {stripped!r})"
+        return f"metafieldId must be a Metafield GID (got {_cap(stripped)!r})"
     if not stripped[len(_METAFIELD_GID_PREFIX) :]:
-        return f"metafieldId has empty GID body: {stripped!r}"
+        return f"metafieldId has empty GID body: {_cap(stripped)!r}"
     return None
 
 
@@ -1128,18 +1134,18 @@ def _resolve_owner_gid_for_metafield(
     stripped = owner_id.strip()
     if stripped.startswith("gid://shopify/Product/"):
         if not stripped[len("gid://shopify/Product/") :]:
-            return None, None, f"ownerId has empty GID body: {stripped!r}"
+            return None, None, f"ownerId has empty GID body: {_cap(stripped)!r}"
         return stripped, "PRODUCT", None
     if stripped.startswith("gid://shopify/ProductVariant/"):
         if not stripped[len("gid://shopify/ProductVariant/") :]:
-            return None, None, f"ownerId has empty GID body: {stripped!r}"
+            return None, None, f"ownerId has empty GID body: {_cap(stripped)!r}"
         return stripped, "PRODUCT_VARIANT", None
     if stripped.isdigit():
         return (
             None,
             None,
             (
-                f"ownerId {stripped!r} is ambiguous — supply a Product or ProductVariant "
+                f"ownerId {_cap(stripped)!r} is ambiguous — supply a Product or ProductVariant "
                 f"GID (with type prefix) or a Product handle"
             ),
         )
@@ -1366,23 +1372,23 @@ def _parse_positive_decimal(raw: object) -> Decimal:
     ValueError with a readable message; callers turn this into `Error: ...`.
     """
     if not isinstance(raw, str):
-        raise ValueError(f"{raw!r} is not a string")
+        raise ValueError(f"{_cap(str(raw))!r} is not a string")
     stripped = raw.strip()
     if not stripped:
         raise ValueError("price/compareAtPrice must be a non-empty string")
     try:
         value = Decimal(stripped)
     except InvalidOperation as exc:
-        raise ValueError(f"{raw!r} is not a positive decimal") from exc
+        raise ValueError(f"{_cap(raw)!r} is not a positive decimal") from exc
     if not value.is_finite():
-        raise ValueError(f"{raw!r} is not a positive decimal")
+        raise ValueError(f"{_cap(raw)!r} is not a positive decimal")
     if value <= 0:
-        raise ValueError(f"{raw!r} is not a positive decimal")
+        raise ValueError(f"{_cap(raw)!r} is not a positive decimal")
     # Reject >2 decimal places via quantize-roundtrip: 49.99 → 49.99 (equal),
     # 49.999 → 50.00 (not equal). Equality on Decimal is value-based, so
     # 49.9 / 49.90 / 49.900 all compare equal to their 2-place quantization.
     if value != value.quantize(Decimal("0.01")):
-        raise ValueError(f"{raw!r} has more than 2 decimal places")
+        raise ValueError(f"{_cap(raw)!r} has more than 2 decimal places")
     return value
 
 
@@ -1418,7 +1424,7 @@ def _normalize_entries(variants: list[dict[str, Any]]) -> list[dict[str, Any]]:
         trimmed_id = variant_id.strip()
         if trimmed_id in seen_ids:
             raise ValueError(
-                f"variants[{i}].variantId {trimmed_id!r} is a duplicate; "
+                f"variants[{i}].variantId {_cap(trimmed_id)!r} is a duplicate; "
                 "merge price/compareAtPrice into a single entry"
             )
         seen_ids.add(trimmed_id)
@@ -1552,12 +1558,12 @@ def _resolve_product_gid(
     if stripped.startswith("gid://") and not stripped.startswith(_PRODUCT_GID_PREFIX):
         return None, (
             "product_id must be a numeric ID, Product GID, or handle"
-            f" — got non-Product GID: {stripped[:_GID_DISPLAY_MAX]!r}"
+            f" — got non-Product GID: {_cap(stripped)!r}"
         )
 
     if stripped.startswith(_PRODUCT_GID_PREFIX):
         if not stripped[len(_PRODUCT_GID_PREFIX) :]:
-            return None, f"Empty product GID body: {stripped[:_GID_DISPLAY_MAX]!r}"
+            return None, f"Empty product GID body: {_cap(stripped)!r}"
         return stripped, None
 
     if stripped.isdigit():
@@ -1572,7 +1578,7 @@ def _resolve_product_gid(
         return None, f"Handle lookup failed ({type(e).__name__}): {e}"
     product = (data or {}).get("productByHandle")
     if not product:
-        return None, f"No product found with handle {stripped!r}."
+        return None, f"No product found with handle {_cap(stripped)!r}."
     return product["id"], None
 
 
@@ -1601,7 +1607,7 @@ def _resolve_taxonomy_category(
 
     if stripped.startswith(_TAXONOMY_GID_PREFIX):
         if not stripped[len(_TAXONOMY_GID_PREFIX) :]:
-            return None, [], f"Empty TaxonomyCategory GID body: {stripped!r}"
+            return None, [], f"Empty TaxonomyCategory GID body: {_cap(stripped)!r}"
         # GID passthrough — caller already knows which node they want. We don't
         # fabricate a fullName; the post-write snapshot from productUpdate fills it.
         return {"id": stripped, "fullName": None, "name": None}, [], None
@@ -1622,7 +1628,7 @@ def _resolve_taxonomy_category(
         return (
             None,
             [],
-            f"No taxonomy categories matched search {stripped!r}. Try a broader term.",
+            f"No taxonomy categories matched search {_cap(stripped)!r}. Try a broader term.",
         )
 
     # All three strategies do casefold comparison on the same input. Hoisting
@@ -1646,14 +1652,14 @@ def _resolve_taxonomy_category(
                 None,
                 [],
                 f"resolve_strategy='exact' but no taxonomy category matched "
-                f"{stripped!r} by fullName or name.",
+                f"{_cap(stripped)!r} by fullName or name.",
             )
         if len(matches) > 1:
             return (
                 None,
                 [],
                 f"resolve_strategy='exact' but {len(matches)} taxonomy categories "
-                f"matched {stripped!r} exactly — refine the search.",
+                f"matched {_cap(stripped)!r} exactly — refine the search.",
             )
         return matches[0], [], None
 
@@ -1671,7 +1677,7 @@ def _resolve_taxonomy_category(
                 None,
                 [],
                 f"resolve_strategy='reject-ambiguous' but {len(candidates)} "
-                f"taxonomy categories matched {stripped!r} — refine the search "
+                f"taxonomy categories matched {_cap(stripped)!r} — refine the search "
                 f"or use resolve_strategy='best-match'.",
             )
         return candidates[0], [], None
@@ -1779,12 +1785,12 @@ def _resolve_product_with_queries(
     if stripped.startswith("gid://") and not stripped.startswith(_PRODUCT_GID_PREFIX):
         raise ValueError(
             "product_id must be a numeric ID, Product GID, or handle"
-            f" — got non-Product GID: {stripped[:_GID_DISPLAY_MAX]!r}"
+            f" — got non-Product GID: {_cap(stripped)!r}"
         )
 
     if stripped.startswith(_PRODUCT_GID_PREFIX):
         if not stripped[len(_PRODUCT_GID_PREFIX) :]:
-            raise ValueError(f"Empty product GID body: {stripped[:_GID_DISPLAY_MAX]!r}")
+            raise ValueError(f"Empty product GID body: {_cap(stripped)!r}")
         gid = stripped
     elif stripped.isdigit():
         gid = to_gid("Product", stripped)
@@ -1972,9 +1978,9 @@ def _normalize_option_input(
         return None, "Error: option.id must be a non-empty string."
     option_id = raw_id.strip()
     if not option_id.startswith(_PRODUCT_OPTION_GID_PREFIX):
-        return None, (f"Error: option.id must be a ProductOption GID (got {option_id!r}).")
+        return None, (f"Error: option.id must be a ProductOption GID (got {_cap(option_id)!r}).")
     if not option_id[len(_PRODUCT_OPTION_GID_PREFIX) :]:
-        return None, f"Error: option.id has empty GID body: {option_id!r}."
+        return None, f"Error: option.id has empty GID body: {_cap(option_id)!r}."
 
     option_name: str | None = None
     if "name" in option:
@@ -2010,15 +2016,15 @@ def _normalize_option_input(
         if not value_id.startswith(_PRODUCT_OPTION_VALUE_GID_PREFIX):
             return None, (
                 f"Error: option_values_to_update[{idx}].id must be a "
-                f"ProductOptionValue GID (got {value_id!r})."
+                f"ProductOptionValue GID (got {_cap(value_id)!r})."
             )
         if not value_id[len(_PRODUCT_OPTION_VALUE_GID_PREFIX) :]:
             return None, (
-                f"Error: option_values_to_update[{idx}].id has empty GID body: {value_id!r}."
+                f"Error: option_values_to_update[{idx}].id has empty GID body: {_cap(value_id)!r}."
             )
         if value_id in seen_value_ids:
             return None, (
-                f"Error: option_values_to_update[{idx}].id {value_id!r} is a "
+                f"Error: option_values_to_update[{idx}].id {_cap(value_id)!r} is a "
                 "duplicate; merge into a single entry."
             )
         seen_value_ids.add(value_id)
@@ -2037,7 +2043,7 @@ def _normalize_option_input(
     if not isinstance(variant_strategy, str) or variant_strategy not in _VALID_VARIANT_STRATEGIES:
         return None, (
             f"Error: variant_strategy must be one of "
-            f"{list(_VALID_VARIANT_STRATEGIES)} (got {variant_strategy!r})."
+            f"{list(_VALID_VARIANT_STRATEGIES)} (got {_cap(str(variant_strategy))!r})."
         )
 
     return (
@@ -2204,7 +2210,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         for gid, entry in zip(resolved_gids, entries, strict=True):
             if gid in seen_gids:
                 msg = (
-                    f"variantId {entry['variantId']!r} resolves to the "
+                    f"variantId {_cap(entry['variantId'])!r} resolves to the "
                     f"same variant ({from_gid(gid)}) as an earlier entry; "
                     "merge price/compareAtPrice into a single entry"
                 )
@@ -2413,7 +2419,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 errors=[
                     {
                         "message": (
-                            f"Invalid resolve_strategy {resolve_strategy!r}. "
+                            f"Invalid resolve_strategy {_cap(str(resolve_strategy))!r}. "
                             f"Must be one of: {', '.join(_VALID_RESOLVE_STRATEGIES)}."
                         )
                     }
@@ -2422,7 +2428,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
             return _format_payload(
                 f"Error — update_product_category\n"
-                f"  Invalid resolve_strategy: {resolve_strategy!r}\n"
+                f"  Invalid resolve_strategy: {_cap(str(resolve_strategy))!r}\n"
                 f"  Allowed: {', '.join(_VALID_RESOLVE_STRATEGIES)}",
                 payload,
                 confirm_hint=False,
@@ -2660,7 +2666,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
 
         if not product_gid:
-            msg = f"Error: no product found for {product_id!r}."
+            msg = f"Error: no product found for {_cap(product_id)!r}."
             return f"{msg}\n\n" + _format_vendor_payload(
                 product_gid="",
                 vendor=new_vendor,
@@ -2833,7 +2839,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
 
         if not product_gid:
-            msg = f"Error: no product found for {product_id!r}."
+            msg = f"Error: no product found for {_cap(product_id)!r}."
             return f"{msg}\n\n" + _format_type_payload(
                 product_gid="",
                 product_type=new_type,
@@ -3006,7 +3012,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 if not isinstance(mid, str) or not mid.startswith("gid://shopify/"):
                     msg = (
                         f"variant_media[{idx}].mediaIds[{mi}] must be a Shopify "
-                        f"media GID (got {mid!r})."
+                        f"media GID (got {_cap(str(mid))!r})."
                     )
                     return _render(f"Error: {msg}", _err_payload(msg))
             normalized.append((raw_variant_id.strip(), list(raw_media_ids)))
@@ -3099,8 +3105,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             if resolved_gid not in variant_media_map and resolved_gid not in unknown_variant_gids:
                 unknown_variant_gids.append(resolved_gid)
         if unknown_variant_gids:
-            msg = f"variant GIDs not on product {product_id}: " + ", ".join(
-                from_gid(g) for g in unknown_variant_gids
+            msg = f"variant GIDs not on product {_cap(str(product_id))}: " + _cap(
+                ", ".join(from_gid(g) for g in unknown_variant_gids)
             )
             return _render(f"Error: {msg}", _err_payload(msg))
 
@@ -3111,7 +3117,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 if mid not in product_media_set and mid not in unknown:
                     unknown.append(mid)
         if unknown:
-            msg = f"media GIDs not on product {product_id}: {', '.join(unknown)}"
+            msg = f"media GIDs not on product {_cap(str(product_id))}: {_cap(', '.join(unknown))}"
             return _render(f"Error: {msg}", _err_payload(msg))
 
         # Step 5a — collapse duplicate variantIds: same resolved variant appearing
@@ -3482,7 +3488,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         def _entry_line(idx: int, entry: dict[str, Any]) -> str:
             return (
                 f"  [{idx}] {entry['ownerType']} {entry['ownerId']} | "
-                f"{entry['namespace']}.{entry['key']} = {entry['value']!r} "
+                f"{entry['namespace']}.{entry['key']} = {_cap(entry['value'])!r} "
                 f"({entry['type']})"
             )
 
@@ -4333,7 +4339,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
 
         if not product_gid:
-            msg = f"Error: no product found for {product_id!r}."
+            msg = f"Error: no product found for {_cap(product_id)!r}."
             return f"{msg}\n\n" + _format_options_payload(
                 product_snapshot=_shape_options_snapshot(None),
                 ok=False,
@@ -4363,7 +4369,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             None,
         )
         if matching_option is None:
-            msg = f"Error: option.id {normalized['option_id']!r} is not on product {product_id!r}."
+            msg = f"Error: option.id {_cap(normalized['option_id'])!r} is not on product {_cap(product_id)!r}."
             return f"{msg}\n\n" + _format_options_payload(
                 product_snapshot=_shape_options_snapshot(product),
                 ok=False,
@@ -4390,7 +4396,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if unknown_value_ids:
             msg = (
                 f"Error: option_values_to_update contains IDs not on option "
-                f"{normalized['option_id']!r}: {', '.join(unknown_value_ids)}."
+                f"{_cap(normalized['option_id'])!r}: {', '.join(unknown_value_ids)}."
             )
             return f"{msg}\n\n" + _format_options_payload(
                 product_snapshot=_shape_options_snapshot(product),
@@ -4462,12 +4468,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             and normalized["option_name"] != current_option_name
         ):
             diff_lines.append(
-                f"  Option name : {current_option_name!r} → {normalized['option_name']!r}"
+                f"  Option name : {_cap(current_option_name or '')!r} → {_cap(normalized['option_name'])!r}"
             )
         for v in normalized["values"]:
             old_name = existing_values_by_id[v["id"]].get("name") or ""
             if old_name != v["name"]:
-                diff_lines.append(f"  Value [{v['id']}]: {old_name!r} → {v['name']!r}")
+                diff_lines.append(f"  Value [{v['id']}]: {_cap(old_name)!r} → {_cap(v['name'])!r}")
 
         # Step 6 guarantees diff_lines is non-empty here: we only reach this
         # point when at least one of option_name / values is a real change. The

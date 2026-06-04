@@ -4,7 +4,7 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-05-27.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-06-04.
 
 ---
 
@@ -44,7 +44,17 @@ Two-agent review pass (`code-review` + `security-review`) ran on the diff before
    - **Info** — `_GID_DISPLAY_MAX = 200` is a positive defence-in-depth addition (already in main from a prior commit); flagged as good behaviour, no action needed beyond regression coverage. Added `test_s96_oversized_non_product_gid_is_capped_in_error` and `test_s95_resolver_oversized_non_product_gid_is_capped_in_error` — both inject a 10KB attacker-controlled non-Product GID and assert the reflected portion in the error response stays within `_GID_DISPLAY_MAX`. Covers both resolver paths (`_resolve_product_gid` used by `update_variant_image_binding`, and `_resolve_product_with_queries` used by `update_product_vendor`/`update_product_type`/`update_product_options`).
    - **Low** — User-supplied truncated GID is reflected in error responses. Cap was already applied at lines 1550 (`_resolve_product_gid`) and 1777 (`_resolve_product_with_queries`) but missing from the sibling "Empty product GID body" error at lines 1555 and 1782. Applied `stripped[:_GID_DISPLAY_MAX]` to both for consistency — the empty-body branch only fires when input is constrained to start with `gid://shopify/Product/`, so the attack surface was minimal, but consistent application means a future code change can't introduce a regression in only one branch.
 
-3. **Forward note:** The `_GID_DISPLAY_MAX` cap is not applied to handle/taxonomy reflection sites (lines ~1570, 1620, 1644, 1651, 1669) where user input is reflected without bound. Out of scope for this story but flagged as `SEC-resolver-reflect-cap` for future hardening (Score: 4, note-only — internal MCP tool, low risk).
+3. ~~**Forward note:** The `_GID_DISPLAY_MAX` cap is not applied to handle/taxonomy reflection sites (lines ~1570, 1620, 1644, 1651, 1669) where user input is reflected without bound. Out of scope for this story but flagged as `SEC-resolver-reflect-cap` for future hardening (Score: 4, note-only — internal MCP tool, low risk).~~
+
+### Follow-up (added 2026-06-04, Story 10.19)
+
+SEC-resolver-reflect-cap closed. Trello: https://trello.com/c/f3TfyNzg (Story 10.19, Epic 10). PR: [#86](https://github.com/rcchirwa/shopify-mcp/pull/86).
+
+**Initial pass.** A new `_cap()` helper (defined just below `_GID_DISPLAY_MAX = 200`) returning `s[:_GID_DISPLAY_MAX]` was added, the 6 named handle/taxonomy sites plus 7 same-class owner/metafield sites were capped, and the 4 already-capped sites (`stripped[:_GID_DISPLAY_MAX]`) were migrated to `_cap()` for a single source of truth. Sites covered: handle-not-found (`_resolve_product_gid`), empty TaxonomyCategory GID body, 0-result taxonomy search, exact-strategy no-match, exact-strategy >1-match, reject-ambiguous >1-match (`_resolve_taxonomy_category`), ownerId empty-body and wrong-type (`_parse_owner_gid`), metafieldId wrong-type and empty-body (`_parse_metafield_gid`), Product-branch and ProductVariant-branch empty-body and numeric-ambiguous (`_resolve_owner_gid_for_metafield`). Five new offline tests added: `test_cap_helper_truncates_oversized_and_passes_short`, `test_resolver_oversized_handle_is_capped_in_error`, `test_resolver_oversized_taxonomy_search_is_capped_in_error`, `test_resolver_oversized_owner_id_is_capped_in_error`, `test_resolver_oversized_metafield_id_is_capped_in_error`. CI clean.
+
+**Second pass (triple-threat review follow-up).** A triple-threat review (code-quality + security + deep) found additional same-class reflection sites missed by the initial pass — GID/identifier/strategy-string/value/namespace/price fields. Every user-input identifier, GID, handle, search term, metafield value, price string, namespace, option name, and strategy enum reflected in any error message or display line now routes through `_cap()`. The total cap-call count across `tools/catalog_hygiene.py` is **51** — every user-input identifier/GID/handle reflection site in the module now routes through `_cap()`. Exception reflections (`{e}`/`{exc}`) are intentionally left uncapped (not raw user input). Five more offline regression tests added covering oversized product_id, option.id, option-value id, media GID (format-rejected path), and media GID (Step 4 "not on product" path).
+
+**Third pass (review-nit hardening).** Two further triple-threat passes addressed the remaining test-quality findings: the four original resolver cap tests had `assert _cap(oversized) in out` (positive) backfilled alongside their existing `not in` (negative) assertions so a refactor dropping the reflected input can't pass vacuously; the `_cap` unit test gained an exact-boundary case (input of length exactly `_GID_DISPLAY_MAX` passes through unchanged, one char past truncates by one); and the two pre-existing sibling tests (`test_s96_oversized_non_product_gid_is_capped_in_error`, `test_s95_resolver_oversized_non_product_gid_is_capped_in_error`) were brought to the same negative+positive pairing, with a comment documenting that the pair must stay together. Test-only changes. Final CI across all passes: ruff + format + mypy clean, **965 tests at 100% coverage**.
 
 ### Follow-up (added 2026-05-29, Story 10.16 /gss-dual-review)
 

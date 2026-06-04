@@ -3523,7 +3523,7 @@ def test_s96_oversized_non_product_gid_is_capped_in_error():
     chars in the error response. Prevents log flooding through reflected user input.
     Covers _resolve_product_gid (used by update_variant_image_binding).
     """
-    from tools.catalog_hygiene import _GID_DISPLAY_MAX
+    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
 
     oversized = "gid://shopify/Order/" + ("A" * 10_000)
     tools, fc = _build([])
@@ -3533,10 +3533,13 @@ def test_s96_oversized_non_product_gid_is_capped_in_error():
     )
     assert "non-Product GID" in out
     assert fc.calls == []
-    # The reflected portion of the attacker-controlled string must not exceed _GID_DISPLAY_MAX.
-    # The raw oversized input must NOT appear in full.
+    # Reflection-cap is pinned by a PAIR of assertions that must stay together:
+    #   negative — the raw input (and anything past the cap) must NOT appear in full;
+    #   positive — the capped prefix MUST appear, so a refactor that drops the input
+    #              entirely can't make the negative assertion pass vacuously.
     assert oversized not in out
     assert oversized[: _GID_DISPLAY_MAX + 1] not in out  # cap is strict, not off-by-one
+    assert _cap(oversized) in out
 
 
 # ---------- handle resolution ----------
@@ -5973,7 +5976,7 @@ def test_s95_resolver_rejects_non_product_gid():
 def test_s95_resolver_oversized_non_product_gid_is_capped_in_error():
     """Security: 10KB attacker-controlled non-Product GID truncated at _GID_DISPLAY_MAX (200) in
     error. Covers the shared _resolve_product_with_queries path (vendor, type, options)."""
-    from tools.catalog_hygiene import _GID_DISPLAY_MAX
+    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
 
     oversized = "gid://shopify/Order/" + ("A" * 10_000)
     tools, fc = _build([])
@@ -5983,8 +5986,10 @@ def test_s95_resolver_oversized_non_product_gid_is_capped_in_error():
     )
     assert "non-Product GID" in out
     assert fc.calls == []
+    # Paired negative + positive cap assertions (see test_s96_oversized_… for rationale).
     assert oversized not in out
     assert oversized[: _GID_DISPLAY_MAX + 1] not in out
+    assert _cap(oversized) in out
 
 
 def test_s95_no_product_found_numeric():
@@ -8215,3 +8220,194 @@ def test_s912_empty_keys_mode_lists_qualified_keys_in_head():
         keys=["age_group", "gender"],
     )
     assert 'No metafields found for keys: "google.age_group", "google.gender"' in out
+
+
+# ---------------------------------------------------------------------------
+# Story 10.19 — SEC-resolver-reflect-cap: oversized-input reflection tests
+# ---------------------------------------------------------------------------
+
+
+def test_cap_helper_truncates_oversized_and_passes_short():
+    """Direct unit test for _cap(): oversized input is truncated, short input unchanged."""
+    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
+
+    oversized = "x" * (_GID_DISPLAY_MAX + 50)
+    assert len(_cap(oversized)) == _GID_DISPLAY_MAX
+    assert _cap("short") == "short"
+    # Exact-boundary: input of length _GID_DISPLAY_MAX is the no-truncation edge.
+    exact = "y" * _GID_DISPLAY_MAX
+    assert _cap(exact) == exact
+    assert len(_cap(exact)) == _GID_DISPLAY_MAX
+    # One past the boundary truncates by exactly one char.
+    assert len(_cap("z" * (_GID_DISPLAY_MAX + 1))) == _GID_DISPLAY_MAX
+
+
+def test_resolver_oversized_handle_is_capped_in_error():
+    """Security: 10KB handle reflected via _resolve_product_gid is truncated at _GID_DISPLAY_MAX.
+    Covers the handle-not-found path in update_product_category.
+    """
+    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
+
+    oversized = "a" * 10_000
+    # taxonomy search returns empty → bails before product-resolve — so we must drive
+    # the handle path via the handle-resolve-then-taxonomy order, which means:
+    # category is a gid:// passthrough (no taxonomy query) and the product_id is the
+    # oversized handle — _resolve_product_gid runs first.
+    tools, fc = _build([{"productByHandle": None}])
+    out = tools["update_product_category"](
+        product_id=oversized,
+        category="gid://shopify/TaxonomyCategory/aa-1",
+    )
+    assert "No product found with handle" in out
+    assert oversized[: _GID_DISPLAY_MAX + 1] not in out
+    assert _cap(oversized) in out
+
+
+def test_resolver_oversized_taxonomy_search_is_capped_in_error():
+    """Security: 10KB taxonomy search term reflected by _resolve_taxonomy_category is
+    truncated at _GID_DISPLAY_MAX when 0 nodes are returned.
+    """
+    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
+
+    oversized = "b" * 10_000
+    # Return an empty taxonomy response (0 nodes) to hit the 0-result message.
+    tools, fc = _build([_taxonomy_response()])
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category=oversized,
+    )
+    assert "No taxonomy categories matched" in out
+    assert oversized[: _GID_DISPLAY_MAX + 1] not in out
+    assert _cap(oversized) in out
+
+
+def test_resolver_oversized_owner_id_is_capped_in_error():
+    """Security: 10KB numeric ownerId reflected by _resolve_owner_gid_for_metafield
+    is truncated at _GID_DISPLAY_MAX (hits the 'ambiguous' error branch via
+    delete_product_metafields, which uses _resolve_owner_gid_for_metafield).
+    """
+    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
+
+    oversized = "9" * 10_000  # all digits → isdigit() → ambiguous branch
+    tools, fc = _build([])
+    out = tools["delete_product_metafields"](
+        metafields=[{"ownerId": oversized, "namespace": "custom", "key": "k"}]
+    )
+    assert "ambiguous" in out
+    assert fc.calls == []
+    assert oversized[: _GID_DISPLAY_MAX + 1] not in out
+    assert _cap(oversized) in out
+
+
+def test_resolver_oversized_metafield_id_is_capped_in_error():
+    """Security: 10KB non-Metafield GID reflected by _validate_metafield_id
+    is truncated at _GID_DISPLAY_MAX.
+    """
+    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
+
+    oversized = "gid://shopify/Product/" + ("C" * 10_000)
+    tools, fc = _build([])
+    out = tools["delete_product_metafields"](metafields=[{"metafieldId": oversized}])
+    assert "metafieldId must be a Metafield GID" in out
+    assert fc.calls == []
+    assert oversized[: _GID_DISPLAY_MAX + 1] not in out
+    assert _cap(oversized) in out
+
+
+# ── Story 10.19 second-pass: additional reflection-cap regression tests ──────
+
+
+def test_s1019_oversized_product_id_handle_not_found_is_capped():
+    """Security: 10KB handle reflecting through update_product_options (no-product path)
+    is truncated to _GID_DISPLAY_MAX chars; the message prefix is preserved.
+    """
+    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
+
+    oversized = "a" * 10_000
+    tools, fc = _build([{"productByHandle": None}])
+    out = tools["update_product_options"](
+        product_id=oversized,
+        option={"id": _OPT_GID, "name": "Size"},
+    )
+    assert "no product found" in out
+    assert oversized[: _GID_DISPLAY_MAX + 1] not in out
+    assert _cap(oversized) in out
+
+
+def test_s1019_oversized_option_id_is_capped_in_error():
+    """Security: 10KB option.id (wrong GID prefix) reflected in validator error is truncated
+    to _GID_DISPLAY_MAX chars.
+    """
+    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
+
+    oversized = "gid://shopify/Product/" + ("X" * 10_000)  # wrong prefix — triggers the error
+    _, err = catalog_hygiene._normalize_option_input(
+        option={"id": oversized},
+        option_values_to_update=None,
+        variant_strategy="LEAVE_AS_IS",
+    )
+    assert err is not None
+    assert "must be a ProductOption GID" in err
+    assert oversized[: _GID_DISPLAY_MAX + 1] not in err
+    assert _cap(oversized) in err
+
+
+def test_s1019_oversized_option_value_id_is_capped_in_error():
+    """Security: 10KB option-value id (wrong GID prefix) reflected in validator error is
+    truncated to _GID_DISPLAY_MAX chars.
+    """
+    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
+
+    oversized = "gid://shopify/Product/" + ("Y" * 10_000)  # wrong prefix for a value
+    _, err = catalog_hygiene._normalize_option_input(
+        option={"id": _OPT_GID},
+        option_values_to_update=[{"id": oversized, "name": "Red"}],
+        variant_strategy="LEAVE_AS_IS",
+    )
+    assert err is not None
+    assert "ProductOptionValue GID" in err
+    assert oversized[: _GID_DISPLAY_MAX + 1] not in err
+    assert _cap(oversized) in err
+
+
+def test_s1019_oversized_media_gid_is_capped_in_error():
+    """Security: 10KB media GID (no 'gid://shopify/' prefix) reflected in
+    update_variant_image_binding validation error is truncated to _GID_DISPLAY_MAX chars.
+    """
+    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
+
+    oversized = "not-a-gid-" + ("Z" * 10_000)
+    tools, fc = _build([])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": "gid://shopify/ProductVariant/1", "mediaIds": [oversized]}],
+    )
+    assert "must be a Shopify media GID" in out
+    assert fc.calls == []
+    assert oversized[: _GID_DISPLAY_MAX + 1] not in out
+    assert _cap(oversized) in out
+
+
+def test_s1019_oversized_media_gid_step4_is_capped():
+    """Security: 10KB media GID that passes the format check (starts with
+    gid://shopify/) but is not on the product reaches Step 4 and its
+    reflection in 'media GIDs not on product' is truncated to _GID_DISPLAY_MAX.
+    """
+    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
+
+    oversized = "gid://shopify/MediaImage/" + ("X" * 10_000)
+    tools, fc = _build(
+        [
+            _s96_combined_response(
+                media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
+                variants=[(_S96_VARIANT_A, "SKU-A", [])],
+            )
+        ]
+    )
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [oversized]}],
+    )
+    assert "media GIDs not on product" in out
+    assert oversized[: _GID_DISPLAY_MAX + 1] not in out
+    assert _cap(oversized) in out
