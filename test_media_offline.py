@@ -17,8 +17,10 @@ from unittest.mock import patch
 
 import pytest
 import requests as _requests
+from pydantic import SecretStr
 
 from _testing import CapturingServer, FakeClient
+from settings import Settings
 from tools import media
 from tools.media._common import _as_product_gid
 from tools.media._graphql import (
@@ -50,6 +52,15 @@ class FakeHTTPResponse:
             return iter([])
         mid = max(1, len(self._content) // 2)
         return iter([self._content[:mid], self._content[mid:]])
+
+
+def _media_settings(**overrides) -> Settings:
+    base: dict = {
+        "shopify_store_url": "test.myshopify.com",
+        "shopify_access_token": SecretStr("shpat_test00000000000000000000000"),
+    }
+    base.update(overrides)
+    return Settings(**base)
 
 
 def _build(responses):
@@ -1107,7 +1118,7 @@ def test_download_image_request_exception_wrapped():
         ),
         pytest.raises(RuntimeError) as exc,
     ):
-        _download_image("https://cdn.example.com/a.jpg")
+        _download_image("https://cdn.example.com/a.jpg", _media_settings())
     msg = str(exc.value)
     assert "request failed" in msg and "dns timeout" in msg
 
@@ -1122,7 +1133,7 @@ def test_download_image_content_length_over_cap_rejected_before_streaming():
         patch("tools.media._upload.requests.get", return_value=fake),
         pytest.raises(RuntimeError, match="exceeds Shopify"),
     ):
-        _download_image("https://cdn.example.com/huge.jpg")
+        _download_image("https://cdn.example.com/huge.jpg", _media_settings())
 
 
 def test_download_image_empty_chunk_in_stream_is_skipped():
@@ -1141,7 +1152,7 @@ def test_download_image_empty_chunk_in_stream_is_skipped():
         patch("tools.media._upload._reject_if_private_host", return_value=None),
         patch("tools.media._upload.requests.get", return_value=resp),
     ):
-        body, filename, ct = _download_image("https://cdn.example.com/ok.jpg")
+        body, filename, ct = _download_image("https://cdn.example.com/ok.jpg", _media_settings())
     assert body == b"headtail"
     assert ct == "image/jpeg"
 
@@ -1169,7 +1180,7 @@ def test_download_image_stream_over_cap_rejected():
         patch("tools.media._upload._MAX_IMAGE_BYTES", 10),
         pytest.raises(RuntimeError) as exc,
     ):
-        _download_image("https://cdn.example.com/big.jpg")
+        _download_image("https://cdn.example.com/big.jpg", _media_settings())
     msg = str(exc.value)
     assert "exceeded" in msg
     assert "10 B" in msg, (
@@ -1190,7 +1201,7 @@ def test_download_image_guesses_mime_when_content_type_missing():
         patch("tools.media._upload._reject_if_private_host", return_value=None),
         patch("tools.media._upload.requests.get", return_value=resp),
     ):
-        _, filename, ct = _download_image("https://cdn.example.com/photo.jpg")
+        _, filename, ct = _download_image("https://cdn.example.com/photo.jpg", _media_settings())
     assert ct == "image/jpeg"
     assert filename == "photo.jpg"
 
@@ -1210,7 +1221,7 @@ def test_upload_bytes_to_target_request_exception_wrapped():
         ),
         pytest.raises(RuntimeError) as exc,
     ):
-        _upload_bytes_to_target(target, b"bytes")
+        _upload_bytes_to_target(target, b"bytes", _media_settings())
     msg = str(exc.value)
     assert "PUT to staged target failed" in msg and "socket reset" in msg
 
@@ -1221,7 +1232,54 @@ def test_upload_bytes_to_target_missing_url_rejected():
     with None instead of letting it crash with a confusing TypeError."""
     target = {"parameters": [{"name": "content_type", "value": "image/jpeg"}]}
     with pytest.raises(RuntimeError, match="staged target missing 'url'"):
-        _upload_bytes_to_target(target, b"bytes")
+        _upload_bytes_to_target(target, b"bytes", _media_settings())
+
+
+# ---------- shared HTTP policy: User-Agent on GET/PUT + config-driven timeout ----------
+
+
+def test_download_image_sends_configured_user_agent():
+    """The image-download GET must carry the configured User-Agent header so
+    the source host sees an app identifier rather than bare python-requests."""
+    captured: dict = {}
+    resp = FakeHTTPResponse(status_code=200, content=b"img", headers={"Content-Type": "image/jpeg"})
+
+    def fake_get(url, **kwargs):
+        captured.update(kwargs)
+        return resp
+
+    s = _media_settings(http_user_agent="shopify-mcp-test/1.2")
+    with (
+        patch("tools.media._upload._reject_if_private_host", return_value=None),
+        patch("tools.media._upload.requests.get", side_effect=fake_get),
+    ):
+        _download_image("https://cdn.example.com/ok.jpg", s)
+    assert captured["headers"]["User-Agent"] == "shopify-mcp-test/1.2"
+
+
+def test_upload_bytes_to_target_sends_user_agent_and_config_timeout():
+    """The staged-upload PUT must carry the configured User-Agent, preserve the
+    signed-target parameters, and source its timeout from Settings (not a
+    hardcoded literal)."""
+    captured: dict = {}
+    resp = FakeHTTPResponse(status_code=200)
+
+    def fake_put(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return resp
+
+    s = _media_settings(http_user_agent="shopify-mcp-test/1.2", staged_upload_timeout_s=42)
+    target = {
+        "url": "https://staged.example/signed",
+        "parameters": [{"name": "content_type", "value": "image/jpeg"}],
+    }
+    with patch("tools.media._upload.requests.put", side_effect=fake_put):
+        _upload_bytes_to_target(target, b"bytes", s)
+    assert captured["headers"]["User-Agent"] == "shopify-mcp-test/1.2"
+    # The signed-target parameter must survive the header merge.
+    assert captured["headers"]["content_type"] == "image/jpeg"
+    assert captured["timeout"] == 42
 
 
 # ---------- _render_media_list: product=None falls through to 'No product found.' ----------

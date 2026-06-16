@@ -39,12 +39,22 @@ class Settings(BaseSettings):
     # int (not float): gql's RequestsHTTPTransport.timeout is typed Optional[int].
     # Sub-second tuning isn't useful for HTTP request timeouts anyway.
     request_timeout_s: int = 15
+    # Timeout for the staged-upload PUT in the media pipeline (raw-requests
+    # stack). Lives here so both HTTP stacks read their timeouts from Settings
+    # rather than one stack carrying a hardcoded literal (TECH_DEBT N4).
+    staged_upload_timeout_s: int = 60
     job_poll_timeout_s: float = 10.0
     retry_max_attempts: int = 5
     retry_base_s: float = 0.5
     retry_cap_s: float = 30.0
     poll_base_s: float = 0.5
     poll_cap_s: float = 5.0
+
+    # Shared User-Agent for every outbound HTTP request — both the gql
+    # transport and the raw-requests media uploads read this one field so
+    # Shopify and staged-upload hosts see a single app identifier instead of
+    # the bare `python-requests/x.y.z` default (TECH_DEBT N4).
+    http_user_agent: str = "shopify-mcp/1.0 (+https://github.com/rcchirwa/shopify-mcp)"
 
     webhook_allowlist_hosts: str = ""
 

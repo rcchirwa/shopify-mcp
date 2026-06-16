@@ -6,6 +6,11 @@ _MAX_IMAGE_BYTES = 20 * 1024 * 1024
 
 # Budget for the download step. Large files over slow links blow through this —
 # acceptable for v1, caller can retry.
+#
+# This is one of three HTTP timeouts in the codebase; the other two live on
+# Settings so ops can tune them via env: `Settings.staged_upload_timeout_s`
+# (the staged-upload PUT in _upload.py) and `Settings.request_timeout_s` (the
+# gql transport in shopify_client.py). See TECH_DEBT N4.
 _IMAGE_DOWNLOAD_TIMEOUT_S = 30
 
 # Budget for waiting on newly-attached media to leave PROCESSING. Shopify
