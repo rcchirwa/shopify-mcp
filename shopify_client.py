@@ -163,7 +163,10 @@ class ShopifyClient:
                 f"https://{self._settings.shopify_store_url}"
                 f"/admin/api/{self._settings.shopify_api_version}/graphql.json"
             ),
-            headers={"X-Shopify-Access-Token": access_token},
+            headers={
+                "X-Shopify-Access-Token": access_token,
+                "User-Agent": self._settings.http_user_agent,
+            },
             timeout=self._settings.request_timeout_s,
         )
         self._client = Client(

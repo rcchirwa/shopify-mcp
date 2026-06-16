@@ -18,8 +18,10 @@ from urllib.parse import urlparse
 import requests
 from mcp.server.fastmcp import FastMCP
 
+from settings import Settings
 from shopify_client import ShopifyClient, poll_job
 from tools._gid import from_gid
+from tools._http import default_headers
 from tools._log import log_write
 from tools._response import extract_user_errors, with_confirm_hint
 from tools._url_safety import _reject_if_private_host
@@ -63,16 +65,21 @@ def _filename_from_url(url: str) -> str:
     return name or "upload.bin"
 
 
-def _download_image(url: str) -> tuple[bytes, str, str]:
+def _download_image(url: str, settings: Settings) -> tuple[bytes, str, str]:
     """Download an image URL and return (bytes, filename, mime_type).
 
     Raises RuntimeError with a human-readable detail on any failure. Caller is
     expected to wrap the call and label it as `stage=download` on error.
+    `settings` supplies the shared HTTP header policy (User-Agent).
     """
     _reject_if_private_host(url)
     try:
         resp = requests.get(
-            url, stream=True, timeout=_IMAGE_DOWNLOAD_TIMEOUT_S, allow_redirects=False
+            url,
+            stream=True,
+            timeout=_IMAGE_DOWNLOAD_TIMEOUT_S,
+            allow_redirects=False,
+            headers=default_headers(settings),
         )
     except requests.RequestException as e:
         raise RuntimeError(f"request failed: {e}") from e
@@ -121,18 +128,24 @@ def _download_image(url: str) -> tuple[bytes, str, str]:
     return bytes(buf), filename, content_type
 
 
-def _upload_bytes_to_target(target: dict, image_bytes: bytes) -> None:
+def _upload_bytes_to_target(target: dict, image_bytes: bytes, settings: Settings) -> None:
     """PUT image bytes to the staged target URL, with parameters as headers.
 
     Raises RuntimeError on non-2xx. Caller labels the failure stage.
+    `settings` supplies the shared User-Agent and the PUT timeout.
     """
     url = target.get("url")
     if not url:
         raise RuntimeError("staged target missing 'url'")
     params = target.get("parameters") or []
-    headers = {p["name"]: p["value"] for p in params if p.get("name")}
+    signed_headers = {p["name"]: p["value"] for p in params if p.get("name")}
+    # Shared policy headers first; the signed-target parameters win on any key
+    # collision so a staged-upload header is never clobbered by policy.
+    headers = {**default_headers(settings), **signed_headers}
     try:
-        resp = requests.put(url, data=image_bytes, headers=headers, timeout=60)
+        resp = requests.put(
+            url, data=image_bytes, headers=headers, timeout=settings.staged_upload_timeout_s
+        )
     except requests.RequestException as e:
         raise RuntimeError(f"PUT to staged target failed: {e}") from e
     if resp.status_code >= 400:
@@ -379,7 +392,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         # Stage 1: download bytes.
         try:
-            image_bytes, filename, mime_type = _download_image(source)
+            image_bytes, filename, mime_type = _download_image(source, client._settings)
         except Exception as e:
             return f"Error at stage=download: {e}"
 
@@ -391,7 +404,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         # Stage 3: PUT bytes with parameters as headers.
         try:
-            _upload_bytes_to_target(target, image_bytes)
+            _upload_bytes_to_target(target, image_bytes, client._settings)
         except Exception as e:
             return f"Error at stage=stage_upload: {e}"
 

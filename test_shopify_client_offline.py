@@ -245,6 +245,29 @@ def test_init_missing_credentials_raises(monkeypatch, tmp_path):
     assert ("shopify_access_token", "missing") in missing
 
 
+def test_transport_includes_configured_user_agent(monkeypatch, tmp_path):
+    """The gql RequestsHTTPTransport must send the same configured User-Agent
+    as the raw-requests stack, alongside the Shopify auth header."""
+    captured: dict = {}
+
+    monkeypatch.setenv("SHOPIFY_STORE_URL", "test.myshopify.com")
+    monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "shpat_test00000000000000000000000")
+    monkeypatch.setattr(sc, "_ENV_PATH", tmp_path / "nonexistent.env")
+    monkeypatch.setattr(sc, "Client", lambda **_kw: object())
+
+    def fake_transport(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(sc, "RequestsHTTPTransport", fake_transport)
+
+    sc.ShopifyClient()
+
+    headers = captured["headers"]
+    assert headers["X-Shopify-Access-Token"] == "shpat_test00000000000000000000000"
+    assert headers["User-Agent"] == _test_settings().http_user_agent
+
+
 # ===========================================================================
 # Scripted stub + fixtures for retry/backoff tests
 # ===========================================================================

@@ -23,7 +23,7 @@ T-9.6-media-cap from the 2026-05-12 Story 9.6 backlog closed in a single PR.
 | Rank | Item | Score | Status |
 |------|------|-------|--------|
 | 1 | SEC-M2-sanitizer — advisory blocklist → proper HTML sanitizer | 16 | active (needs product sign-off) |
-| 2 | N4 — two HTTP stacks, no shared policy | 9 | watch |
+| 2 | ~~N4 — two HTTP stacks, no shared policy~~ | ~~9~~ | closed 2026-06-15 (Story 10.21) |
 | 3 | ~~T-9.5-variants-cap — `variants(first: 50)` post-write snapshot cap~~ | ~~6~~ | closed 2026-05-29 (Story 10.16) |
 | 4 | O1 — mypy permissive on test files (pre-existing) | — | watch |
 | 5 | Q4 — `format_user_errors_joined()` single caller | 4 | note |
@@ -55,6 +55,15 @@ SEC-resolver-reflect-cap closed. Trello: https://trello.com/c/f3TfyNzg (Story 10
 **Second pass (triple-threat review follow-up).** A triple-threat review (code-quality + security + deep) found additional same-class reflection sites missed by the initial pass — GID/identifier/strategy-string/value/namespace/price fields. Every user-input identifier, GID, handle, search term, metafield value, price string, namespace, option name, and strategy enum reflected in any error message or display line now routes through `_cap()`. The total cap-call count across `tools/catalog_hygiene.py` is **51** — every user-input identifier/GID/handle reflection site in the module now routes through `_cap()`. Exception reflections (`{e}`/`{exc}`) are intentionally left uncapped (not raw user input). Five more offline regression tests added covering oversized product_id, option.id, option-value id, media GID (format-rejected path), and media GID (Step 4 "not on product" path).
 
 **Third pass (review-nit hardening).** Two further triple-threat passes addressed the remaining test-quality findings: the four original resolver cap tests had `assert _cap(oversized) in out` (positive) backfilled alongside their existing `not in` (negative) assertions so a refactor dropping the reflected input can't pass vacuously; the `_cap` unit test gained an exact-boundary case (input of length exactly `_GID_DISPLAY_MAX` passes through unchanged, one char past truncates by one); and the two pre-existing sibling tests (`test_s96_oversized_non_product_gid_is_capped_in_error`, `test_s95_resolver_oversized_non_product_gid_is_capped_in_error`) were brought to the same negative+positive pairing, with a comment documenting that the pair must stay together. Test-only changes. Final CI across all passes: ruff + format + mypy clean, **965 tests at 100% coverage**.
+
+### Follow-up (added 2026-06-15, Story 10.21 — N4 closed)
+
+N4 ("two HTTP stacks, no shared policy") closed. Trello: https://trello.com/c/COCYaXwc (Story 10.21, Epic 10). The two stacks — the gql `RequestsHTTPTransport` in `shopify_client.py` and the raw `requests` GET/PUT in `tools/media/_upload.py` — now share one HTTP policy:
+
+- **Shared User-Agent.** New `Settings.http_user_agent` field (`shopify-mcp/1.0 (+https://github.com/rcchirwa/shopify-mcp)`). The gql transport headers and both `requests` call sites now send it; previously neither stack set a User-Agent and Shopify/staged hosts saw the bare `python-requests/x.y.z` default.
+- **New `tools/_http.py` policy module.** `default_headers(settings)` is the single source of header policy for the raw-`requests` stack; the staged-upload PUT merges it under the signed-target parameters (signed params win on collision).
+- **Config-driven PUT timeout.** The staged-upload PUT's hardcoded `timeout=60` moved to `Settings.staged_upload_timeout_s` (default 60). `tools/media/_constants.py` now cross-references all three HTTP timeouts (`_IMAGE_DOWNLOAD_TIMEOUT_S`, `Settings.staged_upload_timeout_s`, `Settings.request_timeout_s`).
+- `_download_image` / `_upload_bytes_to_target` gained a required `settings` param (threaded from `client._settings`). Retry/backoff remains gql-only (hand-rolled in `execute()`); the raw-`requests` stack is a single-shot PUT/GET where retry isn't warranted — header + timeout policy is the shared surface, not retry. The original N4 trigger ("a second `requests` caller lands") had not fired; this is proactive consolidation. Three new/extended offline tests assert the User-Agent on both stacks and the config-driven PUT timeout (`test_http_offline.py`, `test_media_offline.py`, `test_shopify_client_offline.py`). CI clean: ruff + format + mypy + 100% coverage.
 
 ### Follow-up (added 2026-05-29, Story 10.16 /gss-dual-review)
 
