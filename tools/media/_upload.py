@@ -141,6 +141,14 @@ def _upload_bytes_to_target(target: dict, image_bytes: bytes, settings: Settings
     signed_headers = {p["name"]: p["value"] for p in params if p.get("name")}
     # Shared policy headers first; the signed-target parameters win on any key
     # collision so a staged-upload header is never clobbered by policy.
+    #
+    # Adding our policy User-Agent to a *signed* PUT is safe: Shopify staged
+    # targets are GCS/S3 signed-URL uploads whose signature validates only the
+    # enumerated signed headers (host + the names in `parameters`), not
+    # arbitrary request headers like User-Agent — so the extra header is
+    # ignored by signature validation rather than rejected. (Verified against
+    # the GCS/S3 V4 signing model; not yet exercised against a live staged
+    # endpoint — see Story 10.21 / N4.)
     headers = {**default_headers(settings), **signed_headers}
     try:
         resp = requests.put(
