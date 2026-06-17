@@ -48,9 +48,11 @@ def write_gate(
     result (capture the result in the closure via the execute() callable).
 
     post_execute_check is called with the raw mutation result dict AFTER
-    format_user_errors passes (no userErrors). If it returns a non-None string
-    that string is returned as an error and log_write is NOT called. Use it for
-    post-mutation response validation (e.g. missing IDs in the response payload).
+    format_user_errors passes (no userErrors). The dict is the full, unmodified
+    value returned by execute() — callers must navigate to the mutation key
+    themselves (e.g. result.get("mutationName", {})). If it returns a non-None
+    string that string is returned as an error and log_write is NOT called. Use it
+    for post-mutation response validation (e.g. missing IDs in the response payload).
 
     Tools that short-circuit before the mutation (no-op fast paths, empty-batch
     guards) must return early before calling write_gate so the mutation is never

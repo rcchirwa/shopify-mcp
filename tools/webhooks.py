@@ -148,7 +148,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         def _execute() -> dict:
             result = client.execute(CREATE_WEBHOOK, variables)
-            captured.update(result or {})
+            captured.update(result)
             return result
 
         def _numeric_id() -> str:
