@@ -263,9 +263,17 @@ Show me inventory levels for product 12345678.
 shopify-mcp/
 ├── shopify_mcp.py          # MCP server entry point
 ├── shopify_client.py       # Shopify GraphQL API client
+├── shopify/                # Shopify domain layer (independent of the MCP surface)
+│   ├── _ids.py             # GID encode/decode helpers (to_gid / from_gid)
+│   ├── _client.py          # GraphQLClient Protocol the operations layer depends on
+│   ├── queries/            # GraphQL strings grouped by resource, reusable via fragments
+│   │   └── products.py
+│   └── operations/         # Typed business-logic wrappers, callable without the MCP server
+│       └── products.py
 ├── tools/
 │   ├── _log.py             # Write operation logger
-│   ├── products.py
+│   ├── _gid.py             # Re-exports shopify._ids (back-compat shim)
+│   ├── products.py         # MCP-tool surface: coercion, preview/confirm, formatting
 │   ├── inventory.py
 │   ├── collections.py
 │   ├── discounts.py
@@ -280,13 +288,25 @@ shopify-mcp/
 └── .gitignore
 ```
 
+### Layering (`shopify/` extraction — Story 10.23 / A5)
+
+The `shopify/` package separates Shopify domain logic from the MCP-tool surface,
+one-way: `tools/` → `shopify.operations` → `shopify.queries`. `shopify/` never
+imports from `tools/` (enforced by `test_shopify_layering_offline.py`), so
+operations like `shopify.operations.products.update_product_title(client, ...)`
+are callable from non-MCP entry points (CLI, scripts) without importing FastMCP.
+GraphQL strings live in `shopify.queries.*` and reuse shared fragments (e.g.
+`ProductCoreFields` across the by-id and by-handle product reads). The
+`products` domain is the migrated pilot; remaining domains still define their
+queries inline in `tools/*.py` and migrate one per PR.
+
 ---
 
 ## API layer
 
 This project uses the **Shopify Admin GraphQL API** (version `2026-01`).
 
-Each tool module defines its own GraphQL query or mutation strings at the top of the file. All queries are executed through a single `ShopifyClient.execute(query, variables)` method in `shopify_client.py`, which handles:
+Most tool modules define their own GraphQL query or mutation strings at the top of the file; the migrated `products` domain instead keeps them in `shopify/queries/products.py` (see the layering note above). All queries are executed through a single `ShopifyClient.execute(query, variables)` method in `shopify_client.py`, which handles:
 
 - Authentication via `X-Shopify-Access-Token` header
 - GraphQL transport errors (HTTP 4xx/5xx)

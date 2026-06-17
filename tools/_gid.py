@@ -1,15 +1,11 @@
-"""GID encode/decode utilities shared across all tool modules."""
+"""GID encode/decode utilities shared across all tool modules.
 
+The implementations now live in ``shopify._ids`` (the canonical home, so the
+``shopify`` domain layer can use GID coercion without importing ``tools``). This
+module re-exports them to keep every existing ``from tools._gid import ...``
+call site working unchanged. See Story 10.23 / A5 (Q3-helper reconciliation).
+"""
 
-def to_gid(resource_type: str, numeric_id: int | str) -> str:
-    return f"gid://shopify/{resource_type}/{numeric_id}"
+from shopify._ids import from_gid, to_gid
 
-
-def from_gid(gid: str | None) -> str:
-    # Tolerate None/empty so callers can pass `obj.get("id")` or
-    # `obj.get("id", "")` without a pre-check — Shopify responses may
-    # return `id: null` on partial/permissions-trimmed fields, and the
-    # dict .get(..., "") default doesn't catch the "key present, value None" case.
-    if not gid:
-        return ""
-    return gid.split("/")[-1]
+__all__ = ["from_gid", "to_gid"]
