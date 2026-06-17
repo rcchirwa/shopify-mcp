@@ -17,7 +17,7 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 | Rank | ID | Item | Category | I | R | E | Score |
 |------|----|------|----------|---|---|---|-------|
 | 1 | A3 | Pagination helper for list reads — *helper shipped + read-path adoption Story 10.16* | Code | 2 | 3 | 3 | **15** |
-| 2 | A2 | `write_gate()` helper collapsing preview/confirm/error/audit boilerplate — *helper + 7 tools migrated on branch `claude/magical-northcutt-d3977f`* | Code | 4 | 2 | 4 | **12** |
+| 2 | A2 | `write_gate()` helper collapsing preview/confirm/error/audit boilerplate — *closed Story 10.22; 9 tools migrated; remaining tools triaged and deliberately excluded* | Code | 4 | 2 | 4 | **12** |
 | 3 | A5 | `shopify/` subpackage extraction (`queries/` + `operations/`) with GraphQL fragments | Architecture | 2 | 1 | 2 | **12** |
 | 4 | A6 | HTTP client unification (single wrapper for `gql` + `requests`) — *links to N4 in TECH_DEBT.md* | Architecture | 2 | 2 | 3 | **12** |
 | 5 | A8 | Metadata `TTLCache` for locations / channels / shop info | Code | 2 | 2 | 4 | **8** |
@@ -32,22 +32,27 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 ### A2 — `write_gate()` helper
 
 - **Category:** Code
-- **Status:** partially done. Helper + 7 tools migrated on branch `claude/magical-northcutt-d3977f` (pending PR). Remaining: 11 standard-pattern tools that could adopt the helper incrementally; 8 complex tools (job-polling, per-item isolation, multi-stage mutations, custom error formatters) intentionally excluded.
+- **Status:** ✅ **closed — Story 10.22.** All standard-pattern tools have been migrated or deliberately excluded with technical justification. 9 tools now use `write_gate()`.
 - **Cross-reference:** TECH_DEBT.md item **#7** (closed by [#33](https://github.com/rcchirwa/shopify-mcp/pull/33)) collapsed only the hint-string duplication via `with_confirm_hint`. A2 wraps the wider write-tool flow (execute → error check → `log_write`) that #7 left untouched.
 - **Impact (4):** every write tool benefits; future tools become 10–20 lines instead of 60–100.
 - **Risk (2):** boilerplate duplication is the largest source of subtle drift between tools. A typo silently skips `log_write` or the confirm gate. The helper makes that omission structurally impossible in tools that adopt it.
 - **Effort (4):** reduced from 3 — helper is shipped; remaining is mechanical per-tool migration with test verification.
 - **Design choice:** helper function, not a decorator. A `@write_tool` decorator that fully owns the flow would require tool bodies to return structured data (preview + execute callable + log description) rather than `str` — that's a bigger API change. The `write_gate()` helper called at the return site achieves the same drift-prevention with zero framework magic; the name at the call site is self-documenting.
-- **Shipped this session (branch `claude/magical-northcutt-d3977f`):**
-  - `tools/_write_tool.py` — `write_gate()` helper centralising confirm gate, `format_user_errors` check, `log_write`, and done-string return. Accepts `done_text` for tools whose done string differs from preview, and `log_description: str | Callable[[], str]` so non-trivial descriptions aren't computed on the preview path.
+- **Phase 1 — initial helper + 7 tools (merged PR #87):**
+  - `tools/_write_tool.py` — `write_gate()` helper centralising confirm gate, `format_user_errors` check, `log_write`, and done-string return. Accepts `done_text: str | None` for tools whose done string differs from preview, and `log_description: str | Callable[[], str]` so non-trivial descriptions aren't computed on the preview path.
   - `test_write_tool_offline.py` — 8 tests covering preview path, default done text, custom `done_text`, callable `log_description` (preview vs confirm, suppression on userErrors), userErrors short-circuit, custom `error_key`, `TransientShopifyError` propagation.
-  - `conftest.py` — session-wide autouse fixture patching `_write_tool.log_write` so migrated tools don't pollute the audit log during tests.
+  - `conftest.py` — session-wide autouse fixture patching `_wt.log_write` so migrated tools don't pollute the audit log during tests.
   - Migrated tools: `products.update_product_title`, `update_product_description`, `update_product_seo`, `update_product_tags`, `update_product_status`; `collections.update_collection`; `inventory.update_inventory`.
-- **Remaining standard-pattern tools** (could adopt the helper):
-  - `publications.{publish,unpublish,set}_product_publications` — currently use `extract_user_errors` with custom field-index mapping; would need a partial migration or a richer helper variant.
-  - `webhooks.{register,delete}_webhook` — done string depends on mutation result (`numeric_id`, `deletedWebhookSubscriptionId`); would benefit from a `done_text` callable variant.
-  - `catalog_hygiene.{update_product_category,update_product_vendor,update_product_type,update_product_pricing}` — use `_format_payload()` JSON-tail format; would need a payload-aware variant.
-- **Intentionally NOT migrated** (control flow incompatible with the helper):
+- **Phase 2 — write_gate() extended + 2 webhook tools (Story 10.22):**
+  - `tools/_write_tool.py` extended with two new parameters:
+    - `done_text: str | Callable[[], str] | None` — callable variant lets the done string capture mutation result data (e.g. a newly-created subscription ID) via closure without polluting the preview path.
+    - `post_execute_check: Callable[[dict], str | None] | None` — post-mutation validation hook called after userErrors pass, before `log_write`. A non-None return short-circuits success so `log_write` is never called on a structurally bad response.
+  - `test_write_tool_offline.py` — extended to 15 tests (+7 covering the new parameters).
+  - Migrated tools: `webhooks.register_webhook` (uses `captured{}` closure + `done_text` callable to surface subscription ID); `webhooks.delete_webhook` (uses `post_execute_check` to validate `deletedWebhookSubscriptionId` presence).
+- **Deliberately excluded — standard-pattern tools with incompatible control flow:**
+  - `publications.{publish,unpublish,set}_product_publications` — partial-success semantics: `log_write` is called even when some channels fail (partial success is normal for Shopify multi-channel mutations). Field-indexed userErrors mapping is incompatible with `write_gate`'s fail-fast model.
+  - `catalog_hygiene.{update_product_category,update_product_vendor,update_product_type,update_product_pricing}` — use `_format_payload()` JSON-tail output format (incompatible with `write_gate`'s string return) and different confirm hint text ("Reply with confirm=True to execute." vs "To apply, call again with confirm=True.").
+- **Intentionally NOT migrated — complex control flow:**
   - `products.update_variant_inventory_policy` — custom dotted-field-path error formatter
   - `collections.{add,remove}_product_to_collection` — async job polling via `poll_job()`
   - `inventory.{update_variant_inventory_tracking,update_variant_inventory_quantity}` — per-variant try/except isolation
@@ -122,14 +127,10 @@ Designed to interleave with feature work, not block it. No phase is more than ~3
 ~~**A4** — closed, branch `claude/elated-kirch-43a66a`~~
 ~~**A7** — closed, branch `claude/relaxed-hertz-8f050d`~~
 
-### Phase 2 — Tool surface (~1 day remaining)
+### Phase 2 — Tool surface (complete)
 
-A2's helper and proof-of-pattern migration (7 tools) shipped on branch `claude/magical-northcutt-d3977f` this session. Remaining:
-
-| Day | Item | Why |
-|-----|------|-----|
-| 0.5 | **A2 (remainder)** Migrate the remaining standard-pattern tools — publications, webhooks (needs `done_text` callable variant), catalog_hygiene standard tools (needs JSON-tail variant) | Pattern is proven; remaining is mechanical per-tool work with test verification. |
-| 0.5 | **A3** Pagination helper | Quick win; prevents silent truncation. |
+~~**A2** — closed, Story 10.22. 9 tools use `write_gate()`; publications and catalog_hygiene standard tools deliberately excluded (incompatible control flow — see A2 item).~~
+~~**A3** — closed, Story 10.16. `paginate()` helper shipped; all cleanly-paginable reads migrated.~~
 
 ### Phase 3 — Restructure (do before reaching ~12 domains or starting multi-store work, ~3 days)
 
