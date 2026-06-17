@@ -1,6 +1,11 @@
 """
 Product tools — read and write Shopify products.
 
+Thin MCP-tool surface over ``shopify.operations.products``: this module keeps
+param coercion, the preview/confirm flow, and output formatting; the GraphQL
+strings live in ``shopify.queries.products`` and the data access in
+``shopify.operations.products`` (Story 10.23 / A5).
+
 Write operations require confirm=True and log to aon_mcp_log.txt.
 """
 
@@ -9,14 +14,55 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from shopify.operations import products as ops
+from shopify.queries.products import (
+    GET_PRODUCT_BY_HANDLE,
+    GET_PRODUCT_BY_ID,
+    GET_PRODUCT_COLLECTIONS,
+    GET_PRODUCT_FULL_BY_HANDLE,
+    GET_PRODUCT_FULL_BY_ID,
+    GET_PRODUCT_SEO_BY_ID,
+    GET_PRODUCT_VARIANTS_POLICY,
+    GET_PRODUCTS,
+    GET_PRODUCTS_BY_COLLECTION,
+    GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS,
+    GET_PRODUCTS_WITH_DESCRIPTIONS,
+    UPDATE_PRODUCT,
+    UPDATE_PRODUCT_STATUS,
+    UPDATE_PRODUCT_TAGS,
+    UPDATE_PRODUCT_VARIANTS_POLICY,
+)
 from shopify_client import ShopifyClient
 from tools._filters import dangerous_html_patterns, filter_variant_targets
-from tools._gid import from_gid, to_gid
+from tools._gid import from_gid
 from tools._log import log_write
 from tools._response import extract_user_errors, with_confirm_hint
 from tools._write_tool import write_gate
 from validators.naming import format_validation_diff
 from validators.seo import SEO_DESCRIPTION_MAX_CHARS, SEO_TITLE_MAX_CHARS
+
+# The GraphQL strings now live in shopify.queries.products. They are re-exported
+# here so existing callers/tests (`from tools.products import GET_PRODUCT_BY_ID`)
+# keep resolving to the same objects the operations layer executes.
+__all__ = [
+    "GET_PRODUCTS",
+    "GET_PRODUCTS_BY_COLLECTION",
+    "GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS",
+    "GET_PRODUCTS_WITH_DESCRIPTIONS",
+    "GET_PRODUCT_BY_HANDLE",
+    "GET_PRODUCT_BY_ID",
+    "GET_PRODUCT_COLLECTIONS",
+    "GET_PRODUCT_FULL_BY_HANDLE",
+    "GET_PRODUCT_FULL_BY_ID",
+    "GET_PRODUCT_SEO_BY_ID",
+    "GET_PRODUCT_VARIANTS_POLICY",
+    "UPDATE_PRODUCT",
+    "UPDATE_PRODUCT_STATUS",
+    "UPDATE_PRODUCT_TAGS",
+    "UPDATE_PRODUCT_VARIANTS_POLICY",
+    "register",
+    "slugify_shopify_handle",
+]
 
 
 def slugify_shopify_handle(title: str) -> str:
@@ -28,249 +74,6 @@ def slugify_shopify_handle(title: str) -> str:
     return s.strip("-")
 
 
-GET_PRODUCTS = """
-query GetProducts($first: Int!) {
-  products(first: $first) {
-    nodes {
-      id
-      title
-      handle
-      status
-      variants(first: 50) {
-        nodes { id title }
-      }
-    }
-  }
-}
-"""
-
-GET_PRODUCT_BY_ID = """
-query GetProductById($id: ID!, $first: Int = 50, $after: String) {
-  product(id: $id) {
-    id
-    title
-    handle
-    status
-    bodyHtml
-    variants(first: $first, after: $after) {
-      nodes { id title sku }
-      pageInfo { hasNextPage endCursor }
-    }
-  }
-}
-"""
-
-GET_PRODUCT_BY_HANDLE = """
-query GetProductByHandle($handle: String!, $first: Int = 50, $after: String) {
-  productByHandle(handle: $handle) {
-    id
-    title
-    handle
-    status
-    bodyHtml
-    variants(first: $first, after: $after) {
-      nodes { id title sku }
-      pageInfo { hasNextPage endCursor }
-    }
-  }
-}
-"""
-
-UPDATE_PRODUCT = """
-mutation UpdateProduct($input: ProductInput!) {
-  productUpdate(input: $input) {
-    product { id title handle }
-    userErrors { field message }
-  }
-}
-"""
-
-GET_PRODUCTS_BY_COLLECTION = """
-query GetProductsByCollection($handle: String!, $first: Int!) {
-  collectionByHandle(handle: $handle) {
-    id
-    title
-    handle
-    products(first: $first) {
-      nodes { id title handle status }
-    }
-  }
-}
-"""
-
-GET_PRODUCTS_WITH_DESCRIPTIONS = """
-query GetProductsWithDescriptions($first: Int!) {
-  products(first: $first) {
-    nodes {
-      id
-      title
-      handle
-      status
-      bodyHtml
-    }
-  }
-}
-"""
-
-GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS = """
-query GetProductsByCollectionWithDescriptions($handle: String!, $first: Int!) {
-  collectionByHandle(handle: $handle) {
-    id
-    title
-    handle
-    products(first: $first) {
-      nodes {
-        id
-        title
-        handle
-        status
-        bodyHtml
-      }
-    }
-  }
-}
-"""
-
-GET_PRODUCT_FULL_BY_ID = """
-query GetProductFullById($id: ID!, $first: Int = 50, $after: String) {
-  product(id: $id) {
-    id
-    title
-    handle
-    status
-    bodyHtml
-    tags
-    productType
-    vendor
-    seo { title description }
-    category {
-      id
-      name
-      fullName
-    }
-    options {
-      id
-      name
-      optionValues { id name }
-    }
-    variants(first: $first, after: $after) {
-      nodes { id title sku }
-      pageInfo { hasNextPage endCursor }
-    }
-  }
-}
-"""
-
-GET_PRODUCT_FULL_BY_HANDLE = """
-query GetProductFullByHandle($handle: String!, $first: Int = 50, $after: String) {
-  productByHandle(handle: $handle) {
-    id
-    title
-    handle
-    status
-    bodyHtml
-    tags
-    productType
-    vendor
-    seo { title description }
-    category {
-      id
-      name
-      fullName
-    }
-    options {
-      id
-      name
-      optionValues { id name }
-    }
-    variants(first: $first, after: $after) {
-      nodes { id title sku }
-      pageInfo { hasNextPage endCursor }
-    }
-  }
-}
-"""
-
-# Shopify caps this connection at 250 per request. A product with more memberships
-# would need pagination; emit an at-cap warning so operators don't silently miss
-# collections — the whole point of this tool is completeness on the vault path.
-GET_PRODUCT_COLLECTIONS = """
-query GetProductCollections($id: ID!) {
-  product(id: $id) {
-    id
-    title
-    collections(first: 250) {
-      nodes {
-        id
-        handle
-        title
-        ruleSet { appliedDisjunctively }
-      }
-      pageInfo { hasNextPage }
-    }
-  }
-}
-"""
-
-GET_PRODUCT_SEO_BY_ID = """
-query GetProductSeoById($id: ID!) {
-  product(id: $id) {
-    id
-    title
-    seo { title description }
-  }
-}
-"""
-
-UPDATE_PRODUCT_TAGS = """
-mutation UpdateProductTags($input: ProductInput!) {
-  productUpdate(input: $input) {
-    product { id tags }
-    userErrors { field message }
-  }
-}
-"""
-
-UPDATE_PRODUCT_STATUS = """
-mutation UpdateProductStatus($input: ProductInput!) {
-  productUpdate(input: $input) {
-    product { id status }
-    userErrors { field message }
-  }
-}
-"""
-
-# Page size for paginated variant reads in get_product / get_product_full.
-# Kept separate from VARIANTS_PAGE_CAP (policy path) so the two can diverge.
-_VARIANTS_PAGE_CAP = 50
-
-GET_PRODUCT_VARIANTS_POLICY = """
-query GetProductVariantsPolicy($id: ID!, $first: Int!, $after: String) {
-  product(id: $id) {
-    id
-    title
-    variants(first: $first, after: $after) {
-      nodes { id title inventoryPolicy }
-      pageInfo { hasNextPage endCursor }
-    }
-  }
-}
-"""
-# Shopify's per-request ceiling for the variants connection is 250. The policy
-# read is now fully paginated via client.paginate() with page_size=VARIANTS_PAGE_CAP.
-# The `capped` flag from paginate() replaces the old len()>=250 heuristic warning.
-VARIANTS_PAGE_CAP = 250
-
-UPDATE_PRODUCT_VARIANTS_POLICY = """
-mutation UpdateProductVariantsPolicy($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-  productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-    product { id }
-    productVariants { id inventoryPolicy }
-    userErrors { field message }
-  }
-}
-"""
-
 PRODUCT_STATUS_VALUES = ("ACTIVE", "DRAFT", "ARCHIVED")
 INVENTORY_POLICY_VALUES = ("DENY", "CONTINUE")
 TAG_MODES = ("replace", "append", "remove")
@@ -281,8 +84,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def get_products() -> str:
         """List all products with id, title, handle, status, and variants."""
-        data = client.execute(GET_PRODUCTS, {"first": 250})
-        products = data.get("products", {}).get("nodes", [])
+        products = ops.read_products(client)
         if not products:
             return "No products found."
         lines = []
@@ -300,27 +102,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def get_product(product_id: str = "", handle: str = "") -> str:
         """Get a single product by id or handle."""
-        capped = False
-        variants_nodes: list[Any] = []
-        if product_id:
-            data, variants_nodes, capped = client.paginate(
-                GET_PRODUCT_BY_ID,
-                {"id": to_gid("Product", product_id)},
-                connection_path=["product", "variants"],
-                page_size=_VARIANTS_PAGE_CAP,
-            )
-            p = data.get("product")
-        elif handle:
-            data, variants_nodes, capped = client.paginate(
-                GET_PRODUCT_BY_HANDLE,
-                {"handle": handle},
-                connection_path=["productByHandle", "variants"],
-                page_size=_VARIANTS_PAGE_CAP,
-            )
-            p = data.get("productByHandle")
-        else:
+        if not product_id and not handle:
             return "Provide either product_id or handle."
-
+        p, variants_nodes, capped = ops.read_product(client, product_id=product_id, handle=handle)
         if not p:
             return "No product found."
 
@@ -353,8 +137,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         =True the new handle is the slugified new_title; if that slug matches
         the existing handle, the handle is effectively unchanged.
         """
-        data = client.execute(GET_PRODUCT_BY_ID, {"id": to_gid("Product", product_id)})
-        product = data.get("product", {}) or {}
+        product = ops.fetch_product_core(client, product_id) or {}
         old_title = product.get("title", "")
         old_handle = product.get("handle", "")
 
@@ -380,11 +163,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"Naming validation:\n{validation}"
         )
 
-        inp = {"id": to_gid("Product", product_id), "title": new_title, "handle": target_handle}
         return write_gate(
             preview=preview,
             confirm=confirm,
-            execute=lambda: client.execute(UPDATE_PRODUCT, {"input": inp}),
+            execute=lambda: ops.update_product_title(client, product_id, new_title, target_handle),
             mutation_key="productUpdate",
             log_name="update_product_title",
             log_description=f"id={product_id} | '{old_title}' → '{new_title}' | handle '{old_handle}' → '{target_handle}'",
@@ -399,8 +181,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         """
         Update a product's body_html description. Returns a preview unless confirm=True.
         """
-        data = client.execute(GET_PRODUCT_BY_ID, {"id": to_gid("Product", product_id)})
-        product = data.get("product", {})
+        product = ops.fetch_product_core(client, product_id) or {}
         old_desc = product.get("bodyHtml", "")
 
         danger = dangerous_html_patterns(new_description)
@@ -424,15 +205,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         return write_gate(
             preview=preview,
             confirm=confirm,
-            execute=lambda: client.execute(
-                UPDATE_PRODUCT,
-                {
-                    "input": {
-                        "id": to_gid("Product", product_id),
-                        "descriptionHtml": new_description,
-                    }
-                },
-            ),
+            execute=lambda: ops.update_product_description(client, product_id, new_description),
             mutation_key="productUpdate",
             log_name="update_product_description",
             log_description=f"id={product_id}",
@@ -459,8 +232,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not new_seo_title and not new_seo_description:
             return "Error: provide at least one of new_seo_title or new_seo_description."
 
-        data = client.execute(GET_PRODUCT_SEO_BY_ID, {"id": to_gid("Product", product_id)})
-        product = data.get("product")
+        product = ops.read_product_seo(client, product_id)
         if not product:
             return f"No product found with id {product_id}."
 
@@ -532,10 +304,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         return write_gate(
             preview=f"PREVIEW — Product SEO update\n{body}",
             confirm=confirm,
-            execute=lambda: client.execute(
-                UPDATE_PRODUCT,
-                {"input": {"id": to_gid("Product", product_id), "seo": _seo_input()}},
-            ),
+            execute=lambda: ops.update_product_seo(client, product_id, _seo_input()),
             mutation_key="productUpdate",
             log_name="update_product_seo",
             log_description=_log_desc,
@@ -545,14 +314,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def get_products_by_collection(collection_handle: str) -> str:
         """List all products in a collection by collection handle."""
-        data = client.execute(
-            GET_PRODUCTS_BY_COLLECTION,
-            {
-                "handle": collection_handle,
-                "first": 250,
-            },
-        )
-        col = data.get("collectionByHandle")
+        col = ops.read_products_by_collection(client, collection_handle)
         if not col:
             return f"No collection found with handle '{collection_handle}'."
 
@@ -570,15 +332,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def get_product_description(product_id: str = "", handle: str = "") -> str:
         """Get the raw body_html description for a single product by id or handle."""
-        if product_id:
-            data = client.execute(GET_PRODUCT_BY_ID, {"id": to_gid("Product", product_id)})
-            p = data.get("product")
-        elif handle:
-            data = client.execute(GET_PRODUCT_BY_HANDLE, {"handle": handle})
-            p = data.get("productByHandle")
-        else:
+        if not product_id and not handle:
             return "Provide either product_id or handle."
-
+        p = ops.read_product_description(client, product_id=product_id, handle=handle)
         if not p:
             return "No product found."
 
@@ -598,21 +354,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         limit = max(1, min(limit, 250))
 
         if collection_handle:
-            data = client.execute(
-                GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS,
-                {
-                    "handle": collection_handle,
-                    "first": limit,
-                },
-            )
-            col = data.get("collectionByHandle")
+            col = ops.read_collection_with_descriptions(client, collection_handle, limit)
             if not col:
                 return f"No collection found with handle '{collection_handle}'."
             products = col.get("products", {}).get("nodes", [])
             header = f"Products in '{collection_handle}' ({len(products)} total):"
         else:
-            data = client.execute(GET_PRODUCTS_WITH_DESCRIPTIONS, {"first": limit})
-            products = data.get("products", {}).get("nodes", [])
+            products = ops.read_products_with_descriptions(client, limit=limit)
             header = f"Products ({len(products)} total):"
 
         if not products:
@@ -636,27 +384,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         Get a full product record: id, title, handle, status, body_html, tags,
         product_type, vendor, seo, category, variants, and options.
         """
-        capped = False
-        variants_nodes: list[Any] = []
-        if product_id:
-            data, variants_nodes, capped = client.paginate(
-                GET_PRODUCT_FULL_BY_ID,
-                {"id": to_gid("Product", product_id)},
-                connection_path=["product", "variants"],
-                page_size=_VARIANTS_PAGE_CAP,
-            )
-            p = data.get("product")
-        elif handle:
-            data, variants_nodes, capped = client.paginate(
-                GET_PRODUCT_FULL_BY_HANDLE,
-                {"handle": handle},
-                connection_path=["productByHandle", "variants"],
-                page_size=_VARIANTS_PAGE_CAP,
-            )
-            p = data.get("productByHandle")
-        else:
+        if not product_id and not handle:
             return "Provide either product_id or handle."
-
+        p, variants_nodes, capped = ops.read_product_full(
+            client, product_id=product_id, handle=handle
+        )
         if not p:
             return "No product found."
 
@@ -710,8 +442,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def get_product_collections(product_id: str) -> str:
         """List every collection this product belongs to — manual and smart."""
-        data = client.execute(GET_PRODUCT_COLLECTIONS, {"id": to_gid("Product", product_id)})
-        product = data.get("product")
+        product = ops.read_product_collections(client, product_id)
         if not product:
             return f"No product found with id {product_id}."
 
@@ -757,11 +488,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not new_tags:
             return "Error: new_tags must be a non-empty list."
 
-        gid = to_gid("Product", product_id)
         old_tags: list[str] = []
         if mode in ("append", "remove"):
-            data = client.execute(GET_PRODUCT_FULL_BY_ID, {"id": gid})
-            product = data.get("product")
+            product = ops.fetch_product_full_record(client, product_id)
             if not product:
                 return f"No product found with id {product_id}."
             old_tags = list(product.get("tags") or [])
@@ -804,9 +533,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         return write_gate(
             preview=f"PREVIEW — Product tags update\n{body}",
             confirm=confirm,
-            execute=lambda: client.execute(
-                UPDATE_PRODUCT_TAGS, {"input": {"id": gid, "tags": target}}
-            ),
+            execute=lambda: ops.update_product_tags(client, product_id, target),
             mutation_key="productUpdate",
             log_name="update_product_tags",
             log_description=f"id={product_id} mode={mode} | {len(old_tags)} tags → {len(target)} tags",
@@ -826,9 +553,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if new_status not in PRODUCT_STATUS_VALUES:
             return f"Error: new_status must be one of {', '.join(PRODUCT_STATUS_VALUES)}."
 
-        gid = to_gid("Product", product_id)
-        data = client.execute(GET_PRODUCT_BY_ID, {"id": gid})
-        product = data.get("product")
+        product = ops.fetch_product_core(client, product_id)
         if not product:
             return f"No product found with id {product_id}."
         old_status = product.get("status") or "(unknown)"
@@ -843,9 +568,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         return write_gate(
             preview=f"PREVIEW — Product status update\n{body}",
             confirm=confirm,
-            execute=lambda: client.execute(
-                UPDATE_PRODUCT_STATUS, {"input": {"id": gid, "status": new_status}}
-            ),
+            execute=lambda: ops.update_product_status(client, product_id, new_status),
             mutation_key="productUpdate",
             log_name="update_product_status",
             log_description=f"id={product_id} | {old_status} → {new_status}",
@@ -869,14 +592,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if new_policy not in INVENTORY_POLICY_VALUES:
             return f"Error: new_policy must be one of {', '.join(INVENTORY_POLICY_VALUES)}."
 
-        product_gid = to_gid("Product", product_id)
-        data, variants, capped = client.paginate(
-            GET_PRODUCT_VARIANTS_POLICY,
-            {"id": product_gid},
-            connection_path=["product", "variants"],
-            page_size=VARIANTS_PAGE_CAP,
-        )
-        product = data.get("product")
+        product, variants, capped = ops.read_product_variants_policy(client, product_id)
         if not product:
             return f"No product found with id {product_id}."
 
@@ -932,13 +648,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return body
 
         variants_input = [{"id": v["id"], "inventoryPolicy": new_policy} for v in targets]
-        result = client.execute(
-            UPDATE_PRODUCT_VARIANTS_POLICY,
-            {
-                "productId": product_gid,
-                "variants": variants_input,
-            },
-        )
+        result = ops.update_variant_inventory_policy(client, product_id, variants_input)
         user_errors = extract_user_errors(result, "productVariantsBulkUpdate")
         if user_errors:
             # `field` is a dotted path list on productVariantsBulkUpdate (e.g.
