@@ -180,6 +180,157 @@ def test_custom_error_key_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
     assert out.startswith("Error:") and "bad" in out
 
 
+# ---------- done_text callable variant ----------
+
+
+def test_done_text_callable_invoked_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_wt, "log_write", lambda *a, **k: None)
+    calls: list[int] = []
+
+    def _done() -> str:
+        calls.append(1)
+        return "DONE — custom callable text"
+
+    out = _wt.write_gate(
+        preview="PREVIEW — x",
+        confirm=True,
+        execute=lambda: _ok(),
+        mutation_key="productUpdate",
+        log_name="t",
+        log_description="desc",
+        done_text=_done,
+    )
+    assert out == "DONE — custom callable text"
+    assert calls == [1]
+
+
+def test_done_text_callable_not_invoked_on_preview(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+
+    def _done() -> str:
+        calls.append(1)
+        return "should not be called"
+
+    out = _wt.write_gate(
+        preview="PREVIEW — x",
+        confirm=False,
+        execute=lambda: _ok(),
+        mutation_key="productUpdate",
+        log_name="t",
+        log_description="desc",
+        done_text=_done,
+    )
+    assert out.startswith("PREVIEW — x")
+    assert calls == []
+
+
+def test_done_text_callable_not_invoked_on_user_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_wt, "log_write", lambda *a, **k: None)
+    calls: list[int] = []
+
+    def _done() -> str:
+        calls.append(1)
+        return "should not be called"
+
+    out = _wt.write_gate(
+        preview="PREVIEW — x",
+        confirm=True,
+        execute=lambda: _err(),
+        mutation_key="productUpdate",
+        log_name="t",
+        log_description="desc",
+        done_text=_done,
+    )
+    assert out.startswith("Error:")
+    assert calls == []
+
+
+# ---------- post_execute_check ----------
+
+
+def test_post_execute_check_none_does_not_block_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    logged: list[tuple[str, str]] = []
+    monkeypatch.setattr(_wt, "log_write", lambda name, msg: logged.append((name, msg)))
+    received: list[dict] = []
+
+    def _check(result: dict) -> str | None:
+        received.append(result)
+        return None
+
+    out = _wt.write_gate(
+        preview="PREVIEW — y",
+        confirm=True,
+        execute=lambda: _ok(),
+        mutation_key="productUpdate",
+        log_name="tool_y",
+        log_description="desc",
+        post_execute_check=_check,
+    )
+    assert out == "Done. PREVIEW — y"
+    assert logged == [("tool_y", "desc")]
+    assert received == [_ok()]
+
+
+def test_post_execute_check_error_blocks_log_and_done(monkeypatch: pytest.MonkeyPatch) -> None:
+    logged: list[int] = []
+    monkeypatch.setattr(_wt, "log_write", lambda *a, **k: logged.append(1))
+
+    def _check(result: dict) -> str | None:
+        return "Error: missing required field in response"
+
+    out = _wt.write_gate(
+        preview="PREVIEW — y",
+        confirm=True,
+        execute=lambda: _ok(),
+        mutation_key="productUpdate",
+        log_name="tool_y",
+        log_description="desc",
+        post_execute_check=_check,
+    )
+    assert out == "Error: missing required field in response"
+    assert logged == [], "log_write must NOT be called when post_execute_check returns an error"
+
+
+def test_post_execute_check_skipped_on_user_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_wt, "log_write", lambda *a, **k: None)
+    check_calls: list[int] = []
+
+    def _check(result: dict) -> str | None:
+        check_calls.append(1)
+        return None
+
+    out = _wt.write_gate(
+        preview="PREVIEW — y",
+        confirm=True,
+        execute=lambda: _err(),
+        mutation_key="productUpdate",
+        log_name="t",
+        log_description="desc",
+        post_execute_check=_check,
+    )
+    assert out.startswith("Error:")
+    assert check_calls == [], "post_execute_check must not run when userErrors are present"
+
+
+def test_post_execute_check_skipped_on_preview() -> None:
+    check_calls: list[int] = []
+
+    def _check(result: dict) -> str | None:
+        check_calls.append(1)
+        return None
+
+    _wt.write_gate(
+        preview="PREVIEW — y",
+        confirm=False,
+        execute=lambda: _ok(),
+        mutation_key="productUpdate",
+        log_name="t",
+        log_description="desc",
+        post_execute_check=_check,
+    )
+    assert check_calls == []
+
+
 # ---------- exception propagation ----------
 
 

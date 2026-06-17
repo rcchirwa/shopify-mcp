@@ -28,7 +28,8 @@ def write_gate(
     log_name: str,
     log_description: str | Callable[[], str],
     error_key: str = "userErrors",
-    done_text: str | None = None,
+    done_text: str | Callable[[], str] | None = None,
+    post_execute_check: Callable[[dict], str | None] | None = None,
 ) -> str:
     """Confirm gate, error check, and audit log for a single-mutation write tool.
 
@@ -43,6 +44,13 @@ def write_gate(
 
     done_text overrides the default f"Done. {preview}" return — use it when the
     tool's done string differs from its preview (e.g. "CONFIRMED — ..." prefix).
+    Accepts a zero-arg callable when the done string depends on the mutation
+    result (capture the result in the closure via the execute() callable).
+
+    post_execute_check is called with the raw mutation result dict AFTER
+    format_user_errors passes (no userErrors). If it returns a non-None string
+    that string is returned as an error and log_write is NOT called. Use it for
+    post-mutation response validation (e.g. missing IDs in the response payload).
 
     Tools that short-circuit before the mutation (no-op fast paths, empty-batch
     guards) must return early before calling write_gate so the mutation is never
@@ -54,6 +62,12 @@ def write_gate(
     err = format_user_errors(result, mutation_key, error_key=error_key)
     if err:
         return err
+    if post_execute_check is not None:
+        check_err = post_execute_check(result)
+        if check_err is not None:
+            return check_err
     desc = log_description() if callable(log_description) else log_description
     log_write(log_name, desc)
-    return done_text if done_text is not None else f"Done. {preview}"
+    if done_text is None:
+        return f"Done. {preview}"
+    return done_text() if callable(done_text) else done_text

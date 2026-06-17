@@ -11,16 +11,10 @@ Usage:
   pytest test_webhooks_offline.py -v
 """
 
-import pytest
-
+import tools._write_tool as _wt
 from _testing import CapturingServer, FakeClient
 from tools import webhooks
 from tools.webhooks import CREATE_WEBHOOK, DELETE_WEBHOOK, LIST_WEBHOOKS
-
-
-@pytest.fixture(autouse=True)
-def _no_log_write(monkeypatch):
-    monkeypatch.setattr(webhooks, "log_write", lambda *a, **k: None)
 
 
 def _build(responses):
@@ -372,3 +366,52 @@ def test_register_confirmed_hostname_not_in_allowlist_blocked(monkeypatch):
     assert out.startswith("Error:")
     assert "attacker.example.com" in out
     assert len(fc.calls) == 0
+
+
+# ---------- write_gate structural guarantees ----------
+
+
+def test_register_log_write_not_called_on_user_error(monkeypatch):
+    """write_gate ensures log_write is never called when the mutation returns userErrors."""
+    monkeypatch.delenv("WEBHOOK_ALLOWLIST_HOSTS", raising=False)
+    logged: list[int] = []
+    monkeypatch.setattr(_wt, "log_write", lambda *a, **k: logged.append(1))
+
+    tools, _ = _build(
+        [
+            {
+                "webhookSubscriptionCreate": {
+                    "webhookSubscription": None,
+                    "userErrors": [{"field": ["callbackUrl"], "message": "invalid url"}],
+                }
+            }
+        ]
+    )
+    out = tools["register_webhook"](
+        topic="ORDERS_CREATE",
+        endpoint_url="https://example.com/hook",
+        confirm=True,
+    )
+    assert out.startswith("Error:")
+    assert logged == []
+
+
+def test_delete_log_write_not_called_on_missing_deleted_id(monkeypatch):
+    """post_execute_check blocks log_write when deletedWebhookSubscriptionId absent."""
+    logged: list[int] = []
+    monkeypatch.setattr(_wt, "log_write", lambda *a, **k: logged.append(1))
+
+    tools, _ = _build(
+        [
+            {
+                "webhookSubscriptionDelete": {
+                    "deletedWebhookSubscriptionId": None,
+                    "userErrors": [],
+                }
+            }
+        ]
+    )
+    out = tools["delete_webhook"](subscription_id="123", confirm=True)
+    assert "Error" in out
+    assert "deletedWebhookSubscriptionId" in out
+    assert logged == []
