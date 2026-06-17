@@ -11,8 +11,7 @@ from mcp.server.fastmcp import FastMCP
 
 from shopify_client import ShopifyClient
 from tools._gid import from_gid, to_gid
-from tools._log import log_write
-from tools._response import format_user_errors, with_confirm_hint
+from tools._write_tool import write_gate
 
 LIST_WEBHOOKS = """
 query ListWebhooks($first: Int!) {
@@ -138,9 +137,6 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"  Endpoint : {endpoint_url}\n"
             f"  Format   : {message_format}"
         )
-        if not confirm:
-            return with_confirm_hint(preview)
-
         variables = {
             "topic": topic,
             "webhookSubscription": {
@@ -148,22 +144,29 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 "format": message_format,
             },
         }
-        result = client.execute(CREATE_WEBHOOK, variables)
-        payload = result.get("webhookSubscriptionCreate", {}) or {}
-        err = format_user_errors(result, "webhookSubscriptionCreate")
-        if err:
-            return err
+        captured: dict = {}
 
-        sub = payload.get("webhookSubscription") or {}
-        sub_gid = sub.get("id")
-        numeric_id = from_gid(sub_gid) if sub_gid else "(unknown)"
+        def _execute() -> dict:
+            result = client.execute(CREATE_WEBHOOK, variables)
+            captured.update(result)
+            return result
 
-        log_write(
-            "register_webhook",
-            f"id={numeric_id} | topic={topic} | endpoint={endpoint_url} | format={message_format}",
+        def _numeric_id() -> str:
+            sub = (captured.get("webhookSubscriptionCreate") or {}).get("webhookSubscription") or {}
+            sub_gid = sub.get("id")
+            return from_gid(sub_gid) if sub_gid else "(unknown)"
+
+        return write_gate(
+            preview=preview,
+            confirm=confirm,
+            execute=_execute,
+            mutation_key="webhookSubscriptionCreate",
+            log_name="register_webhook",
+            log_description=lambda: (
+                f"id={_numeric_id()} | topic={topic} | endpoint={endpoint_url} | format={message_format}"
+            ),
+            done_text=lambda: f"Done. {preview}\n  Subscription ID : {_numeric_id()}",
         )
-
-        return f"Done. {preview}\n  Subscription ID : {numeric_id}"
 
     @server.tool()
     def delete_webhook(subscription_id: str, confirm: bool = False) -> str:
@@ -175,21 +178,22 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         """
         numeric_id = from_gid(subscription_id)
         preview = f"PREVIEW — Delete webhook\n  Subscription ID : {numeric_id}"
-        if not confirm:
-            return with_confirm_hint(preview)
 
-        result = client.execute(
-            DELETE_WEBHOOK,
-            {"id": to_gid("WebhookSubscription", numeric_id)},
+        def _check_deleted(result: dict) -> str | None:
+            payload = result.get("webhookSubscriptionDelete", {}) or {}
+            if not payload.get("deletedWebhookSubscriptionId"):
+                return "Error: delete mutation returned no deletedWebhookSubscriptionId"
+            return None
+
+        return write_gate(
+            preview=preview,
+            confirm=confirm,
+            execute=lambda: client.execute(
+                DELETE_WEBHOOK,
+                {"id": to_gid("WebhookSubscription", numeric_id)},
+            ),
+            mutation_key="webhookSubscriptionDelete",
+            log_name="delete_webhook",
+            log_description=f"id={numeric_id}",
+            post_execute_check=_check_deleted,
         )
-        payload = result.get("webhookSubscriptionDelete", {}) or {}
-        err = format_user_errors(result, "webhookSubscriptionDelete")
-        if err:
-            return err
-
-        deleted_gid = payload.get("deletedWebhookSubscriptionId")
-        if not deleted_gid:
-            return "Error: delete mutation returned no deletedWebhookSubscriptionId"
-
-        log_write("delete_webhook", f"id={numeric_id}")
-        return f"Done. {preview}"
