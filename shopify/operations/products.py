@@ -41,6 +41,17 @@ VARIANTS_PAGE_CAP = 250
 # ---------- reads ----------
 
 
+def _require_discriminator(product_id: str, handle: str) -> None:
+    """Fail loud when neither id nor handle is given.
+
+    The MCP tool layer guards this upstream, but as standalone operations
+    (callable from CLI/scripts) the by-id/by-handle reads would otherwise
+    silently issue a ``productByHandle(handle: "")`` query.
+    """
+    if not product_id and not handle:
+        raise ValueError("provide either product_id or handle")
+
+
 def read_products(client: GraphQLClient) -> list[dict[str, Any]]:
     """List products with id, title, handle, status, and variants."""
     data = client.execute(GET_PRODUCTS, {"first": 250})
@@ -55,6 +66,7 @@ def read_product(
     Returns ``(product_or_None, variant_nodes, capped)``. The caller decides
     which discriminator to pass; ``product_id`` wins when both are given.
     """
+    _require_discriminator(product_id, handle)
     if product_id:
         data, variants, capped = client.paginate(
             GET_PRODUCT_BY_ID,
@@ -79,6 +91,7 @@ def read_product_full(
 
     Returns ``(product_or_None, variant_nodes, capped)``.
     """
+    _require_discriminator(product_id, handle)
     if product_id:
         data, variants, capped = client.paginate(
             GET_PRODUCT_FULL_BY_ID,
@@ -100,6 +113,7 @@ def read_product_description(
     client: GraphQLClient, *, product_id: str = "", handle: str = ""
 ) -> dict[str, Any] | None:
     """Read a single product's core record (for its body_html) by id or handle."""
+    _require_discriminator(product_id, handle)
     if product_id:
         data = client.execute(GET_PRODUCT_BY_ID, {"id": to_gid("Product", product_id)})
         return data.get("product")

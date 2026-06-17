@@ -12,6 +12,8 @@ Usage:
   pytest test_products_operations_offline.py -v
 """
 
+import pytest
+
 from _testing import FakeClient
 from shopify.operations import products as ops
 from shopify.queries import products as q
@@ -34,6 +36,20 @@ def test_full_fragment_defined_once_and_reused():
     assert "fragment ProductFullFields on Product" in q.GET_PRODUCT_FULL_BY_HANDLE
     assert "...ProductFullFields" in q.GET_PRODUCT_FULL_BY_ID
     assert "...ProductFullFields" in q.GET_PRODUCT_FULL_BY_HANDLE
+
+
+# ---------- discriminator guard (non-MCP callers must pass id or handle) ----------
+
+
+@pytest.mark.parametrize(
+    "op",
+    [ops.read_product, ops.read_product_full, ops.read_product_description],
+)
+def test_read_ops_require_a_discriminator(op):
+    fc = FakeClient([])  # no responses: guard must fire before any execute()
+    with pytest.raises(ValueError, match="provide either product_id or handle"):
+        op(fc)
+    assert fc.calls == [], "guard must raise before issuing any query"
 
 
 # ---------- read operations ----------
