@@ -86,9 +86,9 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 - **Effort (2):** ~1 day. Tool registration stays put; only business logic moves.
 - **Plan:** three thin layers — `shopify/queries/` (GraphQL strings, grouped by resource, reusable via fragments), `shopify/operations/` (typed wrappers like `update_product_title(client, id, title) -> dict`), and `tools/` (param coercion, preview/confirm flow, formatting). Pair with GraphQL fragment extraction so `GET_PRODUCT_BY_ID` and `GET_PRODUCT_BY_HANDLE` share their selection set.
 - **Business justification:** worth doing **before** the codebase grows past ~12 domains, not after. Mechanical restructuring is cheap at small scale and exponentially more expensive once dependencies have accumulated.
-- **Status (in progress — `products` pilot Story 10.23, `catalog_hygiene` Story 10.25, `collections` Story 10.26):**
+- **Status (in progress — `products` pilot Story 10.23, `catalog_hygiene` Story 10.25, `collections` Story 10.26, `discounts` Story 10.27):**
   the `shopify/` package and the three-layer structure are **established**, with the
-  `products`, `catalog_hygiene`, and `collections` domains migrated:
+  `products`, `catalog_hygiene`, `collections`, and `discounts` domains migrated:
   - `shopify/queries/products.py` holds all product GraphQL strings; shared
     fragments `ProductCoreFields` / `ProductFullFields` dedup the by-id and
     by-handle selection sets.
@@ -115,6 +115,17 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
     extracted: collections has a single by-handle read and no by-id twin, so no
     duplicated selection set exists — fragment dedup is opportunistic and did not
     apply here (Story 10.26 / A5, AC3).
+  - `shopify/queries/discounts.py` holds the discounts GraphQL strings
+    (`GET_PRICE_RULES`, `CREATE_PRICE_RULE`, `CREATE_DISCOUNT_CODE`);
+    `shopify/operations/discounts.py` holds the typed read/mutation wrappers
+    (price-rule list read + the two-step `priceRuleCreate` / discount-code
+    create). `tools/discounts.py` re-exports the query constants via `__all__`
+    and delegates every `client.execute` to the operations layer, keeping only
+    param coercion, the PriceRuleInput assembly, preview/confirm, and formatting
+    (behavior-preserving — the existing `test_discounts_offline.py` passes
+    unedited). **No shared fragment** is extracted: discounts has no
+    by-id/by-handle pair and its three selection sets do not overlap, so no
+    duplicated selection set exists (Story 10.27 / A5, AC3).
   - The one-way rule (`shopify/` never imports `tools/`) is enforced by
     `test_shopify_layering_offline.py`.
   - **Q3-helper decision:** the GID helpers moved to `shopify/_ids.py` (the
@@ -124,7 +135,7 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
     (`with_confirm_hint`, `extract_user_errors`) are preview/response-formatting
     concerns used by the tool layer; revisit if a `shopify` operation ever needs
     `extract_user_errors`.
-  - **Remaining:** migrate `discounts`, `inventory`, `orders`, `publications`,
+  - **Remaining:** migrate `inventory`, `orders`, `publications`,
     `webhooks` — one domain per PR. A5 closes once all domains are migrated.
     Effort estimate revised: the full sweep is larger than ~1 day
     (catalog_hygiene alone was ~4,600 lines / ~99 GraphQL blocks), hence the
@@ -180,7 +191,7 @@ Designed to interleave with feature work, not block it. No phase is more than ~3
 
 | Day | Item | Why |
 |-----|------|-----|
-| 1–2 | **A5** `shopify/` subpackage *(in progress — Story 10.23 landed the structure + `products` pilot, Story 10.25 migrated `catalog_hygiene`, Story 10.26 migrated `collections`; remaining: discounts, inventory, orders, publications, webhooks — one domain per PR)* | Restructure before the codebase grows past the size where mechanical reshuffling is cheap. |
+| 1–2 | **A5** `shopify/` subpackage *(in progress — Story 10.23 landed the structure + `products` pilot, Story 10.25 migrated `catalog_hygiene`, Story 10.26 migrated `collections`, Story 10.27 migrated `discounts`; remaining: inventory, orders, publications, webhooks — one domain per PR)* | Restructure before the codebase grows past the size where mechanical reshuffling is cheap. |
 | 2–3 | ~~**A6** HTTP unification~~ *(closed — Story 10.24; `client.fetch_bytes()` + shared `_with_retry`. Policy half was N4/Story 10.21.)* | Pairs naturally with A5; closes TECH_DEBT.md N4. |
 
 ### Backlog (don't pre-refactor)

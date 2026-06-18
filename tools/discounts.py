@@ -1,6 +1,11 @@
 """
 Discount tools — read and create discount codes.
 
+Thin MCP-tool surface over ``shopify.operations.discounts``: this module keeps
+param coercion, the PriceRuleInput assembly, the preview/confirm flow, and output
+formatting; the GraphQL strings live in ``shopify.queries.discounts`` and the
+data access in ``shopify.operations.discounts`` (Story 10.27 / A5).
+
 create_discount_code requires confirm=True.
 """
 
@@ -9,43 +14,26 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from shopify.operations import discounts as ops
+from shopify.queries.discounts import (
+    CREATE_DISCOUNT_CODE,
+    CREATE_PRICE_RULE,
+    GET_PRICE_RULES,
+)
 from shopify_client import ShopifyClient
 from tools._gid import from_gid
 from tools._log import log_write
 from tools._response import format_user_errors, with_confirm_hint
 
-GET_PRICE_RULES = """
-query GetPriceRules($first: Int!) {
-  priceRules(first: $first) {
-    nodes {
-      id
-      title
-      valueType
-      value
-      usageLimit
-      endsAt
-    }
-  }
-}
-"""
-
-CREATE_PRICE_RULE = """
-mutation CreatePriceRule($input: PriceRuleInput!) {
-  priceRuleCreate(priceRule: $input) {
-    priceRule { id }
-    priceRuleUserErrors { field message }
-  }
-}
-"""
-
-CREATE_DISCOUNT_CODE = """
-mutation CreateDiscountCode($priceRuleId: ID!, $code: String!) {
-  priceRuleDiscountCodeCreate(priceRuleId: $priceRuleId, code: $code) {
-    priceRuleDiscountCode { code }
-    userErrors { field message }
-  }
-}
-"""
+# The GraphQL strings now live in shopify.queries.discounts. They are re-exported
+# here so existing callers/tests (`from tools.discounts import GET_PRICE_RULES`)
+# keep resolving to the same objects the operations layer executes.
+__all__ = [
+    "CREATE_DISCOUNT_CODE",
+    "CREATE_PRICE_RULE",
+    "GET_PRICE_RULES",
+    "register",
+]
 
 
 def register(server: FastMCP, client: ShopifyClient) -> None:
@@ -53,8 +41,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def get_discount_codes() -> str:
         """List discount codes (price rules) for the store."""
-        data = client.execute(GET_PRICE_RULES, {"first": 50})
-        rules = data.get("priceRules", {}).get("nodes", [])
+        rules = ops.read_price_rules(client)
         if not rules:
             return "No discount codes found."
 
@@ -109,7 +96,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if usage_limit > 0:
             price_rule_input["usageLimit"] = usage_limit
 
-        rule_result = client.execute(CREATE_PRICE_RULE, {"input": price_rule_input})
+        rule_result = ops.create_price_rule(client, price_rule_input)
         err = format_user_errors(
             rule_result,
             "priceRuleCreate",
@@ -126,13 +113,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not rule_id:
             return "Error: price rule created but no ID returned."
 
-        code_result = client.execute(
-            CREATE_DISCOUNT_CODE,
-            {
-                "priceRuleId": rule_id,
-                "code": code,
-            },
-        )
+        code_result = ops.create_price_rule_discount_code(client, rule_id, code)
         err = format_user_errors(
             code_result,
             "priceRuleDiscountCodeCreate",
