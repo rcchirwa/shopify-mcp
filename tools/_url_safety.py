@@ -1,9 +1,12 @@
 """
 URL safety helpers shared across URL-accepting tools.
 
-Currently provides the SSRF guard used by `tools.media._upload._download_image`.
-Any new tool that accepts a caller-supplied URL and dereferences it
-server-side MUST call `_reject_if_private_host` before issuing the request.
+Provides the SSRF guard applied by `ShopifyClient.fetch_bytes` (the single
+chokepoint for caller-supplied URL fetches; the image-download path in
+`tools.media._upload` routes through it). Any new tool that accepts a
+caller-supplied URL and dereferences it server-side MUST go through
+`fetch_bytes` — or, if it cannot, call `_reject_if_private_host` itself before
+issuing the request.
 """
 
 import ipaddress

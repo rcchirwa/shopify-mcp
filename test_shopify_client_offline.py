@@ -24,6 +24,7 @@ from shopify_client import (
     TransientShopifyError,
     _backoff_delay,
     _format_errors,
+    _human_bytes,
     _is_retryable_http,
     _is_throttled,
     _mask_token,
@@ -725,6 +726,12 @@ def test_fetch_bytes_empty_chunk_skipped(monkeypatch):
     monkeypatch.setattr(sc.requests, "get", lambda *a, **k: resp)
     body, _ct = client.fetch_bytes("https://cdn.example/x.jpg", max_size=1000)
     assert body == b"headtail"
+
+
+def test_human_bytes_b_kb_mb_branches():
+    assert _human_bytes(512) == "512 B"
+    assert _human_bytes(2048) == "2.0 KB"
+    assert _human_bytes(25 * 1024 * 1024) == "25.00 MB"
 
 
 def test_fetch_bytes_missing_content_type_returns_empty_string(monkeypatch):

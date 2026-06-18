@@ -19,6 +19,11 @@ from gql.transport.requests import RequestsHTTPTransport
 
 from logging_config import configure_logging
 from settings import Settings
+
+# Intentional client→tools import (A6): ShopifyClient is now the single HTTP
+# chokepoint, so it owns the shared header policy and the SSRF guard. Both are
+# leaf modules (tools/_http, tools/_url_safety import nothing from here), so
+# this does not create an import cycle.
 from tools._http import default_headers
 from tools._url_safety import _reject_if_private_host
 
@@ -127,6 +132,19 @@ def _is_retryable_http(exc: TransportServerError) -> bool:
     unavoidable; \b ensures "v503" or "503abc" are not treated as status codes.
     """
     return bool(_RETRYABLE_HTTP_RE.search(str(exc)))
+
+
+def _human_bytes(n: int) -> str:
+    """Format a byte count for operator-facing error text (e.g. "20.00 MB").
+
+    Kept here (rather than reusing the media-layer formatter) so fetch_bytes —
+    the generic HTTP chokepoint — has no dependency back into tools.media.
+    """
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{n / (1024 * 1024):.2f} MB"
 
 
 def _backoff_delay(attempt: int, *, base: float, cap: float, jitter: bool) -> float:
@@ -259,7 +277,10 @@ class ShopifyClient:
         with ``allow_redirects=False``, a non-retryable ``>= 400`` status, a
         transport error, or the size cap being exceeded) and
         :class:`TransientShopifyError` when a retryable status outlives the
-        retry budget.
+        retry budget. The SSRF guard rejects a private/loopback host by raising
+        a bare :class:`RuntimeError` (from ``_reject_if_private_host``) before
+        any request — callers that catch only the Shopify error types must also
+        expect that.
         """
         # SSRF guard runs once, on the original URL, before any request — its
         # verdict can't change between retries, so it sits outside the loop.
@@ -301,7 +322,9 @@ class ShopifyClient:
             # bytes; the streaming loop below enforces the cap again regardless.
             cl = resp.headers.get("Content-Length")
             if cl and cl.isdigit() and int(cl) > max_size:
-                raise ShopifyError(f"source is {int(cl)} bytes — exceeds the {max_size} byte cap")
+                raise ShopifyError(
+                    f"source is {_human_bytes(int(cl))} — exceeds the {_human_bytes(max_size)} cap"
+                )
 
             buf = bytearray()
             for chunk in resp.iter_content(chunk_size=65536):
@@ -309,7 +332,9 @@ class ShopifyClient:
                     continue
                 buf.extend(chunk)
                 if len(buf) > max_size:
-                    raise ShopifyError(f"source exceeded the {max_size} byte cap during download")
+                    raise ShopifyError(
+                        f"source exceeded the {_human_bytes(max_size)} cap during download"
+                    )
 
             content_type = resp.headers.get("Content-Type") or ""
             return bytes(buf), content_type
