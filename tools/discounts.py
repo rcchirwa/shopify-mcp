@@ -113,7 +113,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not rule_id:
             return "Error: price rule created but no ID returned."
 
-        code_result = ops.create_discount_code(client, rule_id, code)
+        code_result = ops.create_price_rule_discount_code(client, rule_id, code)
         err = format_user_errors(
             code_result,
             "priceRuleDiscountCodeCreate",

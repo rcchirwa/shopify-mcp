@@ -45,8 +45,16 @@ def create_price_rule(client: GraphQLClient, price_rule_input: dict[str, Any]) -
     return client.execute(CREATE_PRICE_RULE, {"input": price_rule_input})
 
 
-def create_discount_code(client: GraphQLClient, price_rule_id: str, code: str) -> dict[str, Any]:
-    """Execute a priceRuleDiscountCodeCreate attaching ``code`` to ``price_rule_id``."""
+def create_price_rule_discount_code(
+    client: GraphQLClient, price_rule_id: str, code: str
+) -> dict[str, Any]:
+    """Execute a priceRuleDiscountCodeCreate attaching ``code`` to ``price_rule_id``.
+
+    Named for the GraphQL mutation (``priceRuleDiscountCodeCreate``) rather than
+    the tool: this is only the second of the tool's two write steps, so it must
+    not be confused with ``tools.discounts.create_discount_code`` (the full
+    price-rule-create → code-attach flow).
+    """
     return client.execute(
         CREATE_DISCOUNT_CODE,
         {"priceRuleId": price_rule_id, "code": code},
