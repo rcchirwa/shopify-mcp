@@ -42,11 +42,78 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from shopify.operations import catalog_hygiene as ops
+from shopify.queries.catalog_hygiene import (
+    GET_PRODUCT_BY_HANDLE_MIN,
+    GET_PRODUCT_CATEGORY,
+    GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA,
+    GET_PRODUCT_MEDIA_PAGE,
+    GET_PRODUCT_OPTIONS,
+    GET_PRODUCT_OPTIONS_BY_HANDLE,
+    GET_PRODUCT_TYPE,
+    GET_PRODUCT_TYPE_BY_HANDLE,
+    GET_PRODUCT_VARIANTS_FOR_PRICING,
+    GET_PRODUCT_VENDOR,
+    GET_PRODUCT_VENDOR_BY_HANDLE,
+    METAFIELDS_DELETE_MUTATION,
+    METAFIELDS_SET_MUTATION,
+    PRODUCT_VARIANT_APPEND_MEDIA,
+    PRODUCT_VARIANT_DETACH_MEDIA,
+    TAXONOMY_SEARCH,
+    UPDATE_PRODUCT_CATEGORY,
+    UPDATE_PRODUCT_OPTION,
+    UPDATE_PRODUCT_TYPE,
+    UPDATE_PRODUCT_VARIANTS_PRICING,
+    UPDATE_PRODUCT_VENDOR,
+    VARIANT_MEDIA_RESPONSE_CAP,
+    _build_batch_resolve_query,
+    _build_get_product_and_variant_metafields_query,
+    _build_get_product_metafields_query,
+    _build_get_product_variant_metafields_page_query,
+)
 from shopify_client import ShopifyClient
 from tools._gid import from_gid, to_gid
 from tools._log import log_write
 from tools._resolvers import resolve_variant_ids_with_variants
 from tools._response import extract_user_errors, format_user_errors, with_confirm_hint
+
+# The GraphQL strings + dynamic query builders now live in
+# shopify.queries.catalog_hygiene; the data-access wrappers in
+# shopify.operations.catalog_hygiene (Story 10.25 / A5, the catalog_hygiene
+# migration following the products pilot). The query constants and the
+# `_build_*` builders are re-exported here so existing callers/tests
+# (`from tools.catalog_hygiene import GET_PRODUCT_VENDOR`, and the
+# `catalog_hygiene._build_*` module-attribute access in the offline suite) keep
+# resolving to the same objects the operations layer executes.
+__all__ = [
+    "GET_PRODUCT_BY_HANDLE_MIN",
+    "GET_PRODUCT_CATEGORY",
+    "GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA",
+    "GET_PRODUCT_MEDIA_PAGE",
+    "GET_PRODUCT_OPTIONS",
+    "GET_PRODUCT_OPTIONS_BY_HANDLE",
+    "GET_PRODUCT_TYPE",
+    "GET_PRODUCT_TYPE_BY_HANDLE",
+    "GET_PRODUCT_VARIANTS_FOR_PRICING",
+    "GET_PRODUCT_VENDOR",
+    "GET_PRODUCT_VENDOR_BY_HANDLE",
+    "METAFIELDS_DELETE_MUTATION",
+    "METAFIELDS_SET_MUTATION",
+    "PRODUCT_VARIANT_APPEND_MEDIA",
+    "PRODUCT_VARIANT_DETACH_MEDIA",
+    "TAXONOMY_SEARCH",
+    "UPDATE_PRODUCT_CATEGORY",
+    "UPDATE_PRODUCT_OPTION",
+    "UPDATE_PRODUCT_TYPE",
+    "UPDATE_PRODUCT_VARIANTS_PRICING",
+    "UPDATE_PRODUCT_VENDOR",
+    "VARIANT_MEDIA_RESPONSE_CAP",
+    "_build_batch_resolve_query",
+    "_build_get_product_and_variant_metafields_query",
+    "_build_get_product_metafields_query",
+    "_build_get_product_variant_metafields_page_query",
+    "register",
+]
 
 # Page cap mirrors `productVariantsBulkUpdate`'s 250-variant window; same idiom
 # as tools/products.py:247. A product hitting this cap would need paginated
@@ -54,181 +121,14 @@ from tools._response import extract_user_errors, format_user_errors, with_confir
 VARIANTS_PAGE_CAP = 250
 # Page size for the paginated product-media fetch in update_variant_image_binding (Story 9.6 / T-9.6-media-cap).
 PRODUCT_MEDIA_READ_PAGE_SIZE = 50
-# Cap for the mutation-response media connection — used in PRODUCT_VARIANT_APPEND_MEDIA and the truncation note.
-VARIANT_MEDIA_RESPONSE_CAP = 100
-
-GET_PRODUCT_VARIANTS_FOR_PRICING = """
-query GetProductVariantsForPricing($id: ID!) {
-  product(id: $id) {
-    id
-    title
-    variants(first: 250) {
-      nodes { id sku price compareAtPrice }
-    }
-  }
-}
-"""
-
-UPDATE_PRODUCT_VARIANTS_PRICING = """
-mutation UpdateProductVariantsPricing(
-  $productId: ID!,
-  $variants: [ProductVariantsBulkInput!]!
-) {
-  productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-    product { id }
-    productVariants { id sku price compareAtPrice }
-    userErrors { field message }
-  }
-}
-"""
-
-# ---------------------------------------------------------------------------
-# GraphQL — Story 9.2 (update_product_vendor)
-# ---------------------------------------------------------------------------
-
-# Vendor lookup is intentionally lighter than the products.py GET_PRODUCT_BY_ID
-# query — only the fields needed for the preview text and the idempotency
-# check. Cuts the read-path cost roughly in half vs. reusing the heavier query.
-GET_PRODUCT_VENDOR = """
-query GetProductVendor($id: ID!) {
-  product(id: $id) {
-    id
-    title
-    vendor
-  }
-}
-"""
-
-# Handle-form resolver: only fired when the caller passes a non-numeric,
-# non-GID identifier. Returns the GID + the same vendor/title fields so the
-# preview path doesn't need a second round-trip after resolution.
-GET_PRODUCT_VENDOR_BY_HANDLE = """
-query GetProductVendorByHandle($handle: String!) {
-  productByHandle(handle: $handle) {
-    id
-    title
-    vendor
-  }
-}
-"""
-
-# Per spec: ProductUpdateInput (not the older `input: ProductInput!` shape used
-# in tools/products.py). Documented in shopify-aon-mcp-catalog-tools-spec.md
-# §"Tool 2 — Underlying Shopify GraphQL".
-UPDATE_PRODUCT_VENDOR = """
-mutation productUpdate($product: ProductUpdateInput!) {
-  productUpdate(product: $product) {
-    product { id vendor }
-    userErrors { field message }
-  }
-}
-"""
 
 # Shopify rejects vendor strings longer than 255 characters; enforce the cap
-# client-side so the userError comes back as a structured tool error rather
-# than a Shopify userError with a less descriptive message.
+# client-side so the userError comes back as a structured tool error.
 VENDOR_MAX_LEN = 255
-
-# ---------------------------------------------------------------------------
-# GraphQL — Story 9.4 (update_product_type)
-# ---------------------------------------------------------------------------
-
-# Narrow read for the productType field — mirror of GET_PRODUCT_VENDOR. Kept
-# separate from the vendor query so a future API-version bump on either field
-# doesn't have to untangle them.
-GET_PRODUCT_TYPE = """
-query GetProductType($id: ID!) {
-  product(id: $id) {
-    id
-    title
-    productType
-  }
-}
-"""
-
-# Handle-form resolver — only fired when product_id is non-numeric and non-GID.
-GET_PRODUCT_TYPE_BY_HANDLE = """
-query GetProductTypeByHandle($handle: String!) {
-  productByHandle(handle: $handle) {
-    id
-    title
-    productType
-  }
-}
-"""
-
-# ProductUpdateInput shape — same input variable as the vendor mutation. Per
-# spec, clearing productType is wire-encoded as `productType: ""` (Shopify
-# treats empty string as cleared for this field, unlike vendor where null is
-# the clear path).
-UPDATE_PRODUCT_TYPE = """
-mutation productUpdate($product: ProductUpdateInput!) {
-  productUpdate(product: $product) {
-    product { id productType }
-    userErrors { field message }
-  }
-}
-"""
 
 # Same 255-char cap that vendor enforces. Shopify rejects longer values; we
 # pre-empt with a structured tool error.
 PRODUCT_TYPE_MAX_LEN = 255
-
-# ---------------------------------------------------------------------------
-# GraphQL — Story 9.1 (update_product_category)
-# ---------------------------------------------------------------------------
-
-# Look up a Product when only its `handle` is known. Story 9.1 accepts numeric
-# ID / GID / handle for `productId`; the first two short-circuit via to_gid,
-# the handle path needs a query.
-GET_PRODUCT_BY_HANDLE_MIN = """
-query GetProductByHandleMin($handle: String!) {
-  productByHandle(handle: $handle) {
-    id
-  }
-}
-"""
-
-# Read current category for idempotency check + post-write snapshot. Narrower
-# than tools.products.GET_PRODUCT_BY_ID — we only need id/title/category here.
-GET_PRODUCT_CATEGORY = """
-query GetProductCategory($id: ID!) {
-  product(id: $id) {
-    id
-    title
-    category { id fullName name }
-  }
-}
-"""
-
-# Shopify's Standard Product Taxonomy search. Returns up to 10 ranked nodes —
-# rank is the order Shopify returns; there is no explicit `score` field.
-TAXONOMY_SEARCH = """
-query taxonomyCategories($search: String!) {
-  taxonomy {
-    categories(search: $search, first: 10) {
-      nodes { id fullName name level isLeaf isRoot }
-    }
-  }
-}
-"""
-
-# 2025+ Admin API takes `ProductUpdateInput` (singular `product:` argument);
-# the legacy `ProductInput` shape is what `tools/products.py` still uses for
-# title/handle/seo writes. Story 9.1 spec pins the new shape — keep them
-# distinct so a future API-version bump doesn't have to untangle them.
-UPDATE_PRODUCT_CATEGORY = """
-mutation productUpdate($product: ProductUpdateInput!) {
-  productUpdate(product: $product) {
-    product {
-      id
-      title
-      category { id fullName name }
-    }
-    userErrors { field message }
-  }
-}
-"""
 
 _VALID_RESOLVE_STRATEGIES = ("exact", "best-match", "reject-ambiguous")
 _TAXONOMY_GID_PREFIX = "gid://shopify/TaxonomyCategory/"
@@ -244,100 +144,8 @@ def _cap(s: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# GraphQL — Story 9.6 (update_variant_image_binding)
-# ---------------------------------------------------------------------------
-
-# Combined fetch: product media set (cross-product validation, AC #4) AND
-# per-variant currently-bound media (idempotent detection, AC #6) in one
-# round-trip. The SKU index also rides along — so if the caller mixes SKUs
-# in, no extra resolver fetch is needed (the variants list is already here).
-GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA = """
-query GetProductMediaAndVariantMedia($id: ID!, $mediaFirst: Int!, $mediaAfter: String) {
-  product(id: $id) {
-    id
-    title
-    media(first: $mediaFirst, after: $mediaAfter) {
-      nodes {
-        id
-        alt
-        mediaContentType
-        ... on MediaImage { image { url } }
-      }
-      pageInfo { hasNextPage endCursor }
-    }
-    variants(first: 250) {
-      nodes {
-        id
-        sku
-        media(first: 100) { nodes { id } }
-      }
-    }
-  }
-}
-"""
-
-# Page-2+ companion to GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA — fetches only media
-# so variants are not re-fetched on every subsequent page.
-GET_PRODUCT_MEDIA_PAGE = """
-query GetProductMediaPage($id: ID!, $mediaFirst: Int!, $mediaAfter: String!) {
-  product(id: $id) {
-    id
-    media(first: $mediaFirst, after: $mediaAfter) {
-      nodes {
-        id
-        alt
-        mediaContentType
-        ... on MediaImage { image { url } }
-      }
-      pageInfo { hasNextPage endCursor }
-    }
-  }
-}
-"""
-
-PRODUCT_VARIANT_APPEND_MEDIA = f"""
-mutation ProductVariantAppendMedia(
-  $productId: ID!,
-  $variantMedia: [ProductVariantAppendMediaInput!]!
-) {{
-  productVariantAppendMedia(productId: $productId, variantMedia: $variantMedia) {{
-    productVariants {{
-      id
-      media(first: {VARIANT_MEDIA_RESPONSE_CAP}) {{
-        nodes {{
-          id
-          alt
-          mediaContentType
-          ... on MediaImage {{ image {{ url }} }}
-        }}
-        pageInfo {{ hasNextPage }}
-      }}
-    }}
-    userErrors {{ field message }}
-  }}
-}}
-"""
-
-# Sequential complement to PRODUCT_VARIANT_APPEND_MEDIA. Shopify rejects
-# productVariantAppendMedia for any variant that already has ANY media bound,
-# so existing bindings must be cleared first. Unlike Append, Detach accepts
-# multiple mediaIds per entry and has no pre-condition. NOT exposed as a
-# standalone MCP tool — only the update_variant_image_binding composite flow
-# calls this.
-PRODUCT_VARIANT_DETACH_MEDIA = """
-mutation ProductVariantDetachMedia(
-  $productId: ID!,
-  $variantMedia: [ProductVariantDetachMediaInput!]!
-) {
-  productVariantDetachMedia(productId: $productId, variantMedia: $variantMedia) {
-    product { id }
-    userErrors { field message }
-  }
-}
-"""
-
-# ---------------------------------------------------------------------------
-# GraphQL + constants — Story 9.7 (set_product_metafields)
+# Validation constants — Story 9.7 (set_product_metafields). The GraphQL
+# mutation string lives in shopify.queries.catalog_hygiene.
 # ---------------------------------------------------------------------------
 
 # Shopify's `metafieldsSet` accepts up to 25 entries per call. Enforced
@@ -351,8 +159,7 @@ METAFIELDS_SET_MAX = 25
 RESERVED_NAMESPACE_PREFIX = "app--"
 
 # Story 9.7 scope: metafield owners are limited to Product and ProductVariant.
-# Other owner types (Collection, Customer, Order, etc.) are out of scope —
-# adding them would require deciding their resolver / preview strategy.
+# Other owner types (Collection, Customer, Order, etc.) are out of scope.
 METAFIELD_OWNER_PREFIXES: tuple[str, str] = (
     "gid://shopify/Product/",
     "gid://shopify/ProductVariant/",
@@ -366,11 +173,8 @@ _OWNER_TYPE_BY_PREFIX: dict[str, str] = {
 }
 
 # Curated set of Shopify metafield types this tool *shape-checks* client-side.
-# Spec line 506 calls for "basic regex check for numeric types, JSON.parse
-# check for JSON / list.* types" — keep the set small and predictable. Any
-# `type` value NOT in this frozenset is passed through to Shopify with no
-# client-side shape check (forward-compatible: Shopify adds new types and we
-# don't want the tool to gate on every API version bump).
+# Any `type` value NOT in this frozenset is passed through to Shopify with no
+# client-side shape check (forward-compatible).
 SUPPORTED_METAFIELD_TYPES: frozenset[str] = frozenset(
     [
         "single_line_text_field",
@@ -406,33 +210,10 @@ GRANTED_SCOPES_HINT = (
     "read_publications, write_publications, write_files"
 )
 
-# `userErrors { code }` is REQUIRED here (vs. just `field message` in the
-# other Epic 9 mutations) so the ACCESS_DENIED branch in AC #10 can detect
-# the scope-block signal without falling back to message-string matching.
-METAFIELDS_SET_MUTATION = """
-mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
-  metafieldsSet(metafields: $metafields) {
-    metafields {
-      id
-      namespace
-      key
-      value
-      type
-      ownerType
-    }
-    userErrors { field message code }
-  }
-}
-"""
-
 # Regex shape-checks for numeric metafield types. Anchored on both ends so a
 # leading minus is allowed but trailing junk ("14abc", "14 ") is rejected.
 _NUMBER_INTEGER_RE = re.compile(r"^-?\d+$")
 _NUMBER_DECIMAL_RE = re.compile(r"^-?\d+(\.\d+)?$")
-
-# ---------------------------------------------------------------------------
-# GraphQL + constants — Story 9.10 (delete_product_metafields)
-# ---------------------------------------------------------------------------
 
 # Shopify's `metafieldsDelete` accepts up to 25 entries per call. Same idiom
 # as METAFIELDS_SET_MAX — enforced client-side so the cap-exceeded path emits
@@ -441,306 +222,21 @@ METAFIELDS_DELETE_MAX = 25
 
 # Metafield GID prefix — used to validate `metafieldId` inputs to
 # delete_product_metafields. Distinct from the Product / ProductVariant
-# owner prefixes so a caller swapping inputs (passing a Product GID where a
-# Metafield GID was expected) fails in validation, not at the mutation.
+# owner prefixes so a caller swapping inputs fails in validation.
 _METAFIELD_GID_PREFIX = "gid://shopify/Metafield/"
-
-# Resolution is batched via dynamic alias-based query construction (see
-# `_build_batch_resolve_query`). One round-trip resolves the whole input
-# batch — drops the resolve phase from O(N) round-trips to O(1) for any
-# batch of N ≤ 25. The single-query approach replaces what would have been
-# two static queries (GET_METAFIELD_BY_GID + GET_OWNER_METAFIELD_BY_TRIPLE)
-# and removes the need to special-case the mode dispatch at execute time.
-
-# `userErrors { code }` is REQUIRED so the idempotent NOT_FOUND-as-success
-# branch can detect the signal without falling back to message-string matching.
-METAFIELDS_DELETE_MUTATION = """
-mutation metafieldsDelete($metafields: [MetafieldIdentifierInput!]!) {
-  metafieldsDelete(metafields: $metafields) {
-    deletedMetafields {
-      ownerId
-      namespace
-      key
-    }
-    userErrors { field message code }
-  }
-}
-"""
-
-# ---------------------------------------------------------------------------
-# GraphQL + constants — Story 9.11 (get_product_metafields)
-# ---------------------------------------------------------------------------
 
 # Shopify's product.metafields connection caps at 250 per page; 100 keeps each
 # request cheap and aligns with the read patterns used by tools/products.py.
-# Cursor pagination via `pageInfo.hasNextPage` handles the long-tail.
 METAFIELDS_READ_PAGE_SIZE = 100
 
 # Cap on variants per page. Matches the get_product_full convention; the
 # include_variants path paginates the variants connection itself when needed.
 VARIANTS_READ_PAGE_SIZE = 50
 
-# Metafield read queries are built per-call from the helpers below. Shopify's
-# Admin API rejects the simultaneous presence of `namespace` and `keys` on the
-# `metafields(...)` connection — the *declaration* of both args in the query
-# string triggers the rejection, not just non-null runtime values. So the
-# query is emitted in one of three modes driven by the caller's filter input:
-#   "keys"      → metafields(keys: $keys, ...)         (keys are fully qualified
-#                                                       as "<namespace>.<key>"
-#                                                       when both filters were
-#                                                       supplied)
-#   "namespace" → metafields(namespace: $namespace, ...)
-#   "none"      → metafields(...)                       (no filter args)
-#
-# The same mode is reused for product-level and variant-level connections in
-# the combined query — Shopify enforces the exclusivity rule independently
-# on each connection.
-
-_VALID_FILTER_MODES = ("keys", "namespace", "none")
-
-_METAFIELD_NODE_FIELD_NAMES = (
-    "id",
-    "namespace",
-    "key",
-    "value",
-    "type",
-    "createdAt",
-    "updatedAt",
-)
-
-
-def _metafield_node_fields(indent: int) -> str:
-    """Selection-set fields for a Metafield node, each indented `indent` spaces.
-
-    Used by the read-query builders so the same field list renders at the
-    right depth for both the product-level and variant-level connections.
-    """
-    pad = " " * indent
-    return "\n".join(pad + f for f in _METAFIELD_NODE_FIELD_NAMES)
-
-
-def _metafield_filter_decls(mode: str) -> str:
-    """GraphQL variable declarations for the chosen filter mode."""
-    if mode == "keys":
-        return "  $keys: [String!]\n"
-    if mode == "namespace":
-        return "  $namespace: String\n"
-    return ""
-
-
-def _metafield_filter_args(mode: str) -> str:
-    """GraphQL argument fragment (with trailing comma+space) for the chosen mode."""
-    if mode == "keys":
-        return "keys: $keys, "
-    if mode == "namespace":
-        return "namespace: $namespace, "
-    return ""
-
-
-def _check_filter_mode(mode: str) -> None:
-    """Defense in depth: each `_build_*` entry point validates `mode` so a
-    future refactor that forgets to thread the closed-enum contract through
-    fails loudly instead of silently emitting a no-filter query."""
-    if mode not in _VALID_FILTER_MODES:
-        raise ValueError(f"unknown metafield filter mode: {mode!r}")
-
-
-def _build_get_product_metafields_query(mode: str) -> str:
-    """Emit the product-only metafields read query for the chosen filter mode."""
-    _check_filter_mode(mode)
-    node_fields = _metafield_node_fields(10)
-    return f"""
-query GetProductMetafields(
-  $id: ID!
-{_metafield_filter_decls(mode)}  $first: Int!
-  $after: String
-) {{
-  product(id: $id) {{
-    id
-    title
-    handle
-    metafields({_metafield_filter_args(mode)}first: $first, after: $after) {{
-      pageInfo {{ hasNextPage endCursor }}
-      edges {{
-        node {{
-{node_fields}
-        }}
-      }}
-    }}
-  }}
-}}
-"""
-
-
-def _build_get_product_and_variant_metafields_query(mode: str) -> str:
-    """Emit the combined product + variants metafields read query.
-
-    Both the product-level and variant-level `metafields(...)` connections
-    use the same `mode` argument set.
-    """
-    _check_filter_mode(mode)
-    product_node_fields = _metafield_node_fields(10)
-    variant_node_fields = _metafield_node_fields(16)
-    return f"""
-query GetProductAndVariantMetafields(
-  $id: ID!
-{_metafield_filter_decls(mode)}  $first: Int!
-  $after: String
-  $variantsFirst: Int!
-  $variantsAfter: String
-) {{
-  product(id: $id) {{
-    id
-    title
-    handle
-    metafields({_metafield_filter_args(mode)}first: $first, after: $after) {{
-      pageInfo {{ hasNextPage endCursor }}
-      edges {{
-        node {{
-{product_node_fields}
-        }}
-      }}
-    }}
-    variants(first: $variantsFirst, after: $variantsAfter) {{
-      pageInfo {{ hasNextPage endCursor }}
-      edges {{
-        node {{
-          id
-          title
-          sku
-          metafields({_metafield_filter_args(mode)}first: $first) {{
-            edges {{
-              node {{
-{variant_node_fields}
-              }}
-            }}
-          }}
-        }}
-      }}
-    }}
-  }}
-}}
-"""
-
-
-def _build_get_product_variant_metafields_page_query(mode: str) -> str:
-    """Emit the variants-only continuation page query.
-
-    Used when the metafields connection is already exhausted but
-    `include_variants=True` still needs more variant pages.
-    """
-    _check_filter_mode(mode)
-    variant_node_fields = _metafield_node_fields(16)
-    return f"""
-query GetProductVariantMetafieldsPage(
-  $id: ID!
-{_metafield_filter_decls(mode)}  $first: Int!
-  $variantsFirst: Int!
-  $variantsAfter: String
-) {{
-  product(id: $id) {{
-    id
-    title
-    handle
-    variants(first: $variantsFirst, after: $variantsAfter) {{
-      pageInfo {{ hasNextPage endCursor }}
-      edges {{
-        node {{
-          id
-          title
-          sku
-          metafields({_metafield_filter_args(mode)}first: $first) {{
-            edges {{
-              node {{
-{variant_node_fields}
-              }}
-            }}
-          }}
-        }}
-      }}
-    }}
-  }}
-}}
-"""
-
-
 # ---------------------------------------------------------------------------
-# GraphQL + constants — Story 9.5 (update_product_options)
+# Validation constants — Story 9.5 (update_product_options). The GraphQL read
+# + mutation strings live in shopify.queries.catalog_hygiene.
 # ---------------------------------------------------------------------------
-
-# Narrow read: option + value GIDs for the tool-side child-of-option validation
-# AND the post-write snapshot's variants slice. variants(first: 50) is kept as a
-# fixed slice — the warn path (not full pagination) closes T-9.5-variants-cap.
-# pageInfo{hasNextPage} is selected so update_product_options can emit an at-cap
-# warning when a product has >50 variants. The UPDATE_PRODUCT_OPTION echo at line
-# ~727 (variants(first: 50)) is an un-paginable mutation-response echo, a known
-# remaining exception documented in the plan.
-GET_PRODUCT_OPTIONS = """
-query GetProductOptions($id: ID!) {
-  product(id: $id) {
-    id
-    title
-    options {
-      id
-      name
-      optionValues { id name }
-    }
-    variants(first: 50) {
-      nodes { id title selectedOptions { name value } }
-      pageInfo { hasNextPage }
-    }
-  }
-}
-"""
-
-# Handle-form resolver — fired only when product_id is non-numeric and non-GID.
-# Returns the same shape as GET_PRODUCT_OPTIONS so callers don't branch on the
-# read result.
-GET_PRODUCT_OPTIONS_BY_HANDLE = """
-query GetProductOptionsByHandle($handle: String!) {
-  productByHandle(handle: $handle) {
-    id
-    title
-    options {
-      id
-      name
-      optionValues { id name }
-    }
-    variants(first: 50) {
-      nodes { id title selectedOptions { name value } }
-      pageInfo { hasNextPage }
-    }
-  }
-}
-"""
-
-# `productOptionUpdate` updates exactly one option per call (Shopify limit).
-# The tool signature only accepts a single `option` arg, so the multi-option
-# case is impossible to express — see AC #10. `userErrors { code }` is required
-# here so a DUPLICATE_OPTION_VALUE_NAME (rename collision) is surfacable as a
-# structured error rather than message-string matching.
-UPDATE_PRODUCT_OPTION = """
-mutation productOptionUpdate(
-  $productId: ID!,
-  $option: OptionUpdateInput!,
-  $optionValuesToUpdate: [OptionValueUpdateInput!],
-  $variantStrategy: ProductOptionUpdateVariantStrategy
-) {
-  productOptionUpdate(
-    productId: $productId,
-    option: $option,
-    optionValuesToUpdate: $optionValuesToUpdate,
-    variantStrategy: $variantStrategy
-  ) {
-    product {
-      id
-      options { id name optionValues { id name } }
-      variants(first: 50) { nodes { id title selectedOptions { name value } } }
-    }
-    userErrors { field message code }
-  }
-}
-"""
 
 # Shopify caps option names at 255 chars (Admin schema docstring). Same value
 # as VENDOR_MAX_LEN / PRODUCT_TYPE_MAX_LEN; kept distinct so a future divergence
@@ -833,10 +329,7 @@ def _handle_append_failure_after_detach(
     rollback_ok = False
     if rollback_entries:
         try:
-            rb = client.execute(
-                PRODUCT_VARIANT_APPEND_MEDIA,
-                {"productId": product_gid, "variantMedia": rollback_entries},
-            )
+            rb = ops.append_variant_media(client, product_gid, rollback_entries)
             rb_errs = extract_user_errors(rb, "productVariantAppendMedia")
             rollback_errors = [
                 e for e in rb_errs if not _is_already_bound_error(e.get("message") or "")
@@ -1155,76 +648,6 @@ def _resolve_owner_gid_for_metafield(
     if err:
         return None, None, err
     return gid, "PRODUCT", None
-
-
-def _build_batch_resolve_query(
-    classified: list[dict[str, Any]],
-) -> tuple[str, dict[str, Any]]:
-    """Build a single GraphQL query that resolves every classified entry.
-
-    `classified` is the per-entry intermediate produced by the tool's
-    classification phase. Each entry's `mode` selects the resolution shape:
-      - mode='gid'    : {idx, mode, gid}                    → look up the metafield
-                        directly by Metafield GID; the response carries the
-                        triple + ownerType + parent GID.
-      - mode='triple' : {idx, mode, ownerId, ownerType,     → look up the metafield
-                        namespace, key}                       via the owner's
-                                                              `metafield(namespace, key)`
-                                                              field. `ownerId` is
-                                                              expected to be a
-                                                              fully-resolved GID
-                                                              (handles must be
-                                                              pre-resolved by the
-                                                              caller).
-
-    Returns `(query_string, variables_dict)`. The response uses sequentially
-    numbered aliases `e0`, `e1`, … (one per entry, in classified order). The
-    per-alias shape under each mode:
-      - mode='gid'    → `{id, namespace, key, ownerType, owner: {id}}`
-                        OR `null` / `{}` when the metafield doesn't exist.
-      - mode='triple' → `{metafield: {id, namespace, key, ownerType}}`
-                        OR `{metafield: null}` (owner exists, metafield doesn't)
-                        OR `null` (owner GID didn't resolve — hard error).
-
-    Building the query dynamically keeps the resolve phase to one round-trip
-    regardless of batch size; the alternative (separate static queries per
-    mode + per-entry execution) was O(N) round-trips, which dominates the
-    tool's latency for batched hygiene passes.
-    """
-    var_decls: list[str] = []
-    selections: list[str] = []
-    variables: dict[str, Any] = {}
-    for i, c in enumerate(classified):
-        if c["mode"] == "gid":
-            var_decls.append(f"$id{i}: ID!")
-            variables[f"id{i}"] = c["gid"]
-            selections.append(
-                f"  e{i}: node(id: $id{i}) {{\n"
-                f"    ... on Metafield {{\n"
-                f"      id namespace key ownerType\n"
-                f"      owner {{ ... on Product {{ id }} ... on ProductVariant {{ id }} }}\n"
-                f"    }}\n"
-                f"  }}"
-            )
-        else:  # mode == "triple"
-            var_decls.append(f"$ownerId{i}: ID!")
-            var_decls.append(f"$ns{i}: String!")
-            var_decls.append(f"$k{i}: String!")
-            variables[f"ownerId{i}"] = c["ownerId"]
-            variables[f"ns{i}"] = c["namespace"]
-            variables[f"k{i}"] = c["key"]
-            selections.append(
-                f"  e{i}: node(id: $ownerId{i}) {{\n"
-                f"    ... on Product {{ metafield(namespace: $ns{i}, key: $k{i}) "
-                f"{{ id namespace key ownerType }} }}\n"
-                f"    ... on ProductVariant {{ metafield(namespace: $ns{i}, key: $k{i}) "
-                f"{{ id namespace key ownerType }} }}\n"
-                f"  }}"
-            )
-    query = (
-        f"query BatchResolveMetafields({', '.join(var_decls)}) {{\n" + "\n".join(selections) + "\n}"
-    )
-    return query, variables
 
 
 def _format_delete_metafields_payload(
@@ -1573,7 +996,7 @@ def _resolve_product_gid(
     # alphanumerics/hyphens/underscores — but rather than gate here, we let
     # the GraphQL query decide (returns null for unknown handles).
     try:
-        data = client.execute(GET_PRODUCT_BY_HANDLE_MIN, {"handle": stripped})
+        data = ops.read_product_by_handle_min(client, stripped)
     except Exception as e:
         return None, f"Handle lookup failed ({type(e).__name__}): {e}"
     product = (data or {}).get("productByHandle")
@@ -1619,7 +1042,7 @@ def _resolve_taxonomy_category(
     # try/except below makes that surface as a structured error (AC #8),
     # mirroring the product-read and mutation wrappers in the caller.
     try:
-        data = client.execute(TAXONOMY_SEARCH, {"search": stripped})
+        data = ops.search_taxonomy_categories(client, stripped)
     except Exception as e:
         return None, [], f"Taxonomy search failed ({type(e).__name__}): {e}"
     nodes = ((data or {}).get("taxonomy") or {}).get("categories", {}).get("nodes") or []
@@ -1796,14 +1219,14 @@ def _resolve_product_with_queries(
         gid = to_gid("Product", stripped)
     else:
         # Handle path — separate query.
-        data = client.execute(query_by_handle, {"handle": stripped})
+        data = ops.read_product_snapshot_by_handle(client, query_by_handle, stripped)
         product = (data or {}).get("productByHandle") or {}
         if not product:
             return None, {}
         return product.get("id"), product
 
     # Numeric / GID path shares the same query.
-    data = client.execute(query_by_id, {"id": gid})
+    data = ops.read_product_snapshot_by_id(client, query_by_id, gid)
     product = (data or {}).get("product") or {}
     if not product:
         return None, {}
@@ -2176,7 +1599,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # ---- Read existing pricing state (one round-trip) ---------------
         # Wide read pulls id+sku+price+compareAtPrice in one call. The same
         # variants list feeds both SKU resolution and the old→new preview.
-        data = client.execute(GET_PRODUCT_VARIANTS_FOR_PRICING, {"id": product_gid})
+        data = ops.read_variants_for_pricing(client, product_gid)
         product = (data or {}).get("product")
         if not product:
             msg = f"No product found with id {product_id}."
@@ -2323,10 +1746,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 cap_intent_by_gid[gid] = entry["compareAtPrice"]  # value or None
             variants_input.append(payload)
 
-        result = client.execute(
-            UPDATE_PRODUCT_VARIANTS_PRICING,
-            {"productId": product_gid, "variants": variants_input},
-        )
+        result = ops.update_variants_pricing(client, product_gid, variants_input)
 
         user_errors = extract_user_errors(result, "productVariantsBulkUpdate")
         if user_errors:
@@ -2479,7 +1899,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         # --- Fetch current category for idempotency + preview context.
         try:
-            current_data = client.execute(GET_PRODUCT_CATEGORY, {"id": product_gid})
+            current_data = ops.read_product_category(client, product_gid)
         except Exception as e:
             return _format_payload(
                 f"Error — update_product_category\n"
@@ -2565,10 +1985,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         # --- Execute branch (confirm=True): call productUpdate.
         try:
-            result = client.execute(
-                UPDATE_PRODUCT_CATEGORY,
-                {"product": {"id": product_gid, "category": target_category_gid}},
-            )
+            result = ops.update_product_category(client, product_gid, target_category_gid)
         except Exception as e:
             return _format_payload(
                 f"Error — update_product_category\n  Mutation failed ({type(e).__name__}): {e}",
@@ -2725,10 +2142,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
 
         try:
-            result = client.execute(
-                UPDATE_PRODUCT_VENDOR,
-                {"product": {"id": product_gid, "vendor": new_vendor}},
-            )
+            result = ops.update_product_vendor(client, product_gid, new_vendor)
         except Exception as exc:
             msg = f"Error calling productUpdate ({type(exc).__name__}): {exc}"
             return f"{msg}\n\n" + _format_vendor_payload(
@@ -2899,10 +2313,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
 
         try:
-            result = client.execute(
-                UPDATE_PRODUCT_TYPE,
-                {"product": {"id": product_gid, "productType": new_type}},
-            )
+            result = ops.update_product_type(client, product_gid, new_type)
         except Exception as exc:
             msg = f"Error calling productUpdate ({type(exc).__name__}): {exc}"
             return f"{msg}\n\n" + _format_type_payload(
@@ -3025,9 +2436,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # + mutation) to 2 (combined + mutation). Products with >50 product-level
         # media are paginated via GET_PRODUCT_MEDIA_PAGE (Story 10.12 / T-9.6-media-cap).
         try:
-            data = client.execute(
-                GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA,
-                {"id": gid, "mediaFirst": PRODUCT_MEDIA_READ_PAGE_SIZE, "mediaAfter": None},
+            data = ops.read_product_media_and_variant_media(
+                client, gid, media_first=PRODUCT_MEDIA_READ_PAGE_SIZE, media_after=None
             )
             product = (data or {}).get("product")
             if not product:
@@ -3042,13 +2452,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             _has_next_media: bool = bool(_page_info.get("hasNextPage")) and bool(_media_cursor)
 
             while _has_next_media:
-                _page_data = client.execute(
-                    GET_PRODUCT_MEDIA_PAGE,
-                    {
-                        "id": gid,
-                        "mediaFirst": PRODUCT_MEDIA_READ_PAGE_SIZE,
-                        "mediaAfter": _media_cursor,
-                    },
+                # `_has_next_media` is only True when `_media_cursor` is truthy
+                # (see its assignment), so the cursor is a non-empty str here —
+                # a mypy invariant pin for the `String!` mediaAfter variable.
+                assert _media_cursor is not None
+                _page_data = ops.read_product_media_page(
+                    client, gid, media_first=PRODUCT_MEDIA_READ_PAGE_SIZE, media_after=_media_cursor
                 )
                 _page_product = (_page_data or {}).get("product")
                 if not _page_product:
@@ -3303,10 +2712,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # Step 9b — DETACH first. HALT on any userError; do NOT proceed to append.
         detached_variant_gids: list[str] = []
         if detach_entries:
-            detach_result = client.execute(
-                PRODUCT_VARIANT_DETACH_MEDIA,
-                {"productId": gid, "variantMedia": detach_entries},
-            )
+            detach_result = ops.detach_variant_media(client, gid, detach_entries)
             detach_errors = extract_user_errors(detach_result, "productVariantDetachMedia")
             if detach_errors:
                 msgs = _format_user_errors(detach_errors)
@@ -3320,10 +2726,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # All entries are batched into a single mutation call.
         append_result: dict[str, Any] = {}
         if append_entries:
-            append_result = client.execute(
-                PRODUCT_VARIANT_APPEND_MEDIA,
-                {"productId": gid, "variantMedia": append_entries},
-            )
+            append_result = ops.append_variant_media(client, gid, append_entries)
             raw_errors = extract_user_errors(append_result, "productVariantAppendMedia")
             real_errors = [
                 e for e in raw_errors if not _is_already_bound_error(e.get("message") or "")
@@ -3523,10 +2926,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             mutation_input.append(row)
 
         try:
-            result = client.execute(
-                METAFIELDS_SET_MUTATION,
-                {"metafields": mutation_input},
-            )
+            result = ops.set_metafields(client, mutation_input)
         except Exception as exc:
             msg = f"Error calling metafieldsSet ({type(exc).__name__}): {exc}"
             return _render(msg, _err_payload(str(exc), key="metafields"))
@@ -3766,9 +3166,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # mix (metafieldId-mode and triple-mode entries are aliased into
         # the same query). See `_build_batch_resolve_query` for the per-
         # alias response shape.
-        batch_query, batch_vars = _build_batch_resolve_query(classified)
         try:
-            batch_data = client.execute(batch_query, batch_vars)
+            batch_data = ops.resolve_metafields_batch(client, classified)
         except Exception as exc:
             msg = f"Error resolving metafields ({type(exc).__name__}): {exc}"
             return _render(msg, _err_payload(str(exc), key="deleted"))
@@ -3918,10 +3317,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         user_errors: list[dict[str, Any]] = []
         if mutation_input:
             try:
-                result = client.execute(
-                    METAFIELDS_DELETE_MUTATION,
-                    {"metafields": mutation_input},
-                )
+                result = ops.delete_metafields(client, mutation_input)
             except Exception as exc:
                 msg = f"Error calling metafieldsDelete ({type(exc).__name__}): {exc}"
                 return _render(msg, _err_payload(str(exc), key="deleted"))
@@ -4124,21 +3520,20 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 else:
                     query = variants_only_query
 
-                variables: dict[str, Any] = {
-                    "id": product_gid,
-                    "first": METAFIELDS_READ_PAGE_SIZE,
-                }
-                if filter_mode == "keys":
-                    variables["keys"] = keys_filter
-                elif filter_mode == "namespace":
-                    variables["namespace"] = ns_filter
-                if fetch_metafields:
-                    variables["after"] = metafields_cursor
-                if fetch_variants:
-                    variables["variantsFirst"] = VARIANTS_READ_PAGE_SIZE
-                    variables["variantsAfter"] = variants_cursor
-
-                data = client.execute(query, variables)
+                data = ops.read_product_metafields_page(
+                    client,
+                    query=query,
+                    product_gid=product_gid,
+                    page_size=METAFIELDS_READ_PAGE_SIZE,
+                    filter_mode=filter_mode,
+                    ns_filter=ns_filter,
+                    keys_filter=keys_filter,
+                    fetch_metafields=fetch_metafields,
+                    metafields_cursor=metafields_cursor,
+                    fetch_variants=fetch_variants,
+                    variants_page_size=VARIANTS_READ_PAGE_SIZE,
+                    variants_cursor=variants_cursor,
+                )
 
                 product_node = (data or {}).get("product") or {}
                 if not product_node:
@@ -4522,14 +3917,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             option_input["name"] = normalized["option_name"]
 
         try:
-            result = client.execute(
-                UPDATE_PRODUCT_OPTION,
-                {
-                    "productId": product_gid,
-                    "option": option_input,
-                    "optionValuesToUpdate": normalized["values"],
-                    "variantStrategy": normalized["variant_strategy"],
-                },
+            result = ops.update_product_option(
+                client,
+                product_gid,
+                option_input,
+                normalized["values"],
+                normalized["variant_strategy"],
             )
         except Exception as exc:
             msg = f"Error calling productOptionUpdate ({type(exc).__name__}): {exc}"

@@ -86,8 +86,9 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 - **Effort (2):** ~1 day. Tool registration stays put; only business logic moves.
 - **Plan:** three thin layers — `shopify/queries/` (GraphQL strings, grouped by resource, reusable via fragments), `shopify/operations/` (typed wrappers like `update_product_title(client, id, title) -> dict`), and `tools/` (param coercion, preview/confirm flow, formatting). Pair with GraphQL fragment extraction so `GET_PRODUCT_BY_ID` and `GET_PRODUCT_BY_HANDLE` share their selection set.
 - **Business justification:** worth doing **before** the codebase grows past ~12 domains, not after. Mechanical restructuring is cheap at small scale and exponentially more expensive once dependencies have accumulated.
-- **Status (Story 10.23 — in progress):** the `shopify/` package and the three-layer
-  structure are **established**, with the `products` domain migrated as the pilot:
+- **Status (in progress — `products` pilot Story 10.23, `catalog_hygiene` Story 10.25):**
+  the `shopify/` package and the three-layer structure are **established**, with the
+  `products` and `catalog_hygiene` domains migrated:
   - `shopify/queries/products.py` holds all product GraphQL strings; shared
     fragments `ProductCoreFields` / `ProductFullFields` dedup the by-id and
     by-handle selection sets.
@@ -95,6 +96,14 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
     `GraphQLClient` (`shopify/_client.py`) and are callable without FastMCP;
     `tools/products.py` now delegates to them and keeps only coercion +
     preview/confirm + formatting.
+  - `shopify/queries/catalog_hygiene.py` holds the catalog-hygiene GraphQL
+    strings + the dynamic metafield/batch query builders; shared fragments
+    `ProductVendorFields` / `ProductTypeFields` / `ProductOptionsFields` dedup
+    the by-id and by-handle pairs. `shopify/operations/catalog_hygiene.py` holds
+    the typed read/mutation wrappers; `tools/catalog_hygiene.py` re-exports the
+    query constants + `_build_*` builders via `__all__` and delegates every
+    `client.execute` to the operations layer (behavior-preserving — the existing
+    `test_catalog_hygiene_offline.py` passes unedited).
   - The one-way rule (`shopify/` never imports `tools/`) is enforced by
     `test_shopify_layering_offline.py`.
   - **Q3-helper decision:** the GID helpers moved to `shopify/_ids.py` (the
@@ -104,11 +113,11 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
     (`with_confirm_hint`, `extract_user_errors`) are preview/response-formatting
     concerns used by the tool layer; revisit if a `shopify` operation ever needs
     `extract_user_errors`.
-  - **Remaining:** migrate `catalog_hygiene`, then `collections`, `discounts`,
-    `inventory`, `orders`, `publications`, `webhooks` — one domain per PR. A5
-    closes once all domains are migrated. Effort estimate revised: the full
-    sweep is larger than ~1 day (catalog_hygiene alone is ~4,600 lines / ~94
-    GraphQL blocks), hence the incremental approach.
+  - **Remaining:** migrate `collections`, `discounts`, `inventory`, `orders`,
+    `publications`, `webhooks` — one domain per PR. A5 closes once all domains
+    are migrated. Effort estimate revised: the full sweep is larger than ~1 day
+    (catalog_hygiene alone was ~4,600 lines / ~99 GraphQL blocks), hence the
+    incremental approach.
 
 ### A6 — HTTP client unification
 
@@ -160,7 +169,7 @@ Designed to interleave with feature work, not block it. No phase is more than ~3
 
 | Day | Item | Why |
 |-----|------|-----|
-| 1–2 | **A5** `shopify/` subpackage *(in progress — Story 10.23 landed the structure + `products` pilot; remaining domains migrate one per PR)* | Restructure before the codebase grows past the size where mechanical reshuffling is cheap. |
+| 1–2 | **A5** `shopify/` subpackage *(in progress — Story 10.23 landed the structure + `products` pilot, Story 10.25 migrated `catalog_hygiene`; remaining: collections, discounts, inventory, orders, publications, webhooks — one domain per PR)* | Restructure before the codebase grows past the size where mechanical reshuffling is cheap. |
 | 2–3 | ~~**A6** HTTP unification~~ *(closed — Story 10.24; `client.fetch_bytes()` + shared `_with_retry`. Policy half was N4/Story 10.21.)* | Pairs naturally with A5; closes TECH_DEBT.md N4. |
 
 ### Backlog (don't pre-refactor)
