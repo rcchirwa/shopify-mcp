@@ -268,10 +268,12 @@ shopify-mcp/
 │   ├── _client.py          # GraphQLClient Protocol the operations layer depends on
 │   ├── queries/            # GraphQL strings grouped by resource, reusable via fragments
 │   │   ├── products.py
-│   │   └── catalog_hygiene.py
+│   │   ├── catalog_hygiene.py
+│   │   └── collections.py
 │   └── operations/         # Typed business-logic wrappers, callable without the MCP server
 │       ├── products.py
-│       └── catalog_hygiene.py
+│       ├── catalog_hygiene.py
+│       └── collections.py
 ├── tools/
 │   ├── _log.py             # Write operation logger
 │   ├── _gid.py             # Re-exports shopify._ids (back-compat shim)
@@ -300,9 +302,11 @@ are callable from non-MCP entry points (CLI, scripts) without importing FastMCP.
 GraphQL strings live in `shopify.queries.*` and reuse shared fragments (e.g.
 `ProductCoreFields` across the by-id and by-handle product reads, or
 `ProductVendorFields` / `ProductTypeFields` / `ProductOptionsFields` across the
-catalog-hygiene by-id and by-handle pairs). The `products` (pilot) and
-`catalog_hygiene` domains are migrated; the remaining domains still define their
-queries inline in `tools/*.py` and migrate one per PR.
+catalog-hygiene by-id and by-handle pairs). The `products` (pilot),
+`catalog_hygiene`, and `collections` domains are migrated; the remaining domains
+still define their queries inline in `tools/*.py` and migrate one per PR.
+(`collections` has a single by-handle read and no by-id twin, so it has no
+duplicated selection set and defines no shared fragment.)
 
 ---
 

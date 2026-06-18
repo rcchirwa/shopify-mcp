@@ -12,65 +12,44 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from shopify.operations import collections as ops
+from shopify.queries.collections import (
+    ADD_PRODUCTS_TO_COLLECTION,
+    GET_COLLECTION_BY_HANDLE,
+    REMOVE_PRODUCTS_FROM_COLLECTION,
+    UPDATE_COLLECTION,
+)
 from shopify_client import ShopifyClient, poll_job
 from tools._filters import dangerous_html_patterns
-from tools._gid import from_gid, to_gid
+from tools._gid import from_gid
 from tools._log import log_write
 from tools._response import format_user_errors, with_confirm_hint
 from tools._write_tool import write_gate
 
-GET_COLLECTION_BY_HANDLE = """
-query GetCollectionByHandle($handle: String!) {
-  collectionByHandle(handle: $handle) {
-    id
-    title
-    handle
-    descriptionHtml
-    ruleSet { appliedDisjunctively }
-  }
-}
-"""
-
-UPDATE_COLLECTION = """
-mutation UpdateCollection($input: CollectionInput!) {
-  collectionUpdate(input: $input) {
-    collection { id title handle }
-    userErrors { field message }
-  }
-}
-"""
-
-# Both membership mutations return an async `job` in 2024-07+. If the initial
-# response has done=false, poll_job() blocks up to settings.job_poll_timeout_s
-# so the caller sees a final done state instead of an indeterminate one.
-ADD_PRODUCTS_TO_COLLECTION = """
-mutation AddProductsToCollection($id: ID!, $productIds: [ID!]!) {
-  collectionAddProductsV2(id: $id, productIds: $productIds) {
-    job { id done }
-    userErrors { field message }
-  }
-}
-"""
-
-REMOVE_PRODUCTS_FROM_COLLECTION = """
-mutation RemoveProductsFromCollection($id: ID!, $productIds: [ID!]!) {
-  collectionRemoveProducts(id: $id, productIds: $productIds) {
-    job { id done }
-    userErrors { field message }
-  }
-}
-"""
+# The GraphQL strings now live in shopify.queries.collections. They are
+# re-exported here so existing callers/tests (`from tools.collections import
+# GET_COLLECTION_BY_HANDLE`) keep resolving to the same objects the operations
+# layer executes.
+__all__ = [
+    "ADD_PRODUCTS_TO_COLLECTION",
+    "GET_COLLECTION_BY_HANDLE",
+    "REMOVE_PRODUCTS_FROM_COLLECTION",
+    "UPDATE_COLLECTION",
+    "register",
+]
 
 # Dispatch table for the add / remove membership tools. Single source of
-# truth — verbs, preposition, tool_name, mutation, and result_key are all
-# keyed off the same direction so the two paths can't drift apart.
-_MEMBERSHIP_OPS = {
+# truth — verbs, preposition, tool_name, the operation, and result_key are all
+# keyed off the same direction so the two paths can't drift apart. Typed
+# `dict[str, Any]` because the values are heterogeneous (str labels + the
+# operation callable).
+_MEMBERSHIP_OPS: dict[str, dict[str, Any]] = {
     "add": {
         "tool_name": "add_product_to_collection",
         "present_verb": "Add",
         "past_verb": "Added",
         "preposition": "to",
-        "mutation": ADD_PRODUCTS_TO_COLLECTION,
+        "op": ops.add_products_to_collection,
         "result_key": "collectionAddProductsV2",
     },
     "remove": {
@@ -78,7 +57,7 @@ _MEMBERSHIP_OPS = {
         "present_verb": "Remove",
         "past_verb": "Removed",
         "preposition": "from",
-        "mutation": REMOVE_PRODUCTS_FROM_COLLECTION,
+        "op": ops.remove_products_from_collection,
         "result_key": "collectionRemoveProducts",
     },
 }
@@ -88,8 +67,7 @@ def _resolve_collection(
     client: ShopifyClient, handle: str
 ) -> tuple[str | None, dict[str, Any] | None]:
     """Returns (collection_type, collection) tuple or (None, None)."""
-    data = client.execute(GET_COLLECTION_BY_HANDLE, {"handle": handle})
-    col = data.get("collectionByHandle")
+    col = ops.read_collection_by_handle(client, handle)
     if not col:
         return None, None
     col_type = "smart" if col.get("ruleSet") else "manual"
@@ -161,19 +139,23 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         preview = "\n".join(preview_lines)
 
-        inp = {"id": col_id}
-        if new_title:
-            inp["title"] = new_title
-        if new_description:
-            inp["descriptionHtml"] = new_description
+        # Mirror the fields the operation will put in the mutation input, only
+        # to label the audit-log line — input-building itself lives in the op.
+        changed_fields = [
+            field
+            for field, value in (("title", new_title), ("descriptionHtml", new_description))
+            if value
+        ]
 
         return write_gate(
             preview=preview,
             confirm=confirm,
-            execute=lambda: client.execute(UPDATE_COLLECTION, {"input": inp}),
+            execute=lambda: ops.update_collection(
+                client, col_id, new_title=new_title, new_description=new_description
+            ),
             mutation_key="collectionUpdate",
             log_name="update_collection",
-            log_description=f"handle={handle} | changes: {[k for k in inp if k != 'id']}",
+            log_description=f"handle={handle} | changes: {changed_fields}",
         )
 
     def _membership_mutation(direction: str, handle: str, product_id: str, confirm: bool) -> str:
@@ -197,7 +179,6 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
 
         col_id = col["id"]
-        product_gid = to_gid("Product", product_id)
 
         preview = (
             f"PREVIEW — {op['present_verb']} product {op['preposition']} collection\n"
@@ -208,10 +189,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not confirm:
             return with_confirm_hint(preview)
 
-        result = client.execute(
-            op["mutation"],
-            {"id": col_id, "productIds": [product_gid]},
-        )
+        result = op["op"](client, col_id, product_id)
         payload = result.get(op["result_key"], {}) or {}
         err = format_user_errors(result, op["result_key"])
         if err:
