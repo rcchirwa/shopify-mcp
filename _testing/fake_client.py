@@ -53,18 +53,47 @@ class FakeClient:
     exception-path handling in write-path tools.
     """
 
-    def __init__(self, responses: Iterable[Any], settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        responses: Iterable[Any],
+        settings: Settings | None = None,
+        fetch_results: Iterable[Any] | None = None,
+    ) -> None:
         self.responses: list[Any] = list(responses)
         self.calls: list[tuple[str, dict[str, Any] | None]] = []
         # Tools that consult client._settings (webhook allowlist, poll_job
         # backoff/timeout) need a real Settings here, not a sentinel.
         self._settings: Settings = settings or _default_test_settings()
+        # Scripted results for fetch_bytes() — the raw-GET seam that media
+        # tools now go through (Story 10.24 / A6). Each item is either a
+        # (body, content_type) tuple returned to the caller, or a
+        # BaseException instance raised in its place. Defaults to a single
+        # successful image download so upload happy-path tests don't have to
+        # spell it out; tests exercising download failures pass their own.
+        self.fetch_results: list[Any] = (
+            list(fetch_results) if fetch_results is not None else [(b"fakejpgbytes", "image/jpeg")]
+        )
+        self.fetch_calls: list[tuple[str, int, bool]] = []
 
     def execute(self, query: str, variables: dict[str, Any] | None = None) -> Any:
         self.calls.append((query, variables))
         if not self.responses:
             raise AssertionError("FakeClient: unexpected extra execute() call")
         item = self.responses.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    def fetch_bytes(
+        self, url: str, *, max_size: int, allow_redirects: bool = False
+    ) -> tuple[bytes, str]:
+        """Mirror of ShopifyClient.fetch_bytes() — returns the next scripted
+        (body, content_type) tuple, or raises a scripted exception. Records the
+        call so tests can assert the SSRF-relevant args (allow_redirects, cap)."""
+        self.fetch_calls.append((url, max_size, allow_redirects))
+        if not self.fetch_results:
+            raise AssertionError("FakeClient: unexpected extra fetch_bytes() call")
+        item = self.fetch_results.pop(0)
         if isinstance(item, BaseException):
             raise item
         return item

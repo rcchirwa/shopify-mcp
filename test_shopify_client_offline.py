@@ -558,6 +558,185 @@ def test_execute_non_dict_raises_shopify_error_no_retry(no_sleep):
 
 
 # ===========================================================================
+# fetch_bytes() — raw-GET path sharing execute()'s backoff (Story 10.24 / A6)
+# ===========================================================================
+
+
+@pytest.fixture(autouse=True)
+def _allow_all_hosts(monkeypatch):
+    """Default the SSRF guard to a no-op so fetch_bytes tests can use
+    unresolvable example.* hosts without real DNS. The SSRF-specific test
+    re-patches it (its setattr runs after this one) to assert the guard fires.
+    Harmless for non-fetch tests, which never call it."""
+    monkeypatch.setattr(sc, "_reject_if_private_host", lambda _url: None)
+
+
+class _FakeHTTPResp:
+    """Minimal stand-in for requests.Response on the streaming GET path."""
+
+    def __init__(self, status_code=200, content=b"", headers=None):
+        self.status_code = status_code
+        self._content = content
+        self.headers = headers or {}
+
+    def iter_content(self, chunk_size=65536):
+        if not self._content:
+            return iter([])
+        mid = max(1, len(self._content) // 2)
+        return iter([self._content[:mid], self._content[mid:]])
+
+
+def test_fetch_bytes_success_returns_body_and_content_type(monkeypatch):
+    client = _make_client()
+    # Content-Length present and within cap exercises the advisory check's
+    # not-over branch alongside the happy return.
+    resp = _FakeHTTPResp(200, b"imgbytes", {"Content-Type": "image/jpeg", "Content-Length": "8"})
+    monkeypatch.setattr(sc.requests, "get", lambda *a, **k: resp)
+    body, ct = client.fetch_bytes("https://cdn.example/x.jpg", max_size=1000)
+    assert body == b"imgbytes"
+    assert ct == "image/jpeg"
+
+
+def test_fetch_bytes_runs_ssrf_guard_before_request(monkeypatch):
+    client = _make_client()
+    got: list[int] = []
+    monkeypatch.setattr(sc.requests, "get", lambda *a, **k: got.append(1))
+
+    def _boom(_url):
+        raise RuntimeError("blocked SSRF to internal resources")
+
+    monkeypatch.setattr(sc, "_reject_if_private_host", _boom)
+    with pytest.raises(RuntimeError, match="blocked SSRF"):
+        client.fetch_bytes("https://internal/x.jpg", max_size=1000)
+    assert got == []  # request must not be issued once the guard rejects
+
+
+def test_fetch_bytes_sends_shared_user_agent_and_download_timeout(monkeypatch):
+    captured: dict = {}
+
+    def fake_get(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return _FakeHTTPResp(200, b"x", {"Content-Type": "image/jpeg"})
+
+    client = _make_client(settings=_test_settings(http_user_agent="ua/9", download_timeout_s=7))
+    monkeypatch.setattr(sc.requests, "get", fake_get)
+    client.fetch_bytes("https://cdn.example/x.jpg", max_size=1000)
+    assert captured["headers"]["User-Agent"] == "ua/9"
+    assert captured["timeout"] == 7
+    assert captured["allow_redirects"] is False
+    assert captured["stream"] is True
+
+
+def test_fetch_bytes_refuses_redirect(monkeypatch):
+    client = _make_client()
+    resp = _FakeHTTPResp(302, headers={"Location": "http://10.0.0.5/latest/meta-data/"})
+    monkeypatch.setattr(sc.requests, "get", lambda *a, **k: resp)
+    with pytest.raises(ShopifyError) as exc:
+        client.fetch_bytes("https://attacker/x.jpg", max_size=1000)
+    msg = str(exc.value)
+    assert "302" in msg and "10.0.0.5" in msg and "SSRF" in msg
+
+
+def test_fetch_bytes_non_retryable_4xx_raises_shopify_error(no_sleep, monkeypatch):
+    client = _make_client()
+    monkeypatch.setattr(sc.requests, "get", lambda *a, **k: _FakeHTTPResp(404))
+    with pytest.raises(ShopifyError, match="HTTP 404"):
+        client.fetch_bytes("https://cdn.example/missing.jpg", max_size=1000)
+    assert no_sleep == []  # 4xx is permanent — no backoff
+
+
+def test_fetch_bytes_request_exception_is_permanent(no_sleep, monkeypatch):
+    client = _make_client()
+
+    def boom(*_a, **_k):
+        raise sc.requests.ConnectionError("dns down")
+
+    monkeypatch.setattr(sc.requests, "get", boom)
+    with pytest.raises(ShopifyError, match=r"request failed.*dns down"):
+        client.fetch_bytes("https://cdn.example/x.jpg", max_size=1000)
+    assert no_sleep == []
+
+
+def test_fetch_bytes_retries_retryable_status_then_succeeds(no_sleep, monkeypatch):
+    client = _make_client()
+    responses = [_FakeHTTPResp(503), _FakeHTTPResp(200, b"ok", {"Content-Type": "image/png"})]
+    monkeypatch.setattr(sc.requests, "get", lambda *a, **k: responses.pop(0))
+    body, ct = client.fetch_bytes("https://cdn.example/x.png", max_size=1000)
+    assert body == b"ok"
+    assert ct == "image/png"
+    assert len(no_sleep) == 1
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+def test_fetch_bytes_retries_all_retryable_statuses(status, no_sleep, monkeypatch):
+    client = _make_client()
+    responses = [_FakeHTTPResp(status), _FakeHTTPResp(200, b"ok", {"Content-Type": "image/png"})]
+    monkeypatch.setattr(sc.requests, "get", lambda *a, **k: responses.pop(0))
+    body, _ct = client.fetch_bytes("https://cdn.example/x.png", max_size=1000)
+    assert body == b"ok"
+    assert len(no_sleep) == 1
+
+
+def test_fetch_bytes_exhausts_retries_on_persistent_503(no_sleep, monkeypatch):
+    client = _make_client()
+    monkeypatch.setattr(sc.requests, "get", lambda *a, **k: _FakeHTTPResp(503))
+    with pytest.raises(TransientShopifyError) as exc:
+        client.fetch_bytes("https://cdn.example/x.png", max_size=1000)
+    assert "after 6 attempts" in str(exc.value)
+    assert len(no_sleep) == 5
+
+
+def test_fetch_bytes_shares_execute_backoff_schedule(no_sleep, deterministic_jitter, monkeypatch):
+    # Same capped-exponential schedule as execute() — proves one backoff impl.
+    client = _make_client()
+    monkeypatch.setattr(sc.requests, "get", lambda *a, **k: _FakeHTTPResp(503))
+    with pytest.raises(TransientShopifyError):
+        client.fetch_bytes("https://cdn.example/x.png", max_size=1000)
+    assert no_sleep == [0.5, 1.0, 2.0, 4.0, 8.0]
+
+
+def test_fetch_bytes_content_length_over_cap_rejected_before_streaming(monkeypatch):
+    client = _make_client()
+    resp = _FakeHTTPResp(
+        200, b"ignored", {"Content-Type": "image/jpeg", "Content-Length": str(10_000)}
+    )
+    monkeypatch.setattr(sc.requests, "get", lambda *a, **k: resp)
+    with pytest.raises(ShopifyError, match="exceeds"):
+        client.fetch_bytes("https://cdn.example/huge.jpg", max_size=100)
+
+
+def test_fetch_bytes_stream_over_cap_rejected(monkeypatch):
+    client = _make_client()
+    resp = _FakeHTTPResp(200, b"x" * 100, {"Content-Type": "image/jpeg"})  # no Content-Length
+    monkeypatch.setattr(sc.requests, "get", lambda *a, **k: resp)
+    with pytest.raises(ShopifyError, match="exceeded"):
+        client.fetch_bytes("https://cdn.example/big.jpg", max_size=10)
+
+
+def test_fetch_bytes_empty_chunk_skipped(monkeypatch):
+    client = _make_client()
+
+    class _R(_FakeHTTPResp):
+        def iter_content(self, chunk_size=65536):
+            return iter([b"head", b"", b"tail"])
+
+    resp = _R(200, headers={"Content-Type": "image/jpeg"})
+    monkeypatch.setattr(sc.requests, "get", lambda *a, **k: resp)
+    body, _ct = client.fetch_bytes("https://cdn.example/x.jpg", max_size=1000)
+    assert body == b"headtail"
+
+
+def test_fetch_bytes_missing_content_type_returns_empty_string(monkeypatch):
+    client = _make_client()
+    resp = _FakeHTTPResp(200, b"img", {})
+    monkeypatch.setattr(sc.requests, "get", lambda *a, **k: resp)
+    body, ct = client.fetch_bytes("https://cdn.example/x.jpg", max_size=1000)
+    assert body == b"img"
+    assert ct == ""
+
+
+# ===========================================================================
 # poll_job()
 # ===========================================================================
 

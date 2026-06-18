@@ -12,7 +12,6 @@ Usage:
   pytest test_media_offline.py -v
 """
 
-import socket
 from unittest.mock import patch
 
 import pytest
@@ -21,8 +20,10 @@ from pydantic import SecretStr
 
 from _testing import CapturingServer, FakeClient
 from settings import Settings
+from shopify_client import ShopifyError
 from tools import media
 from tools.media._common import _as_product_gid
+from tools.media._constants import _MAX_IMAGE_BYTES
 from tools.media._graphql import (
     GET_MEDIA_STATUS,
     GET_PRODUCT_MEDIA,
@@ -63,9 +64,9 @@ def _media_settings(**overrides) -> Settings:
     return Settings(**base)
 
 
-def _build(responses):
+def _build(responses, fetch_results=None):
     srv = CapturingServer()
-    fc = FakeClient(responses)
+    fc = FakeClient(responses, fetch_results=fetch_results)
     media.register(srv, fc)
     return srv.tools, fc
 
@@ -322,8 +323,6 @@ def test_upload_execute_happy_path_append():
     )
 
     with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
         patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
         patch("tools.media._upload.time.sleep"),
     ):
@@ -377,8 +376,6 @@ def test_upload_execute_reorder_when_non_append_position():
     )
 
     with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
         patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
         patch("tools.media._upload.time.sleep"),
     ):
@@ -409,8 +406,6 @@ def test_upload_execute_skips_reorder_when_position_equals_append():
     )
 
     with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
         patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
         patch("tools.media._upload.time.sleep"),
     ):
@@ -434,38 +429,33 @@ def test_upload_execute_skips_reorder_when_position_equals_append():
 
 
 def test_upload_download_http_error_labels_download_stage():
-    tools, fc = _build([_product_media_read([])])
-    with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=FakeHTTPResponse(status_code=404)),
-    ):
-        out = tools["upload_product_image"](
-            product_id="123",
-            source="https://cdn.example.com/missing.jpg",
-            confirm=True,
-        )
+    # fetch_bytes now owns HTTP status handling: a non-retryable 4xx surfaces as
+    # a ShopifyError, which the tool labels stage=download.
+    tools, fc = _build(
+        [_product_media_read([])],
+        fetch_results=[ShopifyError("HTTP 404 from source URL")],
+    )
+    out = tools["upload_product_image"](
+        product_id="123",
+        source="https://cdn.example.com/missing.jpg",
+        confirm=True,
+    )
     assert out.startswith("Error at stage=download:"), out
     assert "404" in out
 
 
 def test_upload_non_image_content_type_labels_download_stage():
-    tools, fc = _build([_product_media_read([])])
-    with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch(
-            "tools.media._upload.requests.get",
-            return_value=FakeHTTPResponse(
-                status_code=200,
-                content=b"<html>",
-                headers={"Content-Type": "text/html"},
-            ),
-        ),
-    ):
-        out = tools["upload_product_image"](
-            product_id="123",
-            source="https://cdn.example.com/page.jpg",
-            confirm=True,
-        )
+    # fetch_bytes returns the bytes + raw content-type; the image/* MIME check
+    # stays in _download_image, so a text/html body is rejected here.
+    tools, fc = _build(
+        [_product_media_read([])],
+        fetch_results=[(b"<html>", "text/html")],
+    )
+    out = tools["upload_product_image"](
+        product_id="123",
+        source="https://cdn.example.com/page.jpg",
+        confirm=True,
+    )
     assert out.startswith("Error at stage=download:"), out
     assert "MIME" in out or "mime" in out.lower()
 
@@ -479,8 +469,6 @@ def test_upload_attach_user_errors_labelled_attach_stage():
         ]
     )
     with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
         patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
     ):
         out = tools["upload_product_image"](
@@ -500,8 +488,6 @@ def test_upload_staged_target_put_failure_labels_stage_upload():
         ]
     )
     with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
         patch(
             "tools.media._upload.requests.put",
             return_value=FakeHTTPResponse(status_code=500, text="oops"),
@@ -546,8 +532,6 @@ def test_upload_processing_timeout_returns_success_with_note():
         return tick["t"]
 
     with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
         patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
         patch("tools.media._upload.time.sleep"),
         patch("tools.media._upload.time.monotonic", side_effect=fake_monotonic),
@@ -913,8 +897,6 @@ def test_upload_failed_processing_returns_error_with_cleanup_hint():
         ]
     )
     with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
         patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
         patch("tools.media._upload.time.sleep"),
     ):
@@ -943,8 +925,6 @@ def test_upload_failed_processing_still_reorder_when_position_set():
         ]
     )
     with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
         patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
         patch("tools.media._upload.time.sleep"),
     ):
@@ -966,69 +946,75 @@ def test_upload_failed_processing_still_reorder_when_position_set():
 
 
 def test_upload_ssrf_private_host_labels_download_stage():
-    """End-to-end: an SSRF-private URL is rejected inside `_download_image`,
-    which bubbles up to the caller as `Error at stage=download:`."""
-    tools, fc = _build([_product_media_read([])])
-    with patch(
-        "tools._url_safety.socket.getaddrinfo",
-        return_value=[(socket.AF_INET, 0, 0, "", ("10.0.0.5", 0))],
-    ):
-        out = tools["upload_product_image"](
-            product_id="123",
-            source="https://internal.corp/hero.jpg",
-            confirm=True,
-        )
+    """The SSRF guard now lives inside `client.fetch_bytes()` (the guard's own
+    logic is unit-tested in test_shopify_client_offline.py). Here we assert the
+    rejection surfaces to the caller as `Error at stage=download:`."""
+    tools, fc = _build(
+        [_product_media_read([])],
+        fetch_results=[
+            RuntimeError(
+                "host 'internal.corp' resolves to non-public IP 10.0.0.5 "
+                "— blocked to prevent SSRF to internal resources"
+            )
+        ],
+    )
+    out = tools["upload_product_image"](
+        product_id="123",
+        source="https://internal.corp/hero.jpg",
+        confirm=True,
+    )
     assert out.startswith("Error at stage=download:"), out
     assert "SSRF" in out and "10.0.0.5" in out
 
 
 def test_upload_redirect_response_labels_download_stage():
-    """Regression for the redirect-bypass SSRF (security review H1): a public
-    host that returns 302 with a private-IP Location must NOT be followed —
-    `requests.get(..., allow_redirects=False)` keeps the SSRF guard meaningful
-    by refusing the redirect before the second request is issued."""
-    tools, fc = _build([_product_media_read([])])
-    redirect_resp = FakeHTTPResponse(
-        status_code=302,
-        headers={"Location": "http://10.0.0.5/latest/meta-data/iam/security-credentials/"},
+    """Redirect refusal now happens in fetch_bytes; the tool surfaces it as
+    stage=download. The load-bearing contract at this layer is that the download
+    is delegated with allow_redirects=False — if a future refactor flips that
+    flag, the SSRF-redirect bypass returns."""
+    tools, fc = _build(
+        [_product_media_read([])],
+        fetch_results=[
+            ShopifyError(
+                "HTTP 302 redirect to http://10.0.0.5/latest/meta-data/ — refused; "
+                "redirects can bypass the SSRF guard. Supply the final URL directly."
+            )
+        ],
     )
-    with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=redirect_resp) as mock_get,
-    ):
-        out = tools["upload_product_image"](
-            product_id="123",
-            source="https://attacker.example/redirect-to-imds.jpg",
-            confirm=True,
-        )
+    out = tools["upload_product_image"](
+        product_id="123",
+        source="https://attacker.example/redirect-to-imds.jpg",
+        confirm=True,
+    )
     assert out.startswith("Error at stage=download:"), out
     assert "302" in out
     assert "10.0.0.5" in out
     assert "SSRF" in out
-    # Crucial: `requests.get` was called exactly once with allow_redirects=False —
-    # if a future refactor flips that flag, the bypass returns.
-    assert mock_get.call_count == 1
-    assert mock_get.call_args.kwargs.get("allow_redirects") is False
+    # _download_image must delegate with allow_redirects=False and the image cap.
+    assert len(fc.fetch_calls) == 1
+    url, max_size, allow_redirects = fc.fetch_calls[0]
+    assert url == "https://attacker.example/redirect-to-imds.jpg"
+    assert allow_redirects is False
+    assert max_size == _MAX_IMAGE_BYTES
 
 
 def test_upload_redirect_to_public_host_also_refused():
-    """We refuse ALL 3xx, not just SSRF-shaped ones. Documents the intent so a
-    future contributor who 'fixes' this test by re-enabling redirect-following
-    for public-to-public hops re-opens the bypass surface."""
-    tools, fc = _build([_product_media_read([])])
-    redirect_resp = FakeHTTPResponse(
-        status_code=301,
-        headers={"Location": "https://other-public.example/hero.jpg"},
+    """We refuse ALL 3xx, not just SSRF-shaped ones — documents that fetch_bytes
+    rejects even public-to-public redirect hops and the tool labels it."""
+    tools, fc = _build(
+        [_product_media_read([])],
+        fetch_results=[
+            ShopifyError(
+                "HTTP 301 redirect to https://other-public.example/hero.jpg — refused; "
+                "redirects can bypass the SSRF guard. Supply the final URL directly."
+            )
+        ],
     )
-    with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=redirect_resp),
-    ):
-        out = tools["upload_product_image"](
-            product_id="123",
-            source="https://cdn.example.com/moved.jpg",
-            confirm=True,
-        )
+    out = tools["upload_product_image"](
+        product_id="123",
+        source="https://cdn.example.com/moved.jpg",
+        confirm=True,
+    )
     assert out.startswith("Error at stage=download:"), out
     assert "301" in out
     assert "other-public.example" in out
@@ -1107,103 +1093,50 @@ def test_format_bytes_kb_and_mb_branches():
     assert _format_bytes(5 * 1024 * 1024) == "5.00 MB"
 
 
-# ---------- _download_image: request failure, caps, missing content-type ----------
+# ---------- _download_image: delegates HTTP to fetch_bytes, keeps MIME logic ----------
+#
+# The HTTP mechanics (SSRF guard, redirect refusal, size cap, streaming, retry,
+# transport errors) moved into ShopifyClient.fetch_bytes() and are unit-tested
+# in test_shopify_client_offline.py. What stays in _download_image — delegation
+# with the right args, filename derivation, and MIME validation — is tested here.
 
 
-def test_download_image_request_exception_wrapped():
-    with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch(
-            "tools.media._upload.requests.get", side_effect=_requests.ConnectionError("dns timeout")
-        ),
-        pytest.raises(RuntimeError) as exc,
-    ):
-        _download_image("https://cdn.example.com/a.jpg", _media_settings())
-    msg = str(exc.value)
-    assert "request failed" in msg and "dns timeout" in msg
+def _fake_client(fetch_results):
+    """A FakeClient with no GraphQL script — only fetch_bytes is exercised."""
+    return FakeClient([], fetch_results=fetch_results)
 
 
-def test_download_image_content_length_over_cap_rejected_before_streaming():
-    """A Content-Length header advertising a file over 20MB must be refused
-    before we pull any bytes into memory."""
-    headers = {"Content-Length": str(25 * 1024 * 1024), "Content-Type": "image/jpeg"}
-    fake = FakeHTTPResponse(status_code=200, content=b"ignored", headers=headers)
-    with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=fake),
-        pytest.raises(RuntimeError, match="exceeds Shopify"),
-    ):
-        _download_image("https://cdn.example.com/huge.jpg", _media_settings())
-
-
-def test_download_image_empty_chunk_in_stream_is_skipped():
-    """iter_content can yield empty bytes between real chunks (keep-alive
-    semantics); `if not chunk: continue` must skip without appending."""
-
-    class _ChunkedResponse(FakeHTTPResponse):
-        def iter_content(self, chunk_size=65536):
-            return iter([b"head", b"", b"tail"])
-
-    resp = _ChunkedResponse(
-        status_code=200,
-        headers={"Content-Type": "image/jpeg"},
-    )
-    with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=resp),
-    ):
-        body, filename, ct = _download_image("https://cdn.example.com/ok.jpg", _media_settings())
-    assert body == b"headtail"
+def test_download_image_delegates_to_fetch_bytes_with_cap_and_no_redirects():
+    fc = _fake_client([(b"jpegbytes", "image/jpeg")])
+    body, filename, ct = _download_image(fc, "https://cdn.example.com/photo.jpg")
+    assert body == b"jpegbytes"
+    assert filename == "photo.jpg"
     assert ct == "image/jpeg"
+    # The SSRF-relevant contract: image cap + redirects refused.
+    assert fc.fetch_calls == [("https://cdn.example.com/photo.jpg", _MAX_IMAGE_BYTES, False)]
 
 
-def test_download_image_stream_over_cap_rejected():
-    """No Content-Length → streaming loop enforces the cap. Patch the cap
-    down so we can exercise the branch without a 20MB fixture.
-
-    Brittleness note: this couples to `_MAX_IMAGE_BYTES` being a
-    module-level constant. If the cap ever moves to a config object / env
-    var, `patch("tools.media._upload._MAX_IMAGE_BYTES", 10)` would become a no-op
-    and this test would silently stop exercising the branch. The
-    `"10 B exceeded"` assertion below is the tripwire — if the patch stops
-    governing the rejection, the error message won't carry the tiny cap and
-    the assertion fails loudly instead of passing vacuously.
-    """
-    resp = FakeHTTPResponse(
-        status_code=200,
-        content=b"x" * 100,
-        headers={"Content-Type": "image/jpeg"},  # no Content-Length
-    )
-    with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=resp),
-        patch("tools.media._upload._MAX_IMAGE_BYTES", 10),
-        pytest.raises(RuntimeError) as exc,
-    ):
-        _download_image("https://cdn.example.com/big.jpg", _media_settings())
-    msg = str(exc.value)
-    assert "exceeded" in msg
-    assert "10 B" in msg, (
-        f"expected the patched 10-byte cap to appear in the error "
-        f"message (proves the patch still governs the rejection); got {msg!r}"
-    )
+def test_download_image_strips_content_type_params_and_lowercases():
+    fc = _fake_client([(b"img", "Image/JPEG; charset=binary")])
+    _body, _filename, ct = _download_image(fc, "https://cdn.example.com/a.JPG")
+    assert ct == "image/jpeg"
 
 
 def test_download_image_guesses_mime_when_content_type_missing():
-    """No Content-Type header → fall back to mimetypes.guess_type on the
-    URL's filename extension."""
-    resp = FakeHTTPResponse(
-        status_code=200,
-        content=b"jpegbytes",
-        headers={},  # no Content-Type
-    )
-    with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=resp),
-    ):
-        _, filename, ct = _download_image("https://cdn.example.com/photo.jpg", _media_settings())
+    """fetch_bytes returns an empty content-type → fall back to
+    mimetypes.guess_type on the URL's filename extension."""
+    fc = _fake_client([(b"jpegbytes", "")])
+    _body, filename, ct = _download_image(fc, "https://cdn.example.com/photo.jpg")
     assert ct == "image/jpeg"
     assert filename == "photo.jpg"
+
+
+def test_download_image_rejects_when_type_unknown_and_unguessable():
+    """Empty content-type and an extension mimetypes can't map → '(unknown)'
+    type, rejected as non-image."""
+    fc = _fake_client([(b"data", "")])
+    with pytest.raises(RuntimeError, match="unsupported MIME"):
+        _download_image(fc, "https://cdn.example.com/file")  # no extension to guess from
 
 
 # ---------- _upload_bytes_to_target: request exception ----------
@@ -1236,25 +1169,6 @@ def test_upload_bytes_to_target_missing_url_rejected():
 
 
 # ---------- shared HTTP policy: User-Agent on GET/PUT + config-driven timeout ----------
-
-
-def test_download_image_sends_configured_user_agent():
-    """The image-download GET must carry the configured User-Agent header so
-    the source host sees an app identifier rather than bare python-requests."""
-    captured: dict = {}
-    resp = FakeHTTPResponse(status_code=200, content=b"img", headers={"Content-Type": "image/jpeg"})
-
-    def fake_get(url, **kwargs):
-        captured.update(kwargs)
-        return resp
-
-    s = _media_settings(http_user_agent="shopify-mcp-test/1.2")
-    with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", side_effect=fake_get),
-    ):
-        _download_image("https://cdn.example.com/ok.jpg", s)
-    assert captured["headers"]["User-Agent"] == "shopify-mcp-test/1.2"
 
 
 def test_upload_bytes_to_target_sends_user_agent_and_config_timeout():
@@ -1314,8 +1228,6 @@ def test_upload_poll_transient_exception_is_swallowed():
         ]
     )
     with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
         patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
         patch("tools.media._upload.time.sleep"),
     ):
@@ -1470,15 +1382,11 @@ def test_upload_staged_uploads_create_exception_labels_stage_upload():
             RuntimeError("scope error: write_products missing"),
         ]
     )
-    with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
-    ):
-        out = tools["upload_product_image"](
-            product_id="123",
-            source="https://cdn.example.com/a.jpg",
-            confirm=True,
-        )
+    out = tools["upload_product_image"](
+        product_id="123",
+        source="https://cdn.example.com/a.jpg",
+        confirm=True,
+    )
     assert out.startswith("Error at stage=stage_upload:")
     assert "scope error" in out
 
@@ -1495,15 +1403,11 @@ def test_upload_staged_uploads_user_errors_surfaced():
             },
         ]
     )
-    with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
-    ):
-        out = tools["upload_product_image"](
-            product_id="123",
-            source="https://cdn.example.com/a.jpg",
-            confirm=True,
-        )
+    out = tools["upload_product_image"](
+        product_id="123",
+        source="https://cdn.example.com/a.jpg",
+        confirm=True,
+    )
     assert out.startswith("Error at stage=stage_upload:")
     assert "invalid mimeType" in out
 
@@ -1517,15 +1421,11 @@ def test_upload_staged_uploads_empty_targets_reported():
             {"stagedUploadsCreate": {"stagedTargets": [], "userErrors": []}},
         ]
     )
-    with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
-    ):
-        out = tools["upload_product_image"](
-            product_id="123",
-            source="https://cdn.example.com/a.jpg",
-            confirm=True,
-        )
+    out = tools["upload_product_image"](
+        product_id="123",
+        source="https://cdn.example.com/a.jpg",
+        confirm=True,
+    )
     assert out.startswith("Error at stage=stage_upload:")
     assert "stagedTargets" in out
 
@@ -1539,8 +1439,6 @@ def test_upload_product_create_media_exception_labels_attach_stage():
         ]
     )
     with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
         patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
     ):
         out = tools["upload_product_image"](
@@ -1561,8 +1459,6 @@ def test_upload_attach_returns_empty_media_reported():
         ]
     )
     with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
         patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
     ):
         out = tools["upload_product_image"](
@@ -1600,8 +1496,6 @@ def test_upload_reorder_exception_appends_failure_note_still_confirms():
         ]
     )
     with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
         patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
         patch("tools.media._upload.time.sleep"),
     ):
@@ -1627,8 +1521,6 @@ def test_upload_reorder_media_user_errors_append_note():
         ]
     )
     with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
         patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
         patch("tools.media._upload.time.sleep"),
     ):
@@ -1659,8 +1551,6 @@ def test_upload_reorder_polls_job_when_not_done():
         ]
     )
     with (
-        patch("tools.media._upload._reject_if_private_host", return_value=None),
-        patch("tools.media._upload.requests.get", return_value=_make_http_response()),
         patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
         patch("tools.media._upload.time.sleep"),
     ):

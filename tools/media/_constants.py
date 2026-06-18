@@ -4,14 +4,10 @@
 # avoid uploading bytes that can't be attached.
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024
 
-# Budget for the download step. Large files over slow links blow through this —
-# acceptable for v1, caller can retry.
-#
-# This is one of three HTTP timeouts in the codebase; the other two live on
-# Settings so ops can tune them via env: `Settings.staged_upload_timeout_s`
-# (the staged-upload PUT in _upload.py) and `Settings.request_timeout_s` (the
-# gql transport in shopify_client.py). See TECH_DEBT N4.
-_IMAGE_DOWNLOAD_TIMEOUT_S = 30
+# The image-download timeout now lives on Settings (`download_timeout_s`),
+# alongside `staged_upload_timeout_s` and `request_timeout_s` — all three HTTP
+# timeouts are config-driven after Story 10.24 / A6. The download GET itself
+# runs through ShopifyClient.fetch_bytes().
 
 # Budget for waiting on newly-attached media to leave PROCESSING. Shopify
 # processing regularly exceeds any reasonable synchronous wait; we keep the

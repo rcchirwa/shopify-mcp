@@ -7,9 +7,11 @@ import logging
 import random
 import re
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
+import requests
 from dotenv import load_dotenv
 from gql import Client, gql
 from gql.transport.exceptions import TransportQueryError, TransportServerError
@@ -17,6 +19,11 @@ from gql.transport.requests import RequestsHTTPTransport
 
 from logging_config import configure_logging
 from settings import Settings
+from tools._http import default_headers
+from tools._url_safety import _reject_if_private_host
+
+# Return type of the callable handed to ShopifyClient._with_retry.
+_T = TypeVar("_T")
 
 # Some Shopify mutations (collectionAddProductsV2, collectionRemoveProducts, …)
 # return a Job node rather than completing inline. `node(id)` lets us resolve
@@ -174,43 +181,50 @@ class ShopifyClient:
             fetch_schema_from_transport=False,
         )
 
-    def execute(self, query_str: str, variables: dict | None = None) -> dict:
-        gql_query = gql(query_str)
+    def _with_retry(self, attempt_fn: Callable[[], _T], *, label: str) -> _T:
+        """Run ``attempt_fn`` with capped exponential backoff + jitter.
+
+        The single backoff implementation shared by :meth:`execute` and
+        :meth:`fetch_bytes` (A6 — exactly one retry loop). ``attempt_fn`` runs
+        one attempt and either returns a result, raises :class:`ShopifyError`
+        for a permanent failure (propagated immediately — no retry), or raises
+        :class:`TransientShopifyError` for a retryable one (retried up to
+        ``retry_max_attempts``, then re-raised once with an "after N attempts"
+        suffix so callers can see the budget was exhausted).
+        """
         max_attempts = self._settings.retry_max_attempts
         base_s = self._settings.retry_base_s
         cap_s = self._settings.retry_cap_s
+        for attempt in range(max_attempts + 1):
+            try:
+                return attempt_fn()
+            except TransientShopifyError as e:
+                if attempt < max_attempts:
+                    delay = _backoff_delay(attempt, base=base_s, cap=cap_s, jitter=True)
+                    logger.warning("retryable %s attempt=%d sleep=%.2fs", label, attempt, delay)
+                    time.sleep(delay)
+                    continue
+                raise TransientShopifyError(f"{e} after {attempt + 1} attempts") from e
+        raise TransientShopifyError(f"{label} retry loop exhausted")  # pragma: no cover
+
+    def execute(self, query_str: str, variables: dict | None = None) -> dict:
+        gql_query = gql(query_str)
         _m = _GQL_OP_NAME_RE.search(query_str)
         op_name = _m.group(1) if _m else "<anonymous>"
         logger.debug("gql op=%s variables=%s", op_name, list((variables or {}).keys()))
-        for attempt in range(max_attempts + 1):
+
+        def _attempt() -> dict:
             try:
                 result = self._client.execute(gql_query, variable_values=variables or {})
             except TransportQueryError as e:
                 if _is_throttled(e.errors):
-                    if attempt < max_attempts:
-                        delay = _backoff_delay(attempt, base=base_s, cap=cap_s, jitter=True)
-                        logger.warning(
-                            "throttled op=%s attempt=%d sleep=%.2fs", op_name, attempt, delay
-                        )
-                        time.sleep(delay)
-                        continue
                     raise TransientShopifyError(
-                        f"Shopify GraphQL THROTTLED after {attempt + 1} attempts: "
-                        f"{_format_errors(e.errors)}"
+                        f"Shopify GraphQL THROTTLED: {_format_errors(e.errors)}"
                     ) from e
                 raise ShopifyError(f"Shopify GraphQL error: {_format_errors(e.errors)}") from e
             except TransportServerError as e:
                 if _is_retryable_http(e):
-                    if attempt < max_attempts:
-                        delay = _backoff_delay(attempt, base=base_s, cap=cap_s, jitter=True)
-                        logger.warning(
-                            "retryable_http op=%s attempt=%d sleep=%.2fs", op_name, attempt, delay
-                        )
-                        time.sleep(delay)
-                        continue
-                    raise TransientShopifyError(
-                        f"Shopify HTTP error after {attempt + 1} attempts: {e!s}"
-                    ) from e
+                    raise TransientShopifyError(f"Shopify HTTP error: {e!s}") from e
                 raise ShopifyError(f"Shopify HTTP error: {e!s}") from e
 
             if not isinstance(result, dict):
@@ -222,7 +236,85 @@ class ShopifyClient:
                 )
             return result
 
-        raise TransientShopifyError("Shopify retry loop exhausted")  # pragma: no cover
+        return self._with_retry(_attempt, label=f"op={op_name}")
+
+    def fetch_bytes(
+        self,
+        url: str,
+        *,
+        max_size: int,
+        allow_redirects: bool = False,
+    ) -> tuple[bytes, str]:
+        """Fetch raw bytes from a caller-supplied URL through the shared policy.
+
+        The single chokepoint for non-GraphQL GETs (A6): runs the SSRF guard,
+        sends the shared User-Agent (``tools._http.default_headers``), uses the
+        configured download timeout, streams with a hard ``max_size`` cap, and
+        retries retryable statuses (429/5xx) using the same backoff as
+        :meth:`execute` via :meth:`_with_retry`. Returns ``(body, content_type)``
+        on a 2xx response; ``content_type`` is the raw ``Content-Type`` header
+        (possibly empty) for the caller to validate.
+
+        Raises :class:`ShopifyError` on a permanent failure (a refused redirect
+        with ``allow_redirects=False``, a non-retryable ``>= 400`` status, a
+        transport error, or the size cap being exceeded) and
+        :class:`TransientShopifyError` when a retryable status outlives the
+        retry budget.
+        """
+        # SSRF guard runs once, on the original URL, before any request — its
+        # verdict can't change between retries, so it sits outside the loop.
+        _reject_if_private_host(url)
+        headers = default_headers(self._settings)
+        timeout = self._settings.download_timeout_s
+
+        def _attempt() -> tuple[bytes, str]:
+            try:
+                resp = requests.get(
+                    url,
+                    stream=True,
+                    timeout=timeout,
+                    allow_redirects=allow_redirects,
+                    headers=headers,
+                )
+            except requests.RequestException as e:
+                # A transport error (DNS, connection reset, read timeout) is
+                # treated as permanent here — mirrors execute(), which only
+                # retries on parsed transient statuses, not raw socket errors.
+                raise ShopifyError(f"request failed: {e}") from e
+
+            status = resp.status_code
+            # `allow_redirects=False` makes a 3xx a terminal response. Refuse it:
+            # following a redirect would re-issue the request to the Location
+            # host without re-running the SSRF guard, re-opening the bypass.
+            if 300 <= status < 400:
+                location = resp.headers.get("Location", "(no Location header)")
+                raise ShopifyError(
+                    f"HTTP {status} redirect to {location} — refused; redirects can "
+                    f"bypass the SSRF guard. Supply the final URL directly."
+                )
+            if status in _RETRYABLE_HTTP_STATUSES:
+                raise TransientShopifyError(f"HTTP {status} from source URL")
+            if status >= 400:
+                raise ShopifyError(f"HTTP {status} from source URL")
+
+            # Content-Length is advisory — refuse an over-cap file before pulling
+            # bytes; the streaming loop below enforces the cap again regardless.
+            cl = resp.headers.get("Content-Length")
+            if cl and cl.isdigit() and int(cl) > max_size:
+                raise ShopifyError(f"source is {int(cl)} bytes — exceeds the {max_size} byte cap")
+
+            buf = bytearray()
+            for chunk in resp.iter_content(chunk_size=65536):
+                if not chunk:
+                    continue
+                buf.extend(chunk)
+                if len(buf) > max_size:
+                    raise ShopifyError(f"source exceeded the {max_size} byte cap during download")
+
+            content_type = resp.headers.get("Content-Type") or ""
+            return bytes(buf), content_type
+
+        return self._with_retry(_attempt, label=f"fetch {url}")
 
     def paginate(
         self,
