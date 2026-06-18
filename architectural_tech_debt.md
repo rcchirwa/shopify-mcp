@@ -19,7 +19,7 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 | 1 | A3 | Pagination helper for list reads — *helper shipped + read-path adoption Story 10.16* | Code | 2 | 3 | 3 | **15** |
 | 2 | A2 | `write_gate()` helper collapsing preview/confirm/error/audit boilerplate — *closed Story 10.22; 9 tools migrated; remaining tools triaged and deliberately excluded* | Code | 4 | 2 | 4 | **12** |
 | 3 | A5 | `shopify/` subpackage extraction (`queries/` + `operations/`) with GraphQL fragments | Architecture | 2 | 1 | 2 | **12** |
-| 4 | A6 | HTTP client unification (single wrapper for `gql` + `requests`) — *links to N4 in TECH_DEBT.md* | Architecture | 2 | 2 | 3 | **12** |
+| 4 | A6 | HTTP client unification (single wrapper for `gql` + `requests`) — *closed: policy half N4/Story 10.21, transport half Story 10.24 (`client.fetch_bytes()` + shared `_with_retry`)* | Architecture | 2 | 2 | 3 | **12** |
 | 5 | A8 | Metadata `TTLCache` for locations / channels / shop info | Code | 2 | 2 | 4 | **8** |
 | 6 | A10 | Committed `uv.lock` for CI reproducibility | Dependency | 1 | 1 | 5 | **2** |
 
@@ -113,6 +113,7 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 ### A6 — HTTP client unification
 
 - **Category:** Architecture
+- **Status:** ✅ **closed — Story 10.24.** Both halves done. The **policy** half (shared User-Agent + config-driven timeouts across both stacks) closed under **N4 / Story 10.21 (PR #87)**. This story closed the **transport** half: `ShopifyClient.fetch_bytes(url, *, max_size, allow_redirects=False)` now wraps the image-download GET with the SSRF guard, shared headers, the `Settings.download_timeout_s` timeout, a streaming size cap, redirect refusal, and retry on retryable statuses (429/5xx). The gql retry loop and `fetch_bytes` now share **one** backoff implementation (`ShopifyClient._with_retry`), so there is no duplicated retry logic. The staged-upload PUT deliberately stays a single-shot `requests.put` (non-idempotent large signed upload — see the grooming decision on the Story 10.24 card and the code comment in `_upload_bytes_to_target`); it still shares the HTTP *policy* via `default_headers`, only automatic retry is excluded.
 - **Cross-reference:** TECH_DEBT.md item **N4** (watch). N4's trigger is "a second tool starts using `requests` directly." A6 is the architectural framing of the same concern.
 - **Impact (2):** one retry policy, one timeout config, one User-Agent. Foundation for A1's retry/backoff to apply uniformly.
 - **Risk (2):** today [tools/media/_upload.py:18](tools/media/_upload.py:18) uses `requests` directly for image downloads alongside `gql`'s `RequestsHTTPTransport`. Two stacks means two failure modes the user has to learn.
@@ -160,7 +161,7 @@ Designed to interleave with feature work, not block it. No phase is more than ~3
 | Day | Item | Why |
 |-----|------|-----|
 | 1–2 | **A5** `shopify/` subpackage *(in progress — Story 10.23 landed the structure + `products` pilot; remaining domains migrate one per PR)* | Restructure before the codebase grows past the size where mechanical reshuffling is cheap. |
-| 2–3 | **A6** HTTP unification | Pairs naturally with A5; closes TECH_DEBT.md N4. |
+| 2–3 | ~~**A6** HTTP unification~~ *(closed — Story 10.24; `client.fetch_bytes()` + shared `_with_retry`. Policy half was N4/Story 10.21.)* | Pairs naturally with A5; closes TECH_DEBT.md N4. |
 
 ### Backlog (don't pre-refactor)
 

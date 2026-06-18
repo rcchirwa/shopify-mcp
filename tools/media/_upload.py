@@ -24,14 +24,12 @@ from tools._gid import from_gid
 from tools._http import default_headers
 from tools._log import log_write
 from tools._response import extract_user_errors, with_confirm_hint
-from tools._url_safety import _reject_if_private_host
 from tools.media._common import (
     _as_product_gid,
     _extract_media_user_errors,
     _fmt_media_user_errors,
 )
 from tools.media._constants import (
-    _IMAGE_DOWNLOAD_TIMEOUT_S,
     _MAX_IMAGE_BYTES,
     _MEDIA_PAGE_CAP,
     _MEDIA_PROCESSING_POLL_INTERVAL_S,
@@ -65,59 +63,24 @@ def _filename_from_url(url: str) -> str:
     return name or "upload.bin"
 
 
-def _download_image(url: str, settings: Settings) -> tuple[bytes, str, str]:
+def _download_image(client: ShopifyClient, url: str) -> tuple[bytes, str, str]:
     """Download an image URL and return (bytes, filename, mime_type).
 
-    Raises RuntimeError with a human-readable detail on any failure. Caller is
-    expected to wrap the call and label it as `stage=download` on error.
-    `settings` supplies the shared HTTP header policy (User-Agent).
+    Delegates the HTTP fetch to `client.fetch_bytes()`, the single chokepoint
+    that owns the SSRF guard, shared User-Agent, configured download timeout,
+    streaming size cap, redirect refusal, and retry on retryable statuses
+    (Story 10.24 / A6). This function keeps the media-specific concerns:
+    deriving a filename and validating the MIME type is an image.
+
+    Raises on any failure — a `ShopifyError`/`TransientShopifyError` from
+    `fetch_bytes` or a `RuntimeError` for a non-image type. Caller wraps the
+    call and labels it `stage=download`.
     """
-    _reject_if_private_host(url)
-    try:
-        resp = requests.get(
-            url,
-            stream=True,
-            timeout=_IMAGE_DOWNLOAD_TIMEOUT_S,
-            allow_redirects=False,
-            headers=default_headers(settings),
-        )
-    except requests.RequestException as e:
-        raise RuntimeError(f"request failed: {e}") from e
-
-    # `allow_redirects=False` is load-bearing: the SSRF guard ran on `url`,
-    # but `requests` would otherwise follow a 302 to an internal IP without
-    # re-validating. Refuse all 3xx and ask the operator to supply the final
-    # URL directly — image hosts that redirect are uncommon.
-    if 300 <= resp.status_code < 400:
-        raise RuntimeError(
-            f"HTTP {resp.status_code} redirect to "
-            f"{resp.headers.get('Location', '(no Location header)')} — "
-            f"refused; redirects can bypass the SSRF guard. "
-            f"Supply the final URL directly."
-        )
-
-    if resp.status_code >= 400:
-        raise RuntimeError(f"HTTP {resp.status_code} from source URL")
-
-    # Refuse huge files before we pull all bytes into memory. `Content-Length`
-    # is advisory — the streaming loop below enforces the cap again.
-    cl = resp.headers.get("Content-Length")
-    if cl and cl.isdigit() and int(cl) > _MAX_IMAGE_BYTES:
-        raise RuntimeError(
-            f"source is {_format_bytes(cl)} — exceeds Shopify's "
-            f"{_format_bytes(_MAX_IMAGE_BYTES)} image cap"
-        )
-
-    buf = bytearray()
-    for chunk in resp.iter_content(chunk_size=65536):
-        if not chunk:
-            continue
-        buf.extend(chunk)
-        if len(buf) > _MAX_IMAGE_BYTES:
-            raise RuntimeError(f"source exceeded {_format_bytes(_MAX_IMAGE_BYTES)} during download")
-
+    body, content_type_raw = client.fetch_bytes(
+        url, max_size=_MAX_IMAGE_BYTES, allow_redirects=False
+    )
     filename = _filename_from_url(url)
-    content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    content_type = (content_type_raw or "").split(";")[0].strip().lower()
     if not content_type:
         guessed, _ = mimetypes.guess_type(filename)
         content_type = (guessed or "").lower()
@@ -125,7 +88,7 @@ def _download_image(url: str, settings: Settings) -> tuple[bytes, str, str]:
         raise RuntimeError(
             f"unsupported MIME type: {content_type or '(unknown)'} — v1 accepts images only"
         )
-    return bytes(buf), filename, content_type
+    return body, filename, content_type
 
 
 def _upload_bytes_to_target(target: dict, image_bytes: bytes, settings: Settings) -> None:
@@ -133,6 +96,14 @@ def _upload_bytes_to_target(target: dict, image_bytes: bytes, settings: Settings
 
     Raises RuntimeError on non-2xx. Caller labels the failure stage.
     `settings` supplies the shared User-Agent and the PUT timeout.
+
+    Deliberately NOT routed through a retrying client method (Story 10.24 / A6
+    grooming decision): unlike the idempotent image-download GET, this is a
+    large, non-idempotent PUT to a single-use signed target. Re-issuing it on a
+    transient error risks a partial/duplicate upload against an expiring
+    signature, so it stays a single-shot `requests.put`. It still shares the
+    HTTP *policy* (User-Agent + config timeout via `default_headers`) — only
+    automatic retry is excluded, by design.
     """
     url = target.get("url")
     if not url:
@@ -400,7 +371,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         # Stage 1: download bytes.
         try:
-            image_bytes, filename, mime_type = _download_image(source, client._settings)
+            image_bytes, filename, mime_type = _download_image(client, source)
         except Exception as e:
             return f"Error at stage=download: {e}"
 

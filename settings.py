@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     # stack). Lives here so both HTTP stacks read their timeouts from Settings
     # rather than one stack carrying a hardcoded literal (TECH_DEBT N4).
     staged_upload_timeout_s: int = 60
+    # Timeout for the image-download GET (ShopifyClient.fetch_bytes). Promoted
+    # from the old tools.media._constants._IMAGE_DOWNLOAD_TIMEOUT_S literal so
+    # the third and final HTTP timeout also lives on Settings — completing the
+    # transport-unification half of A6 (Story 10.24; policy half was N4 / 10.21).
+    download_timeout_s: int = 30
     job_poll_timeout_s: float = 10.0
     retry_max_attempts: int = 5
     retry_base_s: float = 0.5
