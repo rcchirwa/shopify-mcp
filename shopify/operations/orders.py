@@ -26,6 +26,10 @@ def read_orders(client: GraphQLClient, first: int) -> list[dict[str, Any]]:
 
     ``first`` is the already-clamped count the tool passes through (≤ 250); the
     operation does no clamping of its own."""
+    # Single execute, not paginate: each order's lineItems(first: 50) is a
+    # connection nested inside the orders connection, which client.paginate()
+    # cannot walk (see the NOTE above GET_ORDERS in shopify.queries.orders).
+    # read_order, by contrast, paginates the top-level lineItems of one order.
     data = client.execute(GET_ORDERS, {"first": first})
     return data.get("orders", {}).get("nodes", [])
 
