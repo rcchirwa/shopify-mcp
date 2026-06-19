@@ -1,6 +1,11 @@
 """
 Inventory tools — read and set inventory levels.
 
+Thin MCP-tool surface over ``shopify.operations.inventory``: this module keeps
+param coercion, the (variant, location) bucketing, the preview/confirm flow, and
+output formatting; the GraphQL strings live in ``shopify.queries.inventory`` and
+the data access in ``shopify.operations.inventory`` (Story 10.28 / A5).
+
 update_inventory requires confirm=True.
 """
 
@@ -8,6 +13,13 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from shopify.operations import inventory as ops
+from shopify.queries.inventory import (
+    GET_INVENTORY_ITEM,
+    GET_PRODUCT_INVENTORY,
+    SET_INVENTORY,
+    UPDATE_INVENTORY_ITEM_TRACKED,
+)
 from shopify_client import ShopifyClient
 from tools._filters import filter_variant_targets
 from tools._gid import from_gid, to_gid
@@ -15,76 +27,16 @@ from tools._log import log_write
 from tools._response import format_user_errors, format_user_errors_joined, with_confirm_hint
 from tools._write_tool import write_gate
 
-# Page size for variant pagination via `paginate()`. Controls how many variants
-# are fetched per Shopify request; passed as page_size= to client.paginate().
-_VARIANTS_PAGE_CAP = 50
-
-# 2024-07+ replaced InventoryLevel.available with
-# `quantities(names: [...]) { name quantity }`. The `available` name is the
-# direct equivalent of the old field.
-GET_PRODUCT_INVENTORY = """
-query GetProductInventory($id: ID!, $first: Int!, $after: String) {
-  product(id: $id) {
-    title
-    variants(first: $first, after: $after) {
-      nodes {
-        id
-        title
-        sku
-        inventoryItem {
-          id
-          tracked
-          inventoryLevels(first: 10) {
-            nodes {
-              quantities(names: ["available"]) { name quantity }
-              location { id name }
-            }
-          }
-        }
-      }
-      pageInfo { hasNextPage endCursor }
-    }
-  }
-}
-"""
-
-# Per-variant toggle for InventoryItem.tracked. When tracked=false, Shopify's
-# storefront reports the variant as available regardless of inventoryPolicy or
-# quantity — the vault-product skill needs tracked=true before DENY + 0 take
-# effect at the theme layer. Shopify Admin API 2024-10 exposes inventoryItemUpdate
-# per item; no bulk variant taking a list of (id, input) pairs is documented in
-# this API version, so the caller issues one mutation per variant.
-UPDATE_INVENTORY_ITEM_TRACKED = """
-mutation UpdateInventoryItemTracked($id: ID!, $input: InventoryItemInput!) {
-  inventoryItemUpdate(id: $id, input: $input) {
-    inventoryItem { id tracked }
-    userErrors { field message }
-  }
-}
-"""
-
-GET_INVENTORY_ITEM = """
-query GetInventoryItem($id: ID!) {
-  inventoryItem(id: $id) {
-    inventoryLevels(first: 10) {
-      nodes {
-        quantities(names: ["available"]) { name quantity }
-        location { id }
-      }
-    }
-  }
-}
-"""
-
-
-SET_INVENTORY = """
-mutation SetInventory($input: InventorySetOnHandQuantitiesInput!) {
-  inventorySetOnHandQuantities(input: $input) {
-    inventoryAdjustmentGroup { createdAt }
-    userErrors { field message }
-  }
-}
-"""
+# The GraphQL strings now live in shopify.queries.inventory. They are re-exported
+# here so existing callers/tests (`from tools.inventory import GET_PRODUCT_INVENTORY`)
+# keep resolving to the same objects the operations layer executes.
+__all__ = [
+    "GET_INVENTORY_ITEM",
+    "GET_PRODUCT_INVENTORY",
+    "SET_INVENTORY",
+    "UPDATE_INVENTORY_ITEM_TRACKED",
+    "register",
+]
 
 
 def _available_qty(level: dict[str, Any]) -> int | None:
@@ -131,13 +83,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def get_inventory(product_id: str) -> str:
         """Get inventory levels for a product and all its variants."""
-        data, variants, capped = client.paginate(
-            GET_PRODUCT_INVENTORY,
-            {"id": to_gid("Product", product_id)},
-            connection_path=["product", "variants"],
-            page_size=_VARIANTS_PAGE_CAP,
-        )
-        product = data.get("product")
+        product, variants, capped = ops.read_product_inventory(client, product_id)
         if not product:
             return f"Product {product_id} not found."
 
@@ -175,10 +121,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # Shopify returns `{"inventoryItem": null}` (deleted / wrong id), the
         # default isn't used and we'd crash on a None.get() chain. Same shape
         # elsewhere in this module — see get_inventory above.
-        data = client.execute(
-            GET_INVENTORY_ITEM, {"id": to_gid("InventoryItem", inventory_item_id)}
-        )
-        inv_item = data.get("inventoryItem") or {}
+        inv_item = ops.read_inventory_item_levels(client, inventory_item_id) or {}
         levels = (inv_item.get("inventoryLevels") or {}).get("nodes", [])
         location_gid = to_gid("Location", location_id)
         matching = [lv for lv in levels if lv.get("location", {}).get("id") == location_gid]
@@ -198,20 +141,15 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         return write_gate(
             preview=preview,
             confirm=confirm,
-            execute=lambda: client.execute(
-                SET_INVENTORY,
-                {
-                    "input": {
-                        "reason": "correction",
-                        "setQuantities": [
-                            {
-                                "inventoryItemId": to_gid("InventoryItem", inventory_item_id),
-                                "locationId": location_gid,
-                                "quantity": quantity,
-                            }
-                        ],
+            execute=lambda: ops.set_inventory_on_hand(
+                client,
+                [
+                    {
+                        "inventoryItemId": to_gid("InventoryItem", inventory_item_id),
+                        "locationId": location_gid,
+                        "quantity": quantity,
                     }
-                },
+                ],
             ),
             mutation_key="inventorySetOnHandQuantities",
             log_name="update_inventory",
@@ -233,14 +171,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         the target state are reported as unchanged and no mutation is issued for
         them. Returns a preview unless confirm=True.
         """
-        product_gid = to_gid("Product", product_id)
-        data, variants, capped = client.paginate(
-            GET_PRODUCT_INVENTORY,
-            {"id": product_gid},
-            connection_path=["product", "variants"],
-            page_size=_VARIANTS_PAGE_CAP,
-        )
-        product = data.get("product")
+        product, variants, capped = ops.read_product_inventory(client, product_id)
         if not product:
             return f"No product found with id {product_id}."
         title = product.get("title", "")
@@ -320,10 +251,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             # abort the batch — prior successes must still be reported and
             # logged, subsequent variants must still be attempted.
             try:
-                result = client.execute(
-                    UPDATE_INVENTORY_ITEM_TRACKED,
-                    {"id": inv_item_gid, "input": {"tracked": tracked}},
-                )
+                result = ops.update_inventory_item_tracked(client, inv_item_gid, tracked)
             except Exception as e:
                 failed.append(
                     {
@@ -382,14 +310,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         (variant, location) pair via one inventorySetOnHandQuantities call.
         Returns a preview unless confirm=True.
         """
-        product_gid = to_gid("Product", product_id)
-        data, variants, capped = client.paginate(
-            GET_PRODUCT_INVENTORY,
-            {"id": product_gid},
-            connection_path=["product", "variants"],
-            page_size=_VARIANTS_PAGE_CAP,
-        )
-        product = data.get("product")
+        product, variants, capped = ops.read_product_inventory(client, product_id)
         if not product:
             return f"No product found with id {product_id}."
         title = product.get("title", "")
@@ -535,15 +456,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             for v, _lv, _cur, loc_gid in to_write
         ]
 
-        result = client.execute(
-            SET_INVENTORY,
-            {
-                "input": {
-                    "reason": "correction",
-                    "setQuantities": set_quantities,
-                }
-            },
-        )
+        result = ops.set_inventory_on_hand(client, set_quantities)
         err = format_user_errors(result, "inventorySetOnHandQuantities")
         if err:
             return err
