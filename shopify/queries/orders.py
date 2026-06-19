@@ -1,0 +1,77 @@
+"""GraphQL query strings for the ``orders`` domain.
+
+The bottom layer of the ``orders`` migration (Story 10.29 / A5, following the
+products pilot in Story 10.23 and the catalog_hygiene / collections / discounts /
+inventory migrations). Pure strings — no imports from ``shopify.operations`` or
+``tools``. ``orders`` is a read-only domain: two reads, no mutations.
+
+**A shared fragment applies.** The two reads — ``GET_ORDERS`` (list) and
+``GET_ORDER_BY_ID`` (single) — select the same order-node core
+(``id name createdAt totalPriceSet { shopMoney { amount } }``) verbatim, so it is
+factored into the ``OrderCoreFields`` fragment both queries spread (Story 10.29 /
+A5, AC3). Each read still adds its own fields inline — the list read adds the
+``referringSite``/``landingSite`` traffic pair and a fixed ``lineItems(first: 50)``
+summary; the single read adds the financial/fulfillment status, ``referringSite``,
+and a paginated ``lineItems`` with unit prices. Centralizing only the shared core
+(which includes the version-sensitive ``totalPriceSet`` money shape) means the
+next Admin-API money-shape change is a one-line edit instead of two.
+"""
+
+# Shared core selection on an Order: identity + creation date + total money.
+# `totalPriceSet { shopMoney { amount } }` is the version-sensitive bit (the
+# 2024-07+ Money shape), so centralizing it keeps the next shape change to a
+# single edit; both reads extract the amount via the same null-tolerant chain.
+ORDER_CORE_FIELDS = """
+fragment OrderCoreFields on Order {
+  id
+  name
+  createdAt
+  totalPriceSet { shopMoney { amount } }
+}
+"""
+
+# NOTE: orders.nodes.lineItems is a connection nested inside a list connection
+# (orders is itself paginated). client.paginate() walks a single top-level
+# connection and cannot paginate a nested connection; out of scope.
+GET_ORDERS = (
+    ORDER_CORE_FIELDS
+    + """
+query GetOrders($first: Int!) {
+  orders(first: $first) {
+    nodes {
+      ...OrderCoreFields
+      lineItems(first: 50) {
+        nodes {
+          name
+          quantity
+        }
+      }
+      referringSite
+      landingSite
+    }
+  }
+}
+"""
+)
+
+GET_ORDER_BY_ID = (
+    ORDER_CORE_FIELDS
+    + """
+query GetOrderById($id: ID!, $first: Int!, $after: String) {
+  order(id: $id) {
+    ...OrderCoreFields
+    displayFinancialStatus
+    displayFulfillmentStatus
+    referringSite
+    lineItems(first: $first, after: $after) {
+      nodes {
+        name
+        quantity
+        originalUnitPriceSet { shopMoney { amount } }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+)
