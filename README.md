@@ -270,12 +270,14 @@ shopify-mcp/
 │   │   ├── products.py
 │   │   ├── catalog_hygiene.py
 │   │   ├── collections.py
-│   │   └── discounts.py
+│   │   ├── discounts.py
+│   │   └── inventory.py
 │   └── operations/         # Typed business-logic wrappers, callable without the MCP server
 │       ├── products.py
 │       ├── catalog_hygiene.py
 │       ├── collections.py
-│       └── discounts.py
+│       ├── discounts.py
+│       └── inventory.py
 ├── tools/
 │   ├── _log.py             # Write operation logger
 │   ├── _gid.py             # Re-exports shopify._ids (back-compat shim)
@@ -317,7 +319,7 @@ no by-id/by-handle pair at all, so neither has a duplicated selection set.)
 
 This project uses the **Shopify Admin GraphQL API** (version `2026-01`).
 
-Most tool modules define their own GraphQL query or mutation strings at the top of the file; the migrated `products`, `catalog_hygiene`, `collections`, and `discounts` domains instead keep them under `shopify/queries/` (see the layering note above). All queries are executed through a single `ShopifyClient.execute(query, variables)` method in `shopify_client.py`, which handles:
+Most tool modules define their own GraphQL query or mutation strings at the top of the file; the migrated `products`, `catalog_hygiene`, `collections`, `discounts`, and `inventory` domains instead keep them under `shopify/queries/` (see the layering note above). All queries are executed through a single `ShopifyClient.execute(query, variables)` method in `shopify_client.py`, which handles:
 
 - Authentication via `X-Shopify-Access-Token` header
 - GraphQL transport errors (HTTP 4xx/5xx)
