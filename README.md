@@ -304,14 +304,16 @@ imports from `tools/` (enforced by `test_shopify_layering_offline.py`), so
 operations like `shopify.operations.products.update_product_title(client, ...)`
 are callable from non-MCP entry points (CLI, scripts) without importing FastMCP.
 GraphQL strings live in `shopify.queries.*` and reuse shared fragments (e.g.
-`ProductCoreFields` across the by-id and by-handle product reads, or
+`ProductCoreFields` across the by-id and by-handle product reads,
 `ProductVendorFields` / `ProductTypeFields` / `ProductOptionsFields` across the
-catalog-hygiene by-id and by-handle pairs). The `products` (pilot),
-`catalog_hygiene`, `collections`, and `discounts` domains are migrated; the
-remaining domains still define their queries inline in `tools/*.py` and migrate
-one per PR. (`collections` and `discounts` define no shared fragment —
-`collections` has a single by-handle read with no by-id twin, and `discounts` has
-no by-id/by-handle pair at all, so neither has a duplicated selection set.)
+catalog-hygiene by-id and by-handle pairs, `InventoryLevelQuantities` across the
+two inventory reads, or `OrderCoreFields` across the two orders reads). The
+`products` (pilot), `catalog_hygiene`, `collections`, `discounts`, `inventory`,
+and `orders` domains are migrated; the remaining domains (`publications`,
+`webhooks`) still define their queries inline in `tools/*.py` and migrate one per
+PR. (`collections` and `discounts` define no shared fragment — `collections` has
+a single by-handle read with no by-id twin, and `discounts` has no by-id/by-handle
+pair at all, so neither has a duplicated selection set.)
 
 ---
 
