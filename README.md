@@ -271,13 +271,17 @@ shopify-mcp/
 │   │   ├── catalog_hygiene.py
 │   │   ├── collections.py
 │   │   ├── discounts.py
-│   │   └── inventory.py
+│   │   ├── inventory.py
+│   │   ├── orders.py
+│   │   └── publications.py
 │   └── operations/         # Typed business-logic wrappers, callable without the MCP server
 │       ├── products.py
 │       ├── catalog_hygiene.py
 │       ├── collections.py
 │       ├── discounts.py
-│       └── inventory.py
+│       ├── inventory.py
+│       ├── orders.py
+│       └── publications.py
 ├── tools/
 │   ├── _log.py             # Write operation logger
 │   ├── _gid.py             # Re-exports shopify._ids (back-compat shim)
@@ -307,10 +311,11 @@ GraphQL strings live in `shopify.queries.*` and reuse shared fragments (e.g.
 `ProductCoreFields` across the by-id and by-handle product reads,
 `ProductVendorFields` / `ProductTypeFields` / `ProductOptionsFields` across the
 catalog-hygiene by-id and by-handle pairs, `InventoryLevelQuantities` across the
-two inventory reads, or `OrderCoreFields` across the two orders reads). The
+two inventory reads, `OrderCoreFields` across the two orders reads, or
+`ProductPublicationsFields` across the two publications reads). The
 `products` (pilot), `catalog_hygiene`, `collections`, `discounts`, `inventory`,
-and `orders` domains are migrated; the remaining domains (`publications`,
-`webhooks`) still define their queries inline in `tools/*.py` and migrate one per
+`orders`, and `publications` domains are migrated; the remaining domain
+(`webhooks`) still defines its queries inline in `tools/*.py` and migrates one per
 PR. (`collections` and `discounts` define no shared fragment — `collections` has
 a single by-handle read with no by-id twin, and `discounts` has no by-id/by-handle
 pair at all, so neither has a duplicated selection set.)
@@ -321,7 +326,7 @@ pair at all, so neither has a duplicated selection set.)
 
 This project uses the **Shopify Admin GraphQL API** (version `2026-01`).
 
-Most tool modules define their own GraphQL query or mutation strings at the top of the file; the migrated `products`, `catalog_hygiene`, `collections`, `discounts`, and `inventory` domains instead keep them under `shopify/queries/` (see the layering note above). All queries are executed through a single `ShopifyClient.execute(query, variables)` method in `shopify_client.py`, which handles:
+Most tool modules define their own GraphQL query or mutation strings at the top of the file; the migrated `products`, `catalog_hygiene`, `collections`, `discounts`, `inventory`, `orders`, and `publications` domains instead keep them under `shopify/queries/` (see the layering note above). All queries are executed through a single `ShopifyClient.execute(query, variables)` method in `shopify_client.py`, which handles:
 
 - Authentication via `X-Shopify-Access-Token` header
 - GraphQL transport errors (HTTP 4xx/5xx)

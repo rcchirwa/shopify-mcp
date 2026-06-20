@@ -7,6 +7,13 @@ Requires OAuth scopes `read_publications` (reads) and `write_publications`
 it must be reinstalled on the store.
 
 Write operations require confirm=True and log to aon_mcp_log.txt.
+
+Thin MCP-tool surface over ``shopify.operations.publications`` (Story 10.30 / A5,
+following the products pilot in Story 10.23): this module keeps the
+channel-name/-id resolution cache, the publish/unpublish/declarative-set diff, the
+preview/confirm flow, userError mapping, and output formatting; the GraphQL strings
+live in ``shopify.queries.publications`` and the data access in
+``shopify.operations.publications``.
 """
 
 from collections.abc import Iterable
@@ -14,77 +21,30 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from shopify.operations import publications as ops
+from shopify.queries.publications import (
+    GET_PRODUCT_PUBLICATIONS_BY_HANDLE,
+    GET_PRODUCT_PUBLICATIONS_BY_ID,
+    LIST_PUBLICATIONS,
+    PUBLISHABLE_PUBLISH,
+    PUBLISHABLE_UNPUBLISH,
+)
 from shopify_client import ShopifyClient
 from tools._gid import from_gid, to_gid
 from tools._log import log_write
 from tools._response import extract_user_errors, with_confirm_hint
 
-LIST_PUBLICATIONS = """
-query ListPublications($first: Int!, $after: String) {
-  publications(first: $first, after: $after) {
-    nodes {
-      id
-      name
-      supportsFuturePublishing
-    }
-    pageInfo { hasNextPage endCursor }
-  }
-}
-"""
-
-GET_PRODUCT_PUBLICATIONS_BY_ID = """
-query GetProductPublicationsById($id: ID!, $first: Int!, $after: String) {
-  product(id: $id) {
-    id
-    title
-    handle
-    resourcePublications(first: $first, after: $after) {
-      nodes {
-        publication { id name }
-        publishDate
-        isPublished
-      }
-      pageInfo { hasNextPage endCursor }
-    }
-  }
-}
-"""
-
-GET_PRODUCT_PUBLICATIONS_BY_HANDLE = """
-query GetProductPublicationsByHandle($handle: String!, $first: Int!, $after: String) {
-  productByHandle(handle: $handle) {
-    id
-    title
-    handle
-    resourcePublications(first: $first, after: $after) {
-      nodes {
-        publication { id name }
-        publishDate
-        isPublished
-      }
-      pageInfo { hasNextPage endCursor }
-    }
-  }
-}
-"""
-
-PUBLISHABLE_PUBLISH = """
-mutation PublishableProductPublish($id: ID!, $input: [PublicationInput!]!) {
-  publishablePublish(id: $id, input: $input) {
-    publishable { ... on Product { id title } }
-    userErrors { field message }
-  }
-}
-"""
-
-PUBLISHABLE_UNPUBLISH = """
-mutation PublishableProductUnpublish($id: ID!, $input: [PublicationInput!]!) {
-  publishableUnpublish(id: $id, input: $input) {
-    publishable { ... on Product { id title } }
-    userErrors { field message }
-  }
-}
-"""
+# The GraphQL strings now live in shopify.queries.publications. They are re-exported
+# here so existing callers/tests (`from tools.publications import LIST_PUBLICATIONS`)
+# keep resolving to the same objects the operations layer executes.
+__all__ = [
+    "GET_PRODUCT_PUBLICATIONS_BY_HANDLE",
+    "GET_PRODUCT_PUBLICATIONS_BY_ID",
+    "LIST_PUBLICATIONS",
+    "PUBLISHABLE_PUBLISH",
+    "PUBLISHABLE_UNPUBLISH",
+    "register",
+]
 
 SCOPE_HINT = (
     "If this is a scope error, the app likely needs reinstall on the store "
@@ -94,9 +54,7 @@ SCOPE_HINT = (
 
 def _load_channels(client: ShopifyClient, cache: dict) -> list:
     """Load publications from Shopify, populate cache, return raw list."""
-    _resp, nodes, _capped = client.paginate(
-        LIST_PUBLICATIONS, {}, connection_path=["publications"], page_size=50
-    )
+    nodes = ops.read_publications(client)
     cache["by_lower_name"] = {n["name"].lower(): n for n in nodes}
     cache["by_id"] = {n["id"]: n for n in nodes}
     cache["loaded"] = True
@@ -174,29 +132,17 @@ def _resolve_product_gid_and_meta(
     client: ShopifyClient, product_id: str, handle: str
 ) -> tuple[str | None, str | None, str | None, list[dict[str, Any]]]:
     """Returns (gid, title, handle, current_published_nodes); first three
-    are None when no product was resolved, rps is always a list."""
-    rps_nodes: list[dict[str, Any]] = []
-    if product_id:
-        data, rps_nodes, _capped = client.paginate(
-            GET_PRODUCT_PUBLICATIONS_BY_ID,
-            {"id": to_gid("Product", product_id)},
-            connection_path=["product", "resourcePublications"],
-            page_size=50,
-        )
-        p = data.get("product")
-    elif handle:
-        data, rps_nodes, _capped = client.paginate(
-            GET_PRODUCT_PUBLICATIONS_BY_HANDLE,
-            {"handle": handle},
-            connection_path=["productByHandle", "resourcePublications"],
-            page_size=50,
-        )
-        p = data.get("productByHandle")
-    else:
-        return None, None, None, []
+    are None when no product was resolved, rps is always a list.
+
+    Delegates the by-id/by-handle paginated read to
+    ``shopify.operations.publications.read_product_publications`` and reshapes its
+    ``(product_or_None, rps, capped)`` result into the 4-tuple the tool formatting
+    uses; the pagination cap is not surfaced for publications, so ``capped`` is
+    dropped here exactly as before the migration."""
+    p, rps, _capped = ops.read_product_publications(client, product_id, handle)
     if not p:
         return None, None, None, []
-    return p["id"], p["title"], p["handle"], rps_nodes
+    return p["id"], p["title"], p["handle"], rps
 
 
 def _split_current(rps: list[dict[str, Any]]) -> tuple[set[str], set[str]]:
@@ -361,9 +307,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         now_published = []
         apply_failed = list(failed)
         if to_publish:
-            inputs = [{"publicationId": t["id"]} for t in to_publish]
             try:
-                result = client.execute(PUBLISHABLE_PUBLISH, {"id": gid, "input": inputs})
+                result = ops.publish(client, gid, [t["id"] for t in to_publish])
             except Exception as e:
                 return f"Error: {e}\n{SCOPE_HINT}"
             user_errors = extract_user_errors(result, "publishablePublish")
@@ -444,9 +389,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         now_unpublished = []
         apply_failed = list(failed)
         if to_unpublish:
-            inputs = [{"publicationId": t["id"]} for t in to_unpublish]
             try:
-                result = client.execute(PUBLISHABLE_UNPUBLISH, {"id": gid, "input": inputs})
+                result = ops.unpublish(client, gid, [t["id"] for t in to_unpublish])
             except Exception as e:
                 return f"Error: {e}\n{SCOPE_HINT}"
             user_errors = extract_user_errors(result, "publishableUnpublish")
@@ -538,9 +482,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         removed_applied = []
 
         if added_nodes:
-            inputs = [{"publicationId": n["id"]} for n in added_nodes]
             try:
-                result = client.execute(PUBLISHABLE_PUBLISH, {"id": gid, "input": inputs})
+                result = ops.publish(client, gid, [n["id"] for n in added_nodes])
             except Exception as e:
                 return f"Error during publish: {e}\n{SCOPE_HINT}"
             user_errors = extract_user_errors(result, "publishablePublish")
@@ -551,9 +494,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 added_applied = added_nodes
 
         if removed_nodes:
-            inputs = [{"publicationId": n["id"]} for n in removed_nodes]
             try:
-                result = client.execute(PUBLISHABLE_UNPUBLISH, {"id": gid, "input": inputs})
+                result = ops.unpublish(client, gid, [n["id"] for n in removed_nodes])
             except Exception as e:
                 return f"Error during unpublish: {e}\n{SCOPE_HINT}"
             user_errors = extract_user_errors(result, "publishableUnpublish")

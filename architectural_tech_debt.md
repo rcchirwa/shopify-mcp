@@ -86,9 +86,9 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 - **Effort (2):** ~1 day. Tool registration stays put; only business logic moves.
 - **Plan:** three thin layers — `shopify/queries/` (GraphQL strings, grouped by resource, reusable via fragments), `shopify/operations/` (typed wrappers like `update_product_title(client, id, title) -> dict`), and `tools/` (param coercion, preview/confirm flow, formatting). Pair with GraphQL fragment extraction so `GET_PRODUCT_BY_ID` and `GET_PRODUCT_BY_HANDLE` share their selection set.
 - **Business justification:** worth doing **before** the codebase grows past ~12 domains, not after. Mechanical restructuring is cheap at small scale and exponentially more expensive once dependencies have accumulated.
-- **Status (in progress — `products` pilot Story 10.23, `catalog_hygiene` Story 10.25, `collections` Story 10.26, `discounts` Story 10.27, `inventory` Story 10.28, `orders` Story 10.29):**
+- **Status (in progress — `products` pilot Story 10.23, `catalog_hygiene` Story 10.25, `collections` Story 10.26, `discounts` Story 10.27, `inventory` Story 10.28, `orders` Story 10.29, `publications` Story 10.30):**
   the `shopify/` package and the three-layer structure are **established**, with the
-  `products`, `catalog_hygiene`, `collections`, `discounts`, `inventory`, and `orders` domains migrated:
+  `products`, `catalog_hygiene`, `collections`, `discounts`, `inventory`, `orders`, and `publications` domains migrated:
   - `shopify/queries/products.py` holds all product GraphQL strings; shared
     fragments `ProductCoreFields` / `ProductFullFields` dedup the by-id and
     by-handle selection sets.
@@ -153,6 +153,22 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
     core they duplicate, while each keeps its own traffic-source, status, and
     line-item selections (Story 10.29 / A5, AC3). orders is read-only — no
     mutation wrappers.
+  - `shopify/queries/publications.py` holds the publications GraphQL strings
+    (`LIST_PUBLICATIONS`, `GET_PRODUCT_PUBLICATIONS_BY_ID`,
+    `GET_PRODUCT_PUBLICATIONS_BY_HANDLE`, `PUBLISHABLE_PUBLISH`,
+    `PUBLISHABLE_UNPUBLISH`); `shopify/operations/publications.py` holds the typed
+    read/mutation wrappers (the publications list read, the by-id/by-handle
+    resourcePublications read, and the `publishablePublish` / `publishableUnpublish`
+    writes whose `[{"publicationId": ...}]` input it builds), doing the `Product`
+    GID coercion there. `tools/publications.py` re-exports the query constants via
+    `__all__` and delegates every `client.execute` / `client.paginate` to the
+    operations layer, keeping only the channel-name/-id resolution cache, the
+    publish/unpublish/declarative-set diff, preview/confirm, userError mapping, and
+    formatting (behavior-preserving — the existing `test_publications_offline.py`
+    passes unedited). **A shared fragment applies:** the by-id and by-handle reads
+    differ only in their root field, so the whole `Product` selection (`id title
+    handle` + the paginated `resourcePublications`) is one `ProductPublicationsFields`
+    fragment both spread (Story 10.30 / A5, AC3).
   - The one-way rule (`shopify/` never imports `tools/`) is enforced by
     `test_shopify_layering_offline.py`.
   - **Q3-helper decision:** the GID helpers moved to `shopify/_ids.py` (the
@@ -162,8 +178,8 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
     (`with_confirm_hint`, `extract_user_errors`) are preview/response-formatting
     concerns used by the tool layer; revisit if a `shopify` operation ever needs
     `extract_user_errors`.
-  - **Remaining:** migrate `publications`, `webhooks` — one domain
-    per PR. A5 closes once all domains are migrated.
+  - **Remaining:** migrate `webhooks` — the last domain, one PR. A5 closes
+    once it is migrated.
     Effort estimate revised: the full sweep is larger than ~1 day
     (catalog_hygiene alone was ~4,600 lines / ~99 GraphQL blocks), hence the
     incremental approach.
@@ -218,7 +234,7 @@ Designed to interleave with feature work, not block it. No phase is more than ~3
 
 | Day | Item | Why |
 |-----|------|-----|
-| 1–2 | **A5** `shopify/` subpackage *(in progress — Story 10.23 landed the structure + `products` pilot, Story 10.25 migrated `catalog_hygiene`, Story 10.26 migrated `collections`, Story 10.27 migrated `discounts`, Story 10.28 migrated `inventory`, Story 10.29 migrated `orders`; remaining: publications, webhooks — one domain per PR)* | Restructure before the codebase grows past the size where mechanical reshuffling is cheap. |
+| 1–2 | **A5** `shopify/` subpackage *(in progress — Story 10.23 landed the structure + `products` pilot, Story 10.25 migrated `catalog_hygiene`, Story 10.26 migrated `collections`, Story 10.27 migrated `discounts`, Story 10.28 migrated `inventory`, Story 10.29 migrated `orders`, Story 10.30 migrated `publications`; remaining: webhooks — one domain per PR)* | Restructure before the codebase grows past the size where mechanical reshuffling is cheap. |
 | 2–3 | ~~**A6** HTTP unification~~ *(closed — Story 10.24; `client.fetch_bytes()` + shared `_with_retry`. Policy half was N4/Story 10.21.)* | Pairs naturally with A5; closes TECH_DEBT.md N4. |
 
 ### Backlog (don't pre-refactor)
