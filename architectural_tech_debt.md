@@ -18,7 +18,7 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 |------|----|------|----------|---|---|---|-------|
 | 1 | A3 | Pagination helper for list reads — *helper shipped + read-path adoption Story 10.16* | Code | 2 | 3 | 3 | **15** |
 | 2 | A2 | `write_gate()` helper collapsing preview/confirm/error/audit boilerplate — *closed Story 10.22; 9 tools migrated; remaining tools triaged and deliberately excluded* | Code | 4 | 2 | 4 | **12** |
-| 3 | A5 | `shopify/` subpackage extraction (`queries/` + `operations/`) with GraphQL fragments | Architecture | 2 | 1 | 2 | **12** |
+| 3 | A5 | `shopify/` subpackage extraction (`queries/` + `operations/`) with GraphQL fragments — *closed Story 10.31; all 8 domains migrated (`products`, `catalog_hygiene`, `collections`, `discounts`, `inventory`, `orders`, `publications`, `webhooks`)* | Architecture | 2 | 1 | 2 | **12** |
 | 4 | A6 | HTTP client unification (single wrapper for `gql` + `requests`) — *closed: policy half N4/Story 10.21, transport half Story 10.24 (`client.fetch_bytes()` + shared `_with_retry`)* | Architecture | 2 | 2 | 3 | **12** |
 | 5 | A8 | Metadata `TTLCache` for locations / channels / shop info | Code | 2 | 2 | 4 | **8** |
 | 6 | A10 | Committed `uv.lock` for CI reproducibility | Dependency | 1 | 1 | 5 | **2** |
@@ -86,9 +86,9 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 - **Effort (2):** ~1 day. Tool registration stays put; only business logic moves.
 - **Plan:** three thin layers — `shopify/queries/` (GraphQL strings, grouped by resource, reusable via fragments), `shopify/operations/` (typed wrappers like `update_product_title(client, id, title) -> dict`), and `tools/` (param coercion, preview/confirm flow, formatting). Pair with GraphQL fragment extraction so `GET_PRODUCT_BY_ID` and `GET_PRODUCT_BY_HANDLE` share their selection set.
 - **Business justification:** worth doing **before** the codebase grows past ~12 domains, not after. Mechanical restructuring is cheap at small scale and exponentially more expensive once dependencies have accumulated.
-- **Status (in progress — `products` pilot Story 10.23, `catalog_hygiene` Story 10.25, `collections` Story 10.26, `discounts` Story 10.27, `inventory` Story 10.28, `orders` Story 10.29, `publications` Story 10.30):**
-  the `shopify/` package and the three-layer structure are **established**, with the
-  `products`, `catalog_hygiene`, `collections`, `discounts`, `inventory`, `orders`, and `publications` domains migrated:
+- **Status (✅ closed — Story 10.31; the full sweep landed across `products` pilot Story 10.23, `catalog_hygiene` Story 10.25, `collections` Story 10.26, `discounts` Story 10.27, `inventory` Story 10.28, `orders` Story 10.29, `publications` Story 10.30, `webhooks` Story 10.31):**
+  the `shopify/` package and the three-layer structure are **established**, with all eight domains —
+  `products`, `catalog_hygiene`, `collections`, `discounts`, `inventory`, `orders`, `publications`, and `webhooks` — migrated:
   - `shopify/queries/products.py` holds all product GraphQL strings; shared
     fragments `ProductCoreFields` / `ProductFullFields` dedup the by-id and
     by-handle selection sets.
@@ -169,6 +169,22 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
     differ only in their root field, so the whole `Product` selection (`id title
     handle` + the paginated `resourcePublications`) is one `ProductPublicationsFields`
     fragment both spread (Story 10.30 / A5, AC3).
+  - `shopify/queries/webhooks.py` holds the webhooks GraphQL strings
+    (`LIST_WEBHOOKS`, `CREATE_WEBHOOK`, `DELETE_WEBHOOK`);
+    `shopify/operations/webhooks.py` holds the typed read/mutation wrappers (the
+    webhook-subscription list read + the `webhookSubscriptionCreate` /
+    `webhookSubscriptionDelete` writes, doing the `WebhookSubscription` GID coercion
+    there). `tools/webhooks.py` re-exports the query constants via `__all__` and
+    delegates every `client.execute` to the operations layer, keeping only the
+    endpoint-allowlist validation, preview/confirm, audit logging, and formatting
+    (behavior-preserving — the existing `test_webhooks_offline.py` passes unedited).
+    **No shared fragment** is extracted: webhooks has no by-id/by-handle pair (one
+    list read + two mutations, the same shape as discounts), and the only recurring
+    selection — the small `endpoint { __typename ... on WebhookHttpEndpoint
+    { callbackUrl } }` union block shared by the list read and the create mutation —
+    is a micro sub-selection, not an entity core across a read pair, so it is left
+    inline exactly as orders left its `{ shopMoney { amount } }` money block
+    (Story 10.31 / A5, AC3).
   - The one-way rule (`shopify/` never imports `tools/`) is enforced by
     `test_shopify_layering_offline.py`.
   - **Q3-helper decision:** the GID helpers moved to `shopify/_ids.py` (the
@@ -178,11 +194,13 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
     (`with_confirm_hint`, `extract_user_errors`) are preview/response-formatting
     concerns used by the tool layer; revisit if a `shopify` operation ever needs
     `extract_user_errors`.
-  - **Remaining:** migrate `webhooks` — the last domain, one PR. A5 closes
-    once it is migrated.
-    Effort estimate revised: the full sweep is larger than ~1 day
+  - **Done:** `webhooks` — the last domain — migrated in Story 10.31, **closing A5**.
+    The original six-domain sweep (collections, discounts, inventory, orders,
+    publications, webhooks) plus the `products` pilot and `catalog_hygiene` are now
+    all under `shopify/`.
+    Effort note: the full sweep was larger than the original ~1-day estimate
     (catalog_hygiene alone was ~4,600 lines / ~99 GraphQL blocks), hence the
-    incremental approach.
+    incremental one-domain-per-PR approach.
 
 ### A6 — HTTP client unification
 
@@ -234,7 +252,7 @@ Designed to interleave with feature work, not block it. No phase is more than ~3
 
 | Day | Item | Why |
 |-----|------|-----|
-| 1–2 | **A5** `shopify/` subpackage *(in progress — Story 10.23 landed the structure + `products` pilot, Story 10.25 migrated `catalog_hygiene`, Story 10.26 migrated `collections`, Story 10.27 migrated `discounts`, Story 10.28 migrated `inventory`, Story 10.29 migrated `orders`, Story 10.30 migrated `publications`; remaining: webhooks — one domain per PR)* | Restructure before the codebase grows past the size where mechanical reshuffling is cheap. |
+| 1–2 | ~~**A5** `shopify/` subpackage~~ *(closed — Story 10.31; the structure + `products` pilot landed in Story 10.23, then `catalog_hygiene` (10.25), `collections` (10.26), `discounts` (10.27), `inventory` (10.28), `orders` (10.29), `publications` (10.30), and `webhooks` (10.31) migrated one domain per PR)* | Restructure before the codebase grows past the size where mechanical reshuffling is cheap. |
 | 2–3 | ~~**A6** HTTP unification~~ *(closed — Story 10.24; `client.fetch_bytes()` + shared `_with_retry`. Policy half was N4/Story 10.21.)* | Pairs naturally with A5; closes TECH_DEBT.md N4. |
 
 ### Backlog (don't pre-refactor)

@@ -273,7 +273,8 @@ shopify-mcp/
 │   │   ├── discounts.py
 │   │   ├── inventory.py
 │   │   ├── orders.py
-│   │   └── publications.py
+│   │   ├── publications.py
+│   │   └── webhooks.py
 │   └── operations/         # Typed business-logic wrappers, callable without the MCP server
 │       ├── products.py
 │       ├── catalog_hygiene.py
@@ -281,7 +282,8 @@ shopify-mcp/
 │       ├── discounts.py
 │       ├── inventory.py
 │       ├── orders.py
-│       └── publications.py
+│       ├── publications.py
+│       └── webhooks.py
 ├── tools/
 │   ├── _log.py             # Write operation logger
 │   ├── _gid.py             # Re-exports shopify._ids (back-compat shim)
@@ -312,13 +314,14 @@ GraphQL strings live in `shopify.queries.*` and reuse shared fragments (e.g.
 `ProductVendorFields` / `ProductTypeFields` / `ProductOptionsFields` across the
 catalog-hygiene by-id and by-handle pairs, `InventoryLevelQuantities` across the
 two inventory reads, `OrderCoreFields` across the two orders reads, or
-`ProductPublicationsFields` across the two publications reads). The
+`ProductPublicationsFields` across the two publications reads). All eight domains —
 `products` (pilot), `catalog_hygiene`, `collections`, `discounts`, `inventory`,
-`orders`, and `publications` domains are migrated; the remaining domain
-(`webhooks`) still defines its queries inline in `tools/*.py` and migrates one per
-PR. (`collections` and `discounts` define no shared fragment — `collections` has
-a single by-handle read with no by-id twin, and `discounts` has no by-id/by-handle
-pair at all, so neither has a duplicated selection set.)
+`orders`, `publications`, and `webhooks` — are now migrated, **closing A5**.
+(`collections`, `discounts`, and `webhooks` define no shared fragment —
+`collections` has a single by-handle read with no by-id twin, `discounts` has no
+by-id/by-handle pair, and `webhooks` is one list read plus two mutations with no
+entity core shared across a read pair, so none has a duplicated selection set worth
+factoring.)
 
 ---
 
@@ -326,7 +329,7 @@ pair at all, so neither has a duplicated selection set.)
 
 This project uses the **Shopify Admin GraphQL API** (version `2026-01`).
 
-Most tool modules define their own GraphQL query or mutation strings at the top of the file; the migrated `products`, `catalog_hygiene`, `collections`, `discounts`, `inventory`, `orders`, and `publications` domains instead keep them under `shopify/queries/` (see the layering note above). All queries are executed through a single `ShopifyClient.execute(query, variables)` method in `shopify_client.py`, which handles:
+Some tool modules define their own GraphQL query or mutation strings at the top of the file; the migrated `products`, `catalog_hygiene`, `collections`, `discounts`, `inventory`, `orders`, `publications`, and `webhooks` domains instead keep them under `shopify/queries/` (see the layering note above). All queries are executed through a single `ShopifyClient.execute(query, variables)` method in `shopify_client.py`, which handles:
 
 - Authentication via `X-Shopify-Access-Token` header
 - GraphQL transport errors (HTTP 4xx/5xx)
