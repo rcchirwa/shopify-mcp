@@ -2,6 +2,12 @@
 Webhook subscription tools — list, register, and delete Shopify webhook
 subscriptions on the store.
 
+Thin MCP-tool surface over ``shopify.operations.webhooks`` (Story 10.31 / A5, the
+last domain — closes A5; following the products pilot in Story 10.23): this module
+keeps the endpoint-allowlist validation, the preview/confirm flow, audit logging,
+and output formatting; the GraphQL strings live in ``shopify.queries.webhooks`` and
+the data access in ``shopify.operations.webhooks``.
+
 Write operations require confirm=True and log to aon_mcp_log.txt.
 """
 
@@ -9,53 +15,21 @@ from urllib.parse import urlparse
 
 from mcp.server.fastmcp import FastMCP
 
+from shopify.operations import webhooks as ops
+from shopify.queries.webhooks import CREATE_WEBHOOK, DELETE_WEBHOOK, LIST_WEBHOOKS
 from shopify_client import ShopifyClient
-from tools._gid import from_gid, to_gid
+from tools._gid import from_gid
 from tools._write_tool import write_gate
 
-LIST_WEBHOOKS = """
-query ListWebhooks($first: Int!) {
-  webhookSubscriptions(first: $first) {
-    nodes {
-      id
-      topic
-      format
-      createdAt
-      apiVersion { handle }
-      endpoint {
-        __typename
-        ... on WebhookHttpEndpoint { callbackUrl }
-      }
-    }
-  }
-}
-"""
-
-CREATE_WEBHOOK = """
-mutation CreateWebhook($topic: WebhookSubscriptionTopic!, $webhookSubscription: WebhookSubscriptionInput!) {
-  webhookSubscriptionCreate(topic: $topic, webhookSubscription: $webhookSubscription) {
-    webhookSubscription {
-      id
-      topic
-      format
-      endpoint {
-        __typename
-        ... on WebhookHttpEndpoint { callbackUrl }
-      }
-    }
-    userErrors { field message }
-  }
-}
-"""
-
-DELETE_WEBHOOK = """
-mutation DeleteWebhook($id: ID!) {
-  webhookSubscriptionDelete(id: $id) {
-    deletedWebhookSubscriptionId
-    userErrors { field message }
-  }
-}
-"""
+# The GraphQL strings now live in shopify.queries.webhooks. They are re-exported
+# here so existing callers/tests (`from tools.webhooks import LIST_WEBHOOKS`) keep
+# resolving to the same objects the operations layer executes.
+__all__ = [
+    "CREATE_WEBHOOK",
+    "DELETE_WEBHOOK",
+    "LIST_WEBHOOKS",
+    "register",
+]
 
 
 _EXTERNAL_DOMAIN_WARNING = (
@@ -82,7 +56,9 @@ def _check_endpoint(endpoint_url: str, client: ShopifyClient) -> tuple:
     return True, _EXTERNAL_DOMAIN_WARNING
 
 
-def _endpoint_url(endpoint: dict) -> str:
+def _endpoint_url(endpoint: dict | None) -> str:
+    # Shopify can return endpoint: null, and the list read passes
+    # n.get("endpoint") straight through, so None is a real input here.
     if not endpoint:
         return "(no endpoint)"
     return endpoint.get("callbackUrl") or f"({endpoint.get('__typename', 'unknown')})"
@@ -97,8 +73,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         limit: number of subscriptions to return (max 250).
         """
         limit = min(limit, 250)
-        data = client.execute(LIST_WEBHOOKS, {"first": limit})
-        nodes = data.get("webhookSubscriptions", {}).get("nodes", []) or []
+        nodes = ops.read_webhooks(client, limit)
         if not nodes:
             return "No webhooks registered."
 
@@ -137,17 +112,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"  Endpoint : {endpoint_url}\n"
             f"  Format   : {message_format}"
         )
-        variables = {
-            "topic": topic,
-            "webhookSubscription": {
-                "callbackUrl": endpoint_url,
-                "format": message_format,
-            },
-        }
         captured: dict = {}
 
         def _execute() -> dict:
-            result = client.execute(CREATE_WEBHOOK, variables)
+            result = ops.create_webhook(client, topic, endpoint_url, message_format)
             captured.update(result)
             return result
 
@@ -188,10 +156,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         return write_gate(
             preview=preview,
             confirm=confirm,
-            execute=lambda: client.execute(
-                DELETE_WEBHOOK,
-                {"id": to_gid("WebhookSubscription", numeric_id)},
-            ),
+            execute=lambda: ops.delete_webhook(client, subscription_id),
             mutation_key="webhookSubscriptionDelete",
             log_name="delete_webhook",
             log_description=f"id={numeric_id}",
