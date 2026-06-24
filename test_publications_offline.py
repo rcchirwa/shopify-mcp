@@ -10,7 +10,11 @@ Usage:
   pytest test_publications_offline.py -v
 """
 
+from pydantic import SecretStr
+
 from _testing import CapturingServer, FakeClient
+from settings import Settings
+from shopify._cache import ShopifyMetadataCache
 from tools import publications
 from tools.publications import (
     GET_PRODUCT_PUBLICATIONS_BY_HANDLE,
@@ -21,6 +25,14 @@ from tools.publications import (
     _resolve_product_gid_and_meta,
     _split_current,
 )
+
+
+def _short_ttl_settings(channels_ttl: int = 600) -> Settings:
+    return Settings(
+        shopify_store_url="test.myshopify.com",
+        shopify_access_token=SecretStr("shpat_test00000000000000000000000"),
+        cache_ttl_channels_s=channels_ttl,
+    )
 
 
 def _build(responses):
@@ -156,6 +168,10 @@ def test_list_sales_channels_empty():
 
 def test_list_sales_channels_scope_error_hint():
     class Exploding:
+        # Cross-call cache is consulted before the API read (A8); a cold one here
+        # lets the paginate() RuntimeError surface as the scope-error path.
+        _metadata_cache = ShopifyMetadataCache(_short_ttl_settings())
+
         def execute(self, q, v=None):
             raise RuntimeError("Shopify GraphQL error: Access denied for publications")
 
@@ -1203,3 +1219,154 @@ def test_resolve_product_publications_single_page_not_capped():
         "first": 50,
         "after": None,
     }
+
+
+# ---- cross-call channels TTL cache (Story 10.32 / A8) ----
+
+
+def test_channels_cached_across_calls_skips_second_api_read():
+    """A 2nd channels read within the TTL is served from the cross-call cache —
+    only one LIST_PUBLICATIONS round-trip reaches the client. Exactly one
+    channels response is scripted, so a second read would raise on the FakeClient."""
+    tools, fc = _build([_channels_response()])
+    tools["list_sales_channels"]()
+    out2 = tools["list_sales_channels"]()
+    assert "Online Store" in out2
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == LIST_PUBLICATIONS
+
+
+def test_channels_cache_expires_after_ttl_triggers_refetch():
+    """Past the channels TTL, the next read re-fetches — one extra round-trip.
+    A controllable clock drives expiry so the test never sleeps."""
+    clock = {"t": 1000.0}
+    settings = _short_ttl_settings(channels_ttl=10)
+    cache = ShopifyMetadataCache(settings, timer=lambda: clock["t"])
+    fc = FakeClient(
+        [_channels_response(), _channels_response()],
+        settings=settings,
+        metadata_cache=cache,
+    )
+    srv = CapturingServer()
+    publications.register(srv, fc)
+    srv.tools["list_sales_channels"]()  # cold → read #1 at t=1000
+    clock["t"] += 11  # advance past the 10s TTL
+    srv.tools["list_sales_channels"]()  # expired → read #2
+    assert len(fc.calls) == 2
+
+
+def test_cold_cache_channels_read_matches_precache_behavior():
+    """Cold-cache path is identical to the pre-cache behavior: the first read
+    still issues exactly one LIST_PUBLICATIONS and renders every channel."""
+    tools, fc = _build([_channels_response()])
+    out = tools["list_sales_channels"]()
+    assert "4 total" in out
+    assert "Online Store" in out and "Point of Sale" in out
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == LIST_PUBLICATIONS
+
+
+def test_publish_invalidates_channels_cache_forcing_refetch():
+    """A confirmed publish invalidates the channels cache, so the next channels
+    read re-fetches instead of serving the pre-write snapshot."""
+    tools, fc = _build(
+        [
+            _channels_response(),  # 1: resolve channels (cold)
+            _product_pubs(pid="123", published_ids=[], not_published_ids=[1, 2, 3]),  # 2: product
+            _publish_ok(),  # 3: publish mutation
+            _channels_response(),  # 4: re-read after invalidation
+        ]
+    )
+    tools["publish_product_to_channels"](
+        product_id="123", channel_names=["Online Store"], confirm=True
+    )
+    out = tools["list_sales_channels"]()  # cache invalidated by publish → re-fetch
+    assert "Online Store" in out
+    assert len(fc.calls) == 4
+    assert fc.calls[3][0] == LIST_PUBLICATIONS
+
+
+def test_unpublish_invalidates_channels_cache_forcing_refetch():
+    tools, fc = _build(
+        [
+            _channels_response(),  # 1
+            _product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3]),  # 2
+            _unpublish_ok(),  # 3
+            _channels_response(),  # 4: re-read after invalidation
+        ]
+    )
+    tools["unpublish_product_from_channels"](
+        product_id="123", channel_names=["Online Store"], confirm=True
+    )
+    tools["list_sales_channels"]()
+    assert len(fc.calls) == 4
+    assert fc.calls[3][0] == LIST_PUBLICATIONS
+
+
+def test_set_publications_invalidates_channels_cache_forcing_refetch():
+    """The declarative set runs both publish and unpublish; either mutation
+    invalidates the channels cache, so the following read re-fetches."""
+    tools, fc = _build(
+        [
+            _channels_response(),  # 1
+            _product_pubs(pid="123", published_ids=[1, 4], not_published_ids=[2, 3]),  # 2
+            _publish_ok(),  # 3: add Point of Sale
+            _unpublish_ok(),  # 4: remove Online Store
+            _channels_response(),  # 5: re-read after invalidation
+        ]
+    )
+    tools["set_product_publications"](
+        product_id="123",
+        channel_names=["Point of Sale", "Google & YouTube"],
+        confirm=True,
+    )
+    tools["list_sales_channels"]()
+    assert len(fc.calls) == 5
+    assert fc.calls[4][0] == LIST_PUBLICATIONS
+
+
+def test_unconfirmed_publish_preview_does_not_invalidate_channels_cache():
+    """A preview (confirm=False) runs no mutation, so it must not invalidate the
+    cache — the channels read stays warm for the next call."""
+    tools, fc = _build(
+        [
+            _channels_response(),  # 1: resolve channels (cold), then cached
+            _product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3]),  # 2: product
+        ]
+    )
+    tools["publish_product_to_channels"](product_id="123", channel_names=["Shop"], confirm=False)
+    tools["list_sales_channels"]()  # cache still warm → no extra read
+    assert len(fc.calls) == 2
+
+
+def test_force_refresh_on_name_miss_bypasses_warm_cross_call_cache():
+    """A channel-name miss against a *warm* cross-call cache forces a fresh read
+    (bypassing the cache), so a channel added since the cache warmed is still
+    discovered. The cold-start "refresh on miss" tests don't reach this path —
+    here the cache is genuinely warm from a prior tool call."""
+    tiktok = {
+        "id": "gid://shopify/Publication/5",
+        "name": "TikTok Shop",
+        "supportsFuturePublishing": False,
+    }
+    tools, fc = _build(
+        [
+            _channels_response(),  # 1: warm the cross-call cache (roster without TikTok)
+            _channels_response([*ALL_CHANNELS, tiktok]),  # 2: force-refresh sees the new channel
+            _product_pubs(pid="123", published_ids=[], not_published_ids=[1, 2, 3]),  # 3: product
+            _publish_ok(),  # 4: publish mutation
+        ]
+    )
+    tools["list_sales_channels"]()  # warms the cache with the 4-channel roster
+    out = tools["publish_product_to_channels"](
+        product_id="123", channel_names=["TikTok Shop"], confirm=True
+    )
+    assert out.startswith("CONFIRMED")
+    assert "TikTok Shop" in out
+    # 4 round-trips: warm-read, force-refresh re-read (bypassing the warm cache),
+    # product read, publish. Without force=True the miss would serve the stale
+    # warm roster and never find TikTok.
+    assert len(fc.calls) == 4
+    assert fc.calls[1][0] == LIST_PUBLICATIONS
+    _, vars_put = fc.calls[3]
+    assert vars_put["input"] == [{"publicationId": tiktok["id"]}]

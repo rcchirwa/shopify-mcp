@@ -50,3 +50,10 @@ def test_webhook_allowlist_set_parses_csv():
 def test_webhook_allowlist_set_empty():
     s = Settings(**_ok_kwargs(webhook_allowlist_hosts=""))
     assert s.webhook_allowlist_set == frozenset()
+
+
+def test_non_positive_channels_ttl_raises():
+    """ge=1 guard: a zero/negative cache TTL would silently disable the metadata
+    cache (TTLCache expires instantly), so Settings must reject it at startup."""
+    with pytest.raises(ValidationError, match="greater than or equal to 1"):
+        Settings(**_ok_kwargs(cache_ttl_channels_s=0))
