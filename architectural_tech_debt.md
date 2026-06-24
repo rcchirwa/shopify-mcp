@@ -20,7 +20,7 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 | 2 | A2 | `write_gate()` helper collapsing preview/confirm/error/audit boilerplate — *closed Story 10.22; 9 tools migrated; remaining tools triaged and deliberately excluded* | Code | 4 | 2 | 4 | **12** |
 | 3 | A5 | `shopify/` subpackage extraction (`queries/` + `operations/`) with GraphQL fragments — *closed Story 10.31; all 8 domains migrated (`products`, `catalog_hygiene`, `collections`, `discounts`, `inventory`, `orders`, `publications`, `webhooks`)* | Architecture | 2 | 1 | 2 | **12** |
 | 4 | A6 | HTTP client unification (single wrapper for `gql` + `requests`) — *closed: policy half N4/Story 10.21, transport half Story 10.24 (`client.fetch_bytes()` + shared `_with_retry`)* | Architecture | 2 | 2 | 3 | **12** |
-| 5 | A8 | Metadata `TTLCache` for locations / channels / shop info | Code | 2 | 2 | 4 | **8** |
+| 5 | A8 | Metadata `TTLCache` — channels cross-call cache (locations / shop-info / metafield-defs deferred; not read yet) | Code | 2 | 2 | 4 | **8** |
 | 6 | A10 | Committed `uv.lock` for CI reproducibility | Dependency | 1 | 1 | 5 | **2** |
 
 **Categories not represented in current backlog:** Test debt, Documentation debt. The 2026-04-25 review didn't probe these areas in depth — coverage is at 100% and TECH_DEBT.md plus README cover most documentation needs. Re-evaluate during the next architecture pass.
@@ -216,10 +216,11 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 ### A8 — Metadata `TTLCache`
 
 - **Category:** Code
-- **Impact (2):** reduces latency and Shopify quota burn for stable metadata (locations, publication channels, metafield definitions, shop info).
-- **Risk (2):** real but not urgent at current call volumes. The dead `channel_cache` in [tools/publications.py](tools/publications.py) shows the intent existed but the implementation slipped — every MCP call re-resolves channels from scratch.
-- **Effort (4):** ~half a day. `cachetools.TTLCache` attached to `ShopifyClient`.
-- **Plan:** `ShopifyMetadataCache` with TTL'd entries — shop info (24h), locations (1h), publication channels (10m), metafield definitions (10m). Configurable via Settings (A7). Invalidate on writes that mutate the cached resource.
+- **Scope correction (2026-06-23):** verified against the codebase — **only publication channels are read cross-call today** (`LIST_PUBLICATIONS` via `_load_channels`, [tools/publications.py](tools/publications.py)). Locations appear only as a *nested field inside inventory queries* ([shopify/queries/inventory.py](shopify/queries/inventory.py)), not a standalone cacheable list; **shop info and metafield definitions are not read anywhere yet**. The four-resource design below is aspirational — three of the slots have no read to cache. Groomed scope is **channels-only**; see Trello Story 10.32.
+- **Impact (2):** reduces latency and Shopify quota burn for the one stable-metadata read that exists today (publication channels). Extends to locations / shop info / metafield definitions only if/when those reads are added.
+- **Risk (2):** real but not urgent at current call volumes. The request-scoped `channel_cache` in [tools/publications.py](tools/publications.py) (a local dict rebuilt on each call) memoizes only *within* a single invocation — across MCP calls, channels are re-resolved from scratch every time.
+- **Effort (4):** ~half a day or less for channels-only. A `cachetools.TTLCache` attached to `ShopifyClient`, keyed by resource type so a second resource is cheap to add later.
+- **Plan:** channels-only cross-call TTL cache — cache the `LIST_PUBLICATIONS` result (~10m TTL), keyed internally by resource type, with write-invalidation on publish / unpublish. Configurable via Settings (A7) using a `cache_ttl_channels_s` field. The shop info (24h) / locations (1h) / metafield definitions (10m) entries are **deferred** until those reads exist — do not pre-build queries/operations/tools for them.
 - **Business justification:** pays off as soon as automation increases. Until then, defer.
 
 ### A10 — Committed `uv.lock`
