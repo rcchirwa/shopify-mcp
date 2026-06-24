@@ -20,6 +20,7 @@ from typing import Any
 from pydantic import SecretStr
 
 from settings import Settings
+from shopify._cache import ShopifyMetadataCache
 
 
 def _default_test_settings() -> Settings:
@@ -58,12 +59,19 @@ class FakeClient:
         responses: Iterable[Any],
         settings: Settings | None = None,
         fetch_results: Iterable[Any] | None = None,
+        metadata_cache: ShopifyMetadataCache | None = None,
     ) -> None:
         self.responses: list[Any] = list(responses)
         self.calls: list[tuple[str, dict[str, Any] | None]] = []
         # Tools that consult client._settings (webhook allowlist, poll_job
         # backoff/timeout) need a real Settings here, not a sentinel.
         self._settings: Settings = settings or _default_test_settings()
+        # Mirror ShopifyClient._metadata_cache (A8 / Story 10.32) so cache-aware
+        # tools work against the fake. Defaults to a fresh cache off these
+        # settings; tests inject one with a controllable clock to drive TTL expiry.
+        self._metadata_cache: ShopifyMetadataCache = metadata_cache or ShopifyMetadataCache(
+            self._settings
+        )
         # Scripted results for fetch_bytes() — the raw-GET seam that media
         # tools now go through (Story 10.24 / A6). Each item is either a
         # (body, content_type) tuple returned to the caller, or a

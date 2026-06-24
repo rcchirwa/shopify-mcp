@@ -21,6 +21,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from shopify._cache import CHANNELS
 from shopify.operations import publications as ops
 from shopify.queries.publications import (
     GET_PRODUCT_PUBLICATIONS_BY_HANDLE,
@@ -52,13 +53,40 @@ SCOPE_HINT = (
 )
 
 
-def _load_channels(client: ShopifyClient, cache: dict) -> list:
-    """Load publications from Shopify, populate cache, return raw list."""
+def _read_channels(client: ShopifyClient, *, force: bool) -> list:
+    """Return the raw publications node list via the client's cross-call TTL cache
+    (A8 / Story 10.32). A warm, unexpired cache is served without an API call; a
+    cold/expired cache — or ``force=True``, used when a requested channel name
+    missed and the roster may have changed — re-reads ``LIST_PUBLICATIONS`` and
+    refreshes the cache entry."""
+    metadata_cache = client._metadata_cache
+    if not force:
+        cached = metadata_cache.get(CHANNELS)
+        if cached is not None:
+            return cached
     nodes = ops.read_publications(client)
+    metadata_cache.set(CHANNELS, nodes)
+    return nodes
+
+
+def _load_channels(client: ShopifyClient, cache: dict, *, force: bool = False) -> list:
+    """Load publications (cross-call cached), populate the per-call ``cache`` index,
+    return the raw list. The per-call dict is still rebuilt every call so name/id
+    lookups stay request-local; only the underlying API read is cached across calls."""
+    nodes = _read_channels(client, force=force)
     cache["by_lower_name"] = {n["name"].lower(): n for n in nodes}
     cache["by_id"] = {n["id"]: n for n in nodes}
     cache["loaded"] = True
     return nodes
+
+
+def _invalidate_channels(client: ShopifyClient) -> None:
+    """Drop the cross-call channels cache after a channel-affecting mutation
+    (publish/unpublish), so the next channels read reflects any roster change
+    (A8 / Story 10.32). Conservative by design: a product publish does not itself
+    alter the channel roster, but invalidating here guarantees no stale-after-write
+    roster is served if the roster changed around the same write."""
+    client._metadata_cache.invalidate(CHANNELS)
 
 
 def _ensure_channels(client: ShopifyClient, cache: dict) -> None:
@@ -74,7 +102,10 @@ def _resolve_names(client: ShopifyClient, cache: dict, names: list) -> tuple:
     failed = []
     needs_refresh = any(n.lower() not in cache["by_lower_name"] for n in names)
     if needs_refresh:
-        _load_channels(client, cache)
+        # A name missed the cache; the roster may have changed since the cross-call
+        # entry was cached, so force a fresh API read (bypassing the cache) before
+        # reporting the name unresolved. force=True also refreshes the cached entry.
+        _load_channels(client, cache, force=True)
     for n in names:
         node = cache["by_lower_name"].get(n.lower())
         if node:
@@ -311,6 +342,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 result = ops.publish(client, gid, [t["id"] for t in to_publish])
             except Exception as e:
                 return f"Error: {e}\n{SCOPE_HINT}"
+            _invalidate_channels(client)
             user_errors = extract_user_errors(result, "publishablePublish")
             if user_errors:
                 for ue in user_errors:
@@ -393,6 +425,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 result = ops.unpublish(client, gid, [t["id"] for t in to_unpublish])
             except Exception as e:
                 return f"Error: {e}\n{SCOPE_HINT}"
+            _invalidate_channels(client)
             user_errors = extract_user_errors(result, "publishableUnpublish")
             if user_errors:
                 for ue in user_errors:
@@ -486,6 +519,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 result = ops.publish(client, gid, [n["id"] for n in added_nodes])
             except Exception as e:
                 return f"Error during publish: {e}\n{SCOPE_HINT}"
+            _invalidate_channels(client)
             user_errors = extract_user_errors(result, "publishablePublish")
             if user_errors:
                 for ue in user_errors:
@@ -498,6 +532,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 result = ops.unpublish(client, gid, [n["id"] for n in removed_nodes])
             except Exception as e:
                 return f"Error during unpublish: {e}\n{SCOPE_HINT}"
+            _invalidate_channels(client)
             user_errors = extract_user_errors(result, "publishableUnpublish")
             if user_errors:
                 for ue in user_errors:

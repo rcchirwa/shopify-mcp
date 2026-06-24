@@ -19,6 +19,7 @@ from gql.transport.requests import RequestsHTTPTransport
 
 from logging_config import configure_logging
 from settings import Settings
+from shopify._cache import ShopifyMetadataCache
 
 # Intentional client→tools import (A6): ShopifyClient is now the single HTTP
 # chokepoint, so it owns the shared header policy and the SSRF guard. Both are
@@ -169,6 +170,10 @@ class ShopifyClient:
         # can't see that, so the bare Settings() call needs a type-ignore.
         self._settings = settings or Settings()  # type: ignore[call-arg]
         configure_logging(self._settings)
+
+        # Cross-call TTL cache for stable Shopify metadata (channels today —
+        # A8 / Story 10.32), constructed from the Settings-driven per-resource TTLs.
+        self._metadata_cache = ShopifyMetadataCache(self._settings)
 
         # Log the active credential fingerprint to stderr so operators can tell
         # at a glance which token is live without reading .env. Goes to stderr

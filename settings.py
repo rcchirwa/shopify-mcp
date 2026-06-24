@@ -63,11 +63,15 @@ class Settings(BaseSettings):
 
     webhook_allowlist_hosts: str = ""
 
-    # A8 (metadata TTLCache) — field exists so that item doesn't need a config
-    # touch-up when it lands. log_level / log_format wired by A4 (logging).
+    # log_level / log_format wired by A4 (logging).
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     log_format: Literal["text", "json"] = "text"
+    # Per-resource TTLs for the metadata cache (A8 / Story 10.32). Channels-only
+    # today: cache_ttl_channels_s drives the one wired bucket (ShopifyMetadataCache),
+    # default 10m. cache_ttl_locations_s is reserved scaffolding from A7 — locations
+    # aren't read cross-call yet, so it stays unused until that read lands.
     cache_ttl_locations_s: int = 3600
+    cache_ttl_channels_s: int = 600
 
     @field_validator("shopify_store_url")
     @classmethod

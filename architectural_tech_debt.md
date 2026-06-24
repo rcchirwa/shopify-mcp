@@ -20,8 +20,7 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 | 2 | A2 | `write_gate()` helper collapsing preview/confirm/error/audit boilerplate — *closed Story 10.22; 9 tools migrated; remaining tools triaged and deliberately excluded* | Code | 4 | 2 | 4 | **12** |
 | 3 | A5 | `shopify/` subpackage extraction (`queries/` + `operations/`) with GraphQL fragments — *closed Story 10.31; all 8 domains migrated (`products`, `catalog_hygiene`, `collections`, `discounts`, `inventory`, `orders`, `publications`, `webhooks`)* | Architecture | 2 | 1 | 2 | **12** |
 | 4 | A6 | HTTP client unification (single wrapper for `gql` + `requests`) — *closed: policy half N4/Story 10.21, transport half Story 10.24 (`client.fetch_bytes()` + shared `_with_retry`)* | Architecture | 2 | 2 | 3 | **12** |
-| 5 | A8 | Metadata `TTLCache` — channels cross-call cache (locations / shop-info / metafield-defs deferred; not read yet) | Code | 2 | 2 | 4 | **8** |
-| 6 | A10 | Committed `uv.lock` for CI reproducibility | Dependency | 1 | 1 | 5 | **2** |
+| 5 | A10 | Committed `uv.lock` for CI reproducibility | Dependency | 1 | 1 | 5 | **2** |
 
 **Categories not represented in current backlog:** Test debt, Documentation debt. The 2026-04-25 review didn't probe these areas in depth — coverage is at 100% and TECH_DEBT.md plus README cover most documentation needs. Re-evaluate during the next architecture pass.
 
@@ -213,16 +212,6 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 - **Plan:** unify under a single client wrapper exposing both GraphQL execution and arbitrary HTTP fetches. Image download in `tools/media/_upload.py` becomes `client.fetch_bytes(url, max_size=...)`. Pairs naturally with A1 (shared retry policy across both).
 - **Business justification:** rolls together with A1 — once the throttle-aware policy exists, having two HTTP stacks means only half of calls benefit.
 
-### A8 — Metadata `TTLCache`
-
-- **Category:** Code
-- **Scope correction (2026-06-23):** verified against the codebase — **only publication channels are read cross-call today** (`LIST_PUBLICATIONS` via `_load_channels`, [tools/publications.py](tools/publications.py)). Locations appear only as a *nested field inside inventory queries* ([shopify/queries/inventory.py](shopify/queries/inventory.py)), not a standalone cacheable list; **shop info and metafield definitions are not read anywhere yet**. The four-resource design below is aspirational — three of the slots have no read to cache. Groomed scope is **channels-only**; see Trello Story 10.32.
-- **Impact (2):** reduces latency and Shopify quota burn for the one stable-metadata read that exists today (publication channels). Extends to locations / shop info / metafield definitions only if/when those reads are added.
-- **Risk (2):** real but not urgent at current call volumes. The request-scoped `channel_cache` in [tools/publications.py](tools/publications.py) (a local dict rebuilt on each call) memoizes only *within* a single invocation — across MCP calls, channels are re-resolved from scratch every time.
-- **Effort (4):** ~half a day or less for channels-only. A `cachetools.TTLCache` attached to `ShopifyClient`, keyed by resource type so a second resource is cheap to add later.
-- **Plan:** channels-only cross-call TTL cache — cache the `LIST_PUBLICATIONS` result (~10m TTL), keyed internally by resource type, with write-invalidation on publish / unpublish. Configurable via Settings (A7) using a `cache_ttl_channels_s` field. The shop info (24h) / locations (1h) / metafield definitions (10m) entries are **deferred** until those reads exist — do not pre-build queries/operations/tools for them.
-- **Business justification:** pays off as soon as automation increases. Until then, defer.
-
 ### A10 — Committed `uv.lock`
 
 - **Category:** Dependency
@@ -260,12 +249,21 @@ Designed to interleave with feature work, not block it. No phase is more than ~3
 
 | Item | Trigger |
 |------|---------|
-| **A8** Caching | Call volume rises, or first real Shopify quota miss. |
+| ~~**A8** Caching~~ *(closed — Story 10.32; channels-only cross-call TTLCache, implemented ahead of trigger)* | ~~Call volume rises, or first real Shopify quota miss.~~ |
 | **A10** Lockfile | First CI-vs-dev divergence caused by a floated dep. |
 
 ---
 
 ## Closed
+
+### A8 — Metadata `TTLCache` (channels-only) *(closed Story 10.32, branch `claude/trusting-chaum-3a8f21`)*
+
+- **Category:** Code
+- **Closed:** 2026-06-23, branch `claude/trusting-chaum-3a8f21` (Story 10.32 / A8)
+- **Scope correction:** the original A8 framing — "locations / channels / shop info / metafield definitions re-resolved on every call" — was **verified inaccurate**. Only **publication channels** are read cross-call. Locations appear only as a *nested field inside inventory queries* ([shopify/queries/inventory.py](shopify/queries/inventory.py) lines 45, 80), never as a standalone cacheable list; shop info and metafield definitions are **not read anywhere** in the codebase. The "dead `channel_cache`" wording was likewise imprecise — the `channel_cache` dict in [tools/publications.py](tools/publications.py) is **live per-call** (it memoizes within one invocation) but was rebuilt every call; what was missing is a *persistent, TTL'd* cache across calls, which this story adds. Groomed scope = **channels-only**; the other three resources are deferred until a real cross-call read for each exists.
+- **What shipped:** [shopify/_cache.py](shopify/_cache.py) — `ShopifyMetadataCache`, a registry of per-resource-type `cachetools.TTLCache` buckets keyed by resource type (only `channels` wired today; a second resource is a one-line bucket plus its Settings TTL field). Attached as `ShopifyClient._metadata_cache`, mirrored on `_testing/fake_client.py`. [tools/publications.py](tools/publications.py) `_load_channels` reads `LIST_PUBLICATIONS` through the cross-call cache (`_read_channels`), layered above the existing per-call `channel_cache` index; a channel-name miss forces a cache-bypassing refresh (`force=True`) so a changed roster is still discovered. `publish` / `unpublish` / `set_product_publications` invalidate the channels bucket via `_invalidate_channels`. `settings.py`: `cache_ttl_channels_s: int = 600` (TTL is Settings-driven, beside the reserved-but-unused `cache_ttl_locations_s`). `cachetools>=5,<6` added to `pyproject.toml` dependencies; `.env.example` documents the `CACHE_TTL_CHANNELS_S` knob.
+- **Deferred (no reads exist yet):** locations / shop-info / metafield-definition buckets — added when a real cross-call read for each lands. Keeping them out avoids speculative dead cache wiring.
+- **Test footprint:** `test_metadata_cache_offline.py` (new — cache unit tests incl. TTL expiry via injected clock) plus cross-call cache-hit, TTL-expiry-through-read, and write-invalidation tests in `test_publications_offline.py`; 100% coverage gate held; mypy clean; ruff clean.
 
 ### A7 — `Settings` class via `pydantic-settings` *(closed branch `claude/relaxed-hertz-8f050d`)*
 
