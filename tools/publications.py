@@ -81,8 +81,9 @@ def _load_channels(client: ShopifyClient, cache: dict, *, force: bool = False) -
 
 
 def _invalidate_channels(client: ShopifyClient) -> None:
-    """Drop the cross-call channels cache after a channel-affecting mutation
-    (publish/unpublish), so the next channels read reflects any roster change
+    """Drop the cross-call channels cache after a *successful* channel-affecting
+    mutation (publish/unpublish — called only when the mutation returned no
+    userErrors), so the next channels read reflects any roster change
     (A8 / Story 10.32). Conservative by design: a product publish does not itself
     alter the channel roster, but invalidating here guarantees no stale-after-write
     roster is served if the roster changed around the same write."""
@@ -342,12 +343,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 result = ops.publish(client, gid, [t["id"] for t in to_publish])
             except Exception as e:
                 return f"Error: {e}\n{SCOPE_HINT}"
-            _invalidate_channels(client)
             user_errors = extract_user_errors(result, "publishablePublish")
             if user_errors:
                 for ue in user_errors:
                     apply_failed.append(_map_user_error(ue, to_publish))
             else:
+                _invalidate_channels(client)
                 now_published = to_publish
 
         log_write(
@@ -425,12 +426,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 result = ops.unpublish(client, gid, [t["id"] for t in to_unpublish])
             except Exception as e:
                 return f"Error: {e}\n{SCOPE_HINT}"
-            _invalidate_channels(client)
             user_errors = extract_user_errors(result, "publishableUnpublish")
             if user_errors:
                 for ue in user_errors:
                     apply_failed.append(_map_user_error(ue, to_unpublish))
             else:
+                _invalidate_channels(client)
                 now_unpublished = to_unpublish
 
         log_write(
@@ -519,12 +520,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 result = ops.publish(client, gid, [n["id"] for n in added_nodes])
             except Exception as e:
                 return f"Error during publish: {e}\n{SCOPE_HINT}"
-            _invalidate_channels(client)
             user_errors = extract_user_errors(result, "publishablePublish")
             if user_errors:
                 for ue in user_errors:
                     apply_failed.append(_map_user_error(ue, added_nodes))
             else:
+                _invalidate_channels(client)
                 added_applied = added_nodes
 
         if removed_nodes:
@@ -532,12 +533,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 result = ops.unpublish(client, gid, [n["id"] for n in removed_nodes])
             except Exception as e:
                 return f"Error during unpublish: {e}\n{SCOPE_HINT}"
-            _invalidate_channels(client)
             user_errors = extract_user_errors(result, "publishableUnpublish")
             if user_errors:
                 for ue in user_errors:
                     apply_failed.append(_map_user_error(ue, removed_nodes))
             else:
+                _invalidate_channels(client)
                 removed_applied = removed_nodes
 
         log_write(

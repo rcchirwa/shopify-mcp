@@ -13,7 +13,7 @@ import re
 import sys
 from typing import Literal
 
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _STORE_URL_RE = re.compile(r"^[a-z0-9-]+\.myshopify\.com$", re.IGNORECASE)
@@ -71,7 +71,10 @@ class Settings(BaseSettings):
     # default 10m. cache_ttl_locations_s is reserved scaffolding from A7 — locations
     # aren't read cross-call yet, so it stays unused until that read lands.
     cache_ttl_locations_s: int = 3600
-    cache_ttl_channels_s: int = 600
+    # ge=1: a non-positive TTL makes TTLCache expire entries instantly, silently
+    # disabling the cache (re-fetch every call). Fail fast — consistent with the
+    # store-url / api-version validators — rather than degrade quietly.
+    cache_ttl_channels_s: int = Field(default=600, ge=1)
 
     @field_validator("shopify_store_url")
     @classmethod

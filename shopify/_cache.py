@@ -39,6 +39,10 @@ class ShopifyMetadataCache:
     :meth:`set` operate on a resource's single cached snapshot; :meth:`invalidate`
     drops it (used by write paths that may change the resource). Cached values are
     treated as read-only by callers — the cache stores the reference, not a copy.
+
+    ``resource`` must name a wired bucket (e.g. :data:`CHANNELS`). Passing an
+    unwired key raises ``KeyError`` by design: a missing bucket is a wiring bug
+    (the resource's one-line entry was never added), not a silent cache miss.
     """
 
     def __init__(self, settings: Settings, *, timer: Callable[[], float] = time.monotonic) -> None:

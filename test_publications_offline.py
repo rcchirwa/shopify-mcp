@@ -1337,3 +1337,36 @@ def test_unconfirmed_publish_preview_does_not_invalidate_channels_cache():
     tools["publish_product_to_channels"](product_id="123", channel_names=["Shop"], confirm=False)
     tools["list_sales_channels"]()  # cache still warm → no extra read
     assert len(fc.calls) == 2
+
+
+def test_force_refresh_on_name_miss_bypasses_warm_cross_call_cache():
+    """A channel-name miss against a *warm* cross-call cache forces a fresh read
+    (bypassing the cache), so a channel added since the cache warmed is still
+    discovered. The cold-start "refresh on miss" tests don't reach this path —
+    here the cache is genuinely warm from a prior tool call."""
+    tiktok = {
+        "id": "gid://shopify/Publication/5",
+        "name": "TikTok Shop",
+        "supportsFuturePublishing": False,
+    }
+    tools, fc = _build(
+        [
+            _channels_response(),  # 1: warm the cross-call cache (roster without TikTok)
+            _channels_response([*ALL_CHANNELS, tiktok]),  # 2: force-refresh sees the new channel
+            _product_pubs(pid="123", published_ids=[], not_published_ids=[1, 2, 3]),  # 3: product
+            _publish_ok(),  # 4: publish mutation
+        ]
+    )
+    tools["list_sales_channels"]()  # warms the cache with the 4-channel roster
+    out = tools["publish_product_to_channels"](
+        product_id="123", channel_names=["TikTok Shop"], confirm=True
+    )
+    assert out.startswith("CONFIRMED")
+    assert "TikTok Shop" in out
+    # 4 round-trips: warm-read, force-refresh re-read (bypassing the warm cache),
+    # product read, publish. Without force=True the miss would serve the stale
+    # warm roster and never find TikTok.
+    assert len(fc.calls) == 4
+    assert fc.calls[1][0] == LIST_PUBLICATIONS
+    _, vars_put = fc.calls[3]
+    assert vars_put["input"] == [{"publicationId": tiktok["id"]}]
