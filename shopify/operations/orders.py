@@ -20,17 +20,24 @@ from shopify.queries.orders import GET_ORDER_BY_ID, GET_ORDERS
 # read — how many line items are fetched per Shopify request.
 ORDER_LINE_ITEMS_PAGE_SIZE = 50
 
+# Fixed per-order line-item cap for the GET_ORDERS list read. The list path cannot
+# paginate the nested-in-list lineItems connection (see the NOTE above GET_ORDERS in
+# shopify.queries.orders), so it truncates at this many line items and warns. Single
+# source of truth: flows into the query as the ``$lineItemsFirst`` variable AND into
+# the get_orders at-cap warning copy, so the two can't drift (Story 10.34 / A3).
+GET_ORDERS_LINE_ITEM_CAP = 50
+
 
 def read_orders(client: GraphQLClient, first: int) -> list[dict[str, Any]]:
     """List recent orders, returning the order node list.
 
     ``first`` is the already-clamped count the tool passes through (≤ 250); the
     operation does no clamping of its own."""
-    # Single execute, not paginate: each order's lineItems(first: 50) is a
-    # connection nested inside the orders connection, which client.paginate()
+    # Single execute, not paginate: each order's lineItems(first: GET_ORDERS_LINE_ITEM_CAP)
+    # is a connection nested inside the orders connection, which client.paginate()
     # cannot walk (see the NOTE above GET_ORDERS in shopify.queries.orders).
     # read_order, by contrast, paginates the top-level lineItems of one order.
-    data = client.execute(GET_ORDERS, {"first": first})
+    data = client.execute(GET_ORDERS, {"first": first, "lineItemsFirst": GET_ORDERS_LINE_ITEM_CAP})
     return data.get("orders", {}).get("nodes", [])
 
 
@@ -44,6 +51,11 @@ def capped_line_item_order_ids(orders: list[dict[str, Any]]) -> list[str]:
     A missing / shape-drifted ``pageInfo`` counts as not-capped (defensive against
     permissions-trimmed responses). Ids are returned as gids; the tool layer applies
     ``from_gid`` for display."""
+    # order["id"] is a direct subscript (not .get): id is a non-null field on the
+    # GraphQL Order type, always selected via OrderCoreFields, so every node carries
+    # one — unlike lineItems/pageInfo, which are nullable/absent in shape-drifted or
+    # permissions-trimmed responses and so are guarded. (get_orders already derefs
+    # o["id"] in its render loop before this runs.)
     return [
         order["id"]
         for order in orders

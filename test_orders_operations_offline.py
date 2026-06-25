@@ -48,7 +48,8 @@ def test_read_orders_builds_first_var_and_returns_nodes():
     out = ops.read_orders(fc, 20)
     assert out == resp["orders"]["nodes"]
     assert fc.calls[0][0] == q.GET_ORDERS
-    assert fc.calls[0][1] == {"first": 20}
+    assert fc.calls[0][1] == {"first": 20, "lineItemsFirst": 50}
+    assert fc.calls[0][1]["lineItemsFirst"] == ops.GET_ORDERS_LINE_ITEM_CAP
 
 
 def test_read_orders_passes_through_the_callers_first_unchanged():
@@ -56,7 +57,7 @@ def test_read_orders_passes_through_the_callers_first_unchanged():
     it (the tool owns the ≤250 clamp), so a value of 250 flows straight through."""
     fc = FakeClient([{"orders": {"nodes": []}}])
     ops.read_orders(fc, 250)
-    assert fc.calls[0][1] == {"first": 250}
+    assert fc.calls[0][1] == {"first": 250, "lineItemsFirst": 50}
 
 
 def test_read_orders_empty_returns_empty_list():

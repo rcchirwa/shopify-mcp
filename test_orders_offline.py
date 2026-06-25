@@ -74,7 +74,7 @@ def test_get_orders_empty_returns_no_orders_found():
     out = tools["get_orders"]()
     assert out == "No orders found."
     assert fc.calls[0][0] == GET_ORDERS
-    assert fc.calls[0][1] == {"first": 20}
+    assert fc.calls[0][1] == {"first": 20, "lineItemsFirst": 50}
 
 
 def test_get_orders_formats_each_order_with_line_items_and_source():
@@ -114,7 +114,7 @@ def test_get_orders_formats_each_order_with_line_items_and_source():
 def test_get_orders_limit_capped_at_250():
     tools, fc = _build([{"orders": {"nodes": []}}])
     tools["get_orders"](limit=500)
-    assert fc.calls[0][1] == {"first": 250}
+    assert fc.calls[0][1] == {"first": 250, "lineItemsFirst": 50}
 
 
 def test_get_orders_falls_back_to_landing_site_when_referring_site_missing():
@@ -268,6 +268,7 @@ def test_get_orders_warning_names_only_capped_orders():
     )
     out = tools["get_orders"]()
     assert "WARNING" in out
+    assert out.count("WARNING") == 1  # exactly one capped order → one warning
     warning_section = out[out.index("WARNING") :]
     assert "1001" in warning_section
     assert "1002" not in warning_section
