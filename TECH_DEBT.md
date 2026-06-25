@@ -4,9 +4,27 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-06-24.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-06-25.
 
 ---
+
+## 2026-06-25 — Story 10.35 (SEC-M2-sanitizer — Approach 1: parser-based detection upgrade)
+
+The **detection-only** half of SEC-M2-sanitizer landed. Trello: https://trello.com/c/4vEAwQWo (Story 10.35, Epic 10). No product sign-off required because nothing written to Shopify changes; the allow-list **sanitizer** that strips content (Approach 2/3) still needs sign-off and stays open — see the rescore below.
+
+### Landed (Approach 1 — UNBLOCKED, no sign-off)
+
+| # | Item | What shipped |
+|---|------|--------------|
+| SEC-M2-sanitizer (Approach 1) | ~~Advisory substring blocklist is blind to creative payloads~~ | Added `html_safety_findings()` in `tools/_filters.py`: it **wraps** (does not replace) `dangerous_html_patterns()` and adds two `nh3`-backed mechanisms — (1) a structural diff of the input vs `nh3.clean(input)` that reports tags a real sanitizer would strip (`<style>`/CSS injection, `<iframe>`, `<base>`, `<form>`, …) plus the `style` attribute (CSS-injection vector), and (2) a URL-scheme check flagging script-executing schemes (`javascript:`/`vbscript:`, incl. tab/newline-obfuscated forms a browser still runs) and non-ASCII look-alike schemes (e.g. a Cyrillic je for the `j` of `javascript:`). Wired into all three write previews (`update_product_description`, `update_product_seo`, `update_collection`) — same advisory-warning UX, broader coverage, **no change to written content**. Benign formatting attributes nh3 also strips (`class`/`id`/`data-*`/…) are intentionally not flagged, to avoid alert fatigue. `nh3>=0.2,<0.3` added to `pyproject.toml`. CI clean: ruff + format + mypy + **1154 offline tests at 100% coverage**. |
+
+### Still open — rescored 16 → 10
+
+| Item | Score | Status |
+|------|-------|--------|
+| SEC-M2-sanitizer (Approach 2/3 — allow-list **sanitizer** that strips before the Shopify write) | 10 | active (**needs product sign-off**) |
+
+Rescore rationale: Approach 1 closes the "creative payload slips through **silently**" gap — the three named bypass classes (`<style>`/CSS injection, attribute injection, Unicode look-alikes) now raise a preview warning — so Risk drops: (Impact 3 + Risk 2) × (6 − Effort 4) = **10**. The residual is the content-stripping migration, which changes persisted semantics and is therefore gated on product sign-off (the permitted tag/attribute set + the strip-vs-hard-block decision).
 
 ## 2026-06-24 — Story 10.33 follow-up (Q4 + Q6 closed; Q5 left gated)
 
@@ -196,7 +214,7 @@ Items surfaced by the mcp-server-security-review.md (2026-05-18) and the subsequ
 
 | # | Item | Where | Score |
 |---|------|-------|-------|
-| SEC-M2-sanitizer | **Advisory blocklist should migrate to a proper HTML sanitizer** — `dangerous_html_patterns()` in `tools/_filters.py` detects a curated set of dangerous substrings and regex patterns (`on\w+=`, `<script`, `javascript:`, etc.) and emits an advisory warning in the preview. This is defence-in-depth, not a true sanitizer. A sufficiently creative payload (CSS injection via `<style>`, attribute injection in unexpected HTML contexts, Unicode lookalike characters) can slip through without a warning and be written to `descriptionHtml` / `seo.*` without operator friction. **Recommended path:** replace or wrap `dangerous_html_patterns()` with `nh3` (Rust-backed port of `ammonia`) or `bleach` (Python) in an allow-list mode: strip everything except an explicitly allowed tag+attribute set before calling Shopify. This changes the written content semantics (stripped tags), so it requires product sign-off before landing. Trigger: any Epic that touches bulk description writes or introduces a new HTML-bearing field. | `tools/_filters.py`, `tools/products.py`, `tools/collections.py` | 16 |
+| SEC-M2-sanitizer | **Update 2026-06-25 (Story 10.35):** Approach 1 (detection-only) landed — `html_safety_findings()` now wraps `dangerous_html_patterns()` with an `nh3`-backed structural diff + URL-scheme check, so the three named bypass classes raise a preview warning instead of slipping silently. The residual below is the sign-off-gated allow-list **sanitizer** that strips content; **rescored 16 → 10** (see the 2026-06-25 section). — *Original entry:* **Advisory blocklist should migrate to a proper HTML sanitizer** — `dangerous_html_patterns()` in `tools/_filters.py` detects a curated set of dangerous substrings and regex patterns (`on\w+=`, `<script`, `javascript:`, etc.) and emits an advisory warning in the preview. This is defence-in-depth, not a true sanitizer. A sufficiently creative payload (CSS injection via `<style>`, attribute injection in unexpected HTML contexts, Unicode lookalike characters) can slip through without a warning and be written to `descriptionHtml` / `seo.*` without operator friction. **Recommended path:** replace or wrap `dangerous_html_patterns()` with `nh3` (Rust-backed port of `ammonia`) or `bleach` (Python) in an allow-list mode: strip everything except an explicitly allowed tag+attribute set before calling Shopify. This changes the written content semantics (stripped tags), so it requires product sign-off before landing. Trigger: any Epic that touches bulk description writes or introduces a new HTML-bearing field. | `tools/_filters.py`, `tools/products.py`, `tools/collections.py` | 10 (was 16) |
 | SEC-M2-collection-seo | **`update_collection` description preview warning uses inline suffix format inconsistent with `update_product_description`** — the warning for collections appears as `\n  ⚠ DANGEROUS HTML DETECTED: ...` appended to the preview line, while the product description warning is a distinct block with bullet-pointed pattern names. Minor UX inconsistency; low priority but should be unified when either path is next touched. | `tools/collections.py:update_collection`, `tools/products.py:update_product_description` | 4 (note) |
 
 ### Closed
