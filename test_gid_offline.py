@@ -7,6 +7,8 @@ Usage:
   pytest test_gid_offline.py -v
 """
 
+from typing import Any
+
 from tools._gid import from_gid, to_gid
 
 # ---------- to_gid ----------
@@ -31,11 +33,16 @@ def test_from_gid_extracts_trailing_numeric_id() -> None:
     assert from_gid("gid://shopify/Product/123") == "123"
 
 
-def test_from_gid_tolerates_none() -> None:
-    # Shopify can return `id: null` on partial / permissions-trimmed fields,
-    # and callers that do `from_gid(obj.get("id", ""))` still pass None through
-    # because .get only applies the default for missing keys. Must not crash.
-    assert from_gid(None) == ""
+def test_from_gid_tolerates_none_via_any_payload() -> None:
+    # from_gid's param was narrowed to `str` (Story 10.33 / Q6) so mypy flags
+    # any statically-typed `str | None` caller. But the runtime `if not gid`
+    # guard is deliberately retained, NOT dead code: real None values arrive
+    # through `dict[str, Any]` GraphQL payloads (Shopify returns `id: null` on
+    # partial / permissions-trimmed fields), reaching from_gid as `Any` —
+    # invisible to mypy. This pins the guard so it survives the type narrowing;
+    # drop it and `None.split(...)` raises AttributeError right here.
+    payload: dict[str, Any] = {"id": None}
+    assert from_gid(payload.get("id", "")) == ""
 
 
 def test_from_gid_tolerates_empty_string() -> None:

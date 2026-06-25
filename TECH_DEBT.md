@@ -4,9 +4,24 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-06-04.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-06-24.
 
 ---
+
+## 2026-06-24 — Story 10.33 follow-up (Q4 + Q6 closed; Q5 left gated)
+
+Typing / code-quality cleanup bundling notes Q4, Q5, Q6. Trello: https://trello.com/c/UPN7FOVp (Story 10.33, Epic 10). Pure refactor / type-tightening — no change to externally observable tool output.
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|---------------|
+| Q4 | ~~`format_user_errors_joined()` low use~~ | **Kept — adoption confirmed.** No longer single-caller: two callers with distinct needs — `format_user_errors` (`tools/_response.py:80`, builds the canonical `Error: …` prefixed form) and `update_variant_inventory_tracking` (`tools/inventory.py:263`, needs the prefix-less join for per-variant `• {variant}: {error}` bullets). Inlining would duplicate the `"; ".join(…)` logic across both sites — strictly worse factoring — so the helper earns its keep. No code change. |
+| Q6 | ~~`from_gid` widened to `str \| None` may mask None-propagation~~ | **Static contract narrowed to `str`** at `shopify/_ids.py:13` (`def from_gid(gid: str) -> str:`); the old `str \| None` let mypy silently accept Optional args. The runtime `if not gid: return ""` guard is deliberately retained (documented in the docstring) — `Any`-typed `dict[str, Any]` payload sites can still pass `None` at runtime (Shopify `id: null`), invisible to mypy. **Audited all 70 `from_gid()` call sites** (`grep -rn "from_gid(" tools/ shopify/`): (a) the one genuinely typed `str \| None` local — `loc_gid` (`_pair_prefix`) — is guarded with `loc_gid or ""` before the call; (b) every other site passes `Any`, either straight from `dict[str, Any]` payloads or via `payload.get("id")` locals (some, like `sub_gid` / `job_id`, additionally `if`-guarded), covered by the retained runtime guard. **Zero sites pass a statically-typed `str \| None`** — confirmed: mypy clean after narrowing, zero call-site churn. No silent None-propagation path remains unaudited. The `test_gid_offline.py` None-tolerance test was re-pointed to exercise the guard through the real `Any`-payload path. |
+
+**Q5 left open (still gated).** `dict[str, Any]` → TypedDicts remains trigger-gated: no payload-shape bug mypy can't catch has landed (91 `dict[str, Any]` occurrences in `tools/catalog_hygiene.py` alone). No partial / half-typed state introduced. **O1** (mypy permissive on test files) is unchanged — test-file type-checking stays O1's call.
+
+CI clean: ruff + format + mypy + **1121 offline tests at 100% coverage**.
 
 ## 2026-05-28 — Story 10.12 follow-up (media-cap pagination)
 
@@ -149,7 +164,7 @@ Item Q3 from the 2026-04-24 audit was implemented this session. A `/engineering:
 
 | # | Item | Where | Score |
 |---|------|-------|-------|
-| Q6 | **`from_gid` type widened to `str \| None`** — the original `shopify_client.py` signature declared `gid: str` but callers pass `None` from `obj.get("id")` patterns; the body handled it silently. The split corrected this to `str \| None`. Downstream callers that now type-check cleanly may have been masking `None`-propagation bugs. No action needed — note for the next mypy tightening pass (O1). | `tools/_gid.py` | 4 (note) |
+| Q6 | **`from_gid` type widened to `str \| None`** — the original `shopify_client.py` signature declared `gid: str` but callers pass `None` from `obj.get("id")` patterns; the body handled it silently. The split corrected this to `str \| None`. Downstream callers that now type-check cleanly may have been masking `None`-propagation bugs. No action needed — note for the next mypy tightening pass (O1). | `shopify/_ids.py` (moved from `tools/_gid.py` by A5, Stories 10.23–10.31) | 4 (note) |
 
 ### Current active backlog (after Q3 closes)
 
@@ -378,7 +393,7 @@ Plus two transient hygiene items closed by the PR landing this very subsection:
 | # | Item | Where | Score |
 |---|------|-------|-------|
 | Q3 | `shopify_client.py` becoming a utility grab-bag — 265 lines, 10+ public exports across 3 concerns (transport, helpers, polling). Not debt yet; flag for trajectory. Trigger: next shared helper landing. | `shopify_client.py` | 9 (watch) |
-| Q4 | `format_user_errors_joined()` has only one caller — built slightly ahead of the third use case. Note-only; future bulk-op callers will adopt naturally. | `shopify_client.py:226-243` | 4 |
+| Q4 | `format_user_errors_joined()` had only one caller at audit time — built slightly ahead of the next use case. **Update (2026-06-24, Story 10.33): now 2 callers (`format_user_errors` + `update_variant_inventory_tracking`) — adoption confirmed, kept; closed. Moved to `tools/_response.py:40` by Q3.** | `tools/_response.py:40` | 4 |
 | Q5 | `dict[str, Any]` baseline for GraphQL payloads — typing gate green but payloads are shallow. TypedDicts deferred per [#42](https://github.com/rcchirwa/shopify-mcp/pull/42). Trigger: first payload-shape bug mypy can't catch. | `tools/**/*.py` | 4 (watch) |
 
 Active backlog after the post-#42 baseline: **zero**. Only watch / note-only items remain.
