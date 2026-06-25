@@ -51,28 +51,55 @@ def dangerous_html_patterns(text: str) -> list[str]:
     return found
 
 
-# URL-bearing attributes whose value carries a scheme worth vetting against
-# nh3's allow-list. Kept deliberately small — these are the attributes a
-# storefront theme renders as a navigable / loadable URL.
+# URL-bearing attributes whose value carries a scheme worth vetting. Kept
+# deliberately small — these are the attributes a storefront theme renders as a
+# navigable / loadable URL.
 _URL_ATTRS = frozenset(
     {"href", "src", "xlink:href", "action", "formaction", "poster", "background", "cite"}
 )
 
+# Attributes that are a genuine injection vector when a sanitizer strips them.
+# `style` is the CSS-injection vector this story calls out; event-handler (on*=)
+# attributes are already covered by the substring blocklist. Benign formatting
+# attributes nh3 also strips (class / id / data-* / align / width / role / aria)
+# are deliberately NOT flagged — warning on every non-conforming attribute is
+# alert-fatigue noise that would bury the real findings.
+_DANGEROUS_STRIPPED_ATTRS = frozenset({"style"})
+
+# Schemes that execute script when a browser navigates to them. `data:text/html`
+# stays with the substring blocklist; benign `data:image/*` URIs must not warn.
+_ACTIVE_URL_SCHEMES = frozenset({"javascript", "vbscript"})
+
+# Characters a browser strips from a URL before resolving its scheme, so
+# `java<TAB>script:` runs as `javascript:`. Removing them first means the scheme
+# check sees what the browser will, not the obfuscated source.
+_SCHEME_IGNORED_CHARS = {ord(c): None for c in "\t\n\r"}
+
 
 def _url_scheme(value: str) -> str | None:
-    """Return the scheme of *value* (text before the first ``:``) when it looks
-    like a real ``scheme:`` prefix, else ``None``.
+    """Return the scheme of *value* (the text before the first ``:``) as a
+    browser would resolve it, or ``None`` when there is no scheme.
 
-    A path / fragment / query / whitespace character before the colon means
-    there is no scheme — it is a relative URL like ``/a:b`` or ``#a:b``.
+    Browser-ignored whitespace (tab / CR / LF) is removed and the value is
+    stripped first, so ``java<TAB>script:`` resolves to ``javascript``. A
+    path / query / fragment / space before the colon means it is a relative URL
+    (``/a:b``, ``#a:b``), not a scheme.
     """
-    colon = value.find(":")
+    cleaned = value.translate(_SCHEME_IGNORED_CHARS).strip()
+    colon = cleaned.find(":")
     if colon <= 0:
         return None
-    head = value[:colon]
-    if any(c in head for c in "/?# \t\r\n"):
+    head = cleaned[:colon]
+    if any(c in head for c in "/?# "):
         return None
     return head
+
+
+def _scheme_is_suspect(scheme: str) -> bool:
+    """A scheme is suspect when it executes script (``javascript:`` /
+    ``vbscript:``) or carries a non-ASCII look-alike character — legitimate URL
+    schemes are ASCII, so a non-ASCII scheme is an evasion attempt."""
+    return scheme.casefold() in _ACTIVE_URL_SCHEMES or not scheme.isascii()
 
 
 class _SanitizerIndexer(html.parser.HTMLParser):
@@ -117,15 +144,19 @@ def html_safety_findings(text: str) -> list[str]:
     as the engine:
 
     1. **Structural diff** — parse the input and ``nh3.clean(input)`` and report
-       every tag / attribute the sanitizer would strip. Catches ``<style>`` / CSS
-       injection and attribute injection that the curated blocklist never knew.
-    2. **URL-scheme check** — vet URL-bearing attributes against
-       ``nh3.ALLOWED_URL_SCHEMES``. Catches ``javascript:`` / ``data:`` and
-       Unicode look-alike schemes (e.g. a Cyrillic je, U+0458, standing in for
-       the 'j' of ``javascript:``) that nh3 itself leaves in place.
+       (a) every *tag* the sanitizer would strip (``<style>`` / CSS injection,
+       ``<iframe>``, ``<base>``, ``<form>``, … — far beyond the curated list) and
+       (b) the dangerous *attributes* it would strip (``style``; on*= handlers
+       already come from the blocklist). Benign formatting attributes nh3 also
+       strips (``class`` / ``id`` / ``data-*`` / …) are intentionally not
+       flagged, to keep the warning signal high.
+    2. **URL-scheme check** — flag URL-bearing attributes whose scheme executes
+       script (``javascript:`` / ``vbscript:``, including tab / newline-obfuscated
+       forms a browser still runs) or uses a non-ASCII look-alike (e.g. a
+       Cyrillic je, U+0458, standing in for the 'j' of ``javascript:``).
 
     Findings already named by the blocklist (a ``<tag`` prefix, an ``attr=``
-    handler token, or a ``scheme:`` substring) are not repeated.
+    handler token, or an ASCII ``scheme:``) are not repeated.
     """
     findings: list[str] = list(dangerous_html_patterns(text))
     seen: set[str] = set(findings)
@@ -138,6 +169,10 @@ def html_safety_findings(text: str) -> list[str]:
     before = _index_html(text)
     after = _index_html(nh3.clean(text))
 
+    # Tags and dangerous attributes nh3 would strip. Tag findings catch <style>,
+    # <iframe>, <base>, <form>, … (anything outside nh3's allow-list); attribute
+    # findings are limited to genuine injection vectors (_DANGEROUS_STRIPPED_ATTRS)
+    # so benign formatting attributes don't raise noise.
     for tag, names in before.tag_attrs.items():
         if tag not in after.tag_attrs:
             # The blocklist may already name this tag (e.g. '<script'); only add
@@ -145,23 +180,20 @@ def html_safety_findings(text: str) -> list[str]:
             if f"<{tag}" not in seen:
                 _add(f"<{tag}> (tag stripped by sanitizer)")
             continue
-        for name in sorted(names - after.tag_attrs[tag]):
-            if name in _URL_ATTRS:
-                continue  # URL attributes are covered by the scheme check below
-            if f"{name}=" not in seen:  # on*=-handler tokens come from the blocklist
+        for name in sorted(names & _DANGEROUS_STRIPPED_ATTRS):
+            if name not in after.tag_attrs[tag] and f"{name}=" not in seen:
                 _add(f"{name}= on <{tag}> (attribute stripped by sanitizer)")
 
+    # URL schemes that execute (javascript:/vbscript:, including tab / newline-
+    # obfuscated forms) or use a non-ASCII look-alike. ASCII active schemes the
+    # blocklist already names are not repeated.
     for tag, name, value in before.url_values:
         scheme = _url_scheme(value)
-        if scheme is None:
+        if scheme is None or not _scheme_is_suspect(scheme):
             continue
-        if scheme.casefold() in nh3.ALLOWED_URL_SCHEMES:
+        if f"{scheme.casefold()}:" in seen:
             continue
-        # ASCII javascript:/vbscript:/data:text/html are already named by the
-        # blocklist — don't double-report; look-alike schemes still surface.
-        if any(token.startswith(f"{scheme.casefold()}:") for token in seen):
-            continue
-        _add(f"{name}= on <{tag}> uses disallowed URL scheme {scheme!r}")
+        _add(f"{name}= on <{tag}> uses suspicious URL scheme {scheme!r}")
 
     return findings
 

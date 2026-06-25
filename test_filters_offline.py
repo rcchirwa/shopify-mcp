@@ -3,7 +3,7 @@ Offline unit tests for tools/_filters.py — the HTML-safety detector.
 
 Story 10.35 / SEC-M2-sanitizer (Approach 1, detection-only): the substring
 blocklist is wrapped by a parser-based detector that diffs the input against
-``nh3.clean`` and vets URL schemes against nh3's allow-list, so creative
+``nh3.clean`` and flags script-executing or look-alike URL schemes, so creative
 payloads that dodge the curated blocklist are surfaced in the preview warning.
 No content is stripped — these findings are advisory only.
 
@@ -45,7 +45,7 @@ def test_style_attribute_injection_is_flagged():
 def test_unicode_lookalike_scheme_is_flagged():
     """A Cyrillic je (U+0458) in the javascript scheme dodges the ASCII
     blocklist, and nh3 itself leaves the href in place — but the URL-scheme
-    check (vs nh3's allow-list) still flags it."""
+    check still flags it as a non-ASCII look-alike."""
     payload = f'<a href="{_CYRILLIC_JE}avascript:alert(1)">x</a>'
     assert dangerous_html_patterns(payload) == []  # no ASCII "javascript:" substring
     findings = html_safety_findings(payload)
@@ -131,3 +131,53 @@ def test_url_scheme_slash_before_colon_returns_none():
 
 def test_url_scheme_extracts_ascii_scheme():
     assert _filters._url_scheme("https://example.com") == "https"
+
+
+def test_url_scheme_ignores_browser_stripped_whitespace():
+    """Browsers drop tab / CR / LF from a URL before resolving its scheme, so the
+    helper must too — otherwise `java<TAB>script:` reads as a relative URL."""
+    assert _filters._url_scheme("java\tscript:alert(1)") == "javascript"
+    assert _filters._url_scheme("java\nscript:alert(1)") == "javascript"
+
+
+# ---------- benign real-world markup must not raise noise (alert fatigue) ----------
+
+
+def test_benign_attributes_do_not_warn():
+    """nh3 strips class / id / data-* / align / width for conformance, but they
+    are not injection vectors — flagging them would bury the real findings."""
+    payload = (
+        '<div class="rte" id="main" data-section="x" align="center"><p width="600">hi</p></div>'
+    )
+    assert html_safety_findings(payload) == []
+
+
+def test_realistic_rich_text_description_stays_silent():
+    """A typical theme / rich-text product description (classes, data-*, an
+    https image) produces no warning."""
+    payload = (
+        '<div class="product-description">'
+        '<p class="rte__p">Soft combed cotton. <strong>Pre-shrunk.</strong></p>'
+        '<img src="https://cdn.shopify.com/x.png" class="lazyload" width="800" alt="tee">'
+        "</div>"
+    )
+    assert html_safety_findings(payload) == []
+
+
+def test_data_image_uri_does_not_warn():
+    """Inline data:image/* (common in descriptions) is benign and must stay
+    silent — only data:text/html is dangerous, and the blocklist owns that."""
+    payload = '<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==" alt="x">'
+    assert html_safety_findings(payload) == []
+
+
+# ---------- scheme obfuscation a browser still executes ----------
+
+
+def test_tab_obfuscated_javascript_scheme_is_flagged():
+    """A tab inside 'javascript:' breaks the substring blocklist, but a browser
+    strips the tab and runs it — so it must still warn."""
+    payload = '<a href="java\tscript:alert(1)">x</a>'
+    assert dangerous_html_patterns(payload) == []  # the tab breaks the 'javascript:' substring
+    findings = html_safety_findings(payload)
+    assert any("scheme" in f and "href=" in f for f in findings)
