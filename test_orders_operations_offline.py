@@ -48,7 +48,8 @@ def test_read_orders_builds_first_var_and_returns_nodes():
     out = ops.read_orders(fc, 20)
     assert out == resp["orders"]["nodes"]
     assert fc.calls[0][0] == q.GET_ORDERS
-    assert fc.calls[0][1] == {"first": 20}
+    assert fc.calls[0][1] == {"first": 20, "lineItemsFirst": 50}
+    assert fc.calls[0][1]["lineItemsFirst"] == ops.GET_ORDERS_LINE_ITEM_CAP
 
 
 def test_read_orders_passes_through_the_callers_first_unchanged():
@@ -56,7 +57,7 @@ def test_read_orders_passes_through_the_callers_first_unchanged():
     it (the tool owns the ≤250 clamp), so a value of 250 flows straight through."""
     fc = FakeClient([{"orders": {"nodes": []}}])
     ops.read_orders(fc, 250)
-    assert fc.calls[0][1] == {"first": 250}
+    assert fc.calls[0][1] == {"first": 250, "lineItemsFirst": 50}
 
 
 def test_read_orders_empty_returns_empty_list():
@@ -99,3 +100,55 @@ def test_read_order_missing_order_returns_none_and_empty_items():
     assert order is None
     assert line_items == []
     assert capped is False
+
+
+# ---- A3 / Story 10.34: per-order line-item cap detection on the list read ----
+# GET_ORDERS caps each order's lineItems at a fixed first:50 and cannot paginate
+# that nested-in-list connection. Rather than silently truncate, the query now
+# selects pageInfo.hasNextPage and the operations layer surfaces which orders were
+# capped, so tools/orders.py can warn — parity with read_order's `capped` flag.
+
+
+def test_get_orders_query_selects_lineitems_pageinfo():
+    """GET_ORDERS must select lineItems.pageInfo.hasNextPage so the list path can
+    DETECT the fixed first:50 cap (it cannot paginate the nested connection)."""
+    assert "pageInfo" in q.GET_ORDERS
+    assert "hasNextPage" in q.GET_ORDERS
+
+
+def _node_with_line_item_page(oid, has_next):
+    return {
+        "id": f"gid://shopify/Order/{oid}",
+        "lineItems": {
+            "nodes": [{"name": "Tee", "quantity": 1}],
+            "pageInfo": {"hasNextPage": has_next},
+        },
+    }
+
+
+def test_capped_line_item_order_ids_flags_orders_past_the_cap():
+    """An order whose lineItems.pageInfo.hasNextPage is True is reported capped,
+    named by its gid (the tool layer applies from_gid for display)."""
+    orders = [_node_with_line_item_page("1001", has_next=True)]
+    assert ops.capped_line_item_order_ids(orders) == ["gid://shopify/Order/1001"]
+
+
+def test_capped_line_item_order_ids_empty_when_within_cap():
+    orders = [_node_with_line_item_page("1001", has_next=False)]
+    assert ops.capped_line_item_order_ids(orders) == []
+
+
+def test_capped_line_item_order_ids_returns_only_truncated_ids():
+    """Mixed batch: only the over-cap order's id comes back; an order with
+    hasNextPage False and one missing pageInfo entirely are both treated as
+    not-capped (defensive against shape drift / permissions-trimmed responses)."""
+    orders = [
+        _node_with_line_item_page("1001", has_next=True),
+        _node_with_line_item_page("1002", has_next=False),
+        {"id": "gid://shopify/Order/1003", "lineItems": {"nodes": []}},  # no pageInfo
+    ]
+    assert ops.capped_line_item_order_ids(orders) == ["gid://shopify/Order/1001"]
+
+
+def test_capped_line_item_order_ids_empty_for_empty_batch():
+    assert ops.capped_line_item_order_ids([]) == []

@@ -62,6 +62,18 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"    Items: {items}\n"
                 f"    Source: {traffic}"
             )
+        # GET_ORDERS caps each order's line items at a fixed first: N and cannot
+        # paginate that nested-in-list connection, so warn (don't silently drop)
+        # for every truncated order — parity with the single-order get_order cap
+        # warning below (Story 10.34 / A3).
+        cap = ops.GET_ORDERS_LINE_ITEM_CAP
+        for gid in ops.capped_line_item_order_ids(orders):
+            oid = from_gid(gid)
+            lines.append(
+                f"WARNING: order {oid} has more than {cap} line items — only the first "
+                f"{cap} are shown here; get_orders cannot paginate per-order line items. "
+                "Use get_order to retrieve the full line-item list."
+            )
         return "\n".join(lines)
 
     @server.tool()
