@@ -17,6 +17,9 @@ dependencies = [
     "pydantic-settings>=2.0,<3",
     "python-json-logger>=3,<4",
     "cachetools>=5,<6",
+    # HTML-safety detector (Story 10.35 / SEC-M2-sanitizer): nh3 (ammonia/Rust)
+    # is the parser-based engine behind tools/_filters.html_safety_findings.
+    "nh3>=0.2,<0.3",
 ]
 
 [project.optional-dependencies]

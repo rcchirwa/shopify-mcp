@@ -255,6 +255,23 @@ def test_update_seo_no_warning_for_safe_fields():
     assert "DANGEROUS" not in out
 
 
+def test_update_seo_warns_on_unicode_lookalike_scheme():
+    """Story 10.35 / SEC-M2-sanitizer: a Cyrillic je (U+0458) standing in for the
+    'j' of javascript: dodges the ASCII substring blocklist, but the nh3-backed
+    URL-scheme check still surfaces it in the SEO preview."""
+    tools, fc = _build([_seo_read()])
+    # chr(0x0458) keeps the source ASCII (ruff RUF001) but emits the look-alike.
+    lookalike = '<a href="' + chr(0x0458) + 'avascript:alert(1)">x</a>'
+    out = tools["update_product_seo"](
+        product_id="123",
+        new_seo_description=lookalike,
+        confirm=False,
+    )
+    assert "⚠ DANGEROUS HTML pattern detected" in out
+    assert "scheme" in out
+    assert len(fc.calls) == 1, "preview must not issue the mutation"
+
+
 # ---------- update_product_title handle logic ----------
 
 PROD_ID = "7330113421465"
@@ -1508,6 +1525,17 @@ def test_update_description_warns_on_title_breakout():
     out = tools["update_product_description"](product_id="7", new_description=new_desc)
     assert "⚠ DANGEROUS HTML DETECTED" in out
     assert "'</title>'" in out
+
+
+def test_update_description_warns_on_style_tag_css_injection():
+    """Story 10.35 / SEC-M2-sanitizer: a <style> block (CSS injection) is
+    invisible to the substring blocklist but the nh3-backed detector flags it."""
+    new_desc = "<p>hi</p><style>body{color:red}</style>"
+    tools, fc = _build([{"product": {"bodyHtml": ""}}])
+    out = tools["update_product_description"](product_id="7", new_description=new_desc)
+    assert "⚠ DANGEROUS HTML DETECTED" in out
+    assert "style" in out
+    assert len(fc.calls) == 1
 
 
 def test_update_description_confirmed_dangerous_shows_warning_prefix():

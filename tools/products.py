@@ -33,7 +33,7 @@ from shopify.queries.products import (
     UPDATE_PRODUCT_VARIANTS_POLICY,
 )
 from shopify_client import ShopifyClient
-from tools._filters import dangerous_html_patterns, filter_variant_targets
+from tools._filters import filter_variant_targets, html_safety_findings
 from tools._gid import from_gid
 from tools._log import log_write
 from tools._response import extract_user_errors, with_confirm_hint
@@ -184,7 +184,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         product = ops.fetch_product_core(client, product_id) or {}
         old_desc = product.get("bodyHtml", "")
 
-        danger = dangerous_html_patterns(new_description)
+        danger = html_safety_findings(new_description)
         warning_block = (
             (
                 "\n\n⚠ DANGEROUS HTML DETECTED in new description:\n"
@@ -252,7 +252,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"(> {SEO_DESCRIPTION_MAX_CHARS}, may be truncated in Google SERPs)"
             )
 
-        seo_danger = dangerous_html_patterns(new_seo_title or "") + dangerous_html_patterns(
+        seo_danger = html_safety_findings(new_seo_title or "") + html_safety_findings(
             new_seo_description or ""
         )
         if seo_danger:
