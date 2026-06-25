@@ -34,6 +34,23 @@ def read_orders(client: GraphQLClient, first: int) -> list[dict[str, Any]]:
     return data.get("orders", {}).get("nodes", [])
 
 
+def capped_line_item_order_ids(orders: list[dict[str, Any]]) -> list[str]:
+    """Return the gids of orders whose line items hit the fixed ``lineItems(first:
+    50)`` cap in ``GET_ORDERS`` — i.e. ``lineItems.pageInfo.hasNextPage`` is True.
+
+    ``GET_ORDERS`` cannot paginate the nested-in-list ``lineItems`` connection (see
+    the NOTE in ``shopify.queries.orders``), so rather than silently dropping rows
+    the tool layer warns on these ids — parity with ``read_order``'s ``capped`` flag.
+    A missing / shape-drifted ``pageInfo`` counts as not-capped (defensive against
+    permissions-trimmed responses). Ids are returned as gids; the tool layer applies
+    ``from_gid`` for display."""
+    return [
+        order["id"]
+        for order in orders
+        if ((order.get("lineItems") or {}).get("pageInfo") or {}).get("hasNextPage")
+    ]
+
+
 def read_order(
     client: GraphQLClient, order_id: str
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], bool]:
