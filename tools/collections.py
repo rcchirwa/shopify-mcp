@@ -20,7 +20,7 @@ from shopify.queries.collections import (
     UPDATE_COLLECTION,
 )
 from shopify_client import ShopifyClient, poll_job
-from tools._filters import dangerous_html_patterns
+from tools._filters import html_safety_findings
 from tools._gid import from_gid
 from tools._log import log_write
 from tools._response import format_user_errors, with_confirm_hint
@@ -122,7 +122,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if new_description:
             raw_old = col.get("descriptionHtml") or ""
             old_desc_excerpt = raw_old[:80] + ("..." if len(raw_old) > 80 else "")
-            danger = dangerous_html_patterns(new_description)
+            danger = html_safety_findings(new_description)
             warning_suffix = (
                 (
                     "\n\n⚠ DANGEROUS HTML DETECTED in new description:\n"

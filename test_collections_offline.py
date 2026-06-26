@@ -651,6 +651,17 @@ def test_update_collection_no_warning_for_safe_html():
     assert "DANGEROUS" not in out
 
 
+def test_update_collection_warns_on_style_tag_css_injection():
+    """Story 10.35 / SEC-M2-sanitizer: <style>/CSS injection — blind to the
+    substring blocklist — surfaces via the nh3-backed detector."""
+    new_desc = "<p>hi</p><style>.x{color:red}</style>"
+    tools, fc = _build([_manual_collection(handle="vanish", title="Vanish")])
+    out = tools["update_collection"](handle="vanish", new_description=new_desc)
+    assert "⚠ DANGEROUS HTML DETECTED" in out
+    assert "style" in out
+    assert len(fc.calls) == 1
+
+
 def test_update_collection_old_desc_excerpt_shown():
     tools, fc = _build([_manual_collection(handle="vanish", title="Vanish")])
     out = tools["update_collection"](handle="vanish", new_description="<p>new</p>")
