@@ -94,7 +94,7 @@ Requires `read_publications` and `write_publications` scopes. If the app was ins
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.11+
 - A Shopify store with a [Custom App](https://help.shopify.com/en/manual/apps/app-types/custom-apps) and Admin API access token
 - [Claude Desktop](https://claude.ai/download)
 
@@ -144,6 +144,34 @@ ruff check .
 ruff format --check .   # or `ruff format .` to apply fixes
 mypy
 ```
+
+#### Keeping your environment in sync
+
+When new dependencies land in [pyproject.toml](pyproject.toml) (e.g. a PR adds
+a runtime dep or a type stub), an environment you created earlier will be
+**stale** until you reinstall — the symptom is a `ModuleNotFoundError` at server
+boot, or mypy reporting `import-untyped` for a package whose stubs you never
+pulled. After every `git pull`, re-sync with:
+
+```bash
+pip install -e .[dev]
+```
+
+To check whether the current interpreter has drifted out of sync without a full
+reinstall, run the dep-drift check — it compares every dependency declared in
+pyproject.toml against what is actually installed and exits non-zero (listing
+what is missing) if they diverge:
+
+```bash
+shopify-mcp-check-deps        # or: python -m depcheck
+```
+
+It checks that each declared distribution is *installed* (presence, not version
+bounds — pip enforces those at install time). That's exactly what catches the
+boot crash: because Claude Desktop is pinned to `.venv/bin/shopify-mcp` (see
+step 7), pointing that same `.venv` at the check confirms the server won't hit a
+missing-dependency `ModuleNotFoundError` at startup. The same check runs in CI
+so a declared-but-unresolvable dependency can't pass review.
 
 ### 4. Configure credentials
 
