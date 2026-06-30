@@ -6584,6 +6584,7 @@ def test_update_product_options_no_op_already_set_warns_when_capped():
 from tools.catalog_hygiene import (  # noqa: E402
     METAFIELDS_DELETE_MAX,
     METAFIELDS_DELETE_MUTATION,
+    _is_metafield_not_found_error,
 )
 
 _S910_PRODUCT_GID = "gid://shopify/Product/777"
@@ -6941,6 +6942,27 @@ def test_s911_delete_mutation_does_not_select_code():
     # the mutation never executes (the live bug this story fixes).
     assert "userErrors { field message }" in METAFIELDS_DELETE_MUTATION
     assert "code" not in METAFIELDS_DELETE_MUTATION
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        # Metafield-specific not-found phrasings → idempotent.
+        ("Metafield not found", True),
+        ("The metafield does not exist", True),
+        ("This metafield doesn't exist", True),  # straight apostrophe
+        ("This metafield doesn" + chr(0x2019) + "t exist", True),  # curly apostrophe variant
+        ("METAFIELD NOT FOUND", True),  # case-insensitive
+        # Review fix: a non-metafield not-found must NOT be swallowed as success.
+        ("Owner not found", False),
+        ("Namespace not found", False),
+        # Unrelated / non-idempotent failures.
+        ("Access denied", False),
+        ("", False),
+    ],
+)
+def test_s911_is_metafield_not_found_error(message, expected):
+    assert _is_metafield_not_found_error(message) is expected
 
 
 def test_s911_triple_path_not_found_user_error_is_idempotent():

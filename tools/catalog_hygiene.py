@@ -274,8 +274,19 @@ def _is_metafield_not_found_error(message: str) -> bool:
     pre-mutation resolve, which skips already-absent metafields before the
     mutation runs; this covers the narrow race where a metafield is deleted
     between the resolve and the mutation.
+
+    The match is anchored to the word "metafield" so a non-idempotent error
+    that merely happens to mention a missing owner/namespace ("owner not
+    found") is NOT swallowed as success — only a metafield-specific not-found
+    flips to idempotent. The typographic apostrophe is normalised so Shopify's
+    curly-quote variant ("doesn't") still matches. This is intentionally
+    fail-safe: an unrecognised message surfaces as a real error rather than
+    being silently treated as a no-op. (English-only; the resolve-first path
+    is the real idempotency guarantee, so a localised message just fails loud.)
     """
-    lower = (message or "").lower()
+    lower = (message or "").lower().replace(chr(0x2019), "'")
+    if "metafield" not in lower:
+        return False
     return "not found" in lower or "does not exist" in lower or "doesn't exist" in lower
 
 
