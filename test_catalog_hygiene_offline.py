@@ -6584,6 +6584,7 @@ def test_update_product_options_no_op_already_set_warns_when_capped():
 from tools.catalog_hygiene import (  # noqa: E402
     METAFIELDS_DELETE_MAX,
     METAFIELDS_DELETE_MUTATION,
+    _is_metafield_not_found_error,
 )
 
 _S910_PRODUCT_GID = "gid://shopify/Product/777"
@@ -6905,7 +6906,10 @@ def test_s910_idempotent_not_found_via_resolution_is_success_with_note():
 
 
 def test_s910_idempotent_not_found_from_shopify_user_error_is_success_with_note():
-    # Resolution succeeds, mutation returns NOT_FOUND — also idempotent.
+    # Resolution succeeds, mutation returns a not-found userError — also
+    # idempotent. Story 9.11: `metafieldsDelete` returns the plain `UserError`
+    # type (field + message only, NO `code`), so the NOT_FOUND signal is read
+    # from the message text, not a `code` field.
     tools, fc = _build(
         [
             _s910_batch_resolve(_s910_gid_alias()),
@@ -6914,7 +6918,6 @@ def test_s910_idempotent_not_found_from_shopify_user_error_is_success_with_note(
                     {
                         "field": ["metafields", "0"],
                         "message": "Metafield not found",
-                        "code": "NOT_FOUND",
                     }
                 ]
             ),
@@ -6929,12 +6932,81 @@ def test_s910_idempotent_not_found_from_shopify_user_error_is_success_with_note(
     assert tail["deleted"][0]["note"] == ("Metafield not found — treated as idempotent success")
 
 
+# --- Story 9.11: metafieldsDelete schema (UserError has no `code`) -----------
+
+
+def test_s911_delete_mutation_does_not_select_code():
+    # `metafieldsDelete` returns the plain `UserError` type, which has only
+    # `field` and `message`. Selecting `code` (as metafieldsSet legitimately
+    # does on its `MetafieldsSetUserError`) makes the whole query invalid and
+    # the mutation never executes (the live bug this story fixes).
+    assert "userErrors { field message }" in METAFIELDS_DELETE_MUTATION
+    assert "code" not in METAFIELDS_DELETE_MUTATION
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        # Metafield-specific not-found phrasings → idempotent.
+        ("Metafield not found", True),
+        ("The metafield does not exist", True),
+        ("This metafield doesn't exist", True),  # straight apostrophe
+        ("This metafield doesn" + chr(0x2019) + "t exist", True),  # curly apostrophe variant
+        ("METAFIELD NOT FOUND", True),  # case-insensitive
+        # Review fix: a non-metafield not-found must NOT be swallowed as success.
+        ("Owner not found", False),
+        ("Namespace not found", False),
+        # Unrelated / non-idempotent failures.
+        ("Access denied", False),
+        ("", False),
+    ],
+)
+def test_s911_is_metafield_not_found_error(message, expected):
+    assert _is_metafield_not_found_error(message) is expected
+
+
+def test_s911_triple_path_not_found_user_error_is_idempotent():
+    # Triple addressing, resolution finds the metafield, but the mutation
+    # races and Shopify reports it gone via a message (no `code`). Treated as
+    # idempotent success-with-note, derived from the message text.
+    tools, fc = _build(
+        [
+            _s910_batch_resolve(_s910_triple_alias()),
+            _s910_delete_response(
+                user_errors=[
+                    {
+                        "field": ["metafields", "0"],
+                        "message": "Metafield does not exist",
+                    }
+                ]
+            ),
+        ]
+    )
+    out = tools["delete_product_metafields"](
+        metafields=[
+            {
+                "ownerId": _S910_PRODUCT_GID,
+                "namespace": "custom",
+                "key": "fabric_weight_oz",
+            }
+        ],
+        confirm=True,
+    )
+    assert "CONFIRMED —" in out
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+    assert tail["deleted"][0]["note"] == ("Metafield not found — treated as idempotent success")
+
+
 # --- Per-entry errors keyed by index ----------------------------------------
 
 
 def test_s910_errors_keyed_by_entry_index():
-    # Two-entry batch where entry 1 fails with a non-idempotent error
-    # (ACCESS_DENIED). One batched resolve + one mutation = 2 calls.
+    # Two-entry batch where entry 1 fails with a non-idempotent error.
+    # One batched resolve + one mutation = 2 calls. Story 9.11: the
+    # `metafieldsDelete` userError is the plain `UserError` (field + message
+    # only — NO `code`), so a non-idempotent failure is surfaced by its
+    # message, not a `code`, and re-keyed to the caller's entry index.
     tools, fc = _build(
         [
             _s910_batch_resolve(
@@ -6946,7 +7018,6 @@ def test_s910_errors_keyed_by_entry_index():
                     {
                         "field": ["metafields", "1"],
                         "message": "Access denied",
-                        "code": "ACCESS_DENIED",
                     }
                 ]
             ),
@@ -6963,10 +7034,11 @@ def test_s910_errors_keyed_by_entry_index():
     assert len(fc.calls) == 2  # 1 batched resolve + 1 mutation.
     tail = _parse_tail(out)
     assert tail["ok"] is False
-    # Verbatim — including the `code` field per AC #6.
-    assert tail["errors"][0]["code"] == "ACCESS_DENIED"
+    # Passed through verbatim — field + message, no `code` (real delete schema).
+    assert "code" not in tail["errors"][0]
+    assert tail["errors"][0]["message"] == "Access denied"
     assert "1" in tail["errorsByIndex"]
-    assert tail["errorsByIndex"]["1"][0]["code"] == "ACCESS_DENIED"
+    assert tail["errorsByIndex"]["1"][0]["message"] == "Access denied"
 
 
 # --- Network exception path --------------------------------------------------

@@ -332,8 +332,15 @@ mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
 # batch — drops the resolve phase from O(N) round-trips to O(1) for any
 # batch of N ≤ 25.
 
-# `userErrors { code }` is REQUIRED so the idempotent NOT_FOUND-as-success
-# branch can detect the signal without falling back to message-string matching.
+# `metafieldsDelete` returns the plain `UserError` type, which exposes only
+# `field` and `message` — NOT `code` (unlike `metafieldsSet`, whose
+# `MetafieldsSetUserError` does carry `code`). Selecting `code` here makes the
+# whole query invalid ("Field 'code' doesn't exist on type 'UserError'"), so
+# the mutation never executes (Story 9.11 live bug). The idempotent
+# NOT_FOUND-as-success branch therefore reads the signal from the message text
+# (see `_is_metafield_not_found_error` in tools/catalog_hygiene.py); the
+# primary idempotency path is the pre-mutation resolve that skips absent
+# metafields entirely.
 METAFIELDS_DELETE_MUTATION = """
 mutation metafieldsDelete($metafields: [MetafieldIdentifierInput!]!) {
   metafieldsDelete(metafields: $metafields) {
@@ -342,7 +349,7 @@ mutation metafieldsDelete($metafields: [MetafieldIdentifierInput!]!) {
       namespace
       key
     }
-    userErrors { field message code }
+    userErrors { field message }
   }
 }
 """

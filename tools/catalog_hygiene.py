@@ -264,6 +264,32 @@ def _is_already_bound_error(message: str) -> bool:
     return "already" in lower and ("bound" in lower or "associated" in lower)
 
 
+def _is_metafield_not_found_error(message: str) -> bool:
+    """Detect Shopify's not-found family of ``metafieldsDelete`` userErrors.
+
+    ``metafieldsDelete`` returns the plain ``UserError`` type (``field`` +
+    ``message`` only — no ``code``, unlike ``metafieldsSet``'s
+    ``MetafieldsSetUserError``), so the idempotent NOT_FOUND signal is read
+    from the message text (Story 9.11). The primary idempotency path is the
+    pre-mutation resolve, which skips already-absent metafields before the
+    mutation runs; this covers the narrow race where a metafield is deleted
+    between the resolve and the mutation.
+
+    The match is anchored to the word "metafield" so a non-idempotent error
+    that merely happens to mention a missing owner/namespace ("owner not
+    found") is NOT swallowed as success — only a metafield-specific not-found
+    flips to idempotent. The typographic apostrophe is normalised so Shopify's
+    curly-quote variant ("doesn't") still matches. This is intentionally
+    fail-safe: an unrecognised message surfaces as a real error rather than
+    being silently treated as a no-op. (English-only; the resolve-first path
+    is the real idempotency guarantee, so a localised message just fails loud.)
+    """
+    lower = (message or "").lower().replace(chr(0x2019), "'")
+    if "metafield" not in lower:
+        return False
+    return "not found" in lower or "does not exist" in lower or "doesn't exist" in lower
+
+
 def _expand_append_entries(variant_id: str, media_ids: list[str]) -> list[dict[str, Any]]:
     """Expand one variant's desired media into N single-mediaId append entries.
 
@@ -3327,7 +3353,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # Shopify keys `field` as ["metafields", "<mut-idx>", "<attr>?"] where
         # `mut-idx` is the position in our mutation_input — translate back to
         # the caller's original entry index via map_back. NOT_FOUND-class
-        # codes are treated as idempotent success-with-note (AC #7).
+        # errors are treated as idempotent success-with-note (AC #7). Because
+        # `metafieldsDelete` returns the plain `UserError` (no `code`, Story
+        # 9.11), that signal is read from the message text.
         not_found_indices: set[int] = set()
         non_idempotent_errors: list[dict[str, Any]] = []
         by_index: dict[str, list[dict[str, Any]]] = {}
@@ -3338,8 +3366,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 mut_idx = int(field[1])
                 if 0 <= mut_idx < len(map_back):
                     orig_idx = map_back[mut_idx]
-            code = (e.get("code") or "").upper()
-            if code in {"NOT_FOUND", "METAFIELD_NOT_FOUND"} and orig_idx is not None:
+            if _is_metafield_not_found_error(e.get("message") or "") and orig_idx is not None:
                 not_found_indices.add(orig_idx)
                 continue
             non_idempotent_errors.append(e)
