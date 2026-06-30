@@ -37,9 +37,14 @@ dev = [
 # launch the server via a single command path (`.venv/bin/shopify-mcp`)
 # instead of splitting across Python interpreter + script path.
 shopify-mcp = "shopify_mcp:main"
+# Dependency-drift check (Story 10.37): verifies the current interpreter has
+# every dependency pyproject.toml declares. Run after pulling new deps, or
+# point it at the interpreter the MCP server launches under to catch the
+# boot-crash drift before it happens. Exits non-zero on drift.
+shopify-mcp-check-deps = "depcheck:main"
 
 [tool.setuptools]
-py-modules = ["logging_config", "settings", "shopify_client", "shopify_mcp"]
+py-modules = ["depcheck", "logging_config", "settings", "shopify_client", "shopify_mcp"]
 packages = ["tools", "validators", "_testing", "shopify", "shopify.queries", "shopify.operations"]
 
 [tool.pytest.ini_options]
@@ -54,7 +59,7 @@ addopts = "--ignore=test_shopify_mcp.py --ignore=test_webhooks.py"
 # `coverage run` locally and the CI workflow, so the two can't drift.
 # `_testing/` is intentionally excluded: it holds test doubles exercised
 # only through the offline suites, not production code worth gating on.
-source = ["logging_config", "settings", "shopify_client", "tools", "validators", "shopify"]
+source = ["depcheck", "logging_config", "settings", "shopify_client", "tools", "validators", "shopify"]
 
 [tool.ruff]
 line-length = 100
@@ -88,7 +93,7 @@ quote-style = "double"
 # annotations. Added tools should carry types from the first commit — mypy will
 # reject the PR otherwise.
 python_version = "3.10"
-files = ["logging_config.py", "settings.py", "shopify_client.py", "shopify_mcp.py", "tools", "validators", "_testing", "shopify"]
+files = ["depcheck.py", "logging_config.py", "settings.py", "shopify_client.py", "shopify_mcp.py", "tools", "validators", "_testing", "shopify"]
 ignore_missing_imports = true
 disallow_untyped_defs = true
 # Belt-and-suspenders: if anyone later bypasses the gate with

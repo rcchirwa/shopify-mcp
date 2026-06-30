@@ -45,6 +45,12 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -e .[dev]
+      - name: Dependency drift check
+        # Fails if the installed env is missing any dependency declared in
+        # pyproject.toml (Story 10.37). CI installs fresh so this should always
+        # pass here; running it keeps the check itself from bitrotting and
+        # guards against a declared dep that can't actually be resolved.
+        run: shopify-mcp-check-deps
       - name: Ruff lint
         run: ruff check .
       - name: Ruff format check

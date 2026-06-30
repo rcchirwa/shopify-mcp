@@ -145,6 +145,33 @@ ruff format --check .   # or `ruff format .` to apply fixes
 mypy
 ```
 
+#### Keeping your environment in sync
+
+When new dependencies land in [pyproject.toml](pyproject.toml) (e.g. a PR adds
+a runtime dep or a type stub), an environment you created earlier will be
+**stale** until you reinstall — the symptom is a `ModuleNotFoundError` at server
+boot, or mypy reporting `import-untyped` for a package whose stubs you never
+pulled. After every `git pull`, re-sync with:
+
+```bash
+pip install -e .[dev]
+```
+
+To check whether the current interpreter has drifted out of sync without a full
+reinstall, run the dep-drift check — it compares every dependency declared in
+pyproject.toml against what is actually installed and exits non-zero (listing
+what is missing) if they diverge:
+
+```bash
+shopify-mcp-check-deps        # or: python -m depcheck
+```
+
+This is also the cheapest way to confirm the **interpreter the MCP server
+launches under** satisfies every declared dependency. Because Claude Desktop is
+pinned to `.venv/bin/shopify-mcp` (see step 7), pointing that same `.venv` at
+the check verifies the server will boot cleanly. The same check runs in CI so a
+drifted declaration can't pass review.
+
 ### 4. Configure credentials
 
 Copy the example env file and fill in your values:
