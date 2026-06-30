@@ -129,16 +129,21 @@ def test_check_flags_drift_against_a_pyproject(tmp_path: Path) -> None:
     assert depcheck.check(path) == {"project": [f"{_ABSENT_DIST}>=1"]}
 
 
-def test_check_against_real_pyproject_passes_in_synced_dev_env() -> None:
-    # Running under a dev env installed from this pyproject, nothing should be
-    # missing — this is exactly AC #3 (env satisfies every declared dep).
-    assert depcheck.check() == {}
+# Asserting the *live* environment is fully synced is the job of the
+# `shopify-mcp-check-deps` CI step (which runs against a fresh install), not of
+# the offline suite — coupling a unit test to the ambient venv makes "test
+# failed" and "env drifted" indistinguishable. So main()'s in-sync path is
+# driven through a stubbed check() rather than the real environment.
 
 
 # --- main (CLI entry) -------------------------------------------------------
 
 
-def test_main_returns_zero_and_reports_ok_when_synced(capsys: pytest.CaptureFixture[str]) -> None:
+def test_main_returns_zero_and_reports_ok_when_synced(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(depcheck, "check", dict)
+
     rc = depcheck.main()
 
     out = capsys.readouterr().out

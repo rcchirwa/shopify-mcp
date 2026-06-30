@@ -7,7 +7,11 @@ build-backend = "setuptools.build_meta"
 name = "shopify-mcp"
 version = "0.1.0"
 description = "Shopify MCP server — Model Context Protocol tools for Shopify Admin API."
-requires-python = ">=3.10"
+# 3.11 floor: the documented setup creates the venv with `python3.11`, CI runs
+# only on 3.11, and tooling (e.g. depcheck.py) uses the stdlib `tomllib` added
+# in 3.11. The old ">=3.10" was never exercised — this matches the contract to
+# reality (Story 10.37).
+requires-python = ">=3.11"
 dependencies = [
     "mcp>=1.0.0,<2",
     "python-dotenv>=1.0.0,<2",

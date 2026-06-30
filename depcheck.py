@@ -21,6 +21,21 @@ install, so a stale env that never reinstalled would report itself in sync.
 pyproject.toml on disk is the source of truth; the installed env is what we
 validate against it.
 
+Scope — this checks *presence*, the failure mode Story 10.37 hit (a declared
+distribution simply absent). It deliberately does not:
+
+- validate version specifiers (``cachetools>=5,<6`` passes as long as *some*
+  cachetools is installed) — pip enforces the declared bounds at install time;
+- recurse into a dependency's own extras (``gql[requests]`` is checked as
+  ``gql``; the ``requests`` extra's contents are independently declared here as
+  the top-level ``requests`` dependency anyway);
+- evaluate environment markers — the project declares none today; a marked
+  dependency (e.g. ``foo; python_version < '3.11'``) would need marker-aware
+  filtering added here before it could be reported correctly.
+
+It reads the pyproject.toml beside this module, i.e. the source tree of an
+editable install — the only layout this dev/ops tool is meant to run in.
+
 Run with ``python -m depcheck`` or the ``shopify-mcp-check-deps`` console
 script. Exit code 0 = in sync, 1 = drift detected.
 """

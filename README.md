@@ -94,7 +94,7 @@ Requires `read_publications` and `write_publications` scopes. If the app was ins
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.11+
 - A Shopify store with a [Custom App](https://help.shopify.com/en/manual/apps/app-types/custom-apps) and Admin API access token
 - [Claude Desktop](https://claude.ai/download)
 
@@ -166,11 +166,12 @@ what is missing) if they diverge:
 shopify-mcp-check-deps        # or: python -m depcheck
 ```
 
-This is also the cheapest way to confirm the **interpreter the MCP server
-launches under** satisfies every declared dependency. Because Claude Desktop is
-pinned to `.venv/bin/shopify-mcp` (see step 7), pointing that same `.venv` at
-the check verifies the server will boot cleanly. The same check runs in CI so a
-drifted declaration can't pass review.
+It checks that each declared distribution is *installed* (presence, not version
+bounds — pip enforces those at install time). That's exactly what catches the
+boot crash: because Claude Desktop is pinned to `.venv/bin/shopify-mcp` (see
+step 7), pointing that same `.venv` at the check confirms the server won't hit a
+missing-dependency `ModuleNotFoundError` at startup. The same check runs in CI
+so a declared-but-unresolvable dependency can't pass review.
 
 ### 4. Configure credentials
 
