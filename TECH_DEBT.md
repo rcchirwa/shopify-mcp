@@ -16,7 +16,7 @@ Source: read-only security audit 2026-07-04. Trello: https://trello.com/c/jWndWx
 
 | # | Item | How it closed |
 |---|------|----------------|
-| SEC-04 | ~~Untrusted-data wrapping was per-tool (orders only); metafield values and media alt text reached the model unlabelled~~ | Extracted the `<UNTRUSTED-DATA>` literal + injection reminder into one shared helper, `tools/_untrusted.py` (`wrap(text)` + `INJECTION_REMINDER`); re-pointed `tools/orders.py` to it with byte-identical output. Applied `wrap()` to the agreed field list and prefixed each affected output with `INJECTION_REMINDER`. There is now a single definition of the tag — no duplicated `<UNTRUSTED-DATA>` literals anywhere. CI clean: ruff + format + mypy + 100% coverage. |
+| SEC-04 | ~~Untrusted-data wrapping was per-tool (orders only); metafield values and media alt text reached the model unlabelled~~ | Extracted the `<UNTRUSTED-DATA>` literal + injection reminder into one shared helper, `tools/_untrusted.py` (`wrap(text)` + `INJECTION_REMINDER`); re-pointed `tools/orders.py` to it with byte-identical output for all legitimate content. Applied `wrap()` to the agreed field list and prefixed each affected output with `INJECTION_REMINDER`. There is now a single definition of the tag — no duplicated `<UNTRUSTED-DATA>` literals anywhere. Triple-threat review caught a delimiter-breakout: a value containing the literal `</UNTRUSTED-DATA>` could forge the closing tag and escape the untrusted region — `wrap()` now neutralizes any embedded closing tag before wrapping (payload preserved, not dropped), closing the escape at the single chokepoint for every call site. CI clean: ruff + format + mypy + 100% coverage. |
 
 ### Agreed in-scope field list (groomed for this story)
 

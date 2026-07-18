@@ -153,6 +153,17 @@ def test_list_product_media_empty_alt_renders_without_tags():
     assert "<UNTRUSTED-DATA></UNTRUSTED-DATA>" not in out
 
 
+def test_list_product_media_all_empty_alts_omit_reminder():
+    """When every media node has an empty alt, no value is wrapped — so the
+    reminder header must NOT be emitted (parity with catalog_hygiene gating)."""
+    tools, _ = _build(
+        [_product_media_read([_media_node(MEDIA_A, alt=""), _media_node(MEDIA_B, alt="")])]
+    )
+    out = tools["list_product_media"](product_id="123")
+    assert INJECTION_REMINDER not in out
+    assert "<UNTRUSTED-DATA>" not in out
+
+
 def test_list_product_media_empty():
     tools, fc = _build([_product_media_read([])])
     out = tools["list_product_media"](product_id="123")

@@ -43,9 +43,14 @@ def _render_media_list(
             f"  WARNING: pagination cap reached ({len(nodes)} media shown) — "
             f"additional media exist but are not listed here."
         )
-    # Media list reached here only when nodes exist, so at least one alt field
-    # is present — prefix the injection reminder that explains the tag.
-    return INJECTION_REMINDER + "\n".join(lines)
+    body = "\n".join(lines)
+    # Prefix the injection reminder only when at least one node actually has a
+    # non-empty alt (so a wrapped <UNTRUSTED-DATA> value is present). Node
+    # presence alone doesn't imply alt presence — this mirrors catalog_hygiene's
+    # `total_found > 0` gate so the reminder never references an absent tag.
+    if any(n.get("alt") for n in nodes):
+        body = INJECTION_REMINDER + body
+    return body
 
 
 def register(server: FastMCP, client: ShopifyClient) -> None:
