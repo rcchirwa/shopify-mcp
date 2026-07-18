@@ -27,20 +27,27 @@ def _reject_if_private_host(url: str) -> None:
     Accepted risk — DNS rebinding / TOCTOU (SEC-03, security audit 2026-07-04):
     the check resolves the host and rejects non-public IPs, but the resolved
     IP is *not* pinned through to the request. A host that resolves public at
-    check time and private at fetch time (attacker-controlled DNS + narrow
-    timing) can slip past this guard. Closing it means pinning the validated
-    IP into the connection while preserving the original hostname for TLS SNI
-    and certificate validation — a custom requests/urllib3 adapter that is
-    easy to get subtly wrong and carries ongoing maintenance cost.
+    check time and private at fetch (connect) time can slip past this guard.
+    Attacker-controlled DNS is the baseline for this guard — the caller (a
+    prompt-injectable model) supplies the URL, so pointing it at an
+    attacker-owned domain is assumed, not a barrier; the real obstacle is
+    winning the TOCTOU race between the getaddrinfo check here and requests'
+    re-resolution at connect time. Closing it means pinning the validated IP
+    into the connection while preserving the original hostname for TLS SNI and
+    certificate validation — a custom requests/urllib3 adapter that is easy to
+    get subtly wrong and carries ongoing maintenance cost.
 
     Decision (Story 10.43): formally accept the risk. Rationale — this is a
-    Low-severity finding on a *local stdio* MCP server (no untrusted network
-    reaching the process), the attack requires attacker-controlled DNS *plus*
-    a rebinding race, and `fetch_bytes` already refuses redirects, caps the
-    body, and filters to `image/*` behind a confirm/preview gate. The adapter
+    Low-severity finding on a *local stdio* MCP server, and defense-in-depth
+    already narrows it: `fetch_bytes` refuses redirects by default (the
+    image-download caller passes `allow_redirects=False`) and hard-caps the
+    body, and the media-upload caller filters to `image/*`
+    (`tools/media/_upload.py`) behind a confirm/preview gate. The adapter
     complexity is not proportionate at this threat level. Reopen trigger: **if
-    this server is ever cloud-hosted or otherwise exposed to an untrusted
-    network boundary**, implement IP-pinning (see TECH_DEBT.md → SEC-03).
+    this process is ever deployed where internal/metadata endpoints (e.g.
+    169.254.169.254 IMDS, RFC1918 hosts) are egress-reachable — any cloud VM,
+    container, or CI runner, regardless of network ingress** — implement
+    IP-pinning (see TECH_DEBT.md → SEC-03).
     """
     host = urlparse(url).hostname
     if not host:
