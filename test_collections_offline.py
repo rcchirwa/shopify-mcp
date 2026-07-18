@@ -595,6 +595,79 @@ def test_update_collection_confirm_description_only_sends_only_description_field
     assert "title" not in vars_["input"]
 
 
+# ---------- sanitizer (Approach 2, post-sign-off): disallowed HTML stripped before write ----------
+
+
+def test_update_collection_confirm_strips_disallowed_html_before_write():
+    tools, fc = _build(
+        [
+            _manual_collection(handle="vanish", title="Vanish"),
+            _collection_update_ok(),
+        ]
+    )
+    tools["update_collection"](
+        handle="vanish",
+        new_description='<p>hi</p><iframe src="https://evil.example"></iframe>',
+        confirm=True,
+    )
+    _, vars_ = fc.calls[1]
+    assert "<iframe" not in vars_["input"]["descriptionHtml"]
+    assert "<p>hi</p>" in vars_["input"]["descriptionHtml"]
+
+
+def test_update_collection_confirm_preserves_fully_allowed_html():
+    tools, fc = _build(
+        [
+            _manual_collection(handle="vanish", title="Vanish"),
+            _collection_update_ok(),
+        ]
+    )
+    new_desc = (
+        '<div class="rte"><p>Details.</p><img src="https://cdn.shopify.com/x.png" alt="x"></div>'
+    )
+    tools["update_collection"](
+        handle="vanish",
+        new_description=new_desc,
+        confirm=True,
+    )
+    _, vars_ = fc.calls[1]
+    assert vars_["input"]["descriptionHtml"] == new_desc
+
+
+def test_update_collection_preview_shows_strip_diff_for_disallowed_content():
+    new_desc = "<p>hi</p><style>body{color:red}</style>"
+    tools, fc = _build([_manual_collection(handle="vanish", title="Vanish")])
+    out = tools["update_collection"](handle="vanish", new_description=new_desc)
+    assert "stripped" in out.lower()
+    assert len(fc.calls) == 1
+
+
+def test_update_collection_preview_no_strip_diff_for_allowed_content():
+    new_desc = "<p>Safe <b>content</b></p>"
+    tools, fc = _build([_manual_collection(handle="vanish", title="Vanish")])
+    out = tools["update_collection"](handle="vanish", new_description=new_desc)
+    assert "stripped" not in out.lower()
+
+
+def test_update_collection_confirm_writes_empty_description_when_fully_stripped():
+    """A description that is entirely disallowed markup sanitizes to '' — the
+    operator asked to change the field, so the write must still carry
+    descriptionHtml="" rather than silently leaving the old value in place."""
+    tools, fc = _build(
+        [
+            _manual_collection(handle="vanish", title="Vanish"),
+            _collection_update_ok(),
+        ]
+    )
+    tools["update_collection"](
+        handle="vanish",
+        new_description='<iframe src="https://evil.example"></iframe>',
+        confirm=True,
+    )
+    _, vars_ = fc.calls[1]
+    assert vars_["input"]["descriptionHtml"] == ""
+
+
 def test_update_collection_user_errors_surfaced():
     tools, fc = _build(
         [

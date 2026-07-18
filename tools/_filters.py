@@ -107,19 +107,31 @@ class _SanitizerIndexer(html.parser.HTMLParser):
     attribute values, so the input and ``nh3.clean(input)`` can be diffed for
     what the sanitizer would strip. Tag and attribute names arrive lower-cased
     from ``HTMLParser``, matching nh3's lower-case allow-lists.
+
+    ``tag_attrs`` merges attribute names across *every* instance of a tag —
+    fine for :func:`html_safety_findings`, which only needs to know "does
+    this document contain a `<style>` anywhere". ``elements`` instead keeps
+    one entry per tag *occurrence*, in document order, so
+    :func:`html_strip_report` can align same-named elements positionally and
+    not have one surviving instance's attribute mask another instance's
+    stripped one.
     """
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.tag_attrs: dict[str, set[str]] = {}
+        self.elements: list[tuple[str, set[str]]] = []
         self.url_values: list[tuple[str, str, str]] = []
 
     def _record(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         names = self.tag_attrs.setdefault(tag, set())
+        element_names: set[str] = set()
         for name, value in attrs:
             names.add(name)
+            element_names.add(name)
             if name in _URL_ATTRS and value:
                 self.url_values.append((tag, name, value))
+        self.elements.append((tag, element_names))
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self._record(tag, attrs)
@@ -196,6 +208,147 @@ def html_safety_findings(text: str) -> list[str]:
         _add(f"{name}= on <{tag}> uses suspicious URL scheme {scheme!r}")
 
     return findings
+
+
+# Story 10.35 / SEC-M2-sanitizer, Approach 2 (post-sign-off) — allow-list
+# recorded on the Trello card (4vEAwQWo, 2026-07-17, amended same day). Applies
+# to descriptionHtml (products, collections) and seo.title / seo.description.
+# Standard rich-text formatting plus images/tables/wrapper divs, since real
+# theme-authored descriptions rely on them (see test_realistic_rich_text_
+# description_stays_silent) — event-handler attributes and script-executing /
+# non-http(s) URL schemes are never in any tag's attribute set, so they are
+# stripped regardless of which tags are allowed.
+_ALLOWED_TAGS = frozenset(
+    {
+        "p",
+        "br",
+        "b",
+        "i",
+        "em",
+        "strong",
+        "u",
+        "ul",
+        "ol",
+        "li",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "a",
+        "span",
+        "div",
+        "img",
+        "table",
+        "tr",
+        "td",
+        "th",
+    }
+)
+_ALLOWED_ATTRIBUTES: dict[str, set[str]] = {
+    "a": {"href", "title"},
+    "span": {"style", "class"},
+    "div": {"class"},
+    "img": {"src", "alt"},
+}
+_ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
+_ALLOWED_STYLE_PROPERTIES = frozenset({"color", "font-weight"})
+
+
+def _reject_suspect_url_scheme(tag: str, attr: str, value: str) -> str | None:
+    """``attribute_filter`` callback for :func:`sanitize_html`.
+
+    ``nh3``'s own ``url_schemes`` allow-list only rejects a value it recognises
+    as having an ASCII scheme outside the set; a non-ASCII look-alike scheme
+    (e.g. Cyrillic je for the 'j' of ``javascript:``) isn't parsed as a scheme
+    at all, so it sails through unfiltered — the same bypass class
+    :func:`html_safety_findings`'s ``_scheme_is_suspect`` already detects.
+    Reusing that check here closes the gap for the attribute nh3 would
+    otherwise keep verbatim.
+    """
+    if attr in ("href", "src"):
+        scheme = _url_scheme(value)
+        if scheme is not None and _scheme_is_suspect(scheme):
+            return None
+    return value
+
+
+def sanitize_html(text: str) -> str:
+    """Strip *text* down to the Story 10.35 / SEC-M2-sanitizer Approach 2
+    allow-list (product sign-off, Trello card 4vEAwQWo) — this is the actual
+    sanitizer, called before the Shopify write. Contrast with
+    :func:`html_safety_findings`, which is advisory-only detection against a
+    more permissive baseline and strips nothing.
+    """
+    return nh3.clean(
+        text,
+        tags=set(_ALLOWED_TAGS),
+        attributes=_ALLOWED_ATTRIBUTES,
+        url_schemes=set(_ALLOWED_URL_SCHEMES),
+        filter_style_properties=set(_ALLOWED_STYLE_PROPERTIES),
+        attribute_filter=_reject_suspect_url_scheme,
+    )
+
+
+def html_strip_report(text: str, sanitized: str | None = None) -> list[str]:
+    """Human-readable list of tags/attributes :func:`sanitize_html` removes
+    from *text*, for the write-preview "what will be stripped" diff. Only
+    actual content loss is reported — safety additions nh3 makes (e.g.
+    ``rel="noopener noreferrer"`` on ``<a>``) are not, since nothing was
+    stripped.
+
+    Pass the caller's already-computed ``sanitized_html(text)`` result as
+    *sanitized* to avoid re-running ``nh3.clean`` on the same input; omit it
+    to have this function compute it.
+
+    Diffs ``before``/``after`` *positionally* (:attr:`_SanitizerIndexer.elements`,
+    one entry per tag occurrence in document order) rather than by merging all
+    same-named tags into one attribute set — a merged diff would let one
+    surviving ``<img src="...">`` mask a sibling ``<img>`` whose ``src`` was
+    genuinely stripped (triple-threat review finding, 2026-07-17).
+    """
+    if sanitized is None:
+        sanitized = sanitize_html(text)
+    if sanitized == text:
+        return []
+
+    before_elements = _index_html(text).elements
+    after_elements = _index_html(sanitized).elements
+    report: list[str] = []
+    seen: set[str] = set()
+
+    def _add(message: str) -> None:
+        if message not in seen:
+            seen.add(message)
+            report.append(message)
+
+    j = 0
+    for tag, names in before_elements:
+        if j < len(after_elements) and after_elements[j][0] == tag:
+            for name in sorted(names - after_elements[j][1]):
+                _add(f"{name}= on <{tag}> (attribute stripped by sanitizer)")
+            j += 1
+        else:
+            _add(f"<{tag}> (tag stripped by sanitizer)")
+    return report
+
+
+def format_strip_block(stripped: list[str]) -> str:
+    """Render the "what will be stripped" preview suffix for a
+    :func:`html_strip_report` result — shared by the ``descriptionHtml`` write
+    sites (``update_product_description``, ``update_collection``) so the
+    wording and allow-list summary can't drift out of sync between them.
+    Returns "" when nothing was stripped.
+    """
+    if not stripped:
+        return ""
+    return (
+        "\n\n✂ CONTENT WILL BE SANITIZED — stripped before writing:\n"
+        + "\n".join(f"  • {s}" for s in stripped)
+        + "\nAllowed: p, br, b, i, em, strong, u, ul, ol, li, h1-h6, a[href,title], "
+        "span/div[class], span[style: color/font-weight], img[src,alt], table/tr/td/th."
+    )
 
 
 def filter_variant_targets(

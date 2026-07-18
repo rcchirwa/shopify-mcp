@@ -14,7 +14,12 @@ Usage:
 """
 
 from tools import _filters
-from tools._filters import dangerous_html_patterns, html_safety_findings
+from tools._filters import (
+    dangerous_html_patterns,
+    html_safety_findings,
+    html_strip_report,
+    sanitize_html,
+)
 
 # U+0458 CYRILLIC SMALL LETTER JE — visually identical to ASCII 'j'. Built with
 # chr() so the source stays ASCII (no ruff RUF001 ambiguous-glyph) while the
@@ -181,3 +186,130 @@ def test_tab_obfuscated_javascript_scheme_is_flagged():
     assert dangerous_html_patterns(payload) == []  # the tab breaks the 'javascript:' substring
     findings = html_safety_findings(payload)
     assert any("scheme" in f and "href=" in f for f in findings)
+
+
+# ---------- sanitize_html / html_strip_report (Approach 2, post-sign-off) ----------
+#
+# Product sign-off recorded on the Trello card (4vEAwQWo, 2026-07-17, amended
+# same day): p, br, b, i, em, strong, u, ul, ol, li, h1-h6, a[href,title],
+# span[style,class], div[class], img[src,alt], table/tr/td/th. href/src
+# restricted to http/https. style limited to color/font-weight. Strip-and-warn:
+# disallowed markup is removed by sanitize_html() before the Shopify write.
+
+
+def test_sanitize_html_preserves_allowed_rich_text():
+    payload = "<p>Hello <b>world</b> <i>there</i></p>"
+    assert sanitize_html(payload) == payload
+
+
+def test_sanitize_html_preserves_realistic_theme_description():
+    """The same fixture html_safety_findings already treats as benign real-world
+    content must survive sanitize_html unchanged in substance (class/img kept)."""
+    payload = (
+        '<div class="product-description">'
+        "<p>Soft combed cotton. <strong>Pre-shrunk.</strong></p>"
+        '<img src="https://cdn.shopify.com/x.png" alt="tee">'
+        "</div>"
+    )
+    assert sanitize_html(payload) == payload
+
+
+def test_sanitize_html_strips_style_tag():
+    assert "<style" not in sanitize_html("<p>hi</p><style>body{color:red}</style>")
+
+
+def test_sanitize_html_strips_iframe():
+    assert "<iframe" not in sanitize_html('<iframe src="https://evil.example"></iframe>')
+
+
+def test_sanitize_html_strips_event_handler_attribute():
+    sanitized = sanitize_html('<img src="https://cdn.shopify.com/x.png" onerror="alert(1)">')
+    assert "onerror" not in sanitized
+    assert "https://cdn.shopify.com/x.png" in sanitized
+
+
+def test_sanitize_html_strips_event_handler_even_on_allowed_tag():
+    """on*= must never survive even though <div> is itself allowed."""
+    assert "onmouseover" not in sanitize_html('<div onmouseover="alert(1)">hi</div>')
+
+
+def test_sanitize_html_strips_javascript_scheme_href():
+    sanitized = sanitize_html('<a href="javascript:alert(1)">click</a>')
+    assert "javascript:" not in sanitized
+
+
+def test_sanitize_html_strips_javascript_scheme_img_src():
+    sanitized = sanitize_html('<img src="javascript:alert(1)">')
+    assert "javascript:" not in sanitized
+
+
+def test_sanitize_html_strips_unicode_lookalike_scheme():
+    sanitized = sanitize_html(f'<a href="{_CYRILLIC_JE}avascript:alert(1)">x</a>')
+    assert "href" not in sanitized
+
+
+def test_sanitize_html_allows_relative_href():
+    """No scheme to reject — relative URLs pass through."""
+    sanitized = sanitize_html('<a href="/collections/all">shop</a>')
+    assert 'href="/collections/all"' in sanitized
+
+
+def test_sanitize_html_style_attribute_keeps_allowed_properties_only():
+    sanitized = sanitize_html('<span style="color:red;position:absolute;font-weight:bold">x</span>')
+    assert "color:red" in sanitized
+    assert "font-weight:bold" in sanitized
+    assert "position" not in sanitized
+
+
+def test_sanitize_html_strips_disallowed_tag_not_in_allowlist():
+    """<form> is a genuine structural-injection vector and is not on the
+    allow-list even though it isn't the curated blocklist's concern."""
+    assert "<form" not in sanitize_html('<form action="https://evil.example">hi</form>')
+
+
+def test_sanitize_html_plain_text_passthrough():
+    assert sanitize_html("Vanish Trucker Hat | Streetwear") == "Vanish Trucker Hat | Streetwear"
+
+
+def test_html_strip_report_empty_for_fully_allowed_content():
+    assert html_strip_report("<p>Hello <b>world</b></p>") == []
+
+
+def test_html_strip_report_empty_for_plain_text():
+    assert html_strip_report("Only Title") == []
+
+
+def test_html_strip_report_names_stripped_tag():
+    report = html_strip_report("<p>hi</p><style>body{color:red}</style>")
+    assert any("style" in item for item in report)
+
+
+def test_html_strip_report_names_stripped_attribute():
+    report = html_strip_report('<img src="https://cdn.shopify.com/x.png" onerror="alert(1)">')
+    assert any("onerror" in item and "img" in item for item in report)
+
+
+def test_html_strip_report_does_not_flag_safety_additions():
+    """nh3 adds rel="noopener noreferrer" to <a> — that's an addition, not a
+    removal, and must not appear as a stripped-content finding."""
+    report = html_strip_report('<a href="https://example.com">shop</a>')
+    assert report == []
+
+
+def test_html_strip_report_detects_stripped_attribute_among_duplicate_tags():
+    """Regression (triple-threat review, deep + security): a per-tag-name
+    merged-set diff would mask this — the first <img> keeps its src, so a
+    same-tag-name set diff sees the attribute name survive somewhere and
+    reports nothing, even though the second <img>'s dangerous src was
+    genuinely stripped by sanitize_html()."""
+    payload = '<img src="https://cdn.shopify.com/good.png"><img src="javascript:alert(1)">'
+    assert "javascript:" not in sanitize_html(payload)  # sanitizer itself is correct
+    report = html_strip_report(payload)
+    assert any("src" in item and "img" in item for item in report)
+
+
+def test_html_strip_report_detects_stripped_tag_among_duplicate_tags():
+    """Same class of bug for a fully-stripped tag interleaved with survivors."""
+    payload = "<p>a</p><style>body{color:red}</style><p>b</p>"
+    report = html_strip_report(payload)
+    assert any("style" in item for item in report)
