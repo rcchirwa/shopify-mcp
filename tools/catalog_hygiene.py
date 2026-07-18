@@ -78,6 +78,7 @@ from tools._resolvers import resolve_variant_ids_with_variants
 from tools._response import extract_user_errors, format_user_errors, with_confirm_hint
 from tools._scrub import cap
 from tools._untrusted import INJECTION_REMINDER, wrap
+from tools.media._constants import MEDIA_IDS_MAX
 
 # The GraphQL strings + dynamic query builders now live in
 # shopify.queries.catalog_hygiene; the data-access wrappers in
@@ -225,6 +226,13 @@ _NUMBER_DECIMAL_RE = re.compile(r"^-?\d+(\.\d+)?$")
 # as METAFIELDS_SET_MAX — enforced client-side so the cap-exceeded path emits
 # a structured tool error before any network round-trip.
 METAFIELDS_DELETE_MAX = 25
+
+# Per-call caps on update_product_pricing's `variants` and
+# update_variant_image_binding's `variant_media` lists. Same idiom as
+# METAFIELDS_SET_MAX / METAFIELDS_DELETE_MAX — enforced client-side before
+# any network call (Story 10.42 / SEC-09).
+PRICING_VARIANTS_MAX = 25
+VARIANT_MEDIA_MAX = 25
 
 # Metafield GID prefix — used to validate `metafieldId` inputs to
 # delete_product_metafields. Distinct from the Product / ProductVariant
@@ -514,7 +522,7 @@ def _normalize_metafield_entries(
             ns_clean: str | None = None
         else:
             ns_clean = ns.strip()
-            if ns_clean.startswith(RESERVED_NAMESPACE_PREFIX):
+            if ns_clean.lower().startswith(RESERVED_NAMESPACE_PREFIX):
                 _push(
                     idx,
                     f"metafields[{idx}].namespace {_cap(ns_clean)!r} uses the reserved "
@@ -866,6 +874,10 @@ def _normalize_entries(variants: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     if not isinstance(variants, list) or not variants:
         raise ValueError("variants must be a non-empty list")
+    if len(variants) > PRICING_VARIANTS_MAX:
+        raise ValueError(
+            f"variants exceeds the {PRICING_VARIANTS_MAX}-entry per-call cap (got {len(variants)})."
+        )
 
     out: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
@@ -2428,14 +2440,16 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         `{ok: false, variants: [], errors: [{message}]}` on validation or
         resolver errors; Shopify userErrors pass through verbatim.
         """
-        # Step 1 — resolve product_id (numeric / GID short-circuit; handle via network)
-        gid, resolve_err = _resolve_product_gid(client, product_id)
-        if resolve_err or not gid:
-            err = resolve_err or "product_id could not be resolved."
-            return _render(f"Error: {err}", _err_payload(err))
-
+        # Step 1 — validate variant_media before any network call (including
+        # the handle lookup inside _resolve_product_gid).
         if not variant_media:
             msg = "variant_media must be a non-empty list."
+            return _render(f"Error: {msg}", _err_payload(msg))
+        if len(variant_media) > VARIANT_MEDIA_MAX:
+            msg = (
+                f"variant_media exceeds the {VARIANT_MEDIA_MAX}-entry per-call "
+                f"cap (got {len(variant_media)})."
+            )
             return _render(f"Error: {msg}", _err_payload(msg))
 
         normalized: list[tuple[str, list[str]]] = []
@@ -2451,6 +2465,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             if not isinstance(raw_media_ids, list) or not raw_media_ids:
                 msg = f"variant_media[{idx}].mediaIds must be a non-empty list."
                 return _render(f"Error: {msg}", _err_payload(msg))
+            if len(raw_media_ids) > MEDIA_IDS_MAX:
+                msg = (
+                    f"variant_media[{idx}].mediaIds exceeds the {MEDIA_IDS_MAX}-entry "
+                    f"per-call cap (got {len(raw_media_ids)})."
+                )
+                return _render(f"Error: {msg}", _err_payload(msg))
             for mi, mid in enumerate(raw_media_ids):
                 if not isinstance(mid, str) or not mid.startswith("gid://shopify/"):
                     msg = (
@@ -2460,7 +2480,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                     return _render(f"Error: {msg}", _err_payload(msg))
             normalized.append((raw_variant_id.strip(), list(raw_media_ids)))
 
-        # Step 2 — fetch product media + per-variant bound media. The combined
+        # Step 2 — resolve product_id (numeric / GID short-circuit; handle via network)
+        gid, resolve_err = _resolve_product_gid(client, product_id)
+        if resolve_err or not gid:
+            err = resolve_err or "product_id could not be resolved."
+            return _render(f"Error: {err}", _err_payload(err))
+
+        # Step 3 — fetch product media + per-variant bound media. The combined
         # query already pulls every variant's id + sku, so we feed that list
         # straight into Story 9.3's `resolve_variant_ids_with_variants` enabler
         # (in-memory SKU lookup) instead of paying for a second variants fetch.

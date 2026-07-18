@@ -19,3 +19,13 @@ _MEDIA_PROCESSING_POLL_INTERVAL_S = 2.0
 # Page size for media pagination via `paginate()`. Shopify's `media` connection
 # returns up to 250 nodes per request; 100 is a safe default.
 _MEDIA_PAGE_CAP = 100
+
+# Per-call cap on media-id list params. Same idiom as catalog_hygiene's
+# METAFIELDS_SET_MAX / METAFIELDS_DELETE_MAX — enforced client-side before any
+# network call. Shared by delete_product_media's `media_ids` and
+# update_variant_image_binding's nested `mediaIds` (Story 10.42 / SEC-09).
+MEDIA_IDS_MAX = 25
+
+# Per-call cap on reorder_product_media's `moves` list. Same idiom as
+# MEDIA_IDS_MAX (Story 10.42 / SEC-09).
+MOVES_MAX = 25

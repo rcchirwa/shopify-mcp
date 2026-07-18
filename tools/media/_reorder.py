@@ -11,7 +11,7 @@ from tools.media._common import (
     _extract_media_user_errors,
     _fmt_media_user_errors,
 )
-from tools.media._constants import _MEDIA_PAGE_CAP
+from tools.media._constants import _MEDIA_PAGE_CAP, MOVES_MAX
 from tools.media._graphql import GET_PRODUCT_MEDIA, PRODUCT_REORDER_MEDIA
 
 
@@ -32,6 +32,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         """
         if not moves:
             return "Error: moves must be a non-empty list of {id, newPosition} items."
+        if len(moves) > MOVES_MAX:
+            return f"Error: moves exceeds the {MOVES_MAX}-entry per-call cap (got {len(moves)})."
         gid = _as_product_gid(product_id)
         if not gid:
             return "Error: provide product_id."

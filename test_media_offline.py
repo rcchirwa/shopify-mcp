@@ -1449,6 +1449,66 @@ def test_delete_media_product_not_found():
     assert out == "No product found with id nope."
 
 
+def test_delete_media_over_cap_rejected():
+    from tools.media._constants import MEDIA_IDS_MAX
+
+    tools, fc = _build([])
+    over_cap = [f"gid://shopify/MediaImage/{i}" for i in range(MEDIA_IDS_MAX + 1)]
+    out = tools["delete_product_media"](product_id="123", media_ids=over_cap, confirm=True)
+    assert f"exceeds the {MEDIA_IDS_MAX}-entry per-call cap" in out
+    assert f"got {MEDIA_IDS_MAX + 1}" in out
+    assert fc.calls == []
+
+
+def test_delete_media_at_cap_accepted():
+    from tools.media._constants import MEDIA_IDS_MAX
+
+    at_cap = [f"gid://shopify/MediaImage/{i}" for i in range(MEDIA_IDS_MAX)]
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(mid) for mid in at_cap]),
+            {
+                "productDeleteMedia": {
+                    "deletedMediaIds": at_cap,
+                    "product": {"id": PRODUCT_GID},
+                    "mediaUserErrors": [],
+                }
+            },
+        ]
+    )
+    out = tools["delete_product_media"](product_id="123", media_ids=at_cap, confirm=True)
+    assert out.startswith("CONFIRMED —"), out
+    assert f"Deleted ({MEDIA_IDS_MAX})" in out
+
+
+def test_reorder_media_over_cap_rejected():
+    from tools.media._constants import MOVES_MAX
+
+    tools, fc = _build([])
+    over_cap = [
+        {"id": f"gid://shopify/MediaImage/{i}", "newPosition": i + 1} for i in range(MOVES_MAX + 1)
+    ]
+    out = tools["reorder_product_media"](product_id="123", moves=over_cap, confirm=True)
+    assert f"exceeds the {MOVES_MAX}-entry per-call cap" in out
+    assert f"got {MOVES_MAX + 1}" in out
+    assert fc.calls == []
+
+
+def test_reorder_media_at_cap_accepted():
+    from tools.media._constants import MOVES_MAX
+
+    at_cap_ids = [f"gid://shopify/MediaImage/{i}" for i in range(MOVES_MAX)]
+    at_cap_moves = [{"id": mid, "newPosition": i + 1} for i, mid in enumerate(at_cap_ids)]
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(mid) for mid in at_cap_ids]),
+            _reorder_ok(done=True),
+        ]
+    )
+    out = tools["reorder_product_media"](product_id="123", moves=at_cap_moves, confirm=True)
+    assert out.startswith("CONFIRMED —"), out
+
+
 # ---------- upload_product_image: staged-upload + attach error branches ----------
 
 
