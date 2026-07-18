@@ -6,7 +6,7 @@ from shopify_client import ShopifyClient
 from tools._log import log_write
 from tools._response import extract_user_errors, with_confirm_hint
 from tools.media._common import _as_product_gid, _fmt_media_user_errors
-from tools.media._constants import _MEDIA_PAGE_CAP
+from tools.media._constants import _MEDIA_PAGE_CAP, MEDIA_IDS_MAX
 from tools.media._graphql import GET_PRODUCT_MEDIA, PRODUCT_DELETE_MEDIA
 
 
@@ -23,6 +23,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         """
         if not media_ids:
             return "Error: media_ids must be a non-empty list."
+        if len(media_ids) > MEDIA_IDS_MAX:
+            return (
+                f"Error: media_ids exceeds the {MEDIA_IDS_MAX}-entry "
+                f"per-call cap (got {len(media_ids)})."
+            )
         gid = _as_product_gid(product_id)
         if not gid:
             return "Error: provide product_id."

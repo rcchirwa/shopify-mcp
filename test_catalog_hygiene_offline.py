@@ -160,6 +160,8 @@ def test_register_adds_expected_tools():
     [
         ([], "variants must be a non-empty list"),
         ("not-a-list", "variants must be a non-empty list"),
+        # 26 entries hits the per-call cap (SEC-09).
+        ([{"variantId": "1", "price": "1.00"}] * 26, "exceeds the 25-entry"),
         ([{"price": "49.99"}], "variantId is required"),
         ([{"variantId": "  ", "price": "49.99"}], "variantId is required"),
         ([{"variantId": "201"}], "must supply price or compareAtPrice"),
@@ -196,6 +198,30 @@ def test_validation_rejects(variants, fragment):
     assert out.startswith("Error:")
     assert fragment in out
     assert fc.calls == []  # No network call before validation passes.
+
+
+def test_pricing_at_cap_accepted():
+    """25 entries (PRICING_VARIANTS_MAX) is at the cap, not over — accepted."""
+    from tools.catalog_hygiene import PRICING_VARIANTS_MAX
+
+    read_variants = [
+        {
+            "id": f"gid://shopify/ProductVariant/{i}",
+            "sku": f"SKU-{i}",
+            "price": "10.00",
+            "compareAtPrice": None,
+        }
+        for i in range(PRICING_VARIANTS_MAX)
+    ]
+    mutation_variants = [
+        {"id": v["id"], "sku": v["sku"], "price": "11.00", "compareAtPrice": None}
+        for v in read_variants
+    ]
+    tools, fc = _build([_read_response(read_variants), _mutation_ok(mutation_variants)])
+    at_cap = [{"variantId": v["id"], "price": "11.00"} for v in read_variants]
+    out = tools["update_product_pricing"]("100", variants=at_cap, confirm=True)
+    assert out.startswith("CONFIRMED"), out
+    assert "exceeds the" not in out
 
 
 # Whitespace handling pins ----------------------------------------------------
@@ -3686,6 +3712,48 @@ def test_s96_non_string_media_gid_rejected():
     assert "must be a Shopify media GID" in out
 
 
+def test_s96_variant_media_over_cap_rejected():
+    """SEC-09: the outer variant_media list is capped, checked before any
+    network call — including the handle lookup inside _resolve_product_gid."""
+    from tools.catalog_hygiene import VARIANT_MEDIA_MAX
+
+    tools, fc = _build([])
+    over_cap = [
+        {"variantId": str(i), "mediaIds": [_S96_MEDIA_1]} for i in range(VARIANT_MEDIA_MAX + 1)
+    ]
+    out = tools["update_variant_image_binding"](product_id="some-handle", variant_media=over_cap)
+    assert f"exceeds the {VARIANT_MEDIA_MAX}-entry per-call cap" in out
+    assert f"got {VARIANT_MEDIA_MAX + 1}" in out
+    assert fc.calls == []  # rejected before the handle lookup
+
+
+def test_s96_nested_media_ids_over_cap_rejected():
+    """SEC-09: the nested mediaIds list per entry is capped too."""
+    from tools.catalog_hygiene import MEDIA_IDS_MAX
+
+    tools, fc = _build([])
+    over_cap_media = [f"gid://shopify/MediaImage/{i}" for i in range(MEDIA_IDS_MAX + 1)]
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": "1", "mediaIds": over_cap_media}],
+    )
+    assert f"variant_media[0].mediaIds exceeds the {MEDIA_IDS_MAX}-entry per-call cap" in out
+    assert fc.calls == []
+
+
+def test_s96_variant_media_at_cap_reaches_network():
+    """At exactly the cap, validation passes and the call proceeds to the
+    combined product-media read (not rejected as over-cap)."""
+    from tools.catalog_hygiene import VARIANT_MEDIA_MAX
+
+    tools, fc = _build([{"product": None}])
+    at_cap = [{"variantId": str(i), "mediaIds": [_S96_MEDIA_1]} for i in range(VARIANT_MEDIA_MAX)]
+    out = tools["update_variant_image_binding"](product_id=_S96_PRODUCT_GID, variant_media=at_cap)
+    assert "exceeds the" not in out
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA
+
+
 # ---------- resolver + product-not-found ----------
 
 
@@ -5287,6 +5355,15 @@ def _s97_mutation_response(metafields=None, user_errors=None):
         # Reserved namespace.
         (
             [{**_s97_entry(), "namespace": "app--myapp"}],
+            "uses the reserved 'app--' prefix",
+        ),
+        # Reserved namespace — case-variant (SEC-10: case-fold the guard).
+        (
+            [{**_s97_entry(), "namespace": "APP--myapp"}],
+            "uses the reserved 'app--' prefix",
+        ),
+        (
+            [{**_s97_entry(), "namespace": "App--myapp"}],
             "uses the reserved 'app--' prefix",
         ),
         ([{**_s97_entry(), "key": None}], "key must be a non-empty string"),

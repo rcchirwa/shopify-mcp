@@ -4,9 +4,22 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-07-17.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-07-18.
 
 ---
+
+## 2026-07-18 — Story 10.42 (SEC-09, SEC-10 — consistent batch-size caps + reserved-namespace case-fold)
+
+Source: security audit 2026-07-04. Trello: https://trello.com/c/yKELeIKb (Story 10.42, Epic 10). Metafield tools already capped input lists at 25 (`METAFIELDS_SET_MAX` / `METAFIELDS_DELETE_MAX`), but four list-accepting write tools had no per-call count cap, and the `app--` reserved-namespace guard was case-sensitive (so `APP--` slipped it client-side, even though Shopify rejects it either way).
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|----------------|
+| SEC-09 | ~~`delete_product_media` (`media_ids`), `reorder_product_media` (`moves`), `update_variant_image_binding` (`variant_media` + nested `mediaIds`), and `update_product_pricing` (`variants`) accepted unbounded list input with no client-side cap~~ | Added named constants — `MEDIA_IDS_MAX` / `MOVES_MAX` (`tools/media/_constants.py`, shared by `delete_product_media` and the nested `mediaIds` in `update_variant_image_binding`) and `VARIANT_MEDIA_MAX` / `PRICING_VARIANTS_MAX` (`tools/catalog_hygiene.py`) — all `= 25`, matching the existing metafield caps. Each cap is enforced before any network call, returning the same "exceeds the N-entry per-call cap (got M)" structured error shape metafields already used. For `update_variant_image_binding`, the `variant_media` validation (including its new cap) was moved ahead of `_resolve_product_gid` so an oversized call is rejected before the handle-lookup network call fires, not just before the mutation. |
+| SEC-10 | ~~`tools/catalog_hygiene.py:511`'s reserved-namespace guard was `ns_clean.startswith(RESERVED_NAMESPACE_PREFIX)` — case-sensitive, so `APP--`/`App--` slipped the client-side check (Shopify rejects them anyway; this was a client-side UX/defense-in-depth gap, not an exploitable bypass)~~ | Case-folded the check to `ns_clean.lower().startswith(RESERVED_NAMESPACE_PREFIX)`. |
+
+CI clean: ruff + `ruff format --check` + mypy + 1276 offline tests at 100% coverage.
 
 ## 2026-07-17 — Story 10.41 (SEC-04 — systematic untrusted-data wrapping across read tools)
 
