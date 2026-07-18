@@ -38,6 +38,12 @@ __all__ = [
     "register",
 ]
 
+# inventorySetOnHandQuantities sets an absolute on-hand quantity (not a delta),
+# so negative values are never valid; Shopify's underlying field is a signed
+# 32-bit int, so anything beyond int32 max would only fail server-side with an
+# opaque error. Bound client-side instead (SEC-08).
+INVENTORY_QTY_MAX = 2_147_483_647
+
 
 def _available_qty(level: dict[str, Any]) -> int | None:
     """Extract the 'available' quantity from an InventoryLevel's quantities
@@ -78,6 +84,13 @@ def _current_display(current: int | None) -> int | str:
     return "N/A" if current is None else current
 
 
+def _quantity_range_error(quantity: int) -> str | None:
+    """Reject an out-of-range quantity before any Shopify call; None if valid."""
+    if quantity < 0 or quantity > INVENTORY_QTY_MAX:
+        return f"Error: quantity must be >= 0 and <= {INVENTORY_QTY_MAX} (got {quantity})."
+    return None
+
+
 def register(server: FastMCP, client: ShopifyClient) -> None:
 
     @server.tool()
@@ -115,8 +128,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     ) -> str:
         """
         Set inventory quantity for a specific variant at a location.
+        quantity: must be >= 0 and <= 2,147,483,647 (int32 max).
         Returns a preview unless confirm=True.
         """
+        range_err = _quantity_range_error(quantity)
+        if range_err:
+            return range_err
+
         # Fetch current level. `data.get("inventoryItem", {})` is not safe: if
         # Shopify returns `{"inventoryItem": null}` (deleted / wrong id), the
         # default isn't used and we'd crash on a None.get() chain. Same shape
@@ -308,8 +326,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         When location_id is omitted, applies to every location each variant
         has a level at. A single `quantity` is applied to every matched
         (variant, location) pair via one inventorySetOnHandQuantities call.
+        quantity: must be >= 0 and <= 2,147,483,647 (int32 max).
         Returns a preview unless confirm=True.
         """
+        range_err = _quantity_range_error(quantity)
+        if range_err:
+            return range_err
+
         product, variants, capped = ops.read_product_inventory(client, product_id)
         if not product:
             return f"No product found with id {product_id}."

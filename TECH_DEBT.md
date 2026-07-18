@@ -4,9 +4,22 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-06-25.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-07-17.
 
 ---
+
+## 2026-07-17 — Story 10.38 (SEC-07 / SEC-08 — discount percentage + inventory quantity bounds)
+
+Source: read-only security audit 2026-07-04. Trello: Story 10.38, Epic 10.
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|----------------|
+| SEC-07 | ~~`create_discount_code` accepted an unbounded `percentage_off` (0%, negative, or >100% previewed and dispatched to Shopify)~~ | Added `DISCOUNT_PCT_MIN = 0` / `DISCOUNT_PCT_MAX = 100` (`tools/discounts.py`); `create_discount_code` now rejects unless `DISCOUNT_PCT_MIN < percentage_off <= DISCOUNT_PCT_MAX`, before the preview is built. Valid values (1, 20, 100) unchanged. |
+| SEC-08 | ~~`update_inventory` / `update_variant_inventory_quantity` accepted negative or beyond-int32 `quantity` with no client-side guard~~ | Added `INVENTORY_QTY_MAX = 2_147_483_647` (`tools/inventory.py`); both tools reject `quantity < 0` or `> INVENTORY_QTY_MAX` via a shared `_quantity_range_error()` helper, before any Shopify call. Confirmed `inventorySetOnHandQuantities` sets an absolute on-hand quantity (not a delta), so rejecting negatives is correct semantics, not a behavior regression. |
+
+CI clean: ruff + format + mypy + 100% coverage.
 
 ## 2026-06-25 — Story 10.35 (SEC-M2-sanitizer — Approach 1: parser-based detection upgrade)
 

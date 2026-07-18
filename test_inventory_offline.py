@@ -314,6 +314,45 @@ def test_update_inventory_confirmed_calls_set_inventory_with_correct_gids():
     }
 
 
+# ---- update_inventory — quantity boundary ----
+
+
+@pytest.mark.parametrize("quantity", [-1, 2_147_483_648])
+def test_update_inventory_rejects_out_of_range_quantity(quantity):
+    tools, fc = _build([])
+    out = tools["update_inventory"](
+        inventory_item_id="42",
+        location_id="9",
+        quantity=quantity,
+        confirm=True,
+    )
+    assert out.startswith("Error:")
+    assert "quantity" in out
+    assert len(fc.calls) == 0, "out-of-range quantity must reject before any Shopify call"
+
+
+@pytest.mark.parametrize("quantity", [0, 2_147_483_647])
+def test_update_inventory_accepts_boundary_quantity(quantity):
+    tools, fc = _build(
+        [
+            _inventory_item_response(available=5),
+            {
+                "inventorySetOnHandQuantities": {
+                    "inventoryAdjustmentGroup": {"createdAt": "2026-04-22T00:00:00Z"},
+                    "userErrors": [],
+                }
+            },
+        ]
+    )
+    out = tools["update_inventory"](
+        inventory_item_id="42",
+        location_id="9",
+        quantity=quantity,
+        confirm=True,
+    )
+    assert out.startswith("Done.")
+
+
 def test_update_inventory_handles_missing_inventory_item_without_crashing():
     """If the inventory_item_id doesn't exist (deleted / wrong id), Shopify
     returns {"inventoryItem": None}. The preview should render cleanly with
@@ -350,7 +389,7 @@ def test_update_inventory_surfaces_user_errors_as_error_string():
     out = tools["update_inventory"](
         inventory_item_id="42",
         location_id="9",
-        quantity=-1,
+        quantity=5,
         confirm=True,
     )
     assert out.startswith("Error:")
@@ -964,7 +1003,7 @@ def test_quantity_surfaces_user_errors_as_error_string():
     )
     out = tools["update_variant_inventory_quantity"](
         product_id="555",
-        quantity=-1,
+        quantity=0,
         confirm=True,
     )
     assert out.startswith("Error:")
@@ -1040,6 +1079,41 @@ def test_quantity_preview_only_issues_the_read():
     )
     assert len(fc.calls) == 1
     assert fc.calls[0][0] == GET_PRODUCT_INVENTORY
+
+
+# ---- update_variant_inventory_quantity — quantity boundary ----
+
+
+@pytest.mark.parametrize("quantity", [-1, 2_147_483_648])
+def test_quantity_rejects_out_of_range_quantity(quantity):
+    tools, fc = _build([])
+    out = tools["update_variant_inventory_quantity"](
+        product_id="555",
+        quantity=quantity,
+        confirm=True,
+    )
+    assert out.startswith("Error:")
+    assert "quantity" in out
+    assert len(fc.calls) == 0, "out-of-range quantity must reject before any Shopify call"
+
+
+@pytest.mark.parametrize("quantity", [0, 2_147_483_647])
+def test_quantity_accepts_boundary_quantity(quantity):
+    variants = [
+        _variant("100", "S", "REEF-S", [_level(5, "gid://shopify/Location/9")]),
+    ]
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            _set_inventory_ok(),
+        ]
+    )
+    out = tools["update_variant_inventory_quantity"](
+        product_id="555",
+        quantity=quantity,
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED")
 
 
 def test_quantity_variant_with_missing_inventory_item_id_is_skipped_not_batched():

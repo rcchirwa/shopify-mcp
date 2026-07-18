@@ -25,6 +25,12 @@ from tools._gid import from_gid
 from tools._log import log_write
 from tools._response import format_user_errors, with_confirm_hint
 
+# Shopify rejects a 0% or negative discount, and a >100% value would zero out
+# (or overpay) a line item — bound client-side rather than let a nonsensical
+# code preview as legitimate (SEC-07).
+DISCOUNT_PCT_MIN = 0
+DISCOUNT_PCT_MAX = 100
+
 # The GraphQL strings now live in shopify.queries.discounts. They are re-exported
 # here so existing callers/tests (`from tools.discounts import GET_PRICE_RULES`)
 # keep resolving to the same objects the operations layer executes.
@@ -67,11 +73,17 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     ) -> str:
         """
         Create a new percentage-off discount code.
-        percentage_off: e.g. 20 = 20% off.
+        percentage_off: e.g. 20 = 20% off. Must be > 0 and <= 100.
         usage_limit: 0 = unlimited.
         Returns a preview unless confirm=True.
         """
-        value = -abs(percentage_off)  # Shopify expects negative value for discounts
+        if not (DISCOUNT_PCT_MIN < percentage_off <= DISCOUNT_PCT_MAX):
+            return (
+                f"Error: percentage_off must be > {DISCOUNT_PCT_MIN} and "
+                f"<= {DISCOUNT_PCT_MAX} (got {percentage_off})."
+            )
+
+        value = -percentage_off  # Shopify expects negative value for discounts
 
         preview = (
             f"PREVIEW — New discount code\n"
