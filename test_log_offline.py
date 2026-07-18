@@ -77,6 +77,33 @@ def test_log_write_appends_across_multiple_calls(tmp_log):
     assert "second" in contents
 
 
+def test_log_write_caps_oversized_description(tmp_log):
+    # A single attacker-controlled multi-KB field must not blow up an audit
+    # line and evict genuine history from the rotating log.
+    huge = "A" * (_log.MAX_DESC_LEN + 500)
+    _log.log_write("t", huge)
+    contents = _read(tmp_log)
+    desc = contents.split(" | ", 1)[1].rstrip("\n")
+    assert len(desc) == _log.MAX_DESC_LEN
+
+
+def test_log_write_leaves_normal_description_unchanged(tmp_log):
+    _log.log_write("update_product_pricing", "product=100 variants=2")
+    contents = _read(tmp_log)
+    assert "update_product_pricing | product=100 variants=2" in contents
+
+
+def test_log_write_caps_after_crlf_sanitization(tmp_log):
+    # Cap is applied to the sanitized form so the escaped "\\n"/"\\r" tokens
+    # count toward the bound — the on-disk line is what must stay bounded.
+    huge = "\n" * (_log.MAX_DESC_LEN + 500)
+    _log.log_write("t", huge)
+    contents = _read(tmp_log)
+    desc = contents.split(" | ", 1)[1].rstrip("\n")
+    assert len(desc) == _log.MAX_DESC_LEN
+    assert "\n" not in desc  # only escaped \\n tokens survive, no raw newlines
+
+
 def test_rotating_handler_is_configured(tmp_log):
     _log.log_write("t", "init")  # trigger lazy-init
     assert len(_log._logger.handlers) == 1

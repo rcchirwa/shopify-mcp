@@ -193,6 +193,33 @@ def test_create_discount_code_preview_shows_usage_limit_when_set():
 # ---- create_discount_code — confirm (happy path) ----
 
 
+def test_create_discount_code_masks_code_in_audit_log(monkeypatch):
+    # SEC-12: the plaintext discount code must not be persisted to the local
+    # audit log. The immediate tool response may still echo it (the caller
+    # supplied it), but the durable log line masks it.
+    captured = {}
+    monkeypatch.setattr(
+        discounts,
+        "log_write",
+        lambda name, desc: captured.update(name=name, desc=desc),
+    )
+    tools, fc = _build(
+        [
+            _price_rule_create_ok(rid="5001"),
+            _discount_code_create_ok("LAUNCH20"),
+        ]
+    )
+    out = tools["create_discount_code"](
+        title="Launch Drop",
+        code="LAUNCH20",
+        percentage_off=20,
+        confirm=True,
+    )
+    assert out.startswith("Done.")
+    assert "LAUNCH20" not in captured["desc"]
+    assert "code=***" in captured["desc"]
+
+
 def test_create_discount_code_confirmed_issues_two_mutations_in_order():
     tools, fc = _build(
         [

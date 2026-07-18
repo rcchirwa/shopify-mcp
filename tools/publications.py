@@ -34,6 +34,7 @@ from shopify_client import ShopifyClient
 from tools._gid import from_gid, to_gid
 from tools._log import log_write
 from tools._response import extract_user_errors, with_confirm_hint
+from tools._scrub import cap
 
 # The GraphQL strings now live in shopify.queries.publications. They are re-exported
 # here so existing callers/tests (`from tools.publications import LIST_PUBLICATIONS`)
@@ -213,7 +214,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             nodes = _load_channels(client, channel_cache)
         except Exception as e:
-            return f"Error: {e}\n{SCOPE_HINT}"
+            return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
         if not nodes:
             return "No sales channels found on this store."
         lines = [f"Sales channels ({len(nodes)} total):"]
@@ -233,12 +234,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             _ensure_channels(client, channel_cache)
         except Exception as e:
-            return f"Error loading sales channels: {e}\n{SCOPE_HINT}"
+            return f"Error loading sales channels: {cap(str(e))}\n{SCOPE_HINT}"
 
         try:
             gid, title, prod_handle, rps = _resolve_product_gid_and_meta(client, product_id, handle)
         except Exception as e:
-            return f"Error: {e}\n{SCOPE_HINT}"
+            return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
 
         if not gid:
             return "No product found."
@@ -307,14 +308,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             targets, failed = _resolve_target_nodes(channel_names, publication_ids)
         except Exception as e:
-            return f"Error resolving channels: {e}\n{SCOPE_HINT}"
+            return f"Error resolving channels: {cap(str(e))}\n{SCOPE_HINT}"
         if targets is None:
             return "Error: " + "; ".join(f.get("error", "") for f in failed)
 
         try:
             gid, title, prod_handle, rps = _resolve_product_gid_and_meta(client, product_id, handle)
         except Exception as e:
-            return f"Error: {e}\n{SCOPE_HINT}"
+            return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
         if not gid:
             return "No product found."
 
@@ -342,7 +343,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             try:
                 result = ops.publish(client, gid, [t["id"] for t in to_publish])
             except Exception as e:
-                return f"Error: {e}\n{SCOPE_HINT}"
+                return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
             user_errors = extract_user_errors(result, "publishablePublish")
             if user_errors:
                 for ue in user_errors:
@@ -390,14 +391,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             targets, failed = _resolve_target_nodes(channel_names, publication_ids)
         except Exception as e:
-            return f"Error resolving channels: {e}\n{SCOPE_HINT}"
+            return f"Error resolving channels: {cap(str(e))}\n{SCOPE_HINT}"
         if targets is None:
             return "Error: " + "; ".join(f.get("error", "") for f in failed)
 
         try:
             gid, title, prod_handle, rps = _resolve_product_gid_and_meta(client, product_id, handle)
         except Exception as e:
-            return f"Error: {e}\n{SCOPE_HINT}"
+            return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
         if not gid:
             return "No product found."
 
@@ -425,7 +426,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             try:
                 result = ops.unpublish(client, gid, [t["id"] for t in to_unpublish])
             except Exception as e:
-                return f"Error: {e}\n{SCOPE_HINT}"
+                return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
             user_errors = extract_user_errors(result, "publishableUnpublish")
             if user_errors:
                 for ue in user_errors:
@@ -472,12 +473,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             desired_nodes, failed = _resolve_names(client, channel_cache, channel_names)
         except Exception as e:
-            return f"Error resolving channels: {e}\n{SCOPE_HINT}"
+            return f"Error resolving channels: {cap(str(e))}\n{SCOPE_HINT}"
 
         try:
             gid, title, prod_handle, rps = _resolve_product_gid_and_meta(client, product_id, handle)
         except Exception as e:
-            return f"Error: {e}\n{SCOPE_HINT}"
+            return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
         if not gid:
             return "No product found."
 
@@ -519,7 +520,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             try:
                 result = ops.publish(client, gid, [n["id"] for n in added_nodes])
             except Exception as e:
-                return f"Error during publish: {e}\n{SCOPE_HINT}"
+                return f"Error during publish: {cap(str(e))}\n{SCOPE_HINT}"
             user_errors = extract_user_errors(result, "publishablePublish")
             if user_errors:
                 for ue in user_errors:
@@ -532,7 +533,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             try:
                 result = ops.unpublish(client, gid, [n["id"] for n in removed_nodes])
             except Exception as e:
-                return f"Error during unpublish: {e}\n{SCOPE_HINT}"
+                return f"Error during unpublish: {cap(str(e))}\n{SCOPE_HINT}"
             user_errors = extract_user_errors(result, "publishableUnpublish")
             if user_errors:
                 for ue in user_errors:

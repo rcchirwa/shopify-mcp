@@ -536,6 +536,39 @@ def test_upload_staged_target_put_failure_labels_stage_upload():
     assert out.startswith("Error at stage=stage_upload:"), out
 
 
+def test_upload_staged_failure_does_not_surface_response_body(capsys):
+    # The staged-target response body can contain signed-URL fragments /
+    # internal host detail. It must not be echoed to the caller; the capped
+    # detail goes to stderr for diagnosis instead.
+    from tools._scrub import REFLECT_MAX_LEN
+
+    body = "signed-url-fragment-SECRET " + ("x" * 2000)
+    tools, fc = _build(
+        [
+            _product_media_read([]),
+            _staged_ok(),
+        ]
+    )
+    with (
+        patch(
+            "tools.media._upload.requests.put",
+            return_value=FakeHTTPResponse(status_code=500, text=body),
+        ),
+    ):
+        out = tools["upload_product_image"](
+            product_id="123",
+            source="https://cdn.example.com/hero.jpg",
+            confirm=True,
+        )
+    assert out.startswith("Error at stage=stage_upload:"), out
+    assert "500" in out
+    assert "SECRET" not in out  # body must not reach the caller / model context
+    err = capsys.readouterr().err
+    assert "500" in err  # status logged to stderr for diagnosis
+    assert "SECRET" in err  # capped body detail available in stderr
+    assert "x" * (REFLECT_MAX_LEN + 1) not in err  # but bounded
+
+
 def test_upload_processing_timeout_returns_success_with_note():
     """Poll timing out with status=PROCESSING must return CONFIRMED + note,
     not an error. Storefront renders PROCESSING media in most cases."""
@@ -1177,21 +1210,30 @@ def test_download_image_rejects_when_type_unknown_and_unguessable():
 # ---------- _upload_bytes_to_target: request exception ----------
 
 
-def test_upload_bytes_to_target_request_exception_wrapped():
+def test_upload_bytes_to_target_request_exception_is_generic_and_logs_detail(capsys):
+    # SEC-11: a requests exception's str embeds the full request URL — for a
+    # signed staged-target PUT that's the signed URL. The raised message must
+    # stay generic (no exception detail / signed-URL fragment); the capped
+    # detail goes to stderr for diagnosis instead.
     target = {
         "url": "https://staged.example/signed",
         "parameters": [{"name": "content_type", "value": "image/jpeg"}],
     }
+    leaky = "socket reset to https://staged.example/signed?X-Goog-Signature=SECRETSIG"
     with (
         patch(
             "tools.media._upload.requests.put",
-            side_effect=_requests.ConnectionError("socket reset"),
+            side_effect=_requests.ConnectionError(leaky),
         ),
         pytest.raises(RuntimeError) as exc,
     ):
         _upload_bytes_to_target(target, b"bytes", _media_settings())
     msg = str(exc.value)
-    assert "PUT to staged target failed" in msg and "socket reset" in msg
+    assert "PUT to staged target failed" in msg
+    assert "SECRETSIG" not in msg  # signed-URL fragment must not reach the caller
+    assert "socket reset" not in msg
+    err = capsys.readouterr().err
+    assert "socket reset" in err  # capped detail available on stderr for diagnosis
 
 
 def test_upload_bytes_to_target_missing_url_rejected():
