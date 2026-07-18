@@ -6,6 +6,7 @@ from mcp.server.fastmcp import FastMCP
 
 from shopify_client import ShopifyClient
 from tools._gid import from_gid
+from tools._untrusted import INJECTION_REMINDER, wrap
 from tools.media._common import _as_product_gid
 from tools.media._constants import _MEDIA_PAGE_CAP
 from tools.media._graphql import GET_PRODUCT_MEDIA
@@ -25,11 +26,16 @@ def _render_media_list(
     lines = [header]
     for idx, n in enumerate(nodes, start=1):
         preview = ((n.get("preview") or {}).get("image") or {}).get("url") or "(no preview)"
-        alt = n.get("alt") or ""
+        # Alt text is shopper/third-party-influenced free text — wrap it as
+        # untrusted so the model treats it as data, not instructions (Story
+        # 10.41 / SEC-04). An empty alt has no shopper content, so it renders
+        # as '' with no wrapper (mirrors orders.py's conditional wrapping).
+        raw_alt = n.get("alt") or ""
+        alt_display = wrap(raw_alt) if raw_alt else ""
         kind = n.get("mediaContentType") or "UNKNOWN"
         status = n.get("status") or "UNKNOWN"
         lines.append(
-            f"  {idx}. {kind} {n.get('id', '')}  status={status}  alt={alt!r}\n"
+            f"  {idx}. {kind} {n.get('id', '')}  status={status}  alt={alt_display!r}\n"
             f"     preview: {preview}"
         )
     if capped:
@@ -37,7 +43,9 @@ def _render_media_list(
             f"  WARNING: pagination cap reached ({len(nodes)} media shown) — "
             f"additional media exist but are not listed here."
         )
-    return "\n".join(lines)
+    # Media list reached here only when nodes exist, so at least one alt field
+    # is present — prefix the injection reminder that explains the tag.
+    return INJECTION_REMINDER + "\n".join(lines)
 
 
 def register(server: FastMCP, client: ShopifyClient) -> None:
