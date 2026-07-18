@@ -20,7 +20,12 @@ from shopify.queries.collections import (
     UPDATE_COLLECTION,
 )
 from shopify_client import ShopifyClient, poll_job
-from tools._filters import html_safety_findings, html_strip_report, sanitize_html
+from tools._filters import (
+    format_strip_block,
+    html_safety_findings,
+    html_strip_report,
+    sanitize_html,
+)
 from tools._gid import from_gid
 from tools._log import log_write
 from tools._response import format_user_errors, with_confirm_hint
@@ -111,7 +116,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return f"No collection found with handle '{handle}'."
 
         col_id = col["id"]
-        sanitized_description = sanitize_html(new_description) if new_description else ""
+        # None (not "") means "not provided" — see ops.update_collection's
+        # docstring on why an explicit empty sanitized description must still
+        # be written rather than treated as a no-op.
+        sanitized_description = sanitize_html(new_description) if new_description else None
 
         preview_lines = [
             "PREVIEW — Collection update",
@@ -133,18 +141,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 if danger
                 else ""
             )
-            stripped = html_strip_report(new_description)
-            strip_suffix = (
-                (
-                    "\n\n✂ CONTENT WILL BE SANITIZED — stripped before writing:\n"
-                    + "\n".join(f"  • {s}" for s in stripped)
-                    + "\nAllowed: p, br, b, i, em, strong, u, ul, ol, li, h1-h6, a[href,title], "
-                    "span/div[class], span[style: color/font-weight], img[src,alt], "
-                    "table/tr/td/th."
-                )
-                if stripped
-                else ""
-            )
+            stripped = html_strip_report(new_description, sanitized_description)
+            strip_suffix = format_strip_block(stripped)
             preview_lines.append(
                 f"  Old desc (excerpt): '{old_desc_excerpt}'\n"
                 f"  New desc (full)   :\n{new_description}" + warning_suffix + strip_suffix
@@ -167,7 +165,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 client,
                 col_id,
                 new_title=new_title,
-                new_description=sanitized_description if new_description else None,
+                new_description=sanitized_description,
             ),
             mutation_key="collectionUpdate",
             log_name="update_collection",

@@ -35,6 +35,7 @@ from shopify.queries.products import (
 from shopify_client import ShopifyClient
 from tools._filters import (
     filter_variant_targets,
+    format_strip_block,
     html_safety_findings,
     html_strip_report,
     sanitize_html,
@@ -201,17 +202,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
 
         sanitized_description = sanitize_html(new_description)
-        stripped = html_strip_report(new_description)
-        strip_block = (
-            (
-                "\n\n✂ CONTENT WILL BE SANITIZED — stripped before writing:\n"
-                + "\n".join(f"  • {s}" for s in stripped)
-                + "\nAllowed: p, br, b, i, em, strong, u, ul, ol, li, h1-h6, a[href,title], "
-                "span/div[class], span[style: color/font-weight], img[src,alt], table/tr/td/th."
-            )
-            if stripped
-            else ""
-        )
+        stripped = html_strip_report(new_description, sanitized_description)
+        strip_block = format_strip_block(stripped)
 
         preview = (
             f"PREVIEW — Product description update\n"
@@ -284,8 +276,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         sanitized_title = sanitize_html(new_seo_title) if new_seo_title else ""
         sanitized_description = sanitize_html(new_seo_description) if new_seo_description else ""
-        title_stripped = html_strip_report(new_seo_title) if new_seo_title else []
-        description_stripped = html_strip_report(new_seo_description) if new_seo_description else []
+        title_stripped = html_strip_report(new_seo_title, sanitized_title) if new_seo_title else []
+        description_stripped = (
+            html_strip_report(new_seo_description, sanitized_description)
+            if new_seo_description
+            else []
+        )
         if title_stripped:
             warnings.append(
                 "✂ SEO title will be sanitized before writing — stripped: "

@@ -107,19 +107,31 @@ class _SanitizerIndexer(html.parser.HTMLParser):
     attribute values, so the input and ``nh3.clean(input)`` can be diffed for
     what the sanitizer would strip. Tag and attribute names arrive lower-cased
     from ``HTMLParser``, matching nh3's lower-case allow-lists.
+
+    ``tag_attrs`` merges attribute names across *every* instance of a tag —
+    fine for :func:`html_safety_findings`, which only needs to know "does
+    this document contain a `<style>` anywhere". ``elements`` instead keeps
+    one entry per tag *occurrence*, in document order, so
+    :func:`html_strip_report` can align same-named elements positionally and
+    not have one surviving instance's attribute mask another instance's
+    stripped one.
     """
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.tag_attrs: dict[str, set[str]] = {}
+        self.elements: list[tuple[str, set[str]]] = []
         self.url_values: list[tuple[str, str, str]] = []
 
     def _record(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         names = self.tag_attrs.setdefault(tag, set())
+        element_names: set[str] = set()
         for name, value in attrs:
             names.add(name)
+            element_names.add(name)
             if name in _URL_ATTRS and value:
                 self.url_values.append((tag, name, value))
+        self.elements.append((tag, element_names))
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self._record(tag, attrs)
@@ -279,27 +291,64 @@ def sanitize_html(text: str) -> str:
     )
 
 
-def html_strip_report(text: str) -> list[str]:
+def html_strip_report(text: str, sanitized: str | None = None) -> list[str]:
     """Human-readable list of tags/attributes :func:`sanitize_html` removes
     from *text*, for the write-preview "what will be stripped" diff. Only
     actual content loss is reported — safety additions nh3 makes (e.g.
     ``rel="noopener noreferrer"`` on ``<a>``) are not, since nothing was
     stripped.
+
+    Pass the caller's already-computed ``sanitized_html(text)`` result as
+    *sanitized* to avoid re-running ``nh3.clean`` on the same input; omit it
+    to have this function compute it.
+
+    Diffs ``before``/``after`` *positionally* (:attr:`_SanitizerIndexer.elements`,
+    one entry per tag occurrence in document order) rather than by merging all
+    same-named tags into one attribute set — a merged diff would let one
+    surviving ``<img src="...">`` mask a sibling ``<img>`` whose ``src`` was
+    genuinely stripped (triple-threat review finding, 2026-07-17).
     """
-    sanitized = sanitize_html(text)
+    if sanitized is None:
+        sanitized = sanitize_html(text)
     if sanitized == text:
         return []
 
-    before = _index_html(text)
-    after = _index_html(sanitized)
+    before_elements = _index_html(text).elements
+    after_elements = _index_html(sanitized).elements
     report: list[str] = []
-    for tag, names in before.tag_attrs.items():
-        if tag not in after.tag_attrs:
-            report.append(f"<{tag}> (tag stripped by sanitizer)")
-            continue
-        for name in sorted(names - after.tag_attrs[tag]):
-            report.append(f"{name}= on <{tag}> (attribute stripped by sanitizer)")
+    seen: set[str] = set()
+
+    def _add(message: str) -> None:
+        if message not in seen:
+            seen.add(message)
+            report.append(message)
+
+    j = 0
+    for tag, names in before_elements:
+        if j < len(after_elements) and after_elements[j][0] == tag:
+            for name in sorted(names - after_elements[j][1]):
+                _add(f"{name}= on <{tag}> (attribute stripped by sanitizer)")
+            j += 1
+        else:
+            _add(f"<{tag}> (tag stripped by sanitizer)")
     return report
+
+
+def format_strip_block(stripped: list[str]) -> str:
+    """Render the "what will be stripped" preview suffix for a
+    :func:`html_strip_report` result — shared by the ``descriptionHtml`` write
+    sites (``update_product_description``, ``update_collection``) so the
+    wording and allow-list summary can't drift out of sync between them.
+    Returns "" when nothing was stripped.
+    """
+    if not stripped:
+        return ""
+    return (
+        "\n\n✂ CONTENT WILL BE SANITIZED — stripped before writing:\n"
+        + "\n".join(f"  • {s}" for s in stripped)
+        + "\nAllowed: p, br, b, i, em, strong, u, ul, ol, li, h1-h6, a[href,title], "
+        "span/div[class], span[style: color/font-weight], img[src,alt], table/tr/td/th."
+    )
 
 
 def filter_variant_targets(

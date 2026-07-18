@@ -294,3 +294,22 @@ def test_html_strip_report_does_not_flag_safety_additions():
     removal, and must not appear as a stripped-content finding."""
     report = html_strip_report('<a href="https://example.com">shop</a>')
     assert report == []
+
+
+def test_html_strip_report_detects_stripped_attribute_among_duplicate_tags():
+    """Regression (triple-threat review, deep + security): a per-tag-name
+    merged-set diff would mask this — the first <img> keeps its src, so a
+    same-tag-name set diff sees the attribute name survive somewhere and
+    reports nothing, even though the second <img>'s dangerous src was
+    genuinely stripped by sanitize_html()."""
+    payload = '<img src="https://cdn.shopify.com/good.png"><img src="javascript:alert(1)">'
+    assert "javascript:" not in sanitize_html(payload)  # sanitizer itself is correct
+    report = html_strip_report(payload)
+    assert any("src" in item and "img" in item for item in report)
+
+
+def test_html_strip_report_detects_stripped_tag_among_duplicate_tags():
+    """Same class of bug for a fully-stripped tag interleaved with survivors."""
+    payload = "<p>a</p><style>body{color:red}</style><p>b</p>"
+    report = html_strip_report(payload)
+    assert any("style" in item for item in report)

@@ -1610,6 +1610,27 @@ def test_update_description_confirmed_stripped_shows_sanitized_prefix():
     assert "<script" not in vars_put["input"]["descriptionHtml"]
 
 
+def test_update_description_confirmed_shows_sanitized_prefix_for_duplicate_tag_strip():
+    """Regression (triple-threat review, deep + security): when only the second
+    of two same-named tags loses an attribute, the operator-facing 'Done ✂'
+    signal must still fire — not silently downgrade to plain 'Done.'"""
+    tools, fc = _build(
+        [
+            {"product": {"bodyHtml": ""}},
+            _update_ok(pid="7"),
+        ]
+    )
+    new_desc = '<img src="https://cdn.shopify.com/good.png"><img src="javascript:alert(1)">'
+    out = tools["update_product_description"](
+        product_id="7",
+        new_description=new_desc,
+        confirm=True,
+    )
+    assert out.startswith("Done ✂")
+    _, vars_put = fc.calls[1]
+    assert "javascript:" not in vars_put["input"]["descriptionHtml"]
+
+
 def test_update_description_confirmed_safe_shows_plain_done():
     """When confirm=True succeeds with safe HTML, done prefix is the normal 'Done.'"""
     tools, fc = _build(
