@@ -272,6 +272,57 @@ def test_update_seo_warns_on_unicode_lookalike_scheme():
     assert len(fc.calls) == 1, "preview must not issue the mutation"
 
 
+# ---------- sanitizer (Approach 2, post-sign-off): SEO title/description ----------
+
+
+def test_update_seo_confirm_strips_disallowed_html_from_description():
+    tools, fc = _build([_seo_read(), _update_ok()])
+    tools["update_product_seo"](
+        product_id="123",
+        new_seo_description="<p>desc</p><script>alert(1)</script>",
+        confirm=True,
+    )
+    _, vars_put = fc.calls[1]
+    assert "<script" not in vars_put["input"]["seo"]["description"]
+    assert "<p>desc</p>" in vars_put["input"]["seo"]["description"]
+
+
+def test_update_seo_confirm_strips_disallowed_html_from_title():
+    tools, fc = _build([_seo_read(), _update_ok()])
+    tools["update_product_seo"](
+        product_id="123",
+        new_seo_title='<img src=x onerror="alert(1)">Title',
+        confirm=True,
+    )
+    _, vars_put = fc.calls[1]
+    assert "onerror" not in vars_put["input"]["seo"]["title"]
+
+
+def test_update_seo_confirm_preserves_plain_text_title_and_description():
+    tools, fc = _build([_seo_read(), _update_ok(pid="6803111739545")])
+    tools["update_product_seo"](
+        product_id="6803111739545",
+        new_seo_title="Vanish Trucker Hat | Streetwear",
+        new_seo_description="The signature V, embroidered front and center.",
+        confirm=True,
+    )
+    _, vars_put = fc.calls[1]
+    assert vars_put["input"]["seo"] == {
+        "title": "Vanish Trucker Hat | Streetwear",
+        "description": "The signature V, embroidered front and center.",
+    }
+
+
+def test_update_seo_preview_shows_strip_diff():
+    tools, fc = _build([_seo_read()])
+    out = tools["update_product_seo"](
+        product_id="123",
+        new_seo_description="<style>body{color:red}</style>",
+        confirm=False,
+    )
+    assert "stripped" in out.lower()
+
+
 # ---------- update_product_title handle logic ----------
 
 PROD_ID = "7330113421465"
@@ -1538,8 +1589,9 @@ def test_update_description_warns_on_style_tag_css_injection():
     assert len(fc.calls) == 1
 
 
-def test_update_description_confirmed_dangerous_shows_warning_prefix():
-    """When confirm=True succeeds with dangerous HTML, done prefix calls it out."""
+def test_update_description_confirmed_stripped_shows_sanitized_prefix():
+    """Story 10.35 Approach 2: disallowed HTML is stripped before the write, so
+    the done prefix calls out sanitization rather than claiming it was written."""
     tools, fc = _build(
         [
             {"product": {"bodyHtml": ""}},
@@ -1551,8 +1603,11 @@ def test_update_description_confirmed_dangerous_shows_warning_prefix():
         new_description="<script>alert(1)</script>",
         confirm=True,
     )
-    assert out.startswith("Done ⚠")
-    assert "dangerous HTML" in out
+    assert out.startswith("Done ✂")
+    assert "stripped" in out
+    # The mutation itself must carry the sanitized (script-free) value.
+    _, vars_put = fc.calls[1]
+    assert "<script" not in vars_put["input"]["descriptionHtml"]
 
 
 def test_update_description_confirmed_safe_shows_plain_done():
@@ -1606,6 +1661,61 @@ def test_update_description_user_errors_surfaced():
     )
     assert out.startswith("Error:")
     assert "descriptionHtml: invalid html" in out
+
+
+# ---------- sanitizer (Approach 2, post-sign-off): disallowed HTML stripped before write ----------
+
+
+def test_update_description_confirm_strips_iframe_before_write():
+    tools, fc = _build(
+        [
+            {"product": {"bodyHtml": ""}},
+            _update_ok(pid="7"),
+        ]
+    )
+    tools["update_product_description"](
+        product_id="7",
+        new_description='<p>hi</p><iframe src="https://evil.example"></iframe>',
+        confirm=True,
+    )
+    _, vars_put = fc.calls[1]
+    assert "<iframe" not in vars_put["input"]["descriptionHtml"]
+    assert "<p>hi</p>" in vars_put["input"]["descriptionHtml"]
+
+
+def test_update_description_confirm_preserves_fully_allowed_html():
+    """No stripping occurs for content already inside the allow-list — mutation
+    payload carries the value through unchanged."""
+    tools, fc = _build(
+        [
+            {"product": {"bodyHtml": ""}},
+            _update_ok(pid="7"),
+        ]
+    )
+    new_desc = '<div class="rte"><p>Soft cotton.</p><img src="https://cdn.shopify.com/x.png" alt="tee"></div>'
+    out = tools["update_product_description"](
+        product_id="7",
+        new_description=new_desc,
+        confirm=True,
+    )
+    assert out.startswith("Done.")
+    _, vars_put = fc.calls[1]
+    assert vars_put["input"]["descriptionHtml"] == new_desc
+
+
+def test_update_description_preview_shows_strip_diff_for_disallowed_content():
+    new_desc = "<p>hi</p><style>body{color:red}</style>"
+    tools, fc = _build([{"product": {"bodyHtml": ""}}])
+    out = tools["update_product_description"](product_id="7", new_description=new_desc)
+    assert "stripped" in out.lower()
+    assert len(fc.calls) == 1  # preview only, no mutation
+
+
+def test_update_description_preview_no_strip_diff_for_allowed_content():
+    new_desc = "<p>Hello <b>world</b></p>"
+    tools, fc = _build([{"product": {"bodyHtml": ""}}])
+    out = tools["update_product_description"](product_id="7", new_description=new_desc)
+    assert "stripped" not in out.lower()
 
 
 # ---------- not-found branches for update_product_seo / tags(append) / status / policy ----------

@@ -33,7 +33,12 @@ from shopify.queries.products import (
     UPDATE_PRODUCT_VARIANTS_POLICY,
 )
 from shopify_client import ShopifyClient
-from tools._filters import filter_variant_targets, html_safety_findings
+from tools._filters import (
+    filter_variant_targets,
+    html_safety_findings,
+    html_strip_report,
+    sanitize_html,
+)
 from tools._gid import from_gid
 from tools._log import log_write
 from tools._response import extract_user_errors, with_confirm_hint
@@ -195,23 +200,38 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             else ""
         )
 
+        sanitized_description = sanitize_html(new_description)
+        stripped = html_strip_report(new_description)
+        strip_block = (
+            (
+                "\n\n✂ CONTENT WILL BE SANITIZED — stripped before writing:\n"
+                + "\n".join(f"  • {s}" for s in stripped)
+                + "\nAllowed: p, br, b, i, em, strong, u, ul, ol, li, h1-h6, a[href,title], "
+                "span/div[class], span[style: color/font-weight], img[src,alt], table/tr/td/th."
+            )
+            if stripped
+            else ""
+        )
+
         preview = (
             f"PREVIEW — Product description update\n"
             f"  Product ID   : {product_id}\n"
             f"  Old (excerpt): {old_desc[:120]}{'...' if len(old_desc) > 120 else ''}\n"
-            f"  New (full)   :\n{new_description}" + warning_block
+            f"  New (full)   :\n{new_description}" + warning_block + strip_block
         )
 
         return write_gate(
             preview=preview,
             confirm=confirm,
-            execute=lambda: ops.update_product_description(client, product_id, new_description),
+            execute=lambda: ops.update_product_description(
+                client, product_id, sanitized_description
+            ),
             mutation_key="productUpdate",
             log_name="update_product_description",
             log_description=f"id={product_id}",
             done_text=(
-                "Done ⚠ — dangerous HTML patterns were written to Shopify. Verify the storefront."
-                if danger
+                "Done ✂ — disallowed HTML was stripped before writing. See preview for what changed."
+                if stripped
                 else "Done."
             )
             + f"\n{preview}",
@@ -262,6 +282,21 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 + " — SEO fields are rendered in <head>; verify intent."
             )
 
+        sanitized_title = sanitize_html(new_seo_title) if new_seo_title else ""
+        sanitized_description = sanitize_html(new_seo_description) if new_seo_description else ""
+        title_stripped = html_strip_report(new_seo_title) if new_seo_title else []
+        description_stripped = html_strip_report(new_seo_description) if new_seo_description else []
+        if title_stripped:
+            warnings.append(
+                "✂ SEO title will be sanitized before writing — stripped: "
+                + ", ".join(title_stripped)
+            )
+        if description_stripped:
+            warnings.append(
+                "✂ SEO description will be sanitized before writing — stripped: "
+                + ", ".join(description_stripped)
+            )
+
         old_title_line = old_title if old_title else "(empty)"
         old_desc_line = old_desc if old_desc else "(empty)"
         new_title_line = (
@@ -286,9 +321,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         def _seo_input() -> dict[str, str]:
             inp: dict[str, str] = {}
             if new_seo_title:
-                inp["title"] = new_seo_title
+                inp["title"] = sanitized_title
             if new_seo_description:
-                inp["description"] = new_seo_description
+                inp["description"] = sanitized_description
             return inp
 
         def _log_desc() -> str:

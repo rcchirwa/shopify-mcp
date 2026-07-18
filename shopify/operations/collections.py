@@ -46,18 +46,21 @@ def update_collection(
     collection_id: str,
     *,
     new_title: str = "",
-    new_description: str = "",
+    new_description: str | None = None,
 ) -> dict[str, Any]:
     """Execute a ``collectionUpdate`` setting title and/or descriptionHtml.
 
     ``collection_id`` is the GID read back from ``read_collection_by_handle``.
     Only the provided fields go into the input, so a title-only update leaves the
-    description untouched (and vice versa).
+    description untouched (and vice versa). ``new_description`` uses ``None`` —
+    not an empty string — to mean "not provided", so a caller can still write an
+    explicit empty description (e.g. Story 10.35's sanitizer reducing fully
+    disallowed markup to "") without it being mistaken for a no-op.
     """
     inp: dict[str, Any] = {"id": collection_id}
     if new_title:
         inp["title"] = new_title
-    if new_description:
+    if new_description is not None:
         inp["descriptionHtml"] = new_description
     return client.execute(UPDATE_COLLECTION, {"input": inp})
 

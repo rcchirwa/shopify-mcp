@@ -198,6 +198,110 @@ def html_safety_findings(text: str) -> list[str]:
     return findings
 
 
+# Story 10.35 / SEC-M2-sanitizer, Approach 2 (post-sign-off) — allow-list
+# recorded on the Trello card (4vEAwQWo, 2026-07-17, amended same day). Applies
+# to descriptionHtml (products, collections) and seo.title / seo.description.
+# Standard rich-text formatting plus images/tables/wrapper divs, since real
+# theme-authored descriptions rely on them (see test_realistic_rich_text_
+# description_stays_silent) — event-handler attributes and script-executing /
+# non-http(s) URL schemes are never in any tag's attribute set, so they are
+# stripped regardless of which tags are allowed.
+_ALLOWED_TAGS = frozenset(
+    {
+        "p",
+        "br",
+        "b",
+        "i",
+        "em",
+        "strong",
+        "u",
+        "ul",
+        "ol",
+        "li",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "a",
+        "span",
+        "div",
+        "img",
+        "table",
+        "tr",
+        "td",
+        "th",
+    }
+)
+_ALLOWED_ATTRIBUTES: dict[str, set[str]] = {
+    "a": {"href", "title"},
+    "span": {"style", "class"},
+    "div": {"class"},
+    "img": {"src", "alt"},
+}
+_ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
+_ALLOWED_STYLE_PROPERTIES = frozenset({"color", "font-weight"})
+
+
+def _reject_suspect_url_scheme(tag: str, attr: str, value: str) -> str | None:
+    """``attribute_filter`` callback for :func:`sanitize_html`.
+
+    ``nh3``'s own ``url_schemes`` allow-list only rejects a value it recognises
+    as having an ASCII scheme outside the set; a non-ASCII look-alike scheme
+    (e.g. Cyrillic je for the 'j' of ``javascript:``) isn't parsed as a scheme
+    at all, so it sails through unfiltered — the same bypass class
+    :func:`html_safety_findings`'s ``_scheme_is_suspect`` already detects.
+    Reusing that check here closes the gap for the attribute nh3 would
+    otherwise keep verbatim.
+    """
+    if attr in ("href", "src"):
+        scheme = _url_scheme(value)
+        if scheme is not None and _scheme_is_suspect(scheme):
+            return None
+    return value
+
+
+def sanitize_html(text: str) -> str:
+    """Strip *text* down to the Story 10.35 / SEC-M2-sanitizer Approach 2
+    allow-list (product sign-off, Trello card 4vEAwQWo) — this is the actual
+    sanitizer, called before the Shopify write. Contrast with
+    :func:`html_safety_findings`, which is advisory-only detection against a
+    more permissive baseline and strips nothing.
+    """
+    return nh3.clean(
+        text,
+        tags=set(_ALLOWED_TAGS),
+        attributes=_ALLOWED_ATTRIBUTES,
+        url_schemes=set(_ALLOWED_URL_SCHEMES),
+        filter_style_properties=set(_ALLOWED_STYLE_PROPERTIES),
+        attribute_filter=_reject_suspect_url_scheme,
+    )
+
+
+def html_strip_report(text: str) -> list[str]:
+    """Human-readable list of tags/attributes :func:`sanitize_html` removes
+    from *text*, for the write-preview "what will be stripped" diff. Only
+    actual content loss is reported — safety additions nh3 makes (e.g.
+    ``rel="noopener noreferrer"`` on ``<a>``) are not, since nothing was
+    stripped.
+    """
+    sanitized = sanitize_html(text)
+    if sanitized == text:
+        return []
+
+    before = _index_html(text)
+    after = _index_html(sanitized)
+    report: list[str] = []
+    for tag, names in before.tag_attrs.items():
+        if tag not in after.tag_attrs:
+            report.append(f"<{tag}> (tag stripped by sanitizer)")
+            continue
+        for name in sorted(names - after.tag_attrs[tag]):
+            report.append(f"{name}= on <{tag}> (attribute stripped by sanitizer)")
+    return report
+
+
 def filter_variant_targets(
     variant_ids: list[str] | None,
     variants: list[dict[str, Any]] | None,
