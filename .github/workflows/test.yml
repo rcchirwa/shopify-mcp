@@ -74,11 +74,17 @@ jobs:
         run: mypy
 
   # New job (Story 10.40 / SEC-13, SEC-14): fails the PR if any dependency
-  # pinned in requirements-dev.lock has a known CVE. This is the CVE gate
+  # pinned in either project lockfile has a known CVE. This is the CVE gate
   # depcheck.py deliberately doesn't provide — depcheck only checks that a
   # declared distribution is *present*, not whether the version pinned is
-  # safe. Audits the lockfile directly (not the installed env) so the check
-  # doesn't depend on install order or extras resolution.
+  # safe. Audits both requirements.lock and requirements-dev.lock directly
+  # (not the installed env) so the check doesn't depend on install order or
+  # extras resolution, and so requirements.lock — the file README.md points
+  # runtime-only installs at — isn't left outside the CVE gate. pip-audit
+  # itself installs from requirements-audit.lock (pinned + hash-verified,
+  # same as every other install this story wires into CI) rather than a
+  # floating `pip install pip-audit`, so the scanner can't be a supply-chain
+  # gap in the job that exists to close one.
   dependency-audit:
     runs-on: ubuntu-latest
     steps:
@@ -87,6 +93,9 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: pip install pip-audit
-      - name: pip-audit against the lockfile
+      - name: Install pinned pip-audit
+        run: pip install --require-hashes -r requirements-audit.lock
+      - name: pip-audit against requirements.lock
+        run: pip-audit -r requirements.lock --strict
+      - name: pip-audit against requirements-dev.lock
         run: pip-audit -r requirements-dev.lock --strict

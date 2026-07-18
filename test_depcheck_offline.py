@@ -170,4 +170,5 @@ def test_main_returns_one_and_lists_missing(
     # Names the group each missing dep came from and the fix command.
     assert "runtime" in out
     assert "[dev]" in out
-    assert "pip install -e .[dev]" in out
+    assert "pip install --require-hashes -r requirements-dev.lock" in out
+    assert "pip install --no-deps -e ." in out

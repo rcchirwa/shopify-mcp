@@ -126,7 +126,11 @@ def main() -> int:
         label = "runtime" if group == "project" else f"[{group}]"
         for requirement in requirements:
             print(f"  - {requirement}  (declared in {label})")
-    print("\nRe-sync this environment with:  pip install -e .[dev]")
+    print(
+        "\nRe-sync this environment with:"
+        "\n  pip install --require-hashes -r requirements-dev.lock"
+        "\n  pip install --no-deps -e ."
+    )
     return 1
 
 

@@ -1,0 +1,8 @@
+# CI-only tooling for the dependency-audit job in .github/workflows/test.yml
+# (Story 10.40 / SEC-13, SEC-14, triple-threat review follow-up). pip-audit
+# is the scanner that audits requirements.lock / requirements-dev.lock — kept
+# in its own lockfile rather than folded into requirements-dev.lock because
+# it's CI-only tooling, not a project dev dependency. Pinned + hash-verified
+# like every other install this story wires into CI, so the auditor itself
+# can't be a floating, unverified supply-chain risk.
+pip-audit>=2.10,<3
