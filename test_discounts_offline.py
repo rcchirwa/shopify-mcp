@@ -237,23 +237,6 @@ def test_create_discount_code_negates_percentage_on_write():
     assert rule_input["value"] == "-20"
 
 
-def test_create_discount_code_negative_percentage_still_negated():
-    """Inputs already negative shouldn't flip back to positive."""
-    tools, fc = _build(
-        [
-            _price_rule_create_ok(),
-            _discount_code_create_ok("X"),
-        ]
-    )
-    tools["create_discount_code"](
-        title="T",
-        code="X",
-        percentage_off=-25,
-        confirm=True,
-    )
-    assert fc.calls[0][1]["input"]["value"] == "-25"
-
-
 def test_create_discount_code_usage_limit_zero_omits_key():
     """usage_limit=0 means unlimited — the PriceRuleInput should NOT include a
     usageLimit key (Shopify interprets null as unlimited but a 0 as invalid)."""
@@ -367,6 +350,40 @@ def test_create_discount_code_surfaces_code_attachment_user_errors():
     )
     assert out.startswith("Error attaching discount code:")
     assert "Code has already been taken" in out
+
+
+# ---- create_discount_code — percentage_off boundary ----
+
+
+@pytest.mark.parametrize("percentage_off", [0, -5, 100.01])
+def test_create_discount_code_rejects_out_of_range_percentage(percentage_off):
+    tools, fc = _build([])
+    out = tools["create_discount_code"](
+        title="Bad",
+        code="BAD",
+        percentage_off=percentage_off,
+        confirm=True,
+    )
+    assert out.startswith("Error:")
+    assert "percentage_off" in out
+    assert len(fc.calls) == 0, "out-of-range percentage_off must reject before any Shopify call"
+
+
+@pytest.mark.parametrize("percentage_off", [1, 20, 100])
+def test_create_discount_code_accepts_boundary_and_typical_percentages(percentage_off):
+    tools, fc = _build(
+        [
+            _price_rule_create_ok(),
+            _discount_code_create_ok("X"),
+        ]
+    )
+    out = tools["create_discount_code"](
+        title="Good",
+        code="GOOD",
+        percentage_off=percentage_off,
+        confirm=True,
+    )
+    assert out.startswith("Done.")
 
 
 def test_create_discount_code_handles_missing_rule_id_defensively():
