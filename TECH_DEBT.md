@@ -8,6 +8,20 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-07-17 — Story 10.35 (SEC-M2-sanitizer — Approach 2/3: allow-list sanitizer, closed)
+
+Product sign-off recorded on the card (https://trello.com/c/4vEAwQWo, amended same day after the initial narrow allow-list was found to regress real merchant content — see the card comments for the full before/after). Closes the residual left open by the 2026-06-25 Approach 1 entry below.
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|---------------|
+| SEC-M2-sanitizer (Approach 2/3) | ~~Allow-list sanitizer that strips content before the Shopify write — sign-off-gated~~ | Added `sanitize_html()` in `tools/_filters.py`: `nh3.clean()` against a standard rich-text allow-list (`p, br, b, i, em, strong, u, ul, ol, li, h1-h6, a[href,title], span[style,class], div[class], img[src,alt], table/tr/td/th`), `href`/`src` restricted to http/https, `style` limited to `color`/`font-weight`. A custom `attribute_filter` closes a gap `nh3`'s own `url_schemes` check misses — a non-ASCII look-alike scheme (e.g. Cyrillic je for `javascript:`) isn't parsed as a scheme at all and would otherwise survive. `html_strip_report()` diffs input vs. sanitized output *positionally* (per tag occurrence, not merged by tag name — a triple-threat review catch, see below) for the write-preview "what will be stripped" section. Wired into all 3 write call sites (`update_product_description`, `update_product_seo` title+description, `update_collection`) — the mutation payload now carries the sanitized value, not raw input. `update_collection`'s `new_description` param switched from empty-string to `None` sentinel for "not provided", so content that sanitizes to `""` still writes an explicit empty description instead of silently no-op'ing. Triple-threat review (code quality + security + deep, parallel) caught a real bug pre-merge: the initial strip-report diff merged same-named tags' attribute sets, so a surviving `<img src="...">` could mask a sibling `<img>` whose dangerous `src` was genuinely stripped — fixed with the positional diff. CI clean: ruff + format + mypy + 1229 offline tests at 100% coverage. PR: https://github.com/rcchirwa/shopify-mcp/pull/108. |
+
+**Known limitation, not a gap in this closure:** `table`/`tr`/`td`/`th` carry no attributes, so `colspan`/`rowspan` on spanning cells are stripped along with everything else outside the allow-list. Flagged in review; out of scope for the recorded sign-off (which named these tags without attributes) — would need its own sign-off to widen.
+
+SEC-M2-sanitizer is now fully closed — both approaches landed, no open residual.
+
 ## 2026-07-17 — Story 10.43 (SEC-03 — SSRF DNS-rebinding risk formally accepted)
 
 Decision story from the 2026-07-04 security audit. Trello: https://trello.com/c/wgKYo7t0 (Story 10.43, Epic 10). Chose **accept-with-rationale** over IP-pinning — a docs-only change, no runtime behavior altered. The `_url_safety.py` guard docstring now records the same decision + reopen trigger.
