@@ -21,6 +21,21 @@ Source: read-only security audit 2026-07-04. Trello: Story 10.38, Epic 10.
 
 CI clean: ruff + format + mypy + 100% coverage.
 
+## 2026-07-17 — Story 10.40 (SEC-13, SEC-14 — dependency lockfile + CVE scanning in CI)
+
+Source: security audit 2026-07-04. Natural extension of the Story 10.37 dependency-drift lineage — 10.37 caught *presence* drift (a declared dependency missing from an environment); this closes the neighboring gap, *version* drift and unaudited CVEs within the `>=floor,<next-major` ranges `pyproject.toml` declares.
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|----------------|
+| SEC-13 | ~~No lockfile — installs aren't reproducible; an unaudited point release within a version range is pulled without hash verification~~ | Added `requirements.lock` (runtime deps) and `requirements-dev.lock` (runtime + `dev` extra), generated from `pyproject.toml` via `pip-compile --generate-hashes --allow-unsafe --strip-extras`. Both CI jobs (`offline-tests`, `lint`) now install with `pip install --require-hashes -r requirements-dev.lock` followed by `pip install --no-deps -e .` — pip refuses any package not listed with a matching hash. Verified reproducible: two independent fresh-venv installs from `requirements-dev.lock` produce byte-identical `pip freeze` output. `test_lockfile_offline.py` (new) keeps the committed lockfiles honest — asserts every dependency declared in `pyproject.toml` is pinned in the appropriate lockfile(s) and every pinned entry carries a `--hash=sha256:`, so a PR that edits `pyproject.toml` without regenerating the lockfile fails the offline suite instead of drifting silently. |
+| SEC-14 | ~~CI runs ruff/mypy/pytest and depcheck.py (presence-only), but no CVE gate — a known-vulnerable dependency can land undetected~~ | New `dependency-audit` job in `.github/workflows/test.yml` runs `pip-audit -r requirements-dev.lock --strict` on every push/PR against `main`. Confirmed the gate actually fires: `pip-audit` against the *unmodified* lockfile found a real, current CVE — `pytest` 8.4.2 (the newest version the old `>=7,<9` cap allowed) is vulnerable to CVE-2025-71176 / PYSEC-2026-1845 (predictable `/tmp/pytest-of-{user}` directories on UNIX; local DoS/privilege risk), fixed in 9.0.3. Bumped the floor to `pytest>=9.0.3,<10` in `pyproject.toml`, regenerated both lockfiles, and re-ran `pip-audit` clean (exit 0, 0 vulnerabilities) against both. Full offline suite (1182 tests) re-verified green at 100% coverage under pytest 9.1.1 — no breakage from the major-version bump. |
+
+**Docs.** README.md's "Keeping your environment in sync" section now documents the `--require-hashes` re-sync command, and a new "Regenerating the lockfile" section covers the `pip-compile` regeneration workflow (run whenever a `pyproject.toml` dependency changes) plus how to respond to a future `pip-audit` failure (bump the floor past the fix version, regenerate, recommit). `depcheck.py`'s module docstring now explicitly scopes itself as the **presence-only** complement to the lockfile + `pip-audit` CVE scan — it still does not, and is not meant to, validate pinned versions or vulnerabilities.
+
+CI clean: ruff + format + mypy + depcheck + **1188 offline tests at 100% coverage** (1182 existing + 6 new in `test_lockfile_offline.py`) + `pip-audit` clean against both lockfiles.
+
 ## 2026-06-25 — Story 10.35 (SEC-M2-sanitizer — Approach 1: parser-based detection upgrade)
 
 The **detection-only** half of SEC-M2-sanitizer landed. Trello: https://trello.com/c/4vEAwQWo (Story 10.35, Epic 10). No product sign-off required because nothing written to Shopify changes; the allow-list **sanitizer** that strips content (Approach 2/3) still needs sign-off and stays open — see the rescore below.

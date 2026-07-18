@@ -28,7 +28,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7,<9",
+    # Floor raised 7 -> 9.0.3 (Story 10.40 / SEC-13, SEC-14): every pytest
+    # <9.0.3 is vulnerable to CVE-2025-71176 (PYSEC-2026-1845, local
+    # DoS/privilege risk via predictable /tmp/pytest-of-{user} dirs on UNIX).
+    # pip-audit fails the new CI job on any resolvable 8.x, so the floor must
+    # sit above the fix, not just below the next major.
+    "pytest>=9.0.3,<10",
     "coverage>=7,<8",
     "ruff>=0.6,<1",
     "mypy>=1.11,<2",

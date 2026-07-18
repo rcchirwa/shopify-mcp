@@ -118,22 +118,22 @@ source .venv/bin/activate
 
 ### 3. Install dependencies
 
-```bash
-pip install -e .
-```
-
-Installs the repo as an editable package along with all runtime
-dependencies (`mcp`, `python-dotenv`, `requests`, `gql[requests]`),
-declared in [pyproject.toml](pyproject.toml). `shopify_client`, `tools`,
-`validators`, and `_testing` become importable from any working
-directory, and a `shopify-mcp` console command lands in `.venv/bin/`.
-
-For contributors running the test suite, install with the `dev` extra
-to also pull in `pytest`, `coverage`, `ruff`, and `mypy`:
+Install from the lockfile — this is what CI does, and it gets you the exact
+pinned + hash-verified versions instead of whatever `pyproject.toml`'s
+`>=floor,<cap` ranges happen to resolve to on the day you install:
 
 ```bash
-pip install -e .[dev]
+pip install --require-hashes -r requirements-dev.lock   # pytest, coverage, ruff, mypy + runtime deps
+pip install --no-deps -e .                               # the package itself; deps already pinned above
 ```
+
+`--require-hashes` makes pip refuse any package not listed in the lockfile
+with a matching hash. `shopify_client`, `tools`, `validators`, and `_testing`
+become importable from any working directory, and a `shopify-mcp` console
+command lands in `.venv/bin/`.
+
+Runtime-only installs (no dev tooling) can use `requirements.lock` instead of
+`requirements-dev.lock`.
 
 Run the offline suite, lint, and type-check the same way CI does:
 
@@ -154,7 +154,8 @@ boot, or mypy reporting `import-untyped` for a package whose stubs you never
 pulled. After every `git pull`, re-sync with:
 
 ```bash
-pip install -e .[dev]
+pip install --require-hashes -r requirements-dev.lock
+pip install --no-deps -e .
 ```
 
 To check whether the current interpreter has drifted out of sync without a full
@@ -171,7 +172,32 @@ bounds — pip enforces those at install time). That's exactly what catches the
 boot crash: because Claude Desktop is pinned to `.venv/bin/shopify-mcp` (see
 step 7), pointing that same `.venv` at the check confirms the server won't hit a
 missing-dependency `ModuleNotFoundError` at startup. The same check runs in CI
-so a declared-but-unresolvable dependency can't pass review.
+so a declared-but-unresolvable dependency can't pass review. depcheck stays a
+**presence-only** complement to the lockfile + CVE scan below — it doesn't
+check pinned versions or vulnerabilities, `requirements*.lock` and `pip-audit`
+do.
+
+#### Regenerating the lockfile (Story 10.40 / SEC-13, SEC-14)
+
+`requirements.lock` (runtime deps) and `requirements-dev.lock` (runtime + the
+`dev` extra) are generated from `pyproject.toml` by
+[`pip-tools`](https://github.com/jazzband/pip-tools). Whenever a dependency in
+`pyproject.toml` changes — added, removed, or its version range edited —
+regenerate both:
+
+```bash
+pip install pip-tools
+pip-compile --generate-hashes --allow-unsafe --strip-extras -o requirements.lock pyproject.toml
+pip-compile --extra dev --generate-hashes --allow-unsafe --strip-extras -o requirements-dev.lock pyproject.toml
+```
+
+Commit the regenerated lockfiles alongside the `pyproject.toml` change. CI's
+`dependency-audit` job (`.github/workflows/test.yml`) runs
+[`pip-audit`](https://github.com/pypa/pip-audit) against `requirements-dev.lock`
+on every PR and fails the build if any pinned dependency has a known CVE — if
+it fails, bump the affected package's floor past the fixed version in
+`pyproject.toml` and regenerate the lockfiles, the same way `pytest` was
+bumped `>=7,<9` → `>=9.0.3,<10` to close CVE-2025-71176.
 
 ### 4. Configure credentials
 
