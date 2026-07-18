@@ -134,8 +134,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if err:
             return err
 
+        # SEC-12: the discount code is masked in the durable audit log. The
+        # price-rule id below already identifies the discount, and the code is
+        # recoverable from Shopify — so plaintext buys no audit value while
+        # leaving a secret-shaped string in a local file.
         log_write(
             "create_discount_code",
-            f"title={title} code={code} value={value}% usage_limit={usage_limit}",
+            f"title={title} code=*** value={value}% usage_limit={usage_limit}",
         )
         return f"Done. Price rule id={from_gid(rule_id)} created.\n{preview}"

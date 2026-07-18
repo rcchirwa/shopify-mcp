@@ -536,6 +536,39 @@ def test_upload_staged_target_put_failure_labels_stage_upload():
     assert out.startswith("Error at stage=stage_upload:"), out
 
 
+def test_upload_staged_failure_does_not_surface_response_body(capsys):
+    # The staged-target response body can contain signed-URL fragments /
+    # internal host detail. It must not be echoed to the caller; the capped
+    # detail goes to stderr for diagnosis instead.
+    from tools._scrub import REFLECT_MAX_LEN
+
+    body = "signed-url-fragment-SECRET " + ("x" * 2000)
+    tools, fc = _build(
+        [
+            _product_media_read([]),
+            _staged_ok(),
+        ]
+    )
+    with (
+        patch(
+            "tools.media._upload.requests.put",
+            return_value=FakeHTTPResponse(status_code=500, text=body),
+        ),
+    ):
+        out = tools["upload_product_image"](
+            product_id="123",
+            source="https://cdn.example.com/hero.jpg",
+            confirm=True,
+        )
+    assert out.startswith("Error at stage=stage_upload:"), out
+    assert "500" in out
+    assert "SECRET" not in out  # body must not reach the caller / model context
+    err = capsys.readouterr().err
+    assert "500" in err  # status logged to stderr for diagnosis
+    assert "SECRET" in err  # capped body detail available in stderr
+    assert "x" * (REFLECT_MAX_LEN + 1) not in err  # but bounded
+
+
 def test_upload_processing_timeout_returns_success_with_note():
     """Poll timing out with status=PROCESSING must return CONFIRMED + note,
     not an error. Storefront renders PROCESSING media in most cases."""

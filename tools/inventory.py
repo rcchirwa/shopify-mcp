@@ -25,6 +25,7 @@ from tools._filters import filter_variant_targets
 from tools._gid import from_gid, to_gid
 from tools._log import log_write
 from tools._response import format_user_errors, format_user_errors_joined, with_confirm_hint
+from tools._scrub import cap
 from tools._write_tool import write_gate
 
 # The GraphQL strings now live in shopify.queries.inventory. They are re-exported
@@ -274,7 +275,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 failed.append(
                     {
                         "variant": _variant_label(v),
-                        "error": f"transport error: {e}",
+                        "error": f"transport error: {cap(str(e))}",
                     }
                 )
                 continue

@@ -33,6 +33,19 @@ Wrapping is **values-only**, applied to the human-readable head of **read** tool
 
 An empty alt / absent value adds no wrapper (mirrors `orders.py`'s conditional wrapping), and the reminder header is only prefixed when the output actually contains a wrapped value.
 
+## 2026-07-17 — Story 10.39 (SEC-11, SEC-12 — cap reflected exception/user text in errors and the audit log)
+
+Source: security audit 2026-07-04. Trello: https://trello.com/c/1gb0IUii (Story 10.39, Epic 10). Two related reflection gaps: unbounded exception/response text echoed into returned strings, and unbounded caller fields written to the rotating audit log (plus discount codes logged in plaintext).
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|---------------|
+| SEC-11 | ~~Raw exceptions / upstream bodies interpolated unbounded into returned strings — `Error: {e}` across `tools/publications.py`, `transport error: {e}` at `tools/inventory.py`, and `resp.text[:300]` from the staged-upload target at `tools/media/_upload.py` (could surface signed-URL fragments / internal host detail into model context)~~ | New shared helper `tools/_scrub.py::cap(text, limit=REFLECT_MAX_LEN)` (`REFLECT_MAX_LEN=300`) — a single slicing implementation reused everywhere. All 13 `Error: {e}` sites in `publications.py` and the `transport error: {e}` site in `inventory.py` now reflect `cap(str(e))`. The `media/_upload.py` staged-target failure no longer echoes the third-party response body to the caller at all: it logs the capped body to stderr for diagnosis and raises a **status-only** generic message (`staged target returned HTTP {code}`), so a signed-URL fragment can never reach model context. `tools/catalog_hygiene.py::_cap` was refactored to delegate to the shared `cap` (200-char `_GID_DISPLAY_MAX` bound preserved) so there is no second slicing implementation. |
+| SEC-12 | ~~`tools/_log.py::log_write` sanitized CR/LF but not length — callers passed unbounded user fields (product title, discount title/code, webhook endpoint); a multi-KB field churned the 50 MB rotating audit log and evicted genuine history. Discount codes were also written to the local log in plaintext~~ | Central `MAX_DESC_LEN=4000` cap applied inside `log_write` **after** CR/LF sanitization, so every audit line is bounded regardless of caller (normal multi-variant bulk summaries unchanged). **Discount-code decision: mask.** `create_discount_code` now logs `code=***` instead of the plaintext code — the price-rule id is already logged and the code is recoverable from Shopify, so plaintext bought no audit value while leaving a secret-shaped string in a local file. (Chosen over cap-and-keep; the log is gitignored + local-only, but masking is defense-in-depth at trivial cost.) |
+
+CI clean: ruff + `ruff format --check` + mypy + 1249 offline tests at 100% coverage.
+
 ## 2026-07-17 — Story 10.35 (SEC-M2-sanitizer — Approach 2/3: allow-list sanitizer, closed)
 
 Product sign-off recorded on the card (https://trello.com/c/4vEAwQWo, amended same day after the initial narrow allow-list was found to regress real merchant content — see the card comments for the full before/after). Closes the residual left open by the 2026-06-25 Approach 1 entry below.

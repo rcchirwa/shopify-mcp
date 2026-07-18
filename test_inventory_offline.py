@@ -17,6 +17,7 @@ import pytest
 
 from _testing import CapturingServer, FakeClient
 from tools import inventory
+from tools._scrub import REFLECT_MAX_LEN
 from tools.inventory import (
     GET_INVENTORY_ITEM,
     GET_PRODUCT_INVENTORY,
@@ -480,6 +481,27 @@ def test_tracking_confirm_issues_one_mutation_per_changed_variant():
             "id": f"gid://shopify/InventoryItem/{vid}",
             "input": {"tracked": True},
         }
+
+
+def test_tracking_transport_error_is_capped():
+    # A mid-loop transport failure whose message is huge must be bounded in the
+    # per-variant failure line, not echoed verbatim.
+    variants = [_variant("100", "S", "REEF-S", [], tracked=False)]
+    huge = "Q" * (REFLECT_MAX_LEN + 5000)
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            RuntimeError(huge),
+        ]
+    )
+    out = tools["update_variant_inventory_tracking"](
+        product_id="555",
+        tracked=True,
+        confirm=True,
+    )
+    assert "transport error:" in out
+    assert "Q" * REFLECT_MAX_LEN in out
+    assert "Q" * (REFLECT_MAX_LEN + 1) not in out
 
 
 def test_tracking_unchanged_variants_get_no_mutation():

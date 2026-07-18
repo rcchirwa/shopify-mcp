@@ -24,6 +24,7 @@ from tools._gid import from_gid
 from tools._http import default_headers
 from tools._log import log_write
 from tools._response import extract_user_errors, with_confirm_hint
+from tools._scrub import cap
 from tools.media._common import (
     _as_product_gid,
     _extract_media_user_errors,
@@ -128,7 +129,15 @@ def _upload_bytes_to_target(target: dict, image_bytes: bytes, settings: Settings
     except requests.RequestException as e:
         raise RuntimeError(f"PUT to staged target failed: {e}") from e
     if resp.status_code >= 400:
-        raise RuntimeError(f"staged target returned HTTP {resp.status_code}: {resp.text[:300]}")
+        # The staged-target body is an opaque third-party (GCS/S3) response that
+        # can echo signed-URL fragments / internal host detail. Never surface it
+        # to the caller (it would leak into model context); log the capped body
+        # to stderr for diagnosis and raise a status-only generic message.
+        print(
+            f"[media] staged upload failed: HTTP {resp.status_code}: {cap(resp.text)}",
+            file=sys.stderr,
+        )
+        raise RuntimeError(f"staged target returned HTTP {resp.status_code}")
 
 
 def _poll_media_ready(client: ShopifyClient, product_gid: str, media_id: str) -> dict:

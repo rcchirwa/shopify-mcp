@@ -76,6 +76,7 @@ from tools._gid import from_gid, to_gid
 from tools._log import log_write
 from tools._resolvers import resolve_variant_ids_with_variants
 from tools._response import extract_user_errors, format_user_errors, with_confirm_hint
+from tools._scrub import cap
 from tools._untrusted import INJECTION_REMINDER, wrap
 
 # The GraphQL strings + dynamic query builders now live in
@@ -140,8 +141,12 @@ _GID_DISPLAY_MAX = 200
 
 
 def _cap(s: str) -> str:
-    """Bound user-supplied text reflected into error messages (log-flood / echo defence)."""
-    return s[:_GID_DISPLAY_MAX]
+    """Bound user-supplied text reflected into error messages (log-flood / echo defence).
+
+    Delegates to the shared ``tools._scrub.cap`` so there is a single slicing
+    implementation; the 200-char ``_GID_DISPLAY_MAX`` bound is preserved.
+    """
+    return cap(s, _GID_DISPLAY_MAX)
 
 
 # ---------------------------------------------------------------------------

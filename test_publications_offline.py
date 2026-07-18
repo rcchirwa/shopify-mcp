@@ -16,6 +16,7 @@ from _testing import CapturingServer, FakeClient
 from settings import Settings
 from shopify._cache import ShopifyMetadataCache
 from tools import publications
+from tools._scrub import REFLECT_MAX_LEN
 from tools.publications import (
     GET_PRODUCT_PUBLICATIONS_BY_HANDLE,
     LIST_PUBLICATIONS,
@@ -734,6 +735,22 @@ def test_get_product_publications_product_read_failure_surfaces_hint():
     assert out.startswith("Error:")
     assert "transient" in out
     assert "read_publications" in out
+
+
+def test_get_product_publications_caps_oversized_exception():
+    # A multi-KB upstream error body reflected into the returned string must be
+    # bounded so it can't flood model context.
+    huge = "Z" * (REFLECT_MAX_LEN + 5000)
+    tools, fc = _build(
+        [
+            _channels_response(),
+            RuntimeError(huge),
+        ]
+    )
+    out = tools["get_product_publications"](product_id="123")
+    assert out.startswith("Error:")
+    assert "Z" * REFLECT_MAX_LEN in out
+    assert "Z" * (REFLECT_MAX_LEN + 1) not in out
 
 
 # ---------- publish_product_to_channels: missing identifier + exception paths ----------
