@@ -8,6 +8,16 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-07-17 — Story 10.43 (SEC-03 — SSRF DNS-rebinding risk formally accepted)
+
+Decision story from the 2026-07-04 security audit. Trello: https://trello.com/c/wgKYo7t0 (Story 10.43, Epic 10). Chose **accept-with-rationale** over IP-pinning — a docs-only change, no runtime behavior altered. The `_url_safety.py` guard docstring now records the same decision + reopen trigger.
+
+### Accepted risks
+
+| # | Risk | Rationale for accepting | Reopen trigger |
+|---|------|-------------------------|----------------|
+| SEC-03 | **DNS-rebinding / TOCTOU in the SSRF guard** — `_reject_if_private_host` (`tools/_url_safety.py`) resolves the host and rejects non-public IPs before the fetch, but the resolved IP is not pinned through to the request. A host that resolves public at check time and private at fetch time (attacker-controlled DNS + a rebinding race) can reach 169.254.169.254 (cloud IMDS) or internal hosts. | **Low** severity on a *local stdio* MCP server: no untrusted network reaches the process, and the attack additionally needs attacker-controlled DNS + narrow timing. Defense-in-depth already narrows it — `fetch_bytes` refuses redirects, caps the body, and filters to `image/*` behind a confirm/preview gate. IP-pinning requires a custom requests/urllib3 adapter that preserves TLS SNI + cert-hostname against a pinned connect-IP — easy to get subtly wrong, ongoing maintenance cost, disproportionate at this threat level. | **If this server is ever cloud-hosted or otherwise exposed to an untrusted network boundary**, implement IP-pinning: resolve → validate → pin the validated public IP into the connection (custom adapter / connect-to override) so the fetched IP provably equals the checked IP, and add a DNS-rebinding regression test. |
+
 ## 2026-07-17 — Story 10.38 (SEC-07 / SEC-08 — discount percentage + inventory quantity bounds)
 
 Source: read-only security audit 2026-07-04. Trello: Story 10.38, Epic 10.

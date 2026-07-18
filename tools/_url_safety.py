@@ -22,9 +22,25 @@ def _reject_if_private_host(url: str) -> None:
     target 169.254.169.254 (cloud IMDS), 10/8 / 172.16/12 / 192.168/16
     internals, or localhost via any `https://` URL. The confirm/preview gate
     and `image/*` MIME filter narrow the exfil surface but don't close it —
-    this closes it at the network boundary. TOCTOU against DNS rebinding
-    is out of scope; that fix requires pinning the resolved IP through the
-    request, which is not worth the complexity for this threat model.
+    this closes it at the network boundary.
+
+    Accepted risk — DNS rebinding / TOCTOU (SEC-03, security audit 2026-07-04):
+    the check resolves the host and rejects non-public IPs, but the resolved
+    IP is *not* pinned through to the request. A host that resolves public at
+    check time and private at fetch time (attacker-controlled DNS + narrow
+    timing) can slip past this guard. Closing it means pinning the validated
+    IP into the connection while preserving the original hostname for TLS SNI
+    and certificate validation — a custom requests/urllib3 adapter that is
+    easy to get subtly wrong and carries ongoing maintenance cost.
+
+    Decision (Story 10.43): formally accept the risk. Rationale — this is a
+    Low-severity finding on a *local stdio* MCP server (no untrusted network
+    reaching the process), the attack requires attacker-controlled DNS *plus*
+    a rebinding race, and `fetch_bytes` already refuses redirects, caps the
+    body, and filters to `image/*` behind a confirm/preview gate. The adapter
+    complexity is not proportionate at this threat level. Reopen trigger: **if
+    this server is ever cloud-hosted or otherwise exposed to an untrusted
+    network boundary**, implement IP-pinning (see TECH_DEBT.md → SEC-03).
     """
     host = urlparse(url).hostname
     if not host:
