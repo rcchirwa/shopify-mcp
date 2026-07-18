@@ -31,7 +31,14 @@ distribution simply absent). It deliberately does not:
   the top-level ``requests`` dependency anyway);
 - evaluate environment markers — the project declares none today; a marked
   dependency (e.g. ``foo; python_version < '3.11'``) would need marker-aware
-  filtering added here before it could be reported correctly.
+  filtering added here before it could be reported correctly;
+- scan for known CVEs in the resolved versions — that gap is Story 10.40's
+  (SEC-13, SEC-14): ``requirements.lock`` / ``requirements-dev.lock``
+  (``pip-compile --generate-hashes``) pin exact, hash-verified versions, and
+  the CI ``dependency-audit`` job runs ``pip-audit`` against the lockfile on
+  every PR. depcheck stays this scan's presence-only complement rather than
+  growing version/CVE logic of its own — see README.md's "Regenerating the
+  lockfile" section for the re-sync workflow.
 
 It reads the pyproject.toml beside this module, i.e. the source tree of an
 editable install — the only layout this dev/ops tool is meant to run in.
@@ -119,7 +126,11 @@ def main() -> int:
         label = "runtime" if group == "project" else f"[{group}]"
         for requirement in requirements:
             print(f"  - {requirement}  (declared in {label})")
-    print("\nRe-sync this environment with:  pip install -e .[dev]")
+    print(
+        "\nRe-sync this environment with:"
+        "\n  pip install --require-hashes -r requirements-dev.lock"
+        "\n  pip install --no-deps -e ."
+    )
     return 1
 
 
