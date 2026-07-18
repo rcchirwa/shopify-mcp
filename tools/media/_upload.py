@@ -127,7 +127,16 @@ def _upload_bytes_to_target(target: dict, image_bytes: bytes, settings: Settings
             url, data=image_bytes, headers=headers, timeout=settings.staged_upload_timeout_s
         )
     except requests.RequestException as e:
-        raise RuntimeError(f"PUT to staged target failed: {e}") from e
+        # A requests exception's str embeds the full request URL — for a signed
+        # staged-target PUT that is the signed URL (X-Goog-/X-Amz-Signature) and
+        # internal host. Keep it out of the caller-facing message (it would leak
+        # into model context); log the capped detail to stderr and raise a
+        # generic transport-only message.
+        print(
+            f"[media] staged upload transport error: {cap(str(e))}",
+            file=sys.stderr,
+        )
+        raise RuntimeError("PUT to staged target failed (transport error)") from e
     if resp.status_code >= 400:
         # The staged-target body is an opaque third-party (GCS/S3) response that
         # can echo signed-URL fragments / internal host detail. Never surface it
@@ -168,7 +177,7 @@ def _poll_media_ready(client: ShopifyClient, product_gid: str, media_id: str) ->
                 last["preview_url"] = ((node.get("preview") or {}).get("image") or {}).get("url")
         except Exception as e:
             print(
-                f"[media] poll warning for {media_id}: {type(e).__name__}: {e}",
+                f"[media] poll warning for {media_id}: {type(e).__name__}: {cap(str(e))}",
                 file=sys.stderr,
             )
 
@@ -205,7 +214,7 @@ def _stage_upload(
             },
         )
     except Exception as e:
-        return None, f"Error at stage=stage_upload: {e}"
+        return None, f"Error at stage=stage_upload: {cap(str(e))}"
     staged_errors = extract_user_errors(staged, "stagedUploadsCreate")
     if staged_errors:
         return None, _fmt_media_user_errors(staged_errors, "stage_upload")
@@ -238,7 +247,7 @@ def _attach_media(
             },
         )
     except Exception as e:
-        return None, f"Error at stage=attach: {e}"
+        return None, f"Error at stage=attach: {cap(str(e))}"
     attach_errors = extract_user_errors(attach, "productCreateMedia", error_key="mediaUserErrors")
     if attach_errors:
         return None, _fmt_media_user_errors(attach_errors, "attach")
@@ -278,7 +287,7 @@ def _maybe_reorder_new_media(
             },
         )
     except Exception as e:
-        return f"\n  Reorder    : FAILED at stage=reorder ({e})"
+        return f"\n  Reorder    : FAILED at stage=reorder ({cap(str(e))})"
     rpayload = reorder.get("productReorderMedia", {}) or {}
     rerrs = _extract_media_user_errors(reorder, "productReorderMedia")
     if rerrs:
@@ -345,7 +354,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 page_size=_MEDIA_PAGE_CAP,
             )
         except Exception as e:
-            return f"Error at stage=read: {e}"
+            return f"Error at stage=read: {cap(str(e))}"
         product = first_response.get("product")
         if not product:
             return f"No product found with id {product_id}."
@@ -382,7 +391,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             image_bytes, filename, mime_type = _download_image(client, source)
         except Exception as e:
-            return f"Error at stage=download: {e}"
+            return f"Error at stage=download: {cap(str(e))}"
 
         # Stage 2: create the staged upload target.
         target, err = _stage_upload(client, filename, mime_type, len(image_bytes))
@@ -394,7 +403,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             _upload_bytes_to_target(target, image_bytes, client._settings)
         except Exception as e:
-            return f"Error at stage=stage_upload: {e}"
+            return f"Error at stage=stage_upload: {cap(str(e))}"
 
         # Stage 4: attach via productCreateMedia.
         resource_url = target.get("resourceUrl")

@@ -1210,21 +1210,30 @@ def test_download_image_rejects_when_type_unknown_and_unguessable():
 # ---------- _upload_bytes_to_target: request exception ----------
 
 
-def test_upload_bytes_to_target_request_exception_wrapped():
+def test_upload_bytes_to_target_request_exception_is_generic_and_logs_detail(capsys):
+    # SEC-11: a requests exception's str embeds the full request URL — for a
+    # signed staged-target PUT that's the signed URL. The raised message must
+    # stay generic (no exception detail / signed-URL fragment); the capped
+    # detail goes to stderr for diagnosis instead.
     target = {
         "url": "https://staged.example/signed",
         "parameters": [{"name": "content_type", "value": "image/jpeg"}],
     }
+    leaky = "socket reset to https://staged.example/signed?X-Goog-Signature=SECRETSIG"
     with (
         patch(
             "tools.media._upload.requests.put",
-            side_effect=_requests.ConnectionError("socket reset"),
+            side_effect=_requests.ConnectionError(leaky),
         ),
         pytest.raises(RuntimeError) as exc,
     ):
         _upload_bytes_to_target(target, b"bytes", _media_settings())
     msg = str(exc.value)
-    assert "PUT to staged target failed" in msg and "socket reset" in msg
+    assert "PUT to staged target failed" in msg
+    assert "SECRETSIG" not in msg  # signed-URL fragment must not reach the caller
+    assert "socket reset" not in msg
+    err = capsys.readouterr().err
+    assert "socket reset" in err  # capped detail available on stderr for diagnosis
 
 
 def test_upload_bytes_to_target_missing_url_rejected():
