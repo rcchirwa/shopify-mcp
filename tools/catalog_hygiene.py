@@ -76,6 +76,7 @@ from tools._gid import from_gid, to_gid
 from tools._log import log_write
 from tools._resolvers import resolve_variant_ids_with_variants
 from tools._response import extract_user_errors, format_user_errors, with_confirm_hint
+from tools._untrusted import INJECTION_REMINDER, wrap
 
 # The GraphQL strings + dynamic query builders now live in
 # shopify.queries.catalog_hygiene; the data-access wrappers in
@@ -3656,7 +3657,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 head_lines.append("")
                 head_lines.append(f"Namespace: {ns_name or '(none)'}")
                 for m in group:
-                    head_lines.append(f"  • {m['key']}  [{m['type']}]  →  {m['value']}")
+                    # Metafield values are often written by third-party apps —
+                    # wrap them as untrusted so the model reads them as data,
+                    # not instructions (Story 10.41 / SEC-04). Key/type stay
+                    # raw: they are schema-defined, not shopper free text.
+                    head_lines.append(f"  • {m['key']}  [{m['type']}]  →  {wrap(m['value'])}")
             if include_variants and variant_buckets:
                 head_lines.append("")
                 head_lines.append(f"Variant metafields ({variant_mf_count}):")
@@ -3668,7 +3673,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                     )
                     for m in v["metafields"]:
                         head_lines.append(
-                            f"    • {m['namespace']}.{m['key']}  [{m['type']}]  →  {m['value']}"
+                            f"    • {m['namespace']}.{m['key']}  [{m['type']}]  →  {wrap(m['value'])}"
                         )
 
         payload = _format_read_metafields_payload(
@@ -3678,7 +3683,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             variant_metafields=variant_metafields_payload,
             total_found=total_found,
         )
-        return _render("\n".join(head_lines), payload)
+        head_text = "\n".join(head_lines)
+        # Prefix the reminder only when the head actually contains wrapped
+        # values (total_found > 0). The JSON tail keeps raw values so
+        # downstream parsers of the ```json``` block are unaffected.
+        if total_found > 0:
+            head_text = INJECTION_REMINDER + head_text
+        return _render(head_text, payload)
 
     @server.tool()
     def update_product_options(

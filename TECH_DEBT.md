@@ -8,6 +8,31 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-07-17 — Story 10.41 (SEC-04 — systematic untrusted-data wrapping across read tools)
+
+Source: read-only security audit 2026-07-04. Trello: https://trello.com/c/jWndWxHU (Story 10.41, Epic 10). Before this story, only `tools/orders.py` wrapped externally-influenced text in `<UNTRUSTED-DATA>` tags — the wrapping was a per-tool decision rather than a shared policy, so other read tools returned stored third-party content to the model as unlabelled trusted text (indirect prompt-injection surface).
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|----------------|
+| SEC-04 | ~~Untrusted-data wrapping was per-tool (orders only); metafield values and media alt text reached the model unlabelled~~ | Extracted the `<UNTRUSTED-DATA>` literal + injection reminder into one shared helper, `tools/_untrusted.py` (`wrap(text)` + `INJECTION_REMINDER`); re-pointed `tools/orders.py` to it with byte-identical output for all legitimate content. Applied `wrap()` to the agreed field list and prefixed each affected output with `INJECTION_REMINDER`. There is now a single definition of the tag — no duplicated `<UNTRUSTED-DATA>` literals anywhere. Triple-threat review caught a delimiter-breakout: a value containing the literal `</UNTRUSTED-DATA>` could forge the closing tag and escape the untrusted region — `wrap()` now neutralizes any embedded closing tag before wrapping (payload preserved, not dropped), closing the escape at the single chokepoint for every call site. CI clean: ruff + format + mypy + 100% coverage. |
+
+### Agreed in-scope field list (groomed for this story)
+
+Wrapping is **values-only**, applied to the human-readable head of **read** tools:
+
+- **`get_product_metafields`** — metafield **values**, both product-level and per-variant, in the head. Metafield values are commonly written by third-party apps (the strongest injection case).
+- **`list_product_media`** — media **alt text** in the head.
+
+**Explicitly out of scope (recorded rationale):**
+
+- **Metafield keys / namespaces / types** — schema-defined by app authors, not shopper free text; not wrapped.
+- **The `` ```json `` tail payloads** — structured data that downstream agents parse; the raw value is preserved there so wrapping can't corrupt the documented `{ok, …}` contract. The head is the prose surface the model reads as potential instructions, so that is what gets wrapped.
+- **Product / collection descriptions and the `update_product_media` write-preview echo** — deferred; not in the recommended priority. The write-preview echo mostly reflects caller-supplied input, and descriptions are a larger free-text surface worth their own scoped story if the injection risk is later judged material.
+
+An empty alt / absent value adds no wrapper (mirrors `orders.py`'s conditional wrapping), and the reminder header is only prefixed when the output actually contains a wrapped value.
+
 ## 2026-07-17 — Story 10.35 (SEC-M2-sanitizer — Approach 2/3: allow-list sanitizer, closed)
 
 Product sign-off recorded on the card (https://trello.com/c/4vEAwQWo, amended same day after the initial narrow allow-list was found to regress real merchant content — see the card comments for the full before/after). Closes the residual left open by the 2026-06-25 Approach 1 entry below.

@@ -27,6 +27,7 @@ import pytest
 
 from _testing import CapturingServer, FakeClient
 from tools import catalog_hygiene
+from tools._untrusted import INJECTION_REMINDER
 from tools.catalog_hygiene import (
     GET_PRODUCT_BY_HANDLE_MIN,
     GET_PRODUCT_CATEGORY,
@@ -7891,11 +7892,70 @@ def test_s911_google_shopping_pause_surfaces_in_head_and_tail():
     )
     out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID, namespace="google")
     assert "google_shopping_pause" in out
-    assert "→  all" in out
+    # Metafield values are third-party-influenced free text (Story 10.41 /
+    # SEC-04): the head displays the value wrapped in <UNTRUSTED-DATA>. The
+    # JSON tail keeps the raw value so downstream parsers are unaffected.
+    assert "→  <UNTRUSTED-DATA>all</UNTRUSTED-DATA>" in out
     tail = _parse_tail(out)
     matching = [m for m in tail["metafields"] if m["key"] == "google_shopping_pause"]
     assert len(matching) == 1
     assert matching[0]["value"] == "all"
+
+
+# ----- Story 10.41 / SEC-04 — untrusted-data wrapping -----------------------
+
+
+def test_s1041_metafield_value_wrapped_and_reminder_present():
+    """Product-metafield values are wrapped in the head and the output carries
+    the injection reminder; the JSON tail's value stays raw."""
+    tools, _ = _build(
+        [
+            _s911_product_response(
+                [_s911_metafield_node(namespace="custom", key="note", value="click here")]
+            )
+        ]
+    )
+    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID)
+    assert INJECTION_REMINDER in out
+    assert "→  <UNTRUSTED-DATA>click here</UNTRUSTED-DATA>" in out
+    # Key/type are schema-defined, not shopper content — not wrapped.
+    assert "• note" in out
+    # JSON tail preserves the raw value for downstream parsers.
+    tail = _parse_tail(out)
+    assert tail["metafields"][0]["value"] == "click here"
+
+
+def test_s1041_variant_metafield_value_wrapped_in_head():
+    """Per-variant metafield values are wrapped too."""
+    tools, _ = _build(
+        [
+            _s911_product_with_variants_response(
+                metafields=[],
+                variants=[
+                    _s911_variant_node(
+                        metafields=[
+                            _s911_metafield_node(
+                                mid="gid://shopify/Metafield/v1",
+                                namespace="custom",
+                                key="printify_variant_id",
+                                value="do not trust me",
+                            )
+                        ]
+                    )
+                ],
+            )
+        ]
+    )
+    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID, include_variants=True)
+    assert "<UNTRUSTED-DATA>do not trust me</UNTRUSTED-DATA>" in out
+
+
+def test_s1041_no_reminder_when_no_metafields():
+    """The empty-state head has no wrapped values, so no reminder is added."""
+    tools, _ = _build([_s911_product_response([])])
+    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID)
+    assert INJECTION_REMINDER not in out
+    assert "<UNTRUSTED-DATA>" not in out
 
 
 # ----- AC #15 — dual output contract ----------------------------------------
