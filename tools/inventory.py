@@ -128,6 +128,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     ) -> str:
         """
         Set inventory quantity for a specific variant at a location.
+        quantity: must be >= 0 and <= 2,147,483,647 (int32 max).
         Returns a preview unless confirm=True.
         """
         range_err = _quantity_range_error(quantity)
@@ -325,6 +326,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         When location_id is omitted, applies to every location each variant
         has a level at. A single `quantity` is applied to every matched
         (variant, location) pair via one inventorySetOnHandQuantities call.
+        quantity: must be >= 0 and <= 2,147,483,647 (int32 max).
         Returns a preview unless confirm=True.
         """
         range_err = _quantity_range_error(quantity)

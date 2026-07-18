@@ -73,7 +73,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     ) -> str:
         """
         Create a new percentage-off discount code.
-        percentage_off: e.g. 20 = 20% off.
+        percentage_off: e.g. 20 = 20% off. Must be > 0 and <= 100.
         usage_limit: 0 = unlimited.
         Returns a preview unless confirm=True.
         """
@@ -83,7 +83,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"<= {DISCOUNT_PCT_MAX} (got {percentage_off})."
             )
 
-        value = -abs(percentage_off)  # Shopify expects negative value for discounts
+        value = -percentage_off  # Shopify expects negative value for discounts
 
         preview = (
             f"PREVIEW — New discount code\n"
