@@ -135,10 +135,13 @@ command lands in `.venv/bin/`.
 Runtime-only installs (no dev tooling) can use `requirements.lock` instead of
 `requirements-dev.lock`.
 
-Run the offline suite, lint, and type-check the same way CI does:
+Run the offline suite, lint, and type-check the same way CI does. `pytest`
+takes no test paths: `pyproject.toml` scopes discovery to `tests/`, and
+`tests/conftest.py` holds back `tests/live/` — the live smoke runners, which
+need real store credentials. Run those deliberately with `pytest tests/live`:
 
 ```bash
-coverage run -m pytest test_*_offline.py -v
+coverage run -m pytest -v
 coverage report --fail-under=100
 ruff check .
 ruff format --check .   # or `ruff format .` to apply fixes
@@ -252,7 +255,7 @@ write_files
 ### 6. Test the connection
 
 ```bash
-python3 test_shopify_mcp.py
+python3 tests/live/test_server.py
 ```
 
 Expected output:
@@ -361,17 +364,32 @@ shopify-mcp/
 │   └── media.py
 ├── validators/
 │   └── naming.py           # AON + Vanish title convention validator
+├── tests/                  # Whole suite; mirrors the source layout (Story 10.45)
+│   ├── conftest.py         # Session-wide fixtures
+│   ├── unit/               # One package per source package
+│   │   ├── tools/          # 19 modules covering the MCP-tool surface
+│   │   ├── shopify/        # test_cache.py + operations/ (8 modules)
+│   │   ├── validators/     # test_naming.py
+│   │   └── test_{depcheck,logging_config,settings,shopify_client,paginate}.py
+│   ├── architecture/       # Structural guards: layering, lockfiles, docs, layout
+│   └── live/               # Smoke runners needing real credentials — excluded by default
 ├── pyproject.toml          # Package metadata, deps, console script, test/coverage config
-├── test_shopify_mcp.py
 ├── .env.example
 └── .gitignore
 ```
+
+Every directory under `tests/` carries an `__init__.py`. That is load-bearing:
+mirroring the source layout gives nine duplicate test basenames (e.g.
+`unit/tools/test_products.py` vs `unit/shopify/operations/test_products.py`),
+and under pytest's default *prepend* import mode duplicate basenames in
+non-package directories abort collection outright. `tests/architecture/test_layout.py`
+guards the invariant.
 
 ### Layering (`shopify/` extraction — Story 10.23 / A5)
 
 The `shopify/` package separates Shopify domain logic from the MCP-tool surface,
 one-way: `tools/` → `shopify.operations` → `shopify.queries`. `shopify/` never
-imports from `tools/` (enforced by `test_shopify_layering_offline.py`), so
+imports from `tools/` (enforced by `tests/architecture/test_layering.py`), so
 operations like `shopify.operations.products.update_product_title(client, ...)`
 are callable from non-MCP entry points (CLI, scripts) without importing FastMCP.
 GraphQL strings live in `shopify.queries.*` and reuse shared fragments (e.g.

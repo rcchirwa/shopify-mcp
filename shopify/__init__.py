@@ -16,7 +16,7 @@ Layering rule (one-way, no cycles)::
 
 ``shopify`` MUST NOT import from ``tools`` — the dependency is strictly one-way
 so the domain layer stays reusable from non-MCP entry points and no import
-cycle can form. This is enforced by ``test_shopify_layering_offline.py``.
+cycle can form. This is enforced by ``tests/architecture/test_layering.py``.
 
 Status: Story 10.23 / A5 establishes this structure and migrates the
 ``products`` domain as the pilot. Remaining domains migrate one per PR.
