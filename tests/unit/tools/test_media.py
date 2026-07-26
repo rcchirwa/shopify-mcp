@@ -18,9 +18,9 @@ import pytest
 import requests as _requests
 from pydantic import SecretStr
 
-from _testing import CapturingServer, FakeClient
 from settings import Settings
 from shopify_client import ShopifyError
+from tests.support import CapturingServer, FakeClient
 from tools import media
 from tools._untrusted import INJECTION_REMINDER
 from tools.media._common import _as_product_gid

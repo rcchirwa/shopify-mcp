@@ -16,9 +16,9 @@ Usage:
   pytest tests/unit/shopify/operations/test_collections.py -v
 """
 
-from _testing import FakeClient
 from shopify.operations import collections as ops
 from shopify.queries import collections as q
+from tests.support import FakeClient
 
 # ---------- AC3: collections has no by-id/by-handle pair → no shared fragment ----------
 

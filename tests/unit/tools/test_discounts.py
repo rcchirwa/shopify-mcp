@@ -15,7 +15,7 @@ import re
 
 import pytest
 
-from _testing import CapturingServer, FakeClient
+from tests.support import CapturingServer, FakeClient
 from tools import discounts
 from tools.discounts import (
     CREATE_DISCOUNT_CODE,

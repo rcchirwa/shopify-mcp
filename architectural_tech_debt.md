@@ -21,7 +21,7 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 | 3 | A2 | `write_gate()` helper collapsing preview/confirm/error/audit boilerplate — *closed Story 10.22; 9 tools migrated; remaining tools triaged and deliberately excluded* | Code | 4 | 2 | 4 | **12** |
 | 4 | A5 | `shopify/` subpackage extraction (`queries/` + `operations/`) with GraphQL fragments — *closed Story 10.31; all 8 domains migrated (`products`, `catalog_hygiene`, `collections`, `discounts`, `inventory`, `orders`, `publications`, `webhooks`)* | Architecture | 2 | 1 | 2 | **12** |
 | 5 | A6 | HTTP client unification (single wrapper for `gql` + `requests`) — *closed: policy half N4/Story 10.21, transport half Story 10.24 (`client.fetch_bytes()` + shared `_with_retry`)* | Architecture | 2 | 2 | 3 | **12** |
-| 6 | A12 | `_testing/` test doubles ship inside the installed distribution — *unblocked: A11 made `tests/` an importable package* | Architecture | 2 | 2 | 4 | **8** |
+| 6 | A12 | `_testing/` test doubles ship inside the installed distribution — *closed Story 10.46; doubles moved to `tests/support/`, dropped from `[tool.setuptools] packages`* | Architecture | 2 | 2 | 4 | **8** |
 | 7 | A10 | Committed `uv.lock` for CI reproducibility | Dependency | 1 | 1 | 5 | **2** |
 | 8 | A14 | Root markdown docs consolidated under `docs/` | Documentation | 1 | 1 | 5 | **2** |
 
@@ -227,6 +227,7 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 ### A12 — `_testing/` ships inside the distribution
 
 - **Category:** Architecture
+- **Status:** ✅ **closed — Story 10.46.** The doubles now live at `tests/support/` (`git mv`, history preserved) and `_testing` is gone from `[tool.setuptools] packages`. The mypy `disallow_untyped_defs` gate moved with the code to `tests/support` in `[tool.mypy] files` rather than being dropped. Verified per the note below: a fresh `pip install -e .` followed by `python -c "import _testing"` raises `ModuleNotFoundError`.
 - **Source:** 2026-07-25 folder-structure audit. Tracked as [Story 10.46](https://trello.com/c/9alOE7U4) (filed on the card as `FS-2`). **Depended on A11, which closed with Story 10.45 — this is now unblocked.**
 - **Impact (2):** `_testing` is listed in `[tool.setuptools] packages`, so `pip install -e .` — and any real wheel install — puts the test doubles (`FakeClient`, `CapturingServer`) into site-packages beside production code. Anyone installing this MCP server also installs its test fixtures.
 - **Risk (2):** the packaging declaration contradicts the repo's own stated intent. `_testing` is already excluded from `[tool.coverage.run] source` with the comment "test doubles exercised only through the offline suites, not production code worth gating on." One of the two declarations is wrong, and it is the shipping one.
@@ -239,7 +240,7 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 
 - **Category:** Architecture
 - **Source:** 2026-07-25 folder-structure audit. Tracked as [Story 10.47](https://trello.com/c/1zmUKlY0) (filed on the card as `FS-3`). **Depends on A12; A11 closed with Story 10.45.**
-- **Impact (3):** `[tool.setuptools]` installs six generic top-level names — `depcheck`, `logging_config`, `settings`, `shopify_client`, `shopify_mcp`, plus the `tools`, `validators`, `_testing`, and `shopify` packages — onto the import path of any environment that installs this project. Collapsing to one owned name (`shopify_mcp`) removes the whole class of conflict.
+- **Impact (3):** `[tool.setuptools]` installs six generic top-level names — `depcheck`, `logging_config`, `settings`, `shopify_client`, `shopify_mcp`, plus the `tools`, `validators`, and `shopify` packages — onto the import path of any environment that installs this project. Collapsing to one owned name (`shopify_mcp`) removes the whole class of conflict.
 - **Risk (3):** **`shopify` is the top-level module owned by the `ShopifyAPI` distribution on PyPI** — the mainstream Python Shopify library, which anyone working on a Shopify project is plausibly one `pip install` away from. Installed together, two different `shopify` packages contend on `sys.path`; resolution depends on path order and the failure mode is a silent wrong import, not an error. Separately, the flat layout means `pytest` from the repo root imports the working tree rather than the installed distribution — so a module omitted from `[tool.setuptools] packages` passes the entire CI gate and breaks only for someone doing a real install. `src/` layout is the standard fix for that second problem: the working tree is not importable, so tests exercise what actually ships.
 - **Effort (2):** multi-day, ~110 files. Highest-churn item in this batch.
 - **Plan:** `src/shopify_mcp/` holding `server.py` (was `shopify_mcp.py`), `client.py` (was `shopify_client.py`), `settings.py`, `logging_config.py`, `depcheck.py`, and the `shopify/`, `tools/`, `validators/` sub-packages. Recommended in two stages — move and get green first, then collapse the `tools/_gid.py`-style back-compat shims — because all the risk sits in stage one.
@@ -287,7 +288,7 @@ Added by the 2026-07-25 folder-structure audit. Phase 3 restructured the code *i
 | Day | Item | Why |
 |-----|------|-----|
 | 1 | ~~**A11** test suite into `tests/`~~ — **done, Story 10.45** | Largest single readability win (root went 62 → 22 tracked entries), and A12 needed `tests/` to be an importable package before it could move. |
-| 1 | **A12** un-ship `_testing/` | Small, and it is the natural tail of A11 — now unblocked, and the next item in this phase. |
+| 1 | ~~**A12** un-ship `_testing/`~~ — **done, Story 10.46** | Small, and it is the natural tail of A11 — now unblocked, and the next item in this phase. |
 | 2–3 | **A13** `src/` layout | Do last: it rewrites imports across ~110 files, so every earlier move should already be settled. Closes the `shopify` ↔ ShopifyAPI collision. |
 
 **A14** (docs consolidation) is independent of all three and can land at any point — though it edits README.md, which A13 also touches (A11 already landed its README changes), so sequence it against A13.

@@ -12,9 +12,9 @@ Usage:
 
 from pydantic import SecretStr
 
-from _testing import CapturingServer, FakeClient
 from settings import Settings
 from shopify._cache import ShopifyMetadataCache
+from tests.support import CapturingServer, FakeClient
 from tools import publications
 from tools._scrub import REFLECT_MAX_LEN
 from tools.publications import (

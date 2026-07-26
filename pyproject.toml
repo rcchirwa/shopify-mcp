@@ -54,7 +54,7 @@ shopify-mcp-check-deps = "depcheck:main"
 
 [tool.setuptools]
 py-modules = ["depcheck", "logging_config", "settings", "shopify_client", "shopify_mcp"]
-packages = ["tools", "validators", "_testing", "shopify", "shopify.queries", "shopify.operations"]
+packages = ["tools", "validators", "shopify", "shopify.queries", "shopify.operations"]
 
 [tool.pytest.ini_options]
 # The whole suite lives under tests/ (Story 10.45 / FS-1), so a bare `pytest`
@@ -69,7 +69,7 @@ testpaths = ["tests"]
 [tool.coverage.run]
 # Single source of truth for what coverage measures — consumed by both
 # `coverage run` locally and the CI workflow, so the two can't drift.
-# `_testing/` is intentionally excluded: it holds test doubles exercised
+# `tests/support/` is intentionally excluded: it holds test doubles exercised
 # only through the offline suites, not production code worth gating on.
 source = ["depcheck", "logging_config", "settings", "shopify_client", "tools", "validators", "shopify"]
 
@@ -105,7 +105,7 @@ quote-style = "double"
 # annotations. Added tools should carry types from the first commit — mypy will
 # reject the PR otherwise.
 python_version = "3.11"
-files = ["depcheck.py", "logging_config.py", "settings.py", "shopify_client.py", "shopify_mcp.py", "tools", "validators", "_testing", "shopify"]
+files = ["depcheck.py", "logging_config.py", "settings.py", "shopify_client.py", "shopify_mcp.py", "tools", "validators", "tests/support", "shopify"]
 ignore_missing_imports = true
 disallow_untyped_defs = true
 # Belt-and-suspenders: if anyone later bypasses the gate with

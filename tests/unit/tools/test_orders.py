@@ -11,7 +11,7 @@ Usage:
   pytest tests/unit/tools/test_orders.py -v
 """
 
-from _testing import CapturingServer, FakeClient
+from tests.support import CapturingServer, FakeClient
 from tools import orders
 from tools.orders import GET_ORDER_BY_ID, GET_ORDERS
 

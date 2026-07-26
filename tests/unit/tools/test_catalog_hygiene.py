@@ -25,7 +25,7 @@ from typing import Any
 
 import pytest
 
-from _testing import CapturingServer, FakeClient
+from tests.support import CapturingServer, FakeClient
 from tools import catalog_hygiene
 from tools._untrusted import INJECTION_REMINDER
 from tools.catalog_hygiene import (

@@ -128,7 +128,7 @@ pip install --no-deps -e .                               # the package itself; d
 ```
 
 `--require-hashes` makes pip refuse any package not listed in the lockfile
-with a matching hash. `shopify_client`, `tools`, `validators`, and `_testing`
+with a matching hash. `shopify_client`, `tools`, and `validators`
 become importable from any working directory, and a `shopify-mcp` console
 command lands in `.venv/bin/`.
 
@@ -366,12 +366,13 @@ shopify-mcp/
 │   └── naming.py           # AON + Vanish title convention validator
 ├── tests/                  # Whole suite; mirrors the source layout (Story 10.45)
 │   ├── conftest.py         # Session-wide fixtures
+│   ├── support/            # Test doubles (FakeClient, CapturingServer) — not shipped (Story 10.46)
 │   ├── unit/               # One package per source package
 │   │   ├── tools/          # 19 modules covering the MCP-tool surface
 │   │   ├── shopify/        # test_cache.py + operations/ (8 modules)
 │   │   ├── validators/     # test_naming.py
 │   │   └── test_{depcheck,logging_config,settings,shopify_client,paginate}.py
-│   ├── architecture/       # Structural guards: layering, lockfiles, docs, layout
+│   ├── architecture/       # Structural guards: layering, lockfiles, docs, layout, packaging
 │   └── live/               # Smoke runners needing real credentials — excluded by default
 ├── pyproject.toml          # Package metadata, deps, console script, test/coverage config
 ├── .env.example

@@ -15,7 +15,7 @@ import re
 
 import pytest
 
-from _testing import CapturingServer, FakeClient
+from tests.support import CapturingServer, FakeClient
 from tools import inventory
 from tools._scrub import REFLECT_MAX_LEN
 from tools.inventory import (
