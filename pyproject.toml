@@ -75,7 +75,7 @@ source = ["depcheck", "logging_config", "settings", "shopify_client", "tools", "
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 extend-exclude = ["aon_mcp_log.txt"]
 
 [tool.ruff.lint]
@@ -104,7 +104,7 @@ quote-style = "double"
 # Gate: every def in the `files` list below must have complete param + return
 # annotations. Added tools should carry types from the first commit — mypy will
 # reject the PR otherwise.
-python_version = "3.10"
+python_version = "3.11"
 files = ["depcheck.py", "logging_config.py", "settings.py", "shopify_client.py", "shopify_mcp.py", "tools", "validators", "_testing", "shopify"]
 ignore_missing_imports = true
 disallow_untyped_defs = true

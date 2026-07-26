@@ -49,9 +49,8 @@ script. Exit code 0 = in sync, 1 = drift detected.
 
 import importlib.metadata
 import re
-from pathlib import Path
-
 import tomllib
+from pathlib import Path
 
 # pyproject.toml lives beside this module at the repo root.
 _PYPROJECT = Path(__file__).resolve().parent / "pyproject.toml"

@@ -9,7 +9,7 @@ data access in ``shopify.operations.discounts`` (Story 10.27 / A5).
 create_discount_code requires confirm=True.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -103,7 +103,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             "valueType": "PERCENTAGE",
             "value": str(value),
             "customerSelection": {"forAllCustomers": True},
-            "startsAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "startsAt": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
         if usage_limit > 0:
             price_rule_input["usageLimit"] = usage_limit

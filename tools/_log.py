@@ -6,7 +6,7 @@ All mutations are appended to aon_mcp_log.txt (max 10 MB x 5 files = 50 MB cap).
 import logging
 import logging.handlers
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from tools._scrub import cap
 
@@ -57,5 +57,5 @@ def log_write(tool_name: str, description: str) -> None:
     # Cap after sanitization so the escaped tokens count toward the bound and
     # the on-disk line is what stays bounded.
     safe_description = cap(safe_description, MAX_DESC_LEN)
-    timestamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    timestamp = datetime.now(tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     _get_logger().info("[%s] %s | %s", timestamp, tool_name, safe_description)
