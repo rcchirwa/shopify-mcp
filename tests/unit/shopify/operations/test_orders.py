@@ -15,9 +15,9 @@ Usage:
   pytest tests/unit/shopify/operations/test_orders.py -v
 """
 
-from _testing import FakeClient
 from shopify.operations import orders as ops
 from shopify.queries import orders as q
+from tests.support import FakeClient
 
 # ---------- AC3: a shared order-node core fragment IS extracted and reused ----
 

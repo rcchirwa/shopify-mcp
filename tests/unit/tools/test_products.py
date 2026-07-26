@@ -10,7 +10,7 @@ Usage:
   pytest tests/unit/tools/test_products.py -v
 """
 
-from _testing import CapturingServer, FakeClient
+from tests.support import CapturingServer, FakeClient
 from tools import products
 from tools.products import (
     GET_PRODUCT_BY_HANDLE,

@@ -17,9 +17,9 @@ Usage:
   pytest tests/unit/shopify/operations/test_webhooks.py -v
 """
 
-from _testing import FakeClient
 from shopify.operations import webhooks as ops
 from shopify.queries import webhooks as q
+from tests.support import FakeClient
 
 # ---------- AC3: no shared fragment applies to webhooks ----------
 

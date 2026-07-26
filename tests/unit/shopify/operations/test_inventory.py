@@ -14,9 +14,9 @@ Usage:
   pytest tests/unit/shopify/operations/test_inventory.py -v
 """
 
-from _testing import FakeClient
 from shopify.operations import inventory as ops
 from shopify.queries import inventory as q
+from tests.support import FakeClient
 
 # ---------- AC3: a shared inventory-level fragment IS extracted and reused ----
 

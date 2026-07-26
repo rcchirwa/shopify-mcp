@@ -12,7 +12,7 @@ Usage:
 """
 
 import tools._write_tool as _wt
-from _testing import CapturingServer, FakeClient
+from tests.support import CapturingServer, FakeClient
 from tools import webhooks
 from tools.webhooks import CREATE_WEBHOOK, DELETE_WEBHOOK, LIST_WEBHOOKS
 

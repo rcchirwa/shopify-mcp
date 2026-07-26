@@ -13,8 +13,8 @@ Usage:
 
 import pytest
 
-from _testing import CapturingServer, FakeClient
 from shopify_client import JOB_STATUS_QUERY
+from tests.support import CapturingServer, FakeClient
 from tools import collections
 from tools.collections import (
     ADD_PRODUCTS_TO_COLLECTION,
@@ -388,7 +388,7 @@ class RaisingFakeClient:
     """FakeClient variant where some responses are exceptions to be raised."""
 
     def __init__(self, responses):
-        from _testing.fake_client import _default_test_settings
+        from tests.support.fake_client import _default_test_settings
 
         self.responses = list(responses)
         self.calls = []
