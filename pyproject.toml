@@ -57,11 +57,14 @@ py-modules = ["depcheck", "logging_config", "settings", "shopify_client", "shopi
 packages = ["tools", "validators", "_testing", "shopify", "shopify.queries", "shopify.operations"]
 
 [tool.pytest.ini_options]
-# Live smoke runners that require SHOPIFY_STORE_URL + SHOPIFY_ACCESS_TOKEN.
-# They would fail in CI (and locally without a configured .env), so they are
-# excluded from default pytest discovery. CI runs `pytest test_*_offline.py`
-# explicitly, so this is belt-and-suspenders for local `pytest` invocations.
-addopts = "--ignore=test_shopify_mcp.py --ignore=test_webhooks.py"
+# The whole suite lives under tests/ (Story 10.45 / FS-1), so a bare `pytest`
+# collects it from anywhere in the repo without naming files.
+testpaths = ["tests"]
+# The live smoke runners under tests/live/ are excluded from default discovery
+# by `collect_ignore` in tests/conftest.py, not by an --ignore here: a relative
+# --ignore is resolved against the invocation directory, so it silently stops
+# working the moment pytest is run from anywhere but the repo root. See the
+# comment in tests/conftest.py.
 
 [tool.coverage.run]
 # Single source of truth for what coverage measures — consumed by both
@@ -92,7 +95,7 @@ ignore = ["E501"]
 # validators/naming.py and its tests deal with en-dash separators by design,
 # so RUF001/RUF002 (ambiguous-unicode) flagging the en-dashes is noise.
 "validators/naming.py" = ["RUF001", "RUF002"]
-"test_naming_offline.py" = ["RUF001"]
+"tests/unit/validators/test_naming.py" = ["RUF001"]
 
 [tool.ruff.format]
 quote-style = "double"

@@ -17,16 +17,15 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 | Rank | ID | Item | Category | I | R | E | Score |
 |------|----|------|----------|---|---|---|-------|
 | 1 | A13 | `src/` layout under a single `shopify_mcp` distribution package — closes the `shopify` ↔ ShopifyAPI top-level collision and the flat-layout import shadowing | Architecture | 3 | 3 | 2 | **24** |
-| 2 | A11 | Test suite relocated into `tests/` with a source-mirroring layout — 39 test files currently sit at the repo root | Test | 3 | 2 | 3 | **15** |
-| 3 | A3 | Pagination helper for list reads — *helper shipped + read-path adoption Story 10.16* | Code | 2 | 3 | 3 | **15** |
-| 4 | A2 | `write_gate()` helper collapsing preview/confirm/error/audit boilerplate — *closed Story 10.22; 9 tools migrated; remaining tools triaged and deliberately excluded* | Code | 4 | 2 | 4 | **12** |
-| 5 | A5 | `shopify/` subpackage extraction (`queries/` + `operations/`) with GraphQL fragments — *closed Story 10.31; all 8 domains migrated (`products`, `catalog_hygiene`, `collections`, `discounts`, `inventory`, `orders`, `publications`, `webhooks`)* | Architecture | 2 | 1 | 2 | **12** |
-| 6 | A6 | HTTP client unification (single wrapper for `gql` + `requests`) — *closed: policy half N4/Story 10.21, transport half Story 10.24 (`client.fetch_bytes()` + shared `_with_retry`)* | Architecture | 2 | 2 | 3 | **12** |
-| 7 | A12 | `_testing/` test doubles ship inside the installed distribution | Architecture | 2 | 2 | 4 | **8** |
-| 8 | A10 | Committed `uv.lock` for CI reproducibility | Dependency | 1 | 1 | 5 | **2** |
-| 9 | A14 | Root markdown docs consolidated under `docs/` | Documentation | 1 | 1 | 5 | **2** |
+| 2 | A3 | Pagination helper for list reads — *helper shipped + read-path adoption Story 10.16* | Code | 2 | 3 | 3 | **15** |
+| 3 | A2 | `write_gate()` helper collapsing preview/confirm/error/audit boilerplate — *closed Story 10.22; 9 tools migrated; remaining tools triaged and deliberately excluded* | Code | 4 | 2 | 4 | **12** |
+| 4 | A5 | `shopify/` subpackage extraction (`queries/` + `operations/`) with GraphQL fragments — *closed Story 10.31; all 8 domains migrated (`products`, `catalog_hygiene`, `collections`, `discounts`, `inventory`, `orders`, `publications`, `webhooks`)* | Architecture | 2 | 1 | 2 | **12** |
+| 5 | A6 | HTTP client unification (single wrapper for `gql` + `requests`) — *closed: policy half N4/Story 10.21, transport half Story 10.24 (`client.fetch_bytes()` + shared `_with_retry`)* | Architecture | 2 | 2 | 3 | **12** |
+| 6 | A12 | `_testing/` test doubles ship inside the installed distribution — *unblocked: A11 made `tests/` an importable package* | Architecture | 2 | 2 | 4 | **8** |
+| 7 | A10 | Committed `uv.lock` for CI reproducibility | Dependency | 1 | 1 | 5 | **2** |
+| 8 | A14 | Root markdown docs consolidated under `docs/` | Documentation | 1 | 1 | 5 | **2** |
 
-**Category coverage:** the 2026-04-25 review left Test debt and Documentation debt unrepresented, noting that coverage was at 100% and that TECH_DEBT.md plus README covered most documentation needs. The 2026-07-25 folder-structure audit filled both gaps — **A11** (Test) and **A14** (Documentation). Note that neither is about *coverage* or *content*, which remain healthy; both are about *where files live*, which the original review's ten evaluation areas didn't probe.
+**Category coverage:** the 2026-04-25 review left Test debt and Documentation debt unrepresented, noting that coverage was at 100% and that TECH_DEBT.md plus README covered most documentation needs. The 2026-07-25 folder-structure audit filled both gaps — **A11** (Test, now closed by Story 10.45) and **A14** (Documentation). Note that neither is about *coverage* or *content*, which remain healthy; both are about *where files live*, which the original review's ten evaluation areas didn't probe.
 
 ---
 
@@ -66,7 +65,7 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 ### A3 — Pagination helper for list reads
 
 - **Category:** Code
-- **Status:** helper shipped — `ShopifyClient.paginate()` at [shopify_client.py:224](shopify_client.py:224), tested in [test_paginate_offline.py](test_paginate_offline.py), mirrored in `_testing/fake_client.py`. Every cleanly-paginable single-object read has adopted it (inventory + media under Story 10.6; orders, products, publications under Story 10.16). Remaining gaps are the two structural exceptions below.
+- **Status:** helper shipped — `ShopifyClient.paginate()` at [shopify_client.py:224](shopify_client.py:224), tested in [tests/unit/test_paginate.py](tests/unit/test_paginate.py), mirrored in `_testing/fake_client.py`. Every cleanly-paginable single-object read has adopted it (inventory + media under Story 10.6; orders, products, publications under Story 10.16). Remaining gaps are the two structural exceptions below.
 - **Impact (2):** prevents silent truncation on stores with >50 variants per product or >100 media per product.
 - **Risk (3):** the helper-adopted read paths now auto-continue across pages. The residual risk is the two connections `paginate()` structurally cannot walk — both documented, note-only items in TECH_DEBT.md (`A3-orders-lineitems-cap`, `A3-option-echo-cap`): `GET_ORDERS.nodes.lineItems` (a connection nested inside a list, so `get_orders` still caps per order) and the `UPDATE_PRODUCT_OPTION` mutation-response echo (mitigated by a pre-write at-cap warning).
 - **Effort (3):** historical estimate (~half a day). The helper and the read-path sweep are done; only the two structural exceptions remain, and neither is addressable by `paginate()` as designed.
@@ -189,7 +188,7 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
     inline exactly as orders left its `{ shopMoney { amount } }` money block
     (Story 10.31 / A5, AC3).
   - The one-way rule (`shopify/` never imports `tools/`) is enforced by
-    `test_shopify_layering_offline.py`.
+    `tests/architecture/test_layering.py`.
   - **Q3-helper decision:** the GID helpers moved to `shopify/_ids.py` (the
     operations layer needs `to_gid` and must not import `tools/`); `tools/_gid.py`
     is now a thin re-export shim so existing `from tools._gid import ...` call
@@ -225,21 +224,10 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 - **Plan:** float major versions in `pyproject.toml`, freeze exact versions in `uv.lock`. Resolves the small CI-vs-dev reproducibility smell without sacrificing dev experience.
 - **Business justification:** lowest-priority item on the list. Do only when paired with another change touching `pyproject.toml`, or after a real CI-vs-dev divergence.
 
-### A11 — Test suite location and structure
-
-- **Category:** Test
-- **Source:** 2026-07-25 folder-structure audit. Tracked as [Story 10.45](https://trello.com/c/0KMraglI) (filed on the card as `FS-1`).
-- **Impact (3):** the repo root holds 62 tracked entries, **39 of which are test files** (~28k lines, over 80% of the codebase by line count). `git status`, tab-completion, and any file tree are dominated by tests. Also unblocks A12, which needs `tests/` to be an importable package.
-- **Risk (2):** the live/offline split is encoded twice — once in filenames (the `_offline` suffix on 36 files) and again as a hardcoded two-file ignore list in `pyproject.toml` `addopts`. A third live runner added without editing that list runs in CI and fails against absent credentials. Two tests are also CWD-fragile: `test_story_10_44_offline.py` opens `.env.example` by relative path, so it passes only when pytest is invoked from the repo root.
-- **Effort (3):** ~1 day. 39 `git mv`s plus `pyproject.toml` / CI / docstring updates. Mechanical, but see the collection hazard below.
-- **Plan:** `tests/{unit/{tools,shopify/operations,validators},architecture,live}/`, mirroring the source tree. Drop the `_offline` suffix — the directory carries that meaning — and replace the ignore list with `testpaths` + `--ignore=tests/live`, so adding a live runner needs no config edit. The mirror also resolves the `_operations` infix that currently disambiguates 8 pairs of same-resource test files across the tools and domain layers.
-- **Collection hazard (verified):** mirroring the source layout creates 9 duplicate test basenames. Under pytest's default *prepend* import mode, duplicate basenames without `__init__.py` are a hard collection error ("import file mismatch"), not a warning. `__init__.py` is required in every `tests/` directory.
-- **Business justification:** navigability compounds. Every new contributor pays the root-clutter tax on first read, and the twice-encoded live/offline split is the kind of convention that silently rots — the ignore list is already a manual step nobody will remember.
-
 ### A12 — `_testing/` ships inside the distribution
 
 - **Category:** Architecture
-- **Source:** 2026-07-25 folder-structure audit. Tracked as [Story 10.46](https://trello.com/c/9alOE7U4) (filed on the card as `FS-2`). **Depends on A11.**
+- **Source:** 2026-07-25 folder-structure audit. Tracked as [Story 10.46](https://trello.com/c/9alOE7U4) (filed on the card as `FS-2`). **Depended on A11, which closed with Story 10.45 — this is now unblocked.**
 - **Impact (2):** `_testing` is listed in `[tool.setuptools] packages`, so `pip install -e .` — and any real wheel install — puts the test doubles (`FakeClient`, `CapturingServer`) into site-packages beside production code. Anyone installing this MCP server also installs its test fixtures.
 - **Risk (2):** the packaging declaration contradicts the repo's own stated intent. `_testing` is already excluded from `[tool.coverage.run] source` with the comment "test doubles exercised only through the offline suites, not production code worth gating on." One of the two declarations is wrong, and it is the shipping one.
 - **Effort (4):** ~1–2 hours. 18 import sites plus three config edits.
@@ -250,7 +238,7 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 ### A13 — `src/` layout under a single `shopify_mcp` package
 
 - **Category:** Architecture
-- **Source:** 2026-07-25 folder-structure audit. Tracked as [Story 10.47](https://trello.com/c/1zmUKlY0) (filed on the card as `FS-3`). **Depends on A11 and A12.**
+- **Source:** 2026-07-25 folder-structure audit. Tracked as [Story 10.47](https://trello.com/c/1zmUKlY0) (filed on the card as `FS-3`). **Depends on A12; A11 closed with Story 10.45.**
 - **Impact (3):** `[tool.setuptools]` installs six generic top-level names — `depcheck`, `logging_config`, `settings`, `shopify_client`, `shopify_mcp`, plus the `tools`, `validators`, `_testing`, and `shopify` packages — onto the import path of any environment that installs this project. Collapsing to one owned name (`shopify_mcp`) removes the whole class of conflict.
 - **Risk (3):** **`shopify` is the top-level module owned by the `ShopifyAPI` distribution on PyPI** — the mainstream Python Shopify library, which anyone working on a Shopify project is plausibly one `pip install` away from. Installed together, two different `shopify` packages contend on `sys.path`; resolution depends on path order and the failure mode is a silent wrong import, not an error. Separately, the flat layout means `pytest` from the repo root imports the working tree rather than the installed distribution — so a module omitted from `[tool.setuptools] packages` passes the entire CI gate and breaks only for someone doing a real install. `src/` layout is the standard fix for that second problem: the working tree is not importable, so tests exercise what actually ships.
 - **Effort (2):** multi-day, ~110 files. Highest-churn item in this batch.
@@ -298,11 +286,11 @@ Added by the 2026-07-25 folder-structure audit. Phase 3 restructured the code *i
 
 | Day | Item | Why |
 |-----|------|-----|
-| 1 | **A11** test suite into `tests/` | Largest single readability win (39 of 62 root entries), and A12 needs `tests/` to be an importable package before it can move. |
-| 1 | **A12** un-ship `_testing/` | Small, and it is the natural tail of A11 — the doubles are already moving directory. |
+| 1 | ~~**A11** test suite into `tests/`~~ — **done, Story 10.45** | Largest single readability win (root went 62 → 22 tracked entries), and A12 needed `tests/` to be an importable package before it could move. |
+| 1 | **A12** un-ship `_testing/` | Small, and it is the natural tail of A11 — now unblocked, and the next item in this phase. |
 | 2–3 | **A13** `src/` layout | Do last: it rewrites imports across ~110 files, so every earlier move should already be settled. Closes the `shopify` ↔ ShopifyAPI collision. |
 
-**A14** (docs consolidation) is independent of all three and can land at any point — though it edits README.md, which A11 and A13 also touch, so sequence it against whichever lands first.
+**A14** (docs consolidation) is independent of all three and can land at any point — though it edits README.md, which A13 also touches (A11 already landed its README changes), so sequence it against A13.
 
 ### Backlog (don't pre-refactor)
 
@@ -314,6 +302,19 @@ Added by the 2026-07-25 folder-structure audit. Phase 3 restructured the code *i
 ---
 
 ## Closed
+
+### A11 — Test suite location and structure *(closed Story 10.45)*
+
+- **Category:** Test
+- **Source:** 2026-07-25 folder-structure audit. Tracked as [Story 10.45](https://trello.com/c/0KMraglI) (filed on the card as `FS-1`).
+- **Closed:** 2026-07-25, Story 10.45 — *relocate test suite into `tests/` with a source-mirroring layout*.
+- **The debt:** the repo root held 62 tracked entries, 39 of them test modules (~28k lines, over 80% of the codebase by line count). `git status`, tab-completion, and any file tree were dominated by tests. Three smells compounded it: the `_offline` suffix on 36 files encoded "needs no live credentials" into the filename; the live/offline split was expressed *twice* — once in filenames and again as a hand-maintained `addopts = "--ignore=test_shopify_mcp.py --ignore=test_webhooks.py"` list that had to be edited for every new live runner; and 8 resources had two test files each, disambiguated by an `_operations` infix instead of by directory.
+- **What shipped:** all 39 modules moved under `tests/` (via `git mv`, history preserved) into `tests/{unit/{tools,shopify/operations,validators},architecture,live}/`, mirroring the source tree. The `_offline` suffix and the `_operations` infix are both gone — the directory carries that meaning now. Three CWD-fragile guards were anchored to the repo root. Root dropped from 62 tracked entries to 22. `tests/architecture/test_layout.py` is the new executable spec for the whole invariant.
+- **Deviation from the plan above — read this before "simplifying" the config.** The plan called for `testpaths` + `--ignore=tests/live`. Only the first half shipped that way. pytest resolves a *relative* `--ignore` against the **invocation directory**, not the rootdir, so `cd /tmp && pytest ~/shopify-mcp` silently stopped ignoring `tests/live` and failed five tests on absent credentials — verified, not theoretical. The exclusion therefore lives in `tests/conftest.py` as `collect_ignore = ["live"]`, which pytest resolves relative to the declaring conftest and which holds from any working directory. `pytest tests/live` still works as the deliberate escape hatch. `pyproject.toml` carries `testpaths = ["tests"]` and no `addopts` at all.
+- **Gotcha worth remembering:** mirroring the source layout produces nine duplicate test basenames. Under pytest's default *prepend* import mode those are a hard collection error ("import file mismatch"), not a warning — **every** directory under `tests/` needs an `__init__.py`. The layout guard asserts this so the next person hits a readable assertion instead.
+- **Unblocks:** A12 — `tests/` is now an importable package, which is what the `_testing/` doubles need before they can move.
+
+---
 
 ### A8 — Metadata `TTLCache` (channels-only) *(closed Story 10.32, branch `claude/trusting-chaum-3a8f21`)*
 
