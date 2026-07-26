@@ -280,8 +280,8 @@ def test_python_version_config_agrees_across_the_toolchain():
 def test_no_python_source_points_at_a_pre_move_test_module():
     """AC: no docstring or comment in Python source cites a pre-move test module.
 
-    Scoped to Python source on purpose. The Markdown ledgers (TECH_DEBT.md,
-    architectural_tech_debt.md) are append-only historical records whose closed
+    Scoped to Python source on purpose. The Markdown ledgers (docs/tech-debt.md,
+    docs/architecture-tech-debt.md) are append-only historical records whose closed
     entries legitimately name the files as they were at the time; rewriting
     those would falsify the audit trail. Their *forward-looking* lines — reopen
     triggers, "enforced by" pointers — were repointed by hand instead.

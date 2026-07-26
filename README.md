@@ -399,6 +399,10 @@ shopify-mcp/
 │   │   └── test_{client,depcheck,logging_config,settings,paginate}.py
 │   ├── architecture/           # Structural guards: layering, lockfiles, docs, layout, packaging, src-layout
 │   └── live/                   # Smoke runners needing real credentials — excluded by default
+├── docs/                       # All non-README markdown lives here (Story 10.48)
+│   ├── tech-debt.md            # Tactical / code-level debt ledger, triaged journal-style
+│   ├── architecture-tech-debt.md  # Strategic / design-level debt ledger, static
+│   └── specs/                  # Per-story implementation specs
 ├── pyproject.toml              # Package metadata, deps, console script, test/coverage config
 ├── aon_mcp_log.txt             # Write-audit trail (repo root, not inside src/)
 ├── .env.example

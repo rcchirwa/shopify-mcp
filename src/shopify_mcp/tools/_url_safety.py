@@ -47,7 +47,7 @@ def _reject_if_private_host(url: str) -> None:
     this process is ever deployed where internal/metadata endpoints (e.g.
     169.254.169.254 IMDS, RFC1918 hosts) are egress-reachable — any cloud VM,
     container, or CI runner, regardless of network ingress** — implement
-    IP-pinning (see TECH_DEBT.md → SEC-03).
+    IP-pinning (see docs/tech-debt.md → SEC-03).
     """
     host = urlparse(url).hostname
     if not host:

@@ -6,7 +6,7 @@ smoke checks.
 
 Every path below is anchored to the repo root rather than the process working
 directory (Story 10.45) — these checks used to read ``.env.example`` and
-``TECH_DEBT.md`` by relative path, so they only passed when pytest happened to
+``docs/tech-debt.md`` by relative path, so they only passed when pytest happened to
 be invoked from the repo root.
 
 Usage:
@@ -34,19 +34,19 @@ def test_env_example_does_not_imply_unused_receiver_secrets():
 
 
 def test_security_documentation_exists():
-    """AC 2 & 4: SECURITY.md or TECH_DEBT.md documents accepted-risk decisions."""
-    # Either SECURITY.md exists, or TECH_DEBT.md contains the "Accepted risks" section
+    """AC 2 & 4: SECURITY.md or docs/tech-debt.md documents accepted-risk decisions."""
+    # Either SECURITY.md exists, or docs/tech-debt.md contains the "Accepted risks" section
     security_md_exists = (_REPO_ROOT / "SECURITY.md").is_file()
-    tech_debt_content = (_REPO_ROOT / "TECH_DEBT.md").read_text(encoding="utf-8")
+    tech_debt_content = (_REPO_ROOT / "docs" / "tech-debt.md").read_text(encoding="utf-8")
 
     tech_debt_has_accepted_risks = "Accepted risks" in tech_debt_content
 
     assert security_md_exists or tech_debt_has_accepted_risks, (
-        "SECURITY.md does not exist and TECH_DEBT.md does not have an 'Accepted risks' section. "
+        "SECURITY.md does not exist and docs/tech-debt.md does not have an 'Accepted risks' section. "
         "At least one must document the accepted-risk decisions for SEC-01/02/05/06/15."
     )
 
-    # If TECH_DEBT.md has Accepted risks, check for the specific items
+    # If docs/tech-debt.md has Accepted risks, check for the specific items
     if tech_debt_has_accepted_risks:
         # Check for SEC-02, SEC-05, SEC-06, SEC-15 references
         assert "SEC-02" in tech_debt_content or "token fingerprint" in tech_debt_content.lower()
