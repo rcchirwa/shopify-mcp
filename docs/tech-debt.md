@@ -523,7 +523,7 @@ All three PRs from the Remediation PRs table merged the same day:
 | PR 3 | [#42](https://github.com/rcchirwa/shopify-mcp/pull/42) (`6167ed6`) | O1 — mypy permissive baseline (`disallow_untyped_defs = true`) | closed |
 
 Plus two transient hygiene items closed by the PR landing this very subsection:
-- **Q1** — `TECH_DEBT.md` was untracked in git between creation (2026-04-23) and the commit landing this section. Closed by adding the file to git.
+- **Q1** — this ledger (originally at the repo root, relocated to `docs/tech-debt.md` by Story 10.48) was untracked in git between creation (2026-04-23) and the commit landing this section. Closed by adding the file to git.
 - **Q2** — `.gitignore` had uncommitted local diff for ~1 day adding entries for personal accomplishment-export artifacts. Closed by committing the diff. Used globs (`ACCOMPLISHMENTS_*.md` / `accomplishments_*.html`) rather than date-locked filenames so future weeks don't require ledger churn.
 
 **Worktree cleanup (N5):** `git worktree list` now shows only the main worktree. The 5 entries listed in the original "Not a PR — chore" section have all been pruned. N5 fully closed.
@@ -679,7 +679,7 @@ This file is a **journal**, not a snapshot. Each dated section is one triage eve
 
 ### Workflow
 
-- **To run a re-triage:** invoke `/engineering:tech-debt` with the prompt *"Re-triage against `TECH_DEBT.md`."* The skill will diff against the latest dated section and write a new one at the top.
+- **To run a re-triage:** invoke `/engineering:tech-debt` with the prompt *"Re-triage against `docs/tech-debt.md`."* The skill will diff against the latest dated section and write a new one at the top.
 - **To log a decision between triages:** add a date-stamped follow-up subsection under the latest audit (`### Decision log (added YYYY-MM-DD)`).
 - **To reference an item from chat:** quote its stable ID (e.g. *"working on O2 today"*) — Claude can grep this file for it.
 - **Memory hygiene:** memory-file follow-ups that this ledger supersedes should be pruned from `~/.claude/projects/-Users-robertchirwa-shopify-mcp/memory/` after each triage.

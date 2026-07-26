@@ -6,7 +6,7 @@ mutating module-level state. Validators fail fast at startup (regex on
 shopify_store_url / shopify_api_version) instead of waiting for the first
 GraphQL call to fail with a less obvious error.
 
-See architectural_tech_debt.md item A7 for design rationale.
+See docs/architecture-tech-debt.md item A7 for design rationale.
 """
 
 import re

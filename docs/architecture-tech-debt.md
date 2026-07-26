@@ -1,12 +1,12 @@
 # Architectural Tech Debt
 
-Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.md](TECH_DEBT.md), which tracks tactical / code-level items.
+Strategic, design-level technical debt for `shopify-mcp`. Sibling to [tech-debt.md](tech-debt.md), which tracks tactical / code-level items.
 
 **Scope:** patterns and structures that constrain future scaling, maintainability, or extensibility — debt that won't surface as a single failing test but will compound as the codebase grows.
 
-**Format:** static ledger, updated when the architecture genuinely shifts (not after every PR). The journal-style triage workflow lives in TECH_DEBT.md; this document captures the long-arc design concerns that don't move on a daily cadence.
+**Format:** static ledger, updated when the architecture genuinely shifts (not after every PR). The journal-style triage workflow lives in tech-debt.md; this document captures the long-arc design concerns that don't move on a daily cadence.
 
-**Scoring:** `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted. Same framework as TECH_DEBT.md so items can be triaged together when needed. **Ties broken by Impact descending, then by ID ascending.**
+**Scoring:** `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted. Same framework as tech-debt.md so items can be triaged together when needed. **Ties broken by Impact descending, then by ID ascending.**
 
 **Source:** initial inventory derived from the 2026-04-25 architecture review (10 evaluation areas across organization, tool surface, error handling, auth, caching, rate limiting, reuse, deps, config, observability). Items **A11–A14** were added by a 2026-07-25 folder-structure audit covering repository layout, test placement, and packaging — an axis the original review did not evaluate.
 
@@ -23,9 +23,8 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 | 5 | A6 | HTTP client unification (single wrapper for `gql` + `requests`) — *closed: policy half N4/Story 10.21, transport half Story 10.24 (`client.fetch_bytes()` + shared `_with_retry`)* | Architecture | 2 | 2 | 3 | **12** |
 | 6 | A12 | `_testing/` test doubles ship inside the installed distribution — *closed Story 10.46; doubles moved to `tests/support/`, dropped from `[tool.setuptools] packages`* | Architecture | 2 | 2 | 4 | **8** |
 | 7 | A10 | Committed `uv.lock` for CI reproducibility | Dependency | 1 | 1 | 5 | **2** |
-| 8 | A14 | Root markdown docs consolidated under `docs/` | Documentation | 1 | 1 | 5 | **2** |
 
-**Category coverage:** the 2026-04-25 review left Test debt and Documentation debt unrepresented, noting that coverage was at 100% and that TECH_DEBT.md plus README covered most documentation needs. The 2026-07-25 folder-structure audit filled both gaps — **A11** (Test, now closed by Story 10.45) and **A14** (Documentation). Note that neither is about *coverage* or *content*, which remain healthy; both are about *where files live*, which the original review's ten evaluation areas didn't probe.
+**Category coverage:** the 2026-04-25 review left Test debt and Documentation debt unrepresented, noting that coverage was at 100% and that tech-debt.md plus README covered most documentation needs. The 2026-07-25 folder-structure audit filled both gaps — **A11** (Test, closed by Story 10.45) and **A14** (Documentation, closed by Story 10.48). Note that neither is about *coverage* or *content*, which remain healthy; both are about *where files live*, which the original review's ten evaluation areas didn't probe.
 
 ---
 
@@ -35,7 +34,7 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 
 - **Category:** Code
 - **Status:** ✅ **closed — Story 10.22.** All standard-pattern tools have been migrated or deliberately excluded with technical justification. 9 tools now use `write_gate()`.
-- **Cross-reference:** TECH_DEBT.md item **#7** (closed by [#33](https://github.com/rcchirwa/shopify-mcp/pull/33)) collapsed only the hint-string duplication via `with_confirm_hint`. A2 wraps the wider write-tool flow (execute → error check → `log_write`) that #7 left untouched.
+- **Cross-reference:** tech-debt.md item **#7** (closed by [#33](https://github.com/rcchirwa/shopify-mcp/pull/33)) collapsed only the hint-string duplication via `with_confirm_hint`. A2 wraps the wider write-tool flow (execute → error check → `log_write`) that #7 left untouched.
 - **Impact (4):** every write tool benefits; future tools become 10–20 lines instead of 60–100.
 - **Risk (2):** boilerplate duplication is the largest source of subtle drift between tools. A typo silently skips `log_write` or the confirm gate. The helper makes that omission structurally impossible in tools that adopt it.
 - **Effort (4):** reduced from 3 — helper is shipped; remaining is mechanical per-tool migration with test verification.
@@ -67,7 +66,7 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 - **Category:** Code
 - **Status:** helper shipped — `ShopifyClient.paginate()` at [shopify_client.py:224](shopify_client.py:224), tested in [tests/unit/test_paginate.py](tests/unit/test_paginate.py), mirrored in `_testing/fake_client.py`. Every cleanly-paginable single-object read has adopted it (inventory + media under Story 10.6; orders, products, publications under Story 10.16). Remaining gaps are the two structural exceptions below.
 - **Impact (2):** prevents silent truncation on stores with >50 variants per product or >100 media per product.
-- **Risk (3):** the helper-adopted read paths now auto-continue across pages. The residual risk is the two connections `paginate()` structurally cannot walk — both documented, note-only items in TECH_DEBT.md (`A3-orders-lineitems-cap`, `A3-option-echo-cap`): `GET_ORDERS.nodes.lineItems` (a connection nested inside a list, so `get_orders` still caps per order) and the `UPDATE_PRODUCT_OPTION` mutation-response echo (mitigated by a pre-write at-cap warning).
+- **Risk (3):** the helper-adopted read paths now auto-continue across pages. The residual risk is the two connections `paginate()` structurally cannot walk — both documented, note-only items in tech-debt.md (`A3-orders-lineitems-cap`, `A3-option-echo-cap`): `GET_ORDERS.nodes.lineItems` (a connection nested inside a list, so `get_orders` still caps per order) and the `UPDATE_PRODUCT_OPTION` mutation-response echo (mitigated by a pre-write at-cap warning).
 - **Effort (3):** historical estimate (~half a day). The helper and the read-path sweep are done; only the two structural exceptions remain, and neither is addressable by `paginate()` as designed.
 - **Plan:** ✅ delivered. `paginate(query, variables, *, connection_path, page_size=50, max_pages=10)` walks `pageInfo.hasNextPage` / `endCursor`, hard-capping `max_pages` to prevent runaway calls and returning a `capped` flag so tools surface a visible warning. Tools at risk of the cap migrated; tools that never approach it stayed as-is. The list-nested and mutation-echo connections are out of scope by construction.
 - **Business justification:** silent data truncation in a tool that mutates Shopify state is the worst possible failure mode — user thinks they updated all variants, only the first 50 changed.
@@ -208,7 +207,7 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 
 - **Category:** Architecture
 - **Status:** ✅ **closed — Story 10.24.** Both halves done. The **policy** half (shared User-Agent + config-driven timeouts across both stacks) closed under **N4 / Story 10.21 (PR #87)**. This story closed the **transport** half: `ShopifyClient.fetch_bytes(url, *, max_size, allow_redirects=False)` now wraps the image-download GET with the SSRF guard, shared headers, the `Settings.download_timeout_s` timeout, a streaming size cap, redirect refusal, and retry on retryable statuses (429/5xx). The gql retry loop and `fetch_bytes` now share **one** backoff implementation (`ShopifyClient._with_retry`), so there is no duplicated retry logic. The staged-upload PUT deliberately stays a single-shot `requests.put` (non-idempotent large signed upload — see the grooming decision on the Story 10.24 card and the code comment in `_upload_bytes_to_target`); it still shares the HTTP *policy* via `default_headers`, only automatic retry is excluded.
-- **Cross-reference:** TECH_DEBT.md item **N4** (watch). N4's trigger is "a second tool starts using `requests` directly." A6 is the architectural framing of the same concern.
+- **Cross-reference:** tech-debt.md item **N4** (watch). N4's trigger is "a second tool starts using `requests` directly." A6 is the architectural framing of the same concern.
 - **Impact (2):** one retry policy, one timeout config, one User-Agent. Foundation for A1's retry/backoff to apply uniformly.
 - **Risk (2):** today [tools/media/_upload.py:18](tools/media/_upload.py:18) uses `requests` directly for image downloads alongside `gql`'s `RequestsHTTPTransport`. Two stacks means two failure modes the user has to learn.
 - **Effort (3):** ~half a day. `client.fetch_bytes(url, max_size=...)` wrapper exposed off `ShopifyClient`.
@@ -251,16 +250,6 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 - **Landmines (verified — each survives a naive rename):** 32 string-literal `patch("tools…")` / `patch("shopify_client…")` mock targets, invisible to mypy and ruff, where a stale target yields a **passing test that patches nothing**; `tools/_log.py`'s `LOG_FILE`, which would start writing the write-audit log to `src/`; `depcheck.py`'s `_PYPROJECT`; and the `_ENV_PATH` constants in both `shopify_mcp.py` and `shopify_client.py`, where an error means the server boots with no credentials. `[project.scripts]` entry points change too, and README's Claude Desktop registration section points at `.venv/bin/shopify-mcp`.
 - **Business justification:** the namespace collision is latent rather than active — nothing installs ShopifyAPI today — but it is a silent-wrong-answer failure in a project whose entire domain is Shopify, and the cost of fixing it only grows with the codebase. The src-layout half pays for itself the first time a packaging omission would otherwise reach a user.
 
-### A14 — Root markdown consolidated under `docs/`
-
-- **Category:** Documentation
-- **Source:** 2026-07-25 folder-structure audit. Tracked as [Story 10.48](https://trello.com/c/M7E2dr8A) (filed on the card as `FS-4`).
-- **Impact (1):** organizational only. 121KB of markdown sits at the repo root — `TECH_DEBT.md` (87KB) and this file (34KB) — while `docs/` exists and holds exactly one spec.
-- **Risk (1):** very low. The concern is convention drift: a `docs/` directory holding one file while the two largest documents sit outside it teaches the wrong pattern to the next contributor, and the split is self-reinforcing.
-- **Effort (5):** ~15 minutes. Two `git mv`s plus a reference sweep.
-- **Plan:** `docs/tech-debt.md` and `docs/architecture-tech-debt.md`, kebab-case to match the existing `docs/specs/` naming. Use `git mv` — both files are large and frequently diffed, so history matters. Trello cards across Epic 10 reference these files by name rather than path, so the move does not invalidate existing card text.
-- **Business justification:** lowest-priority item alongside A10. Do it opportunistically when another change is already touching the docs, not on its own.
-
 ---
 
 ## Phased remediation plan
@@ -283,7 +272,7 @@ Designed to interleave with feature work, not block it. No phase is more than ~3
 | Day | Item | Why |
 |-----|------|-----|
 | 1–2 | ~~**A5** `shopify/` subpackage~~ *(closed — Story 10.31; the structure + `products` pilot landed in Story 10.23, then `catalog_hygiene` (10.25), `collections` (10.26), `discounts` (10.27), `inventory` (10.28), `orders` (10.29), `publications` (10.30), and `webhooks` (10.31) migrated one domain per PR)* | Restructure before the codebase grows past the size where mechanical reshuffling is cheap. |
-| 2–3 | ~~**A6** HTTP unification~~ *(closed — Story 10.24; `client.fetch_bytes()` + shared `_with_retry`. Policy half was N4/Story 10.21.)* | Pairs naturally with A5; closes TECH_DEBT.md N4. |
+| 2–3 | ~~**A6** HTTP unification~~ *(closed — Story 10.24; `client.fetch_bytes()` + shared `_with_retry`. Policy half was N4/Story 10.21.)* | Pairs naturally with A5; closes tech-debt.md N4. |
 
 ### Phase 4 — Repository layout (~3 days, strictly sequential)
 
@@ -295,7 +284,7 @@ Added by the 2026-07-25 folder-structure audit. Phase 3 restructured the code *i
 | 1 | ~~**A12** un-ship `_testing/`~~ — **done, Story 10.46** | Small, and it is the natural tail of A11 — now unblocked, and the next item in this phase. |
 | 2–3 | **A13** `src/` layout | Do last: it rewrites imports across ~110 files, so every earlier move should already be settled. Closes the `shopify` ↔ ShopifyAPI collision. |
 
-**A14** (docs consolidation) is independent of all three and can land at any point — though it edits README.md, which A13 also touches (A11 already landed its README changes), so sequence it against A13.
+~~**A14** (docs consolidation)~~ — **done, Story 10.48.** Independent of the other three; edited README.md, which A13 also touches (A11 already landed its README changes).
 
 ### Backlog (don't pre-refactor)
 
@@ -318,6 +307,17 @@ Added by the 2026-07-25 folder-structure audit. Phase 3 restructured the code *i
 - **Deviation from the plan above — read this before "simplifying" the config.** The plan called for `testpaths` + `--ignore=tests/live`. Only the first half shipped that way. pytest resolves a *relative* `--ignore` against the **invocation directory**, not the rootdir, so `cd /tmp && pytest ~/shopify-mcp` silently stopped ignoring `tests/live` and failed five tests on absent credentials — verified, not theoretical. The exclusion therefore lives in `tests/conftest.py` as `collect_ignore = ["live"]`, which pytest resolves relative to the declaring conftest and which holds from any working directory. `pytest tests/live` still works as the deliberate escape hatch. `pyproject.toml` carries `testpaths = ["tests"]` and no `addopts` at all.
 - **Gotcha worth remembering:** mirroring the source layout produces nine duplicate test basenames. Under pytest's default *prepend* import mode those are a hard collection error ("import file mismatch"), not a warning — **every** directory under `tests/` needs an `__init__.py`. The layout guard asserts this so the next person hits a readable assertion instead.
 - **Unblocks:** A12 — `tests/` is now an importable package, which is what the `_testing/` doubles need before they can move.
+
+---
+
+### A14 — Root markdown consolidated under `docs/` *(closed Story 10.48)*
+
+- **Category:** Documentation
+- **Source:** 2026-07-25 folder-structure audit. Tracked as [Story 10.48](https://trello.com/c/M7E2dr8A) (filed on the card as `FS-4`).
+- **Closed:** 2026-07-25, Story 10.48 — *move both ledgers into `docs/` and sweep every reference*.
+- **The debt:** 121KB of markdown sat at the repo root — the tactical ledger (87KB) and this file (34KB) — while `docs/` existed and held exactly one spec. A `docs/` directory holding one file while the two largest documents sat outside it taught the wrong convention to the next contributor.
+- **What shipped:** both ledgers moved via `git mv` (history preserved) to `docs/tech-debt.md` and `docs/architecture-tech-debt.md`, kebab-case to match the existing `docs/specs/` naming. Every reference to the old root filenames — in both ledgers, `docs/specs/story-10.19-sec-resolver-reflect-cap.md`, two source comments, and two architecture-guard tests — was repointed. README's project-structure tree now shows the `docs/` directory.
+- **Business justification:** lowest-priority item alongside A10; landed opportunistically rather than blocking on it.
 
 ---
 
@@ -361,4 +361,4 @@ Added by the 2026-07-25 folder-structure audit. Phase 3 restructured the code *i
 - **Close an item** by deleting its row from the backlog table and moving its detail block to a `## Closed` section at the bottom (with the closing PR number). Keep the audit trail.
 - **Reference an item from chat** by its stable ID (e.g. *"working on A2 today"*).
 - **Re-triage cadence:** after every `/architecture` review (annually-ish), or whenever the codebase doubles in tool count.
-- **Don't merge with TECH_DEBT.md.** That ledger is tactical and high-frequency; this one is strategic and low-frequency. Mixing the two makes both worse — TECH_DEBT.md's priority list would be permanently dominated by 1-week strategic items, and this document would be impossible to scan.
+- **Don't merge with tech-debt.md.** That ledger is tactical and high-frequency; this one is strategic and low-frequency. Mixing the two makes both worse — tech-debt.md's priority list would be permanently dominated by 1-week strategic items, and this document would be impossible to scan.

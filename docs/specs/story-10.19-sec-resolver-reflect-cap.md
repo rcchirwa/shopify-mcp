@@ -2,7 +2,7 @@
 
 Apply the existing `_GID_DISPLAY_MAX` reflection cap consistently to every user-input
 reflection site in `tools/catalog_hygiene.py`. Closes `SEC-resolver-reflect-cap`
-(TECH_DEBT.md, 2026-05-28 follow-up, Score 4, note-only — internal MCP tool, low risk).
+(../tech-debt.md, 2026-05-28 follow-up, Score 4, note-only — internal MCP tool, low risk).
 
 **Plan author:** Opus 4.8 · **Implementer:** Sonnet · **Epic:** 10 — Tech Debt
 
@@ -47,7 +47,7 @@ log-flooding / error-echo amplification via a multi-KB input.
 | 12 | tools/catalog_hygiene.py | 1135 | `ownerId has empty GID body: {stripped!r}` | `_resolve_owner_gid_for_metafield` Variant |
 | 13 | tools/catalog_hygiene.py | 1142 | `ownerId {stripped!r} is ambiguous — supply a Product or ProductVariant…` | numeric ambiguous |
 
-### Discrepancies vs TECH_DEBT.md
+### Discrepancies vs ../tech-debt.md
 
 - The 2026-05-28 forward note named "lines ~1570, 1620, 1644, 1651, 1669" (5 sites). The
   actual current handle/taxonomy set is **6** sites (1575/1604/1625/1649/1656/1674) — line
@@ -91,7 +91,7 @@ log-flooding / error-echo amplification via a multi-KB input.
 24. Run `ruff check . && ruff format --check .` — confirm zero errors.
 25. Run `mypy tools/catalog_hygiene.py` — confirm clean.
 26. Run `pytest --cov --cov-fail-under=100` — confirm all tests pass at 100% coverage.
-27. Update TECH_DEBT.md — add a `### Follow-up (added 2026-06-04, Story 10.19)` subsection under the 2026-05-28 audit recording SEC-resolver-reflect-cap closed (all 13 reflection sites capped + 4 migrated to `_cap()`), and strike the `SEC-resolver-reflect-cap` forward-note line in the 2026-05-28 follow-up.
+27. Update ../tech-debt.md — add a `### Follow-up (added 2026-06-04, Story 10.19)` subsection under the 2026-05-28 audit recording SEC-resolver-reflect-cap closed (all 13 reflection sites capped + 4 migrated to `_cap()`), and strike the `SEC-resolver-reflect-cap` forward-note line in the 2026-05-28 follow-up.
 28. Open PR targeting main — title: `fix(security): cap user-input reflection in catalog_hygiene resolvers (Story 10.19 / SEC-resolver-reflect-cap)`.
 
 ---
@@ -117,7 +117,7 @@ log-flooding / error-echo amplification via a multi-KB input.
 - [ ] `pytest` passes at 100% coverage (`--cov-fail-under=100`).
 
 ### Documentation
-- [ ] TECH_DEBT.md records SEC-resolver-reflect-cap as closed with a dated follow-up subsection.
+- [ ] ../tech-debt.md records SEC-resolver-reflect-cap as closed with a dated follow-up subsection.
 - [ ] The SEC-resolver-reflect-cap forward-note line in the 2026-05-28 follow-up is struck through.
 
 ---
