@@ -19,8 +19,9 @@ from tools._response import (
 
 
 def test_with_confirm_hint_appends_exact_contract_string() -> None:
-    # The tail is asserted verbatim by tool-level tests (test_inventory_offline,
-    # test_discounts_offline). Pin it here too so drift is caught at the source.
+    # The tail is asserted verbatim by tool-level tests (tests/unit/tools/
+    # test_inventory.py, test_discounts.py). Pin it here too so drift is
+    # caught at the source.
     assert with_confirm_hint("PREVIEW — Something") == (
         "PREVIEW — Something\n\nTo apply, call again with confirm=True."
     )

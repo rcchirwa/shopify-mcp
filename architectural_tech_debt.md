@@ -65,7 +65,7 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
 ### A3 — Pagination helper for list reads
 
 - **Category:** Code
-- **Status:** helper shipped — `ShopifyClient.paginate()` at [shopify_client.py:224](shopify_client.py:224), tested in [test_paginate_offline.py](test_paginate_offline.py), mirrored in `_testing/fake_client.py`. Every cleanly-paginable single-object read has adopted it (inventory + media under Story 10.6; orders, products, publications under Story 10.16). Remaining gaps are the two structural exceptions below.
+- **Status:** helper shipped — `ShopifyClient.paginate()` at [shopify_client.py:224](shopify_client.py:224), tested in [tests/unit/test_paginate.py](tests/unit/test_paginate.py), mirrored in `_testing/fake_client.py`. Every cleanly-paginable single-object read has adopted it (inventory + media under Story 10.6; orders, products, publications under Story 10.16). Remaining gaps are the two structural exceptions below.
 - **Impact (2):** prevents silent truncation on stores with >50 variants per product or >100 media per product.
 - **Risk (3):** the helper-adopted read paths now auto-continue across pages. The residual risk is the two connections `paginate()` structurally cannot walk — both documented, note-only items in TECH_DEBT.md (`A3-orders-lineitems-cap`, `A3-option-echo-cap`): `GET_ORDERS.nodes.lineItems` (a connection nested inside a list, so `get_orders` still caps per order) and the `UPDATE_PRODUCT_OPTION` mutation-response echo (mitigated by a pre-write at-cap warning).
 - **Effort (3):** historical estimate (~half a day). The helper and the read-path sweep are done; only the two structural exceptions remain, and neither is addressable by `paginate()` as designed.
@@ -188,7 +188,7 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [TECH_DEBT.
     inline exactly as orders left its `{ shopMoney { amount } }` money block
     (Story 10.31 / A5, AC3).
   - The one-way rule (`shopify/` never imports `tools/`) is enforced by
-    `test_shopify_layering_offline.py`.
+    `tests/architecture/test_layering.py`.
   - **Q3-helper decision:** the GID helpers moved to `shopify/_ids.py` (the
     operations layer needs `to_gid` and must not import `tools/`); `tools/_gid.py`
     is now a thin re-export shim so existing `from tools._gid import ...` call

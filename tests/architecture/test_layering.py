@@ -28,7 +28,7 @@ _SHOPIFY_ROOT = _REPO_ROOT / "shopify"
 def _imported_modules(path: Path) -> set[str]:
     """Top-level module names imported by a source file (``import x.y`` and
     ``from x.y import z`` both yield ``x``)."""
-    tree = ast.parse(path.read_text(), filename=str(path))
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     roots: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):

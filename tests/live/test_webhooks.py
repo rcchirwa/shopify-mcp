@@ -5,10 +5,17 @@ end-to-end against the live Shopify store.
 Usage:
   cd ~/shopify-mcp
   source .venv/bin/activate
-  python3 test_webhooks.py
+  python3 tests/live/test_webhooks.py
 
 Guarantees cleanup: any webhook created by this test is deleted before exit,
 even on failure partway through.
+
+WARNING — this registers a *real* ORDERS_CREATE webhook on the live store,
+pointed at the public request bin below. Between registration and cleanup, any
+order placed on that store POSTs its full payload — customer name, email,
+shipping address, line items — to a third party. Cleanup is guaranteed, but the
+window is real. Run it against a development store, not a production one, and
+prefer repointing TEST_ENDPOINT at a sink you control.
 """
 
 import re

@@ -21,7 +21,7 @@ _TESTS_ROOT = _REPO_ROOT / "tests"
 
 def test_env_example_does_not_imply_unused_receiver_secrets():
     """AC 1: .env.example no longer implies receiver-only secrets are server config."""
-    env_content = (_REPO_ROOT / ".env.example").read_text()
+    env_content = (_REPO_ROOT / ".env.example").read_text(encoding="utf-8")
 
     # Secrets like SHOPIFY_WEBHOOK_SECRET and GA4_* should either be removed
     # or clearly marked as NOT used by this server
@@ -37,7 +37,7 @@ def test_security_documentation_exists():
     """AC 2 & 4: SECURITY.md or TECH_DEBT.md documents accepted-risk decisions."""
     # Either SECURITY.md exists, or TECH_DEBT.md contains the "Accepted risks" section
     security_md_exists = (_REPO_ROOT / "SECURITY.md").is_file()
-    tech_debt_content = (_REPO_ROOT / "TECH_DEBT.md").read_text()
+    tech_debt_content = (_REPO_ROOT / "TECH_DEBT.md").read_text(encoding="utf-8")
 
     tech_debt_has_accepted_risks = "Accepted risks" in tech_debt_content
 
@@ -62,6 +62,12 @@ def test_no_test_references_removed_env_keys():
     the repo root for the retired filename convention; scanning by directory
     means a test added anywhere under ``tests/`` is covered without this list
     being touched again (Story 10.45).
+
+    One coupling to know about: ``tests/live/`` is now in scope, so a future
+    live runner that legitimately needs ``SHOPIFY_WEBHOOK_SECRET`` to exercise
+    HMAC verification would trip this documentation-hygiene guard. If that
+    happens the fix is a carve-out for ``tests/live/``, not deleting the test
+    the failure message points at.
     """
     this_file = Path(__file__).resolve()
     test_files = [p for p in sorted(_TESTS_ROOT.rglob("test_*.py")) if p.resolve() != this_file]
@@ -70,7 +76,7 @@ def test_no_test_references_removed_env_keys():
     removed_keys = ["SHOPIFY_WEBHOOK_SECRET", "GA4_MEASUREMENT_ID", "GA4_API_SECRET"]
 
     for test_file in test_files:
-        content = test_file.read_text()
+        content = test_file.read_text(encoding="utf-8")
         for key in removed_keys:
             assert key not in content, (
                 f"Test file {test_file.relative_to(_REPO_ROOT)} still references {key}, "

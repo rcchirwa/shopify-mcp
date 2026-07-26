@@ -45,7 +45,10 @@ jobs:
         # runs and CI measure the same packages. Don't re-specify --source
         # here — it would override the config instead of layering on top.
         # Likewise, don't name test paths: [tool.pytest.ini_options] scopes
-        # discovery to tests/ minus tests/live.
+        # discovery to tests/, and tests/conftest.py's collect_ignore holds
+        # back tests/live. Don't "simplify" that into an --ignore=tests/live
+        # here or in pyproject.toml — a relative --ignore resolves against the
+        # invocation directory, not the rootdir.
         run: coverage run -m pytest -v
       - name: Enforce 100% coverage
         # `coverage report` prints the per-file table plus TOTAL percentage.
