@@ -35,13 +35,19 @@ def test_testing_directory_no_longer_exists_at_repo_root():
 
 
 def test_the_doubles_live_under_tests_support():
-    """AC: FakeClient and CapturingServer live under tests/support/."""
+    """AC: FakeClient and CapturingServer live under tests/support/.
+
+    Imports the package rather than grepping ``__init__.py`` for the names,
+    so a stale comment mentioning them without an actual re-export can't
+    pass this check.
+    """
     assert _SUPPORT_ROOT.is_dir(), "tests/support/ is missing"
     assert (_SUPPORT_ROOT / "__init__.py").is_file(), "tests/support/__init__.py is missing"
     assert (_SUPPORT_ROOT / "fake_client.py").is_file(), "tests/support/fake_client.py is missing"
 
-    content = (_SUPPORT_ROOT / "__init__.py").read_text(encoding="utf-8")
-    assert "CapturingServer" in content and "FakeClient" in content, (
+    from tests import support
+
+    assert hasattr(support, "CapturingServer") and hasattr(support, "FakeClient"), (
         "tests/support/__init__.py must still re-export CapturingServer and FakeClient"
     )
 
@@ -55,12 +61,22 @@ def test_testing_is_absent_from_setuptools_packages():
     )
 
 
+# Directories never worth sweeping for stale imports: VCS internals, caches,
+# and virtualenvs. Mirrors tests/architecture/test_layout.py's _NON_SUITE_DIRS
+# so this scan can't turn into a full-tree walk as the repo grows.
+_NON_SOURCE_DIRS = frozenset(
+    {".git", ".venv", "venv", ".claude", "build", "dist", "node_modules", ".mypy_cache"}
+)
+
+
 def test_no_python_source_imports_the_old_testing_package():
     """AC: no test file imports from the removed `_testing` package."""
     this_file = Path(__file__).resolve()
     offenders = []
     for path in sorted(_REPO_ROOT.rglob("*.py")):
-        if ".venv" in path.parts or "node_modules" in path.parts or path.resolve() == this_file:
+        if path.resolve() == this_file:
+            continue
+        if any(part.startswith(".") or part in _NON_SOURCE_DIRS for part in path.parts):
             continue
         content = path.read_text(encoding="utf-8")
         if "from _testing" in content or "import _testing" in content:

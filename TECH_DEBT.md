@@ -552,7 +552,7 @@ Baseline was the 2026-04-22 audit (below). 15 PRs merged between runs.
 | 5 | **Missing `test_discounts_offline.py`** (was 20) | 17 tests, 9.6 KB. Also added `test_orders_offline.py` (13) and `test_naming_offline.py` (24). |
 | 6 | **Hardcoded API version `2024-10`** (was 20) | Bumped to `2026-01` at `shopify_client.py:72` with comment documenting the floor (`InventoryLevel.available` removal). |
 | — | **`sys.path` prelude in test files** (memory follow-up) | Closed by #29 — repo now installable via `pip install -e .`. |
-| — | **`FakeClient` re-export** (memory follow-up) | Closed by #28 — `_testing/__init__.py` re-exports. |
+| — | **`FakeClient` re-export** (memory follow-up) | Closed by #28 — re-exported from `_testing/__init__.py`, moved to `tests/support/__init__.py` by Story 10.46. |
 | — | **CI coverage gap** (stale memory) | CI now runs all `test_*_offline.py` under coverage with `--fail-under=100` at `.github/workflows/test.yml:30`. |
 
 Two memory files are now stale and should be pruned:
