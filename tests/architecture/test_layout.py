@@ -24,10 +24,9 @@ Usage:
 """
 
 import re
+import tomllib
 from collections import Counter
 from pathlib import Path
-
-import tomllib
 
 
 def _find_repo_root() -> Path:
@@ -235,6 +234,38 @@ def test_the_live_exclusion_is_anchored_to_the_conftest_not_the_cwd():
             f"collect_ignore names {name!r}, which does not exist under tests/ — "
             "a stale entry excludes nothing and fails silently."
         )
+
+
+def test_python_version_config_agrees_across_the_toolchain():
+    """AC: requires-python, ruff target-version, and mypy python_version agree.
+
+    Story 10.37 raised ``requires-python`` to ``>=3.11`` without moving the two
+    tool configs with it (Story 10.50) — nothing failed when they disagreed, so
+    there was no signal until a symptom (stdlib ``tomllib`` misclassified as
+    third-party) surfaced downstream. This assertion is the signal for the next
+    floor bump: if only one of the three is edited, this test fails immediately
+    instead of drifting silently again.
+    """
+    pyproject = _pyproject()
+    requires_python = pyproject["project"]["requires-python"]
+    ruff_target = pyproject["tool"]["ruff"]["target-version"]
+    mypy_version = pyproject["tool"]["mypy"]["python_version"]
+
+    floor_match = re.match(r">=(\d+)\.(\d+)", requires_python)
+    assert floor_match, f"Unexpected requires-python format: {requires_python!r}"
+    expected_short = f"{floor_match.group(1)}.{floor_match.group(2)}"
+    expected_py_tag = f"py{floor_match.group(1)}{floor_match.group(2)}"
+
+    assert ruff_target == expected_py_tag, (
+        f"[tool.ruff] target-version is {ruff_target!r} but requires-python "
+        f"{requires_python!r} implies {expected_py_tag!r}. Bump target-version "
+        "to match the declared floor."
+    )
+    assert mypy_version == expected_short, (
+        f"[tool.mypy] python_version is {mypy_version!r} but requires-python "
+        f"{requires_python!r} implies {expected_short!r}. Bump python_version "
+        "to match the declared floor."
+    )
 
 
 def test_no_python_source_points_at_a_pre_move_test_module():
