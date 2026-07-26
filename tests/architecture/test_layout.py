@@ -94,20 +94,29 @@ def _package_dirs() -> list[Path]:
 
 
 def _python_sources() -> list[Path]:
-    """Every first-party ``.py`` file: the packaged modules plus the test tree.
+    """Every first-party ``.py`` file: the packaged tree plus the test tree.
 
-    Derived from ``[tool.setuptools]`` rather than hardcoded so a newly
-    packaged module is swept without editing this test — and so the sweep can
-    never quietly walk a ``.venv`` or a nested worktree.
+    Derived from ``[tool.setuptools] package-dir`` rather than hardcoded, so
+    the sweep can never quietly walk a ``.venv`` or a nested worktree.
+
+    Story 10.47 (FS-3) replaced the explicit ``py-modules``/``packages`` lists
+    this used to read with a ``find`` directive, so there is no longer a list
+    of names to expand — the packaged tree is simply everything under the
+    configured package directory. Walking it is also the stronger check: a
+    module accidentally left out of the distribution still gets swept, whereas
+    reading the declaration would have skipped exactly the file most likely to
+    be wrong.
     """
-    setuptools = _pyproject()["tool"]["setuptools"]
-    sources = [_REPO_ROOT / f"{module}.py" for module in setuptools["py-modules"]]
-    roots = [_TESTS_ROOT] + [
-        _REPO_ROOT / package for package in setuptools["packages"] if "." not in package
-    ]
-    for root in roots:
+    package_dir = Path(_pyproject()["tool"]["setuptools"]["package-dir"][""])
+    sources: list[Path] = []
+    for root in (_REPO_ROOT / package_dir, _TESTS_ROOT):
         sources.extend(sorted(root.rglob("*.py")))
-    return [path for path in sources if path.is_file()]
+    # Filter on the *directory*, not the file. ``_is_hidden`` treats any
+    # component starting with ``__`` as a cache — a rule written for
+    # ``__pycache__`` directories. Applied to the leaf it also matches
+    # ``__init__.py`` and ``__main__.py``, which would silently drop every
+    # dunder module (17 of 113 files) from the sweeps below.
+    return [path for path in sources if path.is_file() and not _is_hidden(path.parent, _REPO_ROOT)]
 
 
 def test_the_repo_root_anchor_resolves():

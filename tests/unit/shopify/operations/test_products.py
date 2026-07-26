@@ -14,8 +14,8 @@ Usage:
 
 import pytest
 
-from shopify.operations import products as ops
-from shopify.queries import products as q
+from shopify_mcp.shopify.operations import products as ops
+from shopify_mcp.shopify.queries import products as q
 from tests.support import FakeClient
 
 # ---------- AC3: shared GraphQL fragment reused across by-id / by-handle ----------

@@ -7,8 +7,8 @@ test controls time instead of sleeping.
 
 from pydantic import SecretStr
 
-from settings import Settings
-from shopify._cache import CHANNELS, ShopifyMetadataCache
+from shopify_mcp.settings import Settings
+from shopify_mcp.shopify._cache import CHANNELS, ShopifyMetadataCache
 
 
 def _settings(channels_ttl: int = 600) -> Settings:

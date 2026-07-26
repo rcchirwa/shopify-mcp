@@ -5,7 +5,7 @@ from collections.abc import Generator
 
 import pytest
 
-import tools._write_tool as _wt
+import shopify_mcp.tools._write_tool as _wt
 
 # Keep the live smoke runners out of default discovery (Story 10.45 / FS-1).
 # They need SHOPIFY_STORE_URL + SHOPIFY_ACCESS_TOKEN against a real store, so
@@ -52,7 +52,7 @@ def _reset_root_logger() -> Generator[None, None, None]:
     Teardown resets to that initial state so each test gets a clean slate.
     """
     yield
-    import logging_config as _lc
+    from shopify_mcp import logging_config as _lc
 
     _lc._configured = False
     root = logging.getLogger()

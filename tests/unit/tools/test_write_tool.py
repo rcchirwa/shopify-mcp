@@ -7,9 +7,9 @@ without going through a registered MCP tool or FakeClient.
 
 import pytest
 
-import tools._write_tool as _wt
-from shopify_client import TransientShopifyError
-from tools._response import with_confirm_hint
+import shopify_mcp.tools._write_tool as _wt
+from shopify_mcp.client import TransientShopifyError
+from shopify_mcp.tools._response import with_confirm_hint
 
 
 def _ok(mutation_key: str = "productUpdate") -> dict:

@@ -8,7 +8,7 @@ Usage:
   pytest tests/unit/tools/test_response.py -v
 """
 
-from tools._response import (
+from shopify_mcp.tools._response import (
     extract_user_errors,
     format_user_errors,
     format_user_errors_joined,

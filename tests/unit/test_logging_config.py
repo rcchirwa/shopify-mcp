@@ -10,8 +10,8 @@ import logging
 import pytest
 from pydantic import SecretStr
 
-from logging_config import configure_logging
-from settings import Settings
+from shopify_mcp.logging_config import configure_logging
+from shopify_mcp.settings import Settings
 
 
 def _settings(**overrides: object) -> Settings:

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import _log
+from shopify_mcp.tools import _log
 
 
 @pytest.fixture

@@ -9,7 +9,7 @@ Covers the failure branches of the three field validators:
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from settings import Settings
+from shopify_mcp.settings import Settings
 
 
 def _ok_kwargs(**overrides) -> dict:

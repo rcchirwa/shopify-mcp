@@ -21,8 +21,8 @@ prefer repointing TEST_ENDPOINT at a sink you control.
 import re
 import sys
 
-import tools.webhooks as webhooks_module
-from shopify_client import ShopifyClient
+import shopify_mcp.tools.webhooks as webhooks_module
+from shopify_mcp.client import ShopifyClient
 
 TEST_TOPIC = "ORDERS_CREATE"
 TEST_ENDPOINT = "https://httpbin.org/post"

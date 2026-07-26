@@ -13,8 +13,8 @@ Usage:
 
 from pydantic import SecretStr
 
-from settings import Settings
-from tools._http import default_headers
+from shopify_mcp.settings import Settings
+from shopify_mcp.tools._http import default_headers
 
 
 def _settings(**overrides) -> Settings:

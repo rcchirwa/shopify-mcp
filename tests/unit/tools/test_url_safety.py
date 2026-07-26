@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools._url_safety import _reject_if_private_host
+from shopify_mcp.tools._url_safety import _reject_if_private_host
 
 
 def _resolve_to(*ips):
@@ -30,7 +30,9 @@ def _resolve_to(*ips):
 
 def test_ssrf_rejects_rfc1918_private():
     with (
-        patch("tools._url_safety.socket.getaddrinfo", return_value=_resolve_to("10.0.0.5")),
+        patch(
+            "shopify_mcp.tools._url_safety.socket.getaddrinfo", return_value=_resolve_to("10.0.0.5")
+        ),
         pytest.raises(RuntimeError) as exc,
     ):
         _reject_if_private_host("https://internal.corp/hero.jpg")
@@ -41,7 +43,10 @@ def test_ssrf_rejects_rfc1918_private():
 def test_ssrf_rejects_link_local_imds():
     """169.254.169.254 is the AWS/GCP IMDS endpoint — the textbook SSRF target."""
     with (
-        patch("tools._url_safety.socket.getaddrinfo", return_value=_resolve_to("169.254.169.254")),
+        patch(
+            "shopify_mcp.tools._url_safety.socket.getaddrinfo",
+            return_value=_resolve_to("169.254.169.254"),
+        ),
         pytest.raises(RuntimeError, match=r"169\.254\.169\.254"),
     ):
         _reject_if_private_host("https://metadata.example/token")
@@ -49,7 +54,10 @@ def test_ssrf_rejects_link_local_imds():
 
 def test_ssrf_rejects_loopback():
     with (
-        patch("tools._url_safety.socket.getaddrinfo", return_value=_resolve_to("127.0.0.1")),
+        patch(
+            "shopify_mcp.tools._url_safety.socket.getaddrinfo",
+            return_value=_resolve_to("127.0.0.1"),
+        ),
         pytest.raises(RuntimeError),
     ):
         _reject_if_private_host("https://localhost.example/hero.jpg")
@@ -61,7 +69,7 @@ def test_ssrf_rejects_any_private_ip_in_multi_record_resolution():
     rebinding attempt."""
     with (
         patch(
-            "tools._url_safety.socket.getaddrinfo",
+            "shopify_mcp.tools._url_safety.socket.getaddrinfo",
             return_value=_resolve_to("93.184.216.34", "10.0.0.5"),
         ),
         pytest.raises(RuntimeError, match=r"10\.0\.0\.5"),
@@ -71,14 +79,17 @@ def test_ssrf_rejects_any_private_ip_in_multi_record_resolution():
 
 def test_ssrf_accepts_public_ip():
     """example.com's canonical IP — must pass."""
-    with patch("tools._url_safety.socket.getaddrinfo", return_value=_resolve_to("93.184.216.34")):
+    with patch(
+        "shopify_mcp.tools._url_safety.socket.getaddrinfo",
+        return_value=_resolve_to("93.184.216.34"),
+    ):
         _reject_if_private_host("https://cdn.example.com/hero.jpg")  # no raise
 
 
 def test_ssrf_unresolvable_host_is_rejected():
     with (
         patch(
-            "tools._url_safety.socket.getaddrinfo",
+            "shopify_mcp.tools._url_safety.socket.getaddrinfo",
             side_effect=socket.gaierror("name resolution failed"),
         ),
         pytest.raises(RuntimeError, match="could not resolve host"),
@@ -104,7 +115,7 @@ def test_reject_if_private_host_skips_unparseable_ip_entries():
         (socket.AF_INET, 0, 0, "", ("not-an-ip", 0)),
         (socket.AF_INET, 0, 0, "", ("93.184.216.34", 0)),
     ]
-    with patch("tools._url_safety.socket.getaddrinfo", return_value=results):
+    with patch("shopify_mcp.tools._url_safety.socket.getaddrinfo", return_value=results):
         _reject_if_private_host("https://example.com/a.jpg")  # must not raise
 
 
@@ -119,7 +130,7 @@ def test_reject_if_private_host_still_rejects_private_ip_after_unparseable_entry
         (socket.AF_INET, 0, 0, "", ("10.0.0.1", 0)),
     ]
     with (
-        patch("tools._url_safety.socket.getaddrinfo", return_value=results),
+        patch("shopify_mcp.tools._url_safety.socket.getaddrinfo", return_value=results),
         pytest.raises(RuntimeError) as exc,
     ):
         _reject_if_private_host("https://sneaky.example/a.jpg")

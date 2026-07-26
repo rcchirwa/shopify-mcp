@@ -15,8 +15,8 @@ Usage:
   pytest tests/unit/shopify/operations/test_publications.py -v
 """
 
-from shopify.operations import publications as ops
-from shopify.queries import publications as q
+from shopify_mcp.shopify.operations import publications as ops
+from shopify_mcp.shopify.queries import publications as q
 from tests.support import FakeClient
 
 # ---------- AC3: a shared Product selection fragment IS extracted and reused ----

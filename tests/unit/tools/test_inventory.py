@@ -15,16 +15,16 @@ import re
 
 import pytest
 
-from tests.support import CapturingServer, FakeClient
-from tools import inventory
-from tools._scrub import REFLECT_MAX_LEN
-from tools.inventory import (
+from shopify_mcp.tools import inventory
+from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
+from shopify_mcp.tools.inventory import (
     GET_INVENTORY_ITEM,
     GET_PRODUCT_INVENTORY,
     SET_INVENTORY,
     UPDATE_INVENTORY_ITEM_TRACKED,
     _available_qty,
 )
+from tests.support import CapturingServer, FakeClient
 
 
 @pytest.fixture(autouse=True)
