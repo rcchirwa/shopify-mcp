@@ -19,8 +19,8 @@ from typing import Any
 
 from pydantic import SecretStr
 
-from settings import Settings
-from shopify._cache import ShopifyMetadataCache
+from shopify_mcp.settings import Settings
+from shopify_mcp.shopify._cache import ShopifyMetadataCache
 
 
 def _default_test_settings() -> Settings:

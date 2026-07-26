@@ -167,7 +167,7 @@ pyproject.toml against what is actually installed and exits non-zero (listing
 what is missing) if they diverge:
 
 ```bash
-shopify-mcp-check-deps        # or: python -m depcheck
+shopify-mcp-check-deps        # or: python -m shopify_mcp.depcheck
 ```
 
 It checks that each declared distribution is *installed* (presence, not version
@@ -296,10 +296,12 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 The `shopify-mcp` command is registered by `pip install -e .` via the
 `[project.scripts]` entry in [pyproject.toml](pyproject.toml) — it's a
-thin wrapper around `shopify_mcp:main`. The older form (`command` set
-to the venv's Python with `args: ["shopify_mcp.py"]`) still works if
-you have it wired up; the console script is just a cleaner one-path
-alternative.
+thin wrapper around `shopify_mcp.server:main`. If you have the older form
+wired up (`command` set to the venv's Python with `args: ["shopify_mcp.py"]`),
+**it no longer works**: Story 10.47 moved the entry point to
+`src/shopify_mcp/server.py`, so there is no `shopify_mcp.py` at the repo root
+to run. Use the console script above, or the module form
+`args: ["-m", "shopify_mcp"]`.
 
 Replace `YOUR_USERNAME` with your macOS username (`whoami` in Terminal).
 
@@ -327,54 +329,76 @@ Show me inventory levels for product 12345678.
 
 ## Project structure
 
+Everything the project ships lives under one top-level name, `shopify_mcp`, in
+a `src/` layout (Story 10.47). Two consequences worth knowing:
+
+- **The working tree is not importable.** `src/` is not on `sys.path`, so
+  `pytest` exercises the *installed* distribution rather than the checkout —
+  which is why an editable install (`pip install -e .`, step 5) is required
+  before the suite will run, and why a module accidentally left out of the
+  package can no longer pass CI and break only on a real install.
+- **No generic top-level names.** The previous layout installed `tools`,
+  `settings`, `validators`, `shopify` and three more onto the import path of
+  any environment installing this project. `shopify` in particular is owned by
+  the [ShopifyAPI](https://pypi.org/project/ShopifyAPI/) distribution, so the
+  two silently contended for one name; the domain layer is now reachable only
+  as `shopify_mcp.shopify`.
+
 ```
 shopify-mcp/
-├── shopify_mcp.py          # MCP server entry point
-├── shopify_client.py       # Shopify GraphQL API client
-├── shopify/                # Shopify domain layer (independent of the MCP surface)
-│   ├── _ids.py             # GID encode/decode helpers (to_gid / from_gid)
-│   ├── _client.py          # GraphQLClient Protocol the operations layer depends on
-│   ├── queries/            # GraphQL strings grouped by resource, reusable via fragments
-│   │   ├── products.py
-│   │   ├── catalog_hygiene.py
-│   │   ├── collections.py
-│   │   ├── discounts.py
-│   │   ├── inventory.py
-│   │   ├── orders.py
-│   │   ├── publications.py
-│   │   └── webhooks.py
-│   └── operations/         # Typed business-logic wrappers, callable without the MCP server
-│       ├── products.py
-│       ├── catalog_hygiene.py
-│       ├── collections.py
-│       ├── discounts.py
-│       ├── inventory.py
-│       ├── orders.py
-│       ├── publications.py
-│       └── webhooks.py
-├── tools/
-│   ├── _log.py             # Write operation logger
-│   ├── _gid.py             # Re-exports shopify._ids (back-compat shim)
-│   ├── products.py         # MCP-tool surface: coercion, preview/confirm, formatting
-│   ├── inventory.py
-│   ├── collections.py
-│   ├── discounts.py
-│   ├── orders.py
-│   ├── publications.py
-│   └── media.py
-├── validators/
-│   └── naming.py           # AON + Vanish title convention validator
-├── tests/                  # Whole suite; mirrors the source layout (Story 10.45)
-│   ├── conftest.py         # Session-wide fixtures
-│   ├── support/            # Test doubles (FakeClient, CapturingServer) — not shipped (Story 10.46)
-│   ├── unit/               # One package per source package
-│   │   ├── tools/          # 19 modules covering the MCP-tool surface
-│   │   ├── shopify/        # test_cache.py + operations/ (8 modules)
-│   │   ├── validators/     # test_naming.py
+├── src/
+│   └── shopify_mcp/            # the one top-level name this project installs
+│       ├── __main__.py         # `python -m shopify_mcp`
+│       ├── server.py           # MCP server entry point (console script: shopify-mcp)
+│       ├── client.py           # Shopify GraphQL API client
+│       ├── settings.py         # Env-backed config (pydantic-settings)
+│       ├── logging_config.py   # JSON logging setup
+│       ├── depcheck.py         # Dependency-drift check (shopify-mcp-check-deps)
+│       ├── shopify/            # Shopify domain layer (independent of the MCP surface)
+│       │   ├── _ids.py         # GID encode/decode helpers (to_gid / from_gid)
+│       │   ├── _client.py      # GraphQLClient Protocol the operations layer depends on
+│       │   ├── queries/        # GraphQL strings grouped by resource, reusable via fragments
+│       │   │   ├── products.py
+│       │   │   ├── catalog_hygiene.py
+│       │   │   ├── collections.py
+│       │   │   ├── discounts.py
+│       │   │   ├── inventory.py
+│       │   │   ├── orders.py
+│       │   │   ├── publications.py
+│       │   │   └── webhooks.py
+│       │   └── operations/     # Typed business-logic wrappers, callable without the MCP server
+│       │       ├── products.py
+│       │       ├── catalog_hygiene.py
+│       │       ├── collections.py
+│       │       ├── discounts.py
+│       │       ├── inventory.py
+│       │       ├── orders.py
+│       │       ├── publications.py
+│       │       └── webhooks.py
+│       ├── tools/
+│       │   ├── _log.py         # Write operation logger (audit log at the repo root)
+│       │   ├── _gid.py         # Re-exports shopify._ids (back-compat shim)
+│       │   ├── products.py     # MCP-tool surface: coercion, preview/confirm, formatting
+│       │   ├── inventory.py
+│       │   ├── collections.py
+│       │   ├── discounts.py
+│       │   ├── orders.py
+│       │   ├── publications.py
+│       │   └── media/
+│       └── validators/
+│           └── naming.py       # AON + Vanish title convention validator
+├── tests/                      # Whole suite; mirrors the source layout (Story 10.45)
+│   ├── conftest.py             # Session-wide fixtures
+│   ├── support/                # Test doubles (FakeClient, CapturingServer) — not shipped (Story 10.46)
+│   ├── unit/                   # One package per source package
+│   │   ├── tools/              # 19 modules covering the MCP-tool surface
+│   │   ├── shopify/            # test_cache.py + operations/ (8 modules)
+│   │   ├── validators/         # test_naming.py
 │   │   └── test_{depcheck,logging_config,settings,shopify_client,paginate}.py
-│   ├── architecture/       # Structural guards: layering, lockfiles, docs, layout, packaging
-│   └── live/               # Smoke runners needing real credentials — excluded by default
-├── pyproject.toml          # Package metadata, deps, console script, test/coverage config
+│   ├── architecture/           # Structural guards: layering, lockfiles, docs, layout, packaging, src-layout
+│   └── live/                   # Smoke runners needing real credentials — excluded by default
+├── pyproject.toml              # Package metadata, deps, console script, test/coverage config
+├── aon_mcp_log.txt             # Write-audit trail (repo root, not inside src/)
 ├── .env.example
 └── .gitignore
 ```
@@ -413,7 +437,7 @@ factoring.)
 
 This project uses the **Shopify Admin GraphQL API** (version `2026-01`).
 
-Some tool modules define their own GraphQL query or mutation strings at the top of the file; the migrated `products`, `catalog_hygiene`, `collections`, `discounts`, `inventory`, `orders`, `publications`, and `webhooks` domains instead keep them under `shopify/queries/` (see the layering note above). All queries are executed through a single `ShopifyClient.execute(query, variables)` method in `shopify_client.py`, which handles:
+Some tool modules define their own GraphQL query or mutation strings at the top of the file; the migrated `products`, `catalog_hygiene`, `collections`, `discounts`, `inventory`, `orders`, `publications`, and `webhooks` domains instead keep them under `shopify/queries/` (see the layering note above). All queries are executed through a single `ShopifyClient.execute(query, variables)` method in `src/shopify_mcp/client.py`, which handles:
 
 - Authentication via `X-Shopify-Access-Token` header
 - GraphQL transport errors (HTTP 4xx/5xx)

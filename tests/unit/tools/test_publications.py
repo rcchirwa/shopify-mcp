@@ -12,12 +12,11 @@ Usage:
 
 from pydantic import SecretStr
 
-from settings import Settings
-from shopify._cache import ShopifyMetadataCache
-from tests.support import CapturingServer, FakeClient
-from tools import publications
-from tools._scrub import REFLECT_MAX_LEN
-from tools.publications import (
+from shopify_mcp.settings import Settings
+from shopify_mcp.shopify._cache import ShopifyMetadataCache
+from shopify_mcp.tools import publications
+from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
+from shopify_mcp.tools.publications import (
     GET_PRODUCT_PUBLICATIONS_BY_HANDLE,
     LIST_PUBLICATIONS,
     PUBLISHABLE_PUBLISH,
@@ -26,6 +25,7 @@ from tools.publications import (
     _resolve_product_gid_and_meta,
     _split_current,
 )
+from tests.support import CapturingServer, FakeClient
 
 
 def _short_ttl_settings(channels_ttl: int = 600) -> Settings:

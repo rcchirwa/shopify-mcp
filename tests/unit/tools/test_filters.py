@@ -13,8 +13,8 @@ Usage:
   pytest tests/unit/tools/test_filters.py -v
 """
 
-from tools import _filters
-from tools._filters import (
+from shopify_mcp.tools import _filters
+from shopify_mcp.tools._filters import (
     dangerous_html_patterns,
     html_safety_findings,
     html_strip_report,

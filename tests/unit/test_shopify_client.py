@@ -16,9 +16,8 @@ import pytest
 from gql.transport.exceptions import TransportQueryError, TransportServerError
 from pydantic import ValidationError
 
-import shopify_client as sc
-from settings import Settings
-from shopify_client import (
+from shopify_mcp import client as sc
+from shopify_mcp.client import (
     ShopifyClient,
     ShopifyError,
     TransientShopifyError,
@@ -29,6 +28,7 @@ from shopify_client import (
     _is_throttled,
     _mask_token,
 )
+from shopify_mcp.settings import Settings
 
 
 def _test_settings(**overrides) -> Settings:
@@ -191,7 +191,7 @@ def test_mask_token_empty_or_none():
 
 def test_init_env_override_wins_over_process_env(tmp_path, monkeypatch, capsys):
     """.env on disk must win over stale env vars injected by the launcher."""
-    import shopify_client as sc
+    from shopify_mcp import client as sc
 
     # Simulate Claude-Desktop-style injection: process env has the OLD token.
     monkeypatch.setenv("SHOPIFY_STORE_URL", "stale.myshopify.com")
@@ -231,7 +231,7 @@ def test_init_env_override_wins_over_process_env(tmp_path, monkeypatch, capsys):
 
 def test_init_missing_credentials_raises(monkeypatch, tmp_path):
     """No .env on disk + no process env → ValidationError naming both fields."""
-    import shopify_client as sc
+    from shopify_mcp import client as sc
 
     monkeypatch.delenv("SHOPIFY_STORE_URL", raising=False)
     monkeypatch.delenv("SHOPIFY_ACCESS_TOKEN", raising=False)
@@ -800,7 +800,7 @@ def _patch_time(monkeypatch, clock):
 
 
 def test_poll_job_default_uses_exponential_backoff(monkeypatch):
-    from shopify_client import poll_job
+    from shopify_mcp.client import poll_job
 
     clock = _SleepTrackingClock()
     _patch_time(monkeypatch, clock)
@@ -812,7 +812,7 @@ def test_poll_job_default_uses_exponential_backoff(monkeypatch):
 
 
 def test_poll_job_explicit_interval_overrides_backoff(monkeypatch):
-    from shopify_client import poll_job
+    from shopify_mcp.client import poll_job
 
     clock = _SleepTrackingClock()
     _patch_time(monkeypatch, clock)
@@ -821,7 +821,7 @@ def test_poll_job_explicit_interval_overrides_backoff(monkeypatch):
 
 
 def test_poll_job_first_response_done_no_sleep(monkeypatch):
-    from shopify_client import poll_job
+    from shopify_mcp.client import poll_job
 
     clock = _SleepTrackingClock()
     _patch_time(monkeypatch, clock)
@@ -832,7 +832,7 @@ def test_poll_job_first_response_done_no_sleep(monkeypatch):
 
 
 def test_poll_job_done_after_one_step(monkeypatch):
-    from shopify_client import poll_job
+    from shopify_mcp.client import poll_job
 
     clock = _SleepTrackingClock()
     _patch_time(monkeypatch, clock)
@@ -842,7 +842,7 @@ def test_poll_job_done_after_one_step(monkeypatch):
 
 
 def test_poll_job_budget_respects_next_sleep_size(monkeypatch):
-    from shopify_client import poll_job
+    from shopify_mcp.client import poll_job
 
     clock = _SleepTrackingClock()
     _patch_time(monkeypatch, clock)

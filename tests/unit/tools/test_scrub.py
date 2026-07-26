@@ -13,7 +13,7 @@ Usage:
   pytest tests/unit/tools/test_scrub.py -v
 """
 
-from tools import _scrub
+from shopify_mcp.tools import _scrub
 
 
 def test_cap_leaves_short_text_unchanged():

@@ -6,7 +6,7 @@ the literals. These tests pin the wrapping shape and the reminder text so the
 whole codebase stays consistent.
 """
 
-from tools._untrusted import INJECTION_REMINDER, wrap
+from shopify_mcp.tools._untrusted import INJECTION_REMINDER, wrap
 
 
 def test_wrap_surrounds_text_with_untrusted_tags():

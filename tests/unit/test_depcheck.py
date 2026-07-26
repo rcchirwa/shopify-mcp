@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-import depcheck
+from shopify_mcp import depcheck
 
 # A distribution name that cannot plausibly be installed, used to simulate a
 # declared-but-absent dependency (the Story 10.37 failure mode).

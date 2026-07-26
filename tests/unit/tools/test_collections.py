@@ -13,15 +13,15 @@ Usage:
 
 import pytest
 
-from shopify_client import JOB_STATUS_QUERY
-from tests.support import CapturingServer, FakeClient
-from tools import collections
-from tools.collections import (
+from shopify_mcp.client import JOB_STATUS_QUERY
+from shopify_mcp.tools import collections
+from shopify_mcp.tools.collections import (
     ADD_PRODUCTS_TO_COLLECTION,
     GET_COLLECTION_BY_HANDLE,
     REMOVE_PRODUCTS_FROM_COLLECTION,
     UPDATE_COLLECTION,
 )
+from tests.support import CapturingServer, FakeClient
 
 
 class _FakeClock:
@@ -48,7 +48,7 @@ def fake_poll_clock(monkeypatch):
     so timeout/failure branches are fast and deterministic. Opt-in: apply by
     adding `fake_poll_clock` to a test's signature. Not autouse — future tests
     that need wall-clock timing mustn't silently pick up the fake."""
-    import shopify_client
+    from shopify_mcp import client as shopify_client
 
     clock = _FakeClock(step=1.0)
     monkeypatch.setattr(shopify_client.time, "sleep", lambda s: None)

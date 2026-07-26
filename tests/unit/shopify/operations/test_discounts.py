@@ -13,8 +13,8 @@ Usage:
   pytest tests/unit/shopify/operations/test_discounts.py -v
 """
 
-from shopify.operations import discounts as ops
-from shopify.queries import discounts as q
+from shopify_mcp.shopify.operations import discounts as ops
+from shopify_mcp.shopify.queries import discounts as q
 from tests.support import FakeClient
 
 # ---------- AC3: no shared fragment applies to discounts ----------

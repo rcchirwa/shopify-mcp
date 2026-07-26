@@ -15,7 +15,7 @@ silently drifting until CI's ``--require-hashes`` install breaks.
 import re
 from pathlib import Path
 
-import depcheck
+from shopify_mcp import depcheck
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RUNTIME_LOCK = _REPO_ROOT / "requirements.lock"

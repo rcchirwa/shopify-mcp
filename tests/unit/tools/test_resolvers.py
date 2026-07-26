@@ -12,7 +12,7 @@ Usage:
 
 import pytest
 
-from tools._resolvers import (
+from shopify_mcp.tools._resolvers import (
     resolve_variant_ids_with_variants,
 )
 

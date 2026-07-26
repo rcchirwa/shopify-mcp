@@ -15,13 +15,13 @@ import re
 
 import pytest
 
-from tests.support import CapturingServer, FakeClient
-from tools import discounts
-from tools.discounts import (
+from shopify_mcp.tools import discounts
+from shopify_mcp.tools.discounts import (
     CREATE_DISCOUNT_CODE,
     CREATE_PRICE_RULE,
     GET_PRICE_RULES,
 )
+from tests.support import CapturingServer, FakeClient
 
 
 @pytest.fixture(autouse=True)

@@ -11,9 +11,9 @@ Usage:
   pytest tests/unit/tools/test_orders.py -v
 """
 
+from shopify_mcp.tools import orders
+from shopify_mcp.tools.orders import GET_ORDER_BY_ID, GET_ORDERS
 from tests.support import CapturingServer, FakeClient
-from tools import orders
-from tools.orders import GET_ORDER_BY_ID, GET_ORDERS
 
 
 def _build(responses):

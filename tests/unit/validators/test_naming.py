@@ -11,7 +11,7 @@ Usage:
   pytest tests/unit/validators/test_naming.py -v
 """
 
-from validators.naming import (
+from shopify_mcp.validators.naming import (
     format_validation_diff,
     format_validation_result,
     validate_title,

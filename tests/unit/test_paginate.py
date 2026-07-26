@@ -12,7 +12,7 @@ Usage:
 
 from unittest.mock import MagicMock, patch
 
-from shopify_client import ShopifyClient
+from shopify_mcp.client import ShopifyClient
 
 QUERY = "query Q($first: Int!, $after: String) { data { nodes { id } pageInfo { hasNextPage endCursor } } }"
 PATH = ["data"]
@@ -57,7 +57,7 @@ def test_two_pages_concatenates_nodes_and_forwards_cursor():
 def test_max_pages_cap_sets_capped_true_and_logs_warning():
     responses = [_page([{"id": str(i)}], has_next=True, cursor=f"c{i}") for i in range(3)]
     m = _mock_client(responses)
-    with patch("shopify_client.logger") as mock_log:
+    with patch("shopify_mcp.client.logger") as mock_log:
         _, nodes, capped = ShopifyClient.paginate(m, QUERY, {}, connection_path=PATH, max_pages=3)
     assert capped is True
     assert len(nodes) == 3
@@ -93,7 +93,7 @@ def test_null_cursor_with_has_next_page_returns_capped_without_refetch():
     """If Shopify returns hasNextPage=True but endCursor=null, paginate must
     abort and return capped=True rather than re-fetching page 0 in a loop."""
     m = _mock_client([_page([{"id": "a"}], has_next=True, cursor=None)])
-    with patch("shopify_client.logger") as mock_log:
+    with patch("shopify_mcp.client.logger") as mock_log:
         _, nodes, capped = ShopifyClient.paginate(m, QUERY, {}, connection_path=PATH)
     assert capped is True
     assert nodes == [{"id": "a"}]

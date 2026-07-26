@@ -25,10 +25,9 @@ from typing import Any
 
 import pytest
 
-from tests.support import CapturingServer, FakeClient
-from tools import catalog_hygiene
-from tools._untrusted import INJECTION_REMINDER
-from tools.catalog_hygiene import (
+from shopify_mcp.tools import catalog_hygiene
+from shopify_mcp.tools._untrusted import INJECTION_REMINDER
+from shopify_mcp.tools.catalog_hygiene import (
     GET_PRODUCT_BY_HANDLE_MIN,
     GET_PRODUCT_CATEGORY,
     GET_PRODUCT_TYPE,
@@ -42,6 +41,7 @@ from tools.catalog_hygiene import (
     UPDATE_PRODUCT_VENDOR,
     VENDOR_MAX_LEN,
 )
+from tests.support import CapturingServer, FakeClient
 
 
 @pytest.fixture(autouse=True)
@@ -202,7 +202,7 @@ def test_validation_rejects(variants, fragment):
 
 def test_pricing_at_cap_accepted():
     """25 entries (PRICING_VARIANTS_MAX) is at the cap, not over — accepted."""
-    from tools.catalog_hygiene import PRICING_VARIANTS_MAX
+    from shopify_mcp.tools.catalog_hygiene import PRICING_VARIANTS_MAX
 
     read_variants = [
         {
@@ -2873,25 +2873,25 @@ def test_update_product_vendor_post_mutation_missing_vendor_field_falls_back():
 
 
 def test_vendor_text_none_returns_cleared():
-    from tools.catalog_hygiene import _vendor_text
+    from shopify_mcp.tools.catalog_hygiene import _vendor_text
 
     assert _vendor_text(None) == "(cleared)"
 
 
 def test_vendor_text_empty_string_returns_cleared():
-    from tools.catalog_hygiene import _vendor_text
+    from shopify_mcp.tools.catalog_hygiene import _vendor_text
 
     assert _vendor_text("") == "(cleared)"
 
 
 def test_vendor_text_whitespace_only_returns_cleared():
-    from tools.catalog_hygiene import _vendor_text
+    from shopify_mcp.tools.catalog_hygiene import _vendor_text
 
     assert _vendor_text("   ") == "(cleared)"
 
 
 def test_vendor_text_non_empty_returns_value():
-    from tools.catalog_hygiene import _vendor_text
+    from shopify_mcp.tools.catalog_hygiene import _vendor_text
 
     assert _vendor_text("Nike") == "Nike"
     assert _vendor_text("  Nike  ") == "  Nike  "
@@ -3381,19 +3381,19 @@ def test_update_product_type_post_mutation_null_value_normalized_to_empty():
 
 
 def test_type_text_empty_string_returns_cleared():
-    from tools.catalog_hygiene import _type_text
+    from shopify_mcp.tools.catalog_hygiene import _type_text
 
     assert _type_text("") == "(cleared)"
 
 
 def test_type_text_whitespace_only_returns_cleared():
-    from tools.catalog_hygiene import _type_text
+    from shopify_mcp.tools.catalog_hygiene import _type_text
 
     assert _type_text("   ") == "(cleared)"
 
 
 def test_type_text_non_empty_returns_value():
-    from tools.catalog_hygiene import _type_text
+    from shopify_mcp.tools.catalog_hygiene import _type_text
 
     assert _type_text("Crewneck") == "Crewneck"
     assert _type_text("  Crewneck  ") == "  Crewneck  "
@@ -3403,7 +3403,7 @@ def test_type_text_non_empty_returns_value():
 # Story 9.6 — update_variant_image_binding
 # =============================================================================
 
-from tools.catalog_hygiene import (  # noqa: E402
+from shopify_mcp.tools.catalog_hygiene import (  # noqa: E402
     GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA,
     PRODUCT_VARIANT_APPEND_MEDIA,
     PRODUCT_VARIANT_DETACH_MEDIA,
@@ -3550,7 +3550,7 @@ def test_s96_oversized_non_product_gid_is_capped_in_error():
     chars in the error response. Prevents log flooding through reflected user input.
     Covers _resolve_product_gid (used by update_variant_image_binding).
     """
-    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
+    from shopify_mcp.tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
 
     oversized = "gid://shopify/Order/" + ("A" * 10_000)
     tools, fc = _build([])
@@ -3715,7 +3715,7 @@ def test_s96_non_string_media_gid_rejected():
 def test_s96_variant_media_over_cap_rejected():
     """SEC-09: the outer variant_media list is capped, checked before any
     network call — including the handle lookup inside _resolve_product_gid."""
-    from tools.catalog_hygiene import VARIANT_MEDIA_MAX
+    from shopify_mcp.tools.catalog_hygiene import VARIANT_MEDIA_MAX
 
     tools, fc = _build([])
     over_cap = [
@@ -3729,7 +3729,7 @@ def test_s96_variant_media_over_cap_rejected():
 
 def test_s96_nested_media_ids_over_cap_rejected():
     """SEC-09: the nested mediaIds list per entry is capped too."""
-    from tools.catalog_hygiene import MEDIA_IDS_MAX
+    from shopify_mcp.tools.catalog_hygiene import MEDIA_IDS_MAX
 
     tools, fc = _build([])
     over_cap_media = [f"gid://shopify/MediaImage/{i}" for i in range(MEDIA_IDS_MAX + 1)]
@@ -3744,7 +3744,7 @@ def test_s96_nested_media_ids_over_cap_rejected():
 def test_s96_variant_media_at_cap_reaches_network():
     """At exactly the cap, validation passes and the call proceeds to the
     combined product-media read (not rejected as over-cap)."""
-    from tools.catalog_hygiene import VARIANT_MEDIA_MAX
+    from shopify_mcp.tools.catalog_hygiene import VARIANT_MEDIA_MAX
 
     tools, fc = _build([{"product": None}])
     at_cap = [{"variantId": str(i), "mediaIds": [_S96_MEDIA_1]} for i in range(VARIANT_MEDIA_MAX)]
@@ -4705,7 +4705,7 @@ def test_s96_product_media_paginates_page_two_validates_gid():
     assert tail["ok"] is True, out
     # call order: combined query → page-2 query → mutation
     assert len(fc.calls) == 3
-    from tools.catalog_hygiene import (
+    from shopify_mcp.tools.catalog_hygiene import (
         GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA,
         GET_PRODUCT_MEDIA_PAGE,
         PRODUCT_VARIANT_APPEND_MEDIA,
@@ -4759,7 +4759,7 @@ def test_s96_product_media_pagination_idempotent_no_op():
     assert tail["ok"] is True, out
     # two reads, zero mutations
     assert len(fc.calls) == 2
-    from tools.catalog_hygiene import PRODUCT_VARIANT_APPEND_MEDIA
+    from shopify_mcp.tools.catalog_hygiene import PRODUCT_VARIANT_APPEND_MEDIA
 
     assert all(call[0] != PRODUCT_VARIANT_APPEND_MEDIA for call in fc.calls)
 
@@ -5239,7 +5239,7 @@ def test_s99_detach_userErrors_halts_before_append():
 
 def test_s99_log_write_called_with_detach_and_append_counts(monkeypatch):
     """Regression — log_write must include detached=N appended=M in the new format."""
-    import tools.catalog_hygiene as _ch
+    import shopify_mcp.tools.catalog_hygiene as _ch
 
     logged: list[tuple[str, str]] = []
     monkeypatch.setattr(_ch, "log_write", lambda name, msg: logged.append((name, msg)))
@@ -5266,7 +5266,7 @@ def test_s99_log_write_called_with_detach_and_append_counts(monkeypatch):
 
 def test_s99_PRODUCT_VARIANT_DETACH_MEDIA_constant_importable():
     """Regression — guards against accidental rename of the module-level constant."""
-    from tools.catalog_hygiene import PRODUCT_VARIANT_DETACH_MEDIA as _c
+    from shopify_mcp.tools.catalog_hygiene import PRODUCT_VARIANT_DETACH_MEDIA as _c
 
     assert "productVariantDetachMedia" in _c
 
@@ -5832,7 +5832,7 @@ def test_s97_err_payload_custom_key():
 # Story 9.5 — update_product_options
 # =============================================================================
 
-from tools.catalog_hygiene import (  # noqa: E402
+from shopify_mcp.tools.catalog_hygiene import (  # noqa: E402
     GET_PRODUCT_OPTIONS,
     GET_PRODUCT_OPTIONS_BY_HANDLE,
     OPTION_NAME_MAX_LEN,
@@ -6054,7 +6054,7 @@ def test_s95_resolver_rejects_non_product_gid():
 def test_s95_resolver_oversized_non_product_gid_is_capped_in_error():
     """Security: 10KB attacker-controlled non-Product GID truncated at _GID_DISPLAY_MAX (200) in
     error. Covers the shared _resolve_product_with_queries path (vendor, type, options)."""
-    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
+    from shopify_mcp.tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
 
     oversized = "gid://shopify/Order/" + ("A" * 10_000)
     tools, fc = _build([])
@@ -6659,7 +6659,7 @@ def test_update_product_options_no_op_already_set_warns_when_capped():
 #   AC #7  NOT_FOUND treated as idempotent  → test_s910_idempotent_not_found_*
 #   AC #8  return shape                     → test_s910_metafieldId_path_*, _success_*
 
-from tools.catalog_hygiene import (  # noqa: E402
+from shopify_mcp.tools.catalog_hygiene import (  # noqa: E402
     METAFIELDS_DELETE_MAX,
     METAFIELDS_DELETE_MUTATION,
     _is_metafield_not_found_error,
@@ -8438,7 +8438,7 @@ def test_s912_empty_keys_mode_lists_qualified_keys_in_head():
 
 def test_cap_helper_truncates_oversized_and_passes_short():
     """Direct unit test for _cap(): oversized input is truncated, short input unchanged."""
-    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
+    from shopify_mcp.tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
 
     oversized = "x" * (_GID_DISPLAY_MAX + 50)
     assert len(_cap(oversized)) == _GID_DISPLAY_MAX
@@ -8455,7 +8455,7 @@ def test_resolver_oversized_handle_is_capped_in_error():
     """Security: 10KB handle reflected via _resolve_product_gid is truncated at _GID_DISPLAY_MAX.
     Covers the handle-not-found path in update_product_category.
     """
-    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
+    from shopify_mcp.tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
 
     oversized = "a" * 10_000
     # taxonomy search returns empty → bails before product-resolve — so we must drive
@@ -8476,7 +8476,7 @@ def test_resolver_oversized_taxonomy_search_is_capped_in_error():
     """Security: 10KB taxonomy search term reflected by _resolve_taxonomy_category is
     truncated at _GID_DISPLAY_MAX when 0 nodes are returned.
     """
-    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
+    from shopify_mcp.tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
 
     oversized = "b" * 10_000
     # Return an empty taxonomy response (0 nodes) to hit the 0-result message.
@@ -8495,7 +8495,7 @@ def test_resolver_oversized_owner_id_is_capped_in_error():
     is truncated at _GID_DISPLAY_MAX (hits the 'ambiguous' error branch via
     delete_product_metafields, which uses _resolve_owner_gid_for_metafield).
     """
-    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
+    from shopify_mcp.tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
 
     oversized = "9" * 10_000  # all digits → isdigit() → ambiguous branch
     tools, fc = _build([])
@@ -8512,7 +8512,7 @@ def test_resolver_oversized_metafield_id_is_capped_in_error():
     """Security: 10KB non-Metafield GID reflected by _validate_metafield_id
     is truncated at _GID_DISPLAY_MAX.
     """
-    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
+    from shopify_mcp.tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
 
     oversized = "gid://shopify/Product/" + ("C" * 10_000)
     tools, fc = _build([])
@@ -8530,7 +8530,7 @@ def test_s1019_oversized_product_id_handle_not_found_is_capped():
     """Security: 10KB handle reflecting through update_product_options (no-product path)
     is truncated to _GID_DISPLAY_MAX chars; the message prefix is preserved.
     """
-    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
+    from shopify_mcp.tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
 
     oversized = "a" * 10_000
     tools, fc = _build([{"productByHandle": None}])
@@ -8547,7 +8547,7 @@ def test_s1019_oversized_option_id_is_capped_in_error():
     """Security: 10KB option.id (wrong GID prefix) reflected in validator error is truncated
     to _GID_DISPLAY_MAX chars.
     """
-    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
+    from shopify_mcp.tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
 
     oversized = "gid://shopify/Product/" + ("X" * 10_000)  # wrong prefix — triggers the error
     _, err = catalog_hygiene._normalize_option_input(
@@ -8565,7 +8565,7 @@ def test_s1019_oversized_option_value_id_is_capped_in_error():
     """Security: 10KB option-value id (wrong GID prefix) reflected in validator error is
     truncated to _GID_DISPLAY_MAX chars.
     """
-    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
+    from shopify_mcp.tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
 
     oversized = "gid://shopify/Product/" + ("Y" * 10_000)  # wrong prefix for a value
     _, err = catalog_hygiene._normalize_option_input(
@@ -8583,7 +8583,7 @@ def test_s1019_oversized_media_gid_is_capped_in_error():
     """Security: 10KB media GID (no 'gid://shopify/' prefix) reflected in
     update_variant_image_binding validation error is truncated to _GID_DISPLAY_MAX chars.
     """
-    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
+    from shopify_mcp.tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
 
     oversized = "not-a-gid-" + ("Z" * 10_000)
     tools, fc = _build([])
@@ -8602,7 +8602,7 @@ def test_s1019_oversized_media_gid_step4_is_capped():
     gid://shopify/) but is not on the product reaches Step 4 and its
     reflection in 'media GIDs not on product' is truncated to _GID_DISPLAY_MAX.
     """
-    from tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
+    from shopify_mcp.tools.catalog_hygiene import _GID_DISPLAY_MAX, _cap
 
     oversized = "gid://shopify/MediaImage/" + ("X" * 10_000)
     tools, fc = _build(

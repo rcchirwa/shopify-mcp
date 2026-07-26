@@ -9,7 +9,7 @@ Usage:
 
 from typing import Any
 
-from tools._gid import from_gid, to_gid
+from shopify_mcp.tools._gid import from_gid, to_gid
 
 # ---------- to_gid ----------
 

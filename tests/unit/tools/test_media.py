@@ -18,22 +18,22 @@ import pytest
 import requests as _requests
 from pydantic import SecretStr
 
-from settings import Settings
-from shopify_client import ShopifyError
-from tests.support import CapturingServer, FakeClient
-from tools import media
-from tools._untrusted import INJECTION_REMINDER
-from tools.media._common import _as_product_gid
-from tools.media._constants import _MAX_IMAGE_BYTES
-from tools.media._graphql import (
+from shopify_mcp.client import ShopifyError
+from shopify_mcp.settings import Settings
+from shopify_mcp.tools import media
+from shopify_mcp.tools._untrusted import INJECTION_REMINDER
+from shopify_mcp.tools.media._common import _as_product_gid
+from shopify_mcp.tools.media._constants import _MAX_IMAGE_BYTES
+from shopify_mcp.tools.media._graphql import (
     GET_MEDIA_STATUS,
     GET_PRODUCT_MEDIA,
     PRODUCT_CREATE_MEDIA,
     PRODUCT_REORDER_MEDIA,
     STAGED_UPLOADS_CREATE,
 )
-from tools.media._list import _render_media_list
-from tools.media._upload import _download_image, _format_bytes, _upload_bytes_to_target
+from shopify_mcp.tools.media._list import _render_media_list
+from shopify_mcp.tools.media._upload import _download_image, _format_bytes, _upload_bytes_to_target
+from tests.support import CapturingServer, FakeClient
 
 PRODUCT_GID = "gid://shopify/Product/123"
 MEDIA_A = "gid://shopify/MediaImage/111"
@@ -358,8 +358,11 @@ def test_upload_execute_happy_path_append():
     )
 
     with (
-        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
-        patch("tools.media._upload.time.sleep"),
+        patch(
+            "shopify_mcp.tools.media._upload.requests.put",
+            return_value=FakeHTTPResponse(status_code=200),
+        ),
+        patch("shopify_mcp.tools.media._upload.time.sleep"),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -411,8 +414,11 @@ def test_upload_execute_reorder_when_non_append_position():
     )
 
     with (
-        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
-        patch("tools.media._upload.time.sleep"),
+        patch(
+            "shopify_mcp.tools.media._upload.requests.put",
+            return_value=FakeHTTPResponse(status_code=200),
+        ),
+        patch("shopify_mcp.tools.media._upload.time.sleep"),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -441,8 +447,11 @@ def test_upload_execute_skips_reorder_when_position_equals_append():
     )
 
     with (
-        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
-        patch("tools.media._upload.time.sleep"),
+        patch(
+            "shopify_mcp.tools.media._upload.requests.put",
+            return_value=FakeHTTPResponse(status_code=200),
+        ),
+        patch("shopify_mcp.tools.media._upload.time.sleep"),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -504,7 +513,10 @@ def test_upload_attach_user_errors_labelled_attach_stage():
         ]
     )
     with (
-        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch(
+            "shopify_mcp.tools.media._upload.requests.put",
+            return_value=FakeHTTPResponse(status_code=200),
+        ),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -524,7 +536,7 @@ def test_upload_staged_target_put_failure_labels_stage_upload():
     )
     with (
         patch(
-            "tools.media._upload.requests.put",
+            "shopify_mcp.tools.media._upload.requests.put",
             return_value=FakeHTTPResponse(status_code=500, text="oops"),
         ),
     ):
@@ -540,7 +552,7 @@ def test_upload_staged_failure_does_not_surface_response_body(capsys):
     # The staged-target response body can contain signed-URL fragments /
     # internal host detail. It must not be echoed to the caller; the capped
     # detail goes to stderr for diagnosis instead.
-    from tools._scrub import REFLECT_MAX_LEN
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
 
     body = "signed-url-fragment-SECRET " + ("x" * 2000)
     tools, fc = _build(
@@ -551,7 +563,7 @@ def test_upload_staged_failure_does_not_surface_response_body(capsys):
     )
     with (
         patch(
-            "tools.media._upload.requests.put",
+            "shopify_mcp.tools.media._upload.requests.put",
             return_value=FakeHTTPResponse(status_code=500, text=body),
         ),
     ):
@@ -600,9 +612,12 @@ def test_upload_processing_timeout_returns_success_with_note():
         return tick["t"]
 
     with (
-        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
-        patch("tools.media._upload.time.sleep"),
-        patch("tools.media._upload.time.monotonic", side_effect=fake_monotonic),
+        patch(
+            "shopify_mcp.tools.media._upload.requests.put",
+            return_value=FakeHTTPResponse(status_code=200),
+        ),
+        patch("shopify_mcp.tools.media._upload.time.sleep"),
+        patch("shopify_mcp.tools.media._upload.time.monotonic", side_effect=fake_monotonic),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -693,7 +708,7 @@ def test_reorder_polls_job_when_not_done():
             {"node": {"id": "gid://shopify/Job/abc", "done": True}},
         ]
     )
-    with patch("tools.media._upload.time.sleep"):
+    with patch("shopify_mcp.tools.media._upload.time.sleep"):
         out = tools["reorder_product_media"](
             product_id="123",
             moves=[{"id": MEDIA_B, "newPosition": 1}],
@@ -965,8 +980,11 @@ def test_upload_failed_processing_returns_error_with_cleanup_hint():
         ]
     )
     with (
-        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
-        patch("tools.media._upload.time.sleep"),
+        patch(
+            "shopify_mcp.tools.media._upload.requests.put",
+            return_value=FakeHTTPResponse(status_code=200),
+        ),
+        patch("shopify_mcp.tools.media._upload.time.sleep"),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -993,8 +1011,11 @@ def test_upload_failed_processing_still_reorder_when_position_set():
         ]
     )
     with (
-        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
-        patch("tools.media._upload.time.sleep"),
+        patch(
+            "shopify_mcp.tools.media._upload.requests.put",
+            return_value=FakeHTTPResponse(status_code=200),
+        ),
+        patch("shopify_mcp.tools.media._upload.time.sleep"),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -1222,7 +1243,7 @@ def test_upload_bytes_to_target_request_exception_is_generic_and_logs_detail(cap
     leaky = "socket reset to https://staged.example/signed?X-Goog-Signature=SECRETSIG"
     with (
         patch(
-            "tools.media._upload.requests.put",
+            "shopify_mcp.tools.media._upload.requests.put",
             side_effect=_requests.ConnectionError(leaky),
         ),
         pytest.raises(RuntimeError) as exc,
@@ -1265,7 +1286,7 @@ def test_upload_bytes_to_target_sends_user_agent_and_config_timeout():
         "url": "https://staged.example/signed",
         "parameters": [{"name": "content_type", "value": "image/jpeg"}],
     }
-    with patch("tools.media._upload.requests.put", side_effect=fake_put):
+    with patch("shopify_mcp.tools.media._upload.requests.put", side_effect=fake_put):
         _upload_bytes_to_target(target, b"bytes", s)
     assert captured["headers"]["User-Agent"] == "shopify-mcp-test/1.2"
     # The signed-target parameter must survive the header merge.
@@ -1305,8 +1326,11 @@ def test_upload_poll_transient_exception_is_swallowed():
         ]
     )
     with (
-        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
-        patch("tools.media._upload.time.sleep"),
+        patch(
+            "shopify_mcp.tools.media._upload.requests.put",
+            return_value=FakeHTTPResponse(status_code=200),
+        ),
+        patch("shopify_mcp.tools.media._upload.time.sleep"),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -1450,7 +1474,7 @@ def test_delete_media_product_not_found():
 
 
 def test_delete_media_over_cap_rejected():
-    from tools.media._constants import MEDIA_IDS_MAX
+    from shopify_mcp.tools.media._constants import MEDIA_IDS_MAX
 
     tools, fc = _build([])
     over_cap = [f"gid://shopify/MediaImage/{i}" for i in range(MEDIA_IDS_MAX + 1)]
@@ -1461,7 +1485,7 @@ def test_delete_media_over_cap_rejected():
 
 
 def test_delete_media_at_cap_accepted():
-    from tools.media._constants import MEDIA_IDS_MAX
+    from shopify_mcp.tools.media._constants import MEDIA_IDS_MAX
 
     at_cap = [f"gid://shopify/MediaImage/{i}" for i in range(MEDIA_IDS_MAX)]
     tools, fc = _build(
@@ -1482,7 +1506,7 @@ def test_delete_media_at_cap_accepted():
 
 
 def test_reorder_media_over_cap_rejected():
-    from tools.media._constants import MOVES_MAX
+    from shopify_mcp.tools.media._constants import MOVES_MAX
 
     tools, fc = _build([])
     over_cap = [
@@ -1495,7 +1519,7 @@ def test_reorder_media_over_cap_rejected():
 
 
 def test_reorder_media_at_cap_accepted():
-    from tools.media._constants import MOVES_MAX
+    from shopify_mcp.tools.media._constants import MOVES_MAX
 
     at_cap_ids = [f"gid://shopify/MediaImage/{i}" for i in range(MOVES_MAX)]
     at_cap_moves = [{"id": mid, "newPosition": i + 1} for i, mid in enumerate(at_cap_ids)]
@@ -1576,7 +1600,10 @@ def test_upload_product_create_media_exception_labels_attach_stage():
         ]
     )
     with (
-        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch(
+            "shopify_mcp.tools.media._upload.requests.put",
+            return_value=FakeHTTPResponse(status_code=200),
+        ),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -1596,7 +1623,10 @@ def test_upload_attach_returns_empty_media_reported():
         ]
     )
     with (
-        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
+        patch(
+            "shopify_mcp.tools.media._upload.requests.put",
+            return_value=FakeHTTPResponse(status_code=200),
+        ),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -1633,8 +1663,11 @@ def test_upload_reorder_exception_appends_failure_note_still_confirms():
         ]
     )
     with (
-        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
-        patch("tools.media._upload.time.sleep"),
+        patch(
+            "shopify_mcp.tools.media._upload.requests.put",
+            return_value=FakeHTTPResponse(status_code=200),
+        ),
+        patch("shopify_mcp.tools.media._upload.time.sleep"),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -1658,8 +1691,11 @@ def test_upload_reorder_media_user_errors_append_note():
         ]
     )
     with (
-        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
-        patch("tools.media._upload.time.sleep"),
+        patch(
+            "shopify_mcp.tools.media._upload.requests.put",
+            return_value=FakeHTTPResponse(status_code=200),
+        ),
+        patch("shopify_mcp.tools.media._upload.time.sleep"),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -1688,8 +1724,11 @@ def test_upload_reorder_polls_job_when_not_done():
         ]
     )
     with (
-        patch("tools.media._upload.requests.put", return_value=FakeHTTPResponse(status_code=200)),
-        patch("tools.media._upload.time.sleep"),
+        patch(
+            "shopify_mcp.tools.media._upload.requests.put",
+            return_value=FakeHTTPResponse(status_code=200),
+        ),
+        patch("shopify_mcp.tools.media._upload.time.sleep"),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -1730,8 +1769,8 @@ def test_reorder_job_timeout_surfaces_timeout_hint():
 
     # poll_job lives in shopify_client; patch its time there.
     with (
-        patch("shopify_client.time.sleep"),
-        patch("shopify_client.time.monotonic", side_effect=_fake_monotonic),
+        patch("shopify_mcp.client.time.sleep"),
+        patch("shopify_mcp.client.time.monotonic", side_effect=_fake_monotonic),
     ):
         out = tools["reorder_product_media"](
             product_id="123",

@@ -11,10 +11,10 @@ Usage:
   pytest tests/unit/tools/test_webhooks.py -v
 """
 
-import tools._write_tool as _wt
+import shopify_mcp.tools._write_tool as _wt
+from shopify_mcp.tools import webhooks
+from shopify_mcp.tools.webhooks import CREATE_WEBHOOK, DELETE_WEBHOOK, LIST_WEBHOOKS
 from tests.support import CapturingServer, FakeClient
-from tools import webhooks
-from tools.webhooks import CREATE_WEBHOOK, DELETE_WEBHOOK, LIST_WEBHOOKS
 
 
 def _build(responses):

@@ -10,9 +10,8 @@ Usage:
   pytest tests/unit/tools/test_products.py -v
 """
 
-from tests.support import CapturingServer, FakeClient
-from tools import products
-from tools.products import (
+from shopify_mcp.tools import products
+from shopify_mcp.tools.products import (
     GET_PRODUCT_BY_HANDLE,
     GET_PRODUCT_BY_ID,
     GET_PRODUCT_COLLECTIONS,
@@ -29,6 +28,7 @@ from tools.products import (
     UPDATE_PRODUCT_TAGS,
     UPDATE_PRODUCT_VARIANTS_POLICY,
 )
+from tests.support import CapturingServer, FakeClient
 
 
 def _build(responses):

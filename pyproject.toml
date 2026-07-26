@@ -45,16 +45,31 @@ dev = [
 # Installed into the venv's bin/ by `pip install -e .`. Lets Claude Desktop
 # launch the server via a single command path (`.venv/bin/shopify-mcp`)
 # instead of splitting across Python interpreter + script path.
-shopify-mcp = "shopify_mcp:main"
+shopify-mcp = "shopify_mcp.server:main"
 # Dependency-drift check (Story 10.37): verifies the current interpreter has
 # every dependency pyproject.toml declares. Run after pulling new deps, or
 # point it at the interpreter the MCP server launches under to catch the
 # boot-crash drift before it happens. Exits non-zero on drift.
-shopify-mcp-check-deps = "depcheck:main"
+shopify-mcp-check-deps = "shopify_mcp.depcheck:main"
 
+# src/ layout under one top-level name (Story 10.47 / FS-3). Replaces the
+# py-modules/packages lists that installed six generic top-level names —
+# `shopify` among them, which collides with the ShopifyAPI distribution on
+# PyPI. Two properties matter here:
+#
+#   package-dir: the working tree is NOT importable, so `pytest` from the repo
+#     root exercises the *installed* distribution. Under the old flat layout a
+#     module accidentally left out of `packages` passed the whole CI gate and
+#     broke only on a real (non-editable) install.
+#   find/where: discovery replaces the hand-maintained lists, so a new
+#     sub-package is packaged by existing there rather than by remembering to
+#     edit this file. Scoped to src/ so it can never sweep tests/ back in — the
+#     regression Story 10.46 (FS-2) closed.
 [tool.setuptools]
-py-modules = ["depcheck", "logging_config", "settings", "shopify_client", "shopify_mcp"]
-packages = ["tools", "validators", "shopify", "shopify.queries", "shopify.operations"]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.pytest.ini_options]
 # The whole suite lives under tests/ (Story 10.45 / FS-1), so a bare `pytest`
@@ -71,7 +86,18 @@ testpaths = ["tests"]
 # `coverage run` locally and the CI workflow, so the two can't drift.
 # `tests/support/` is intentionally excluded: it holds test doubles exercised
 # only through the offline suites, not production code worth gating on.
-source = ["depcheck", "logging_config", "settings", "shopify_client", "tools", "validators", "shopify"]
+#
+# One name now that everything lives under one package (Story 10.47 / FS-3).
+source = ["shopify_mcp"]
+# The flat layout expressed "entry points aren't unit tested" by leaving
+# `shopify_mcp` (the old entry-point module) out of the `source` list above.
+# Folding seven names into one means that carve-out has to be an explicit omit.
+# Both modules are verified by being launched — see README's Claude Desktop
+# section — not by unit tests. An omit list is an easy place to hide an
+# untested module, so its contents are pinned by
+# tests/architecture/test_src_layout.py::test_coverage_omits_only_the_entry_points:
+# these two and nothing else.
+omit = ["*/shopify_mcp/__main__.py", "*/shopify_mcp/server.py"]
 
 [tool.ruff]
 line-length = 100
@@ -94,7 +120,7 @@ ignore = ["E501"]
 "test_*.py" = ["B011", "RUF059"]
 # validators/naming.py and its tests deal with en-dash separators by design,
 # so RUF001/RUF002 (ambiguous-unicode) flagging the en-dashes is noise.
-"validators/naming.py" = ["RUF001", "RUF002"]
+"src/shopify_mcp/validators/naming.py" = ["RUF001", "RUF002"]
 "tests/unit/validators/test_naming.py" = ["RUF001"]
 
 [tool.ruff.format]
@@ -105,7 +131,13 @@ quote-style = "double"
 # annotations. Added tools should carry types from the first commit — mypy will
 # reject the PR otherwise.
 python_version = "3.11"
-files = ["depcheck.py", "logging_config.py", "settings.py", "shopify_client.py", "shopify_mcp.py", "tools", "validators", "tests/support", "shopify"]
+# One entry now that the whole package lives under src/ (Story 10.47 / FS-3);
+# the entry points (server.py, __main__.py) are inside it, so the gate covers
+# strictly more than the old per-module list did.
+files = ["src/shopify_mcp", "tests/support"]
+# src/ is not on sys.path, so mypy needs to be told where the package root is —
+# without this it reports every `import shopify_mcp.…` as unresolved.
+mypy_path = "src"
 ignore_missing_imports = true
 disallow_untyped_defs = true
 # Belt-and-suspenders: if anyone later bypasses the gate with
