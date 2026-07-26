@@ -4,7 +4,7 @@ Covers the userErrors pattern shared across all write tools, and the
 confirm-hint used by every write-tool preview branch.
 
 Note: `_format_errors` / `_format_one_error` — the transport-level GQL error
-formatters — live in shopify_client.py, not here. Those format
+formatters — live in shopify_mcp/client.py, not here. Those format
 TransportQueryError payloads; these format GraphQL userErrors from mutation
 response bodies.
 """

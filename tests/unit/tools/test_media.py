@@ -1036,7 +1036,7 @@ def test_upload_failed_processing_still_reorder_when_position_set():
 
 def test_upload_ssrf_private_host_labels_download_stage():
     """The SSRF guard now lives inside `client.fetch_bytes()` (the guard's own
-    logic is unit-tested in tests/unit/test_shopify_client.py). Here we assert the
+    logic is unit-tested in tests/unit/test_client.py). Here we assert the
     rejection surfaces to the caller as `Error at stage=download:`."""
     tools, fc = _build(
         [_product_media_read([])],
@@ -1186,7 +1186,7 @@ def test_format_bytes_kb_and_mb_branches():
 #
 # The HTTP mechanics (SSRF guard, redirect refusal, size cap, streaming, retry,
 # transport errors) moved into ShopifyClient.fetch_bytes() and are unit-tested
-# in tests/unit/test_shopify_client.py. What stays in _download_image — delegation
+# in tests/unit/test_client.py. What stays in _download_image — delegation
 # with the right args, filename derivation, and MIME validation — is tested here.
 
 
@@ -1767,7 +1767,7 @@ def test_reorder_job_timeout_surfaces_timeout_hint():
         tick["t"] += 5.0
         return tick["t"]
 
-    # poll_job lives in shopify_client; patch its time there.
+    # poll_job lives in shopify_mcp.client; patch its time there.
     with (
         patch("shopify_mcp.client.time.sleep"),
         patch("shopify_mcp.client.time.monotonic", side_effect=_fake_monotonic),

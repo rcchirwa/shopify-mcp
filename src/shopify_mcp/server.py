@@ -2,7 +2,9 @@
 Shopify MCP Server — entry point.
 
 Exposes Shopify Admin API tools to Claude via the Model Context Protocol.
-Run via: python shopify_mcp.py
+Run via the ``shopify-mcp`` console script, or ``python -m shopify_mcp``.
+(The pre-Story-10.47 ``python shopify_mcp.py`` no longer exists — this module
+moved to ``src/shopify_mcp/server.py``.)
 
 All credentials loaded from .env — never hardcoded here.
 """

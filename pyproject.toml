@@ -70,6 +70,12 @@ package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+# Explicit, because the default is `true`: with namespace discovery on, ANY
+# directory dropped under src/ becomes an installed top-level package whether
+# or not it has an __init__.py — quietly re-opening the collision this story
+# closes. Every package here has an __init__.py, so requiring one costs
+# nothing and makes adding a top-level name a deliberate act.
+namespaces = false
 
 [tool.pytest.ini_options]
 # The whole suite lives under tests/ (Story 10.45 / FS-1), so a bare `pytest`

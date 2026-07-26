@@ -1,5 +1,5 @@
 """
-Offline unit tests for shopify_client.ShopifyClient.execute() boundary.
+Offline unit tests for shopify_mcp.client.ShopifyClient.execute() boundary.
 
 Exercises the non-dict response check and the TransportQueryError formatting
 path without hitting Shopify or requiring .env credentials.
@@ -7,7 +7,7 @@ path without hitting Shopify or requiring .env credentials.
 Usage:
   cd ~/shopify-mcp
   source .venv/bin/activate
-  pytest tests/unit/test_shopify_client.py -v
+  pytest tests/unit/test_client.py -v
 """
 
 import os
@@ -303,7 +303,7 @@ def _make_scripted(script, settings=None):
 
 @pytest.fixture
 def no_sleep(monkeypatch):
-    """Replace time.sleep in shopify_client with a recorder (no actual sleeping)."""
+    """Replace time.sleep in shopify_mcp.client with a recorder (no actual sleeping)."""
     sleeps: list[float] = []
     monkeypatch.setattr(sc.time, "sleep", lambda s: sleeps.append(s))
     return sleeps

@@ -31,6 +31,13 @@ recorded on the card. What *is* asserted below is the property that makes both
 of them true — no legacy top-level name resolves into this repo any more —
 which is the part that can regress silently in an ordinary PR.
 
+Consequently this module assumes the **editable** install the README documents:
+``test_the_package_resolves_from_the_installed_distribution`` requires
+``shopify_mcp`` to resolve into this repo's ``src/`` tree, so the suite cannot
+be run as-is against an installed wheel. That is the intended coupling — these
+are guards on the working tree, not on the artifact — but it is the reason the
+two ACs above have to be checked by hand.
+
 Usage:
   pytest tests/architecture/test_src_layout.py -v
 """
@@ -74,28 +81,51 @@ _ENTRY_POINT_MODULES = ("server.py", "__main__.py")
 # ``\b`` keeps ``shopify`` from matching inside ``shopify_mcp`` (``_`` is a word
 # character, so there is no boundary there).
 _LEGACY_IMPORT_RE = re.compile(
-    r"^\s*(?:from|import)\s+(" + "|".join(_LEGACY_TOP_LEVEL) + r")\b",
+    r"^\s*(?:from|import)\s+(" + "|".join(re.escape(name) for name in _LEGACY_TOP_LEVEL) + r")\b",
     re.MULTILINE,
 )
 
 # Matches a stale string-literal mock target, e.g. a patch target beginning
-# ``tools.`` or ``shopify_client.``. These are the 32+4 targets that no static
+# ``tools.`` or ``shopify_client.``. These are the 41 targets that no static
 # tool can see: a stale one yields a green test that patches nothing.
+#
+# 41, not the 32 the story card estimated. That figure came from
+# ``grep -rn 'patch("' tests/``, which counts *lines*; nine targets sit on a
+# continuation line of a multi-line ``patch(`` call and were invisible to it.
+# Sweeping for the literal rather than the call site is what found them, and is
+# why this pattern matches a quoted string anywhere rather than a call.
 #
 # The whole quoted string must be a pure dotted path — a legacy root, one or
 # more dotted attributes, then the *same* quote character (backreference). That
 # precision is what lets this module sweep itself along with every other source
 # file: prose such as "depcheck._PYPROJECT resolves to ..." contains a dotted
 # path but does not consist of one, so it is not a match, while every real
-# target (verified: all 36 are plain literals, none built by f-string or
+# target (verified: all 41 are plain literals, none built by f-string or
 # concatenation) is. Anchoring on quote-to-quote beats excluding this file,
 # because a self-exclusion would also hide a genuinely stale target added here.
+#
+# The final segment must not look like a file extension. Without that, a
+# perfectly ordinary filename literal — "settings.py", "tools.json" — matches
+# the dotted-path shape and reports a stale mock target that does not exist.
+_FILE_EXTENSIONS = ("py", "pyi", "toml", "json", "txt", "md", "lock", "cfg", "ini", "yml", "yaml")
 _MOCK_TARGET_RE = re.compile(
-    r"""(["'])(?:""" + "|".join(_LEGACY_TOP_LEVEL) + r""")(?:\.[A-Za-z_][A-Za-z0-9_]*)+\1""",
+    r"""(["'])(?:"""
+    + "|".join(re.escape(name) for name in _LEGACY_TOP_LEVEL)
+    + r""")(?:\.[A-Za-z_][A-Za-z0-9_]*)*"""
+    + r"""\.(?!(?:"""
+    + "|".join(_FILE_EXTENSIONS)
+    + r""")\1)"""
+    + r"""[A-Za-z_][A-Za-z0-9_]*\1""",
 )
 
 # Directories that are never first-party source: VCS internals, caches, and
-# virtualenvs. Mirrors test_layout.py's _NON_SUITE_DIRS.
+# virtualenvs. Deliberately NOT identical to test_layout.py's _NON_SUITE_DIRS:
+# that set is paired with a helper which also treats any ``__``-prefixed
+# component as a cache, which is right for ``__pycache__`` directories but
+# wrong for ``__init__.py``/``__main__.py`` files. The sweeps here match on
+# ``.``-prefixed components and these names only, so dunder *modules* stay in
+# scope — this file's own ``__init__.py``-heavy package is exactly what the
+# import and mock-target sweeps most need to cover.
 _NON_SOURCE_DIRS = frozenset(
     {".git", ".venv", "venv", ".claude", "build", "dist", "node_modules", ".mypy_cache"}
 )
@@ -372,6 +402,34 @@ def test_the_package_resolves_from_the_installed_distribution():
     assert _is_under_repo(origin) and "src" in Path(origin).parts, (
         f"{_PACKAGE} resolves to {origin!r}, which is not the src/ tree of this repo."
     )
+
+
+def test_python_m_shopify_mcp_is_runnable():
+    """AC: ``python -m shopify_mcp`` works — it replaced ``python shopify_mcp.py``.
+
+    ``__main__.py`` is omitted from coverage (it is an entry point), so without
+    this nothing would exercise it at all: a typo in its import would ship
+    silently and only surface for whoever runs the module form.
+
+    Runs it for real and asserts it gets *past* import resolution. It is
+    expected to fail on credentials in CI — ``Settings`` requires
+    SHOPIFY_STORE_URL/ACCESS_TOKEN and there is no .env — so the assertion is
+    the narrow one that matters here: whatever goes wrong, it must not be the
+    module failing to resolve. ``-P`` keeps the CWD off sys.path so this cannot
+    pass by accidentally importing the working tree.
+    """
+    completed = subprocess.run(
+        [sys.executable, "-P", "-m", _PACKAGE],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        input="",
+    )
+    output = completed.stdout + completed.stderr
+    for broken in ("ModuleNotFoundError", "ImportError", "No module named"):
+        assert broken not in output, (
+            f"`python -m {_PACKAGE}` failed to resolve its imports ({broken}):\n{output}"
+        )
 
 
 def test_no_legacy_top_level_name_resolves_into_this_repo():

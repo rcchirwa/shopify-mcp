@@ -44,15 +44,15 @@ class _FakeClock:
 
 @pytest.fixture
 def fake_poll_clock(monkeypatch):
-    """Skip real sleeping and fake time.monotonic inside shopify_client.poll_job
+    """Skip real sleeping and fake time.monotonic inside shopify_mcp.client.poll_job
     so timeout/failure branches are fast and deterministic. Opt-in: apply by
     adding `fake_poll_clock` to a test's signature. Not autouse — future tests
     that need wall-clock timing mustn't silently pick up the fake."""
-    from shopify_mcp import client as shopify_client
+    from shopify_mcp import client
 
     clock = _FakeClock(step=1.0)
-    monkeypatch.setattr(shopify_client.time, "sleep", lambda s: None)
-    monkeypatch.setattr(shopify_client.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(client.time, "sleep", lambda s: None)
+    monkeypatch.setattr(client.time, "monotonic", clock.monotonic)
 
 
 @pytest.fixture(autouse=True)

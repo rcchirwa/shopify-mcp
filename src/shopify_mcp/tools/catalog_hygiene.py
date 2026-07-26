@@ -3,7 +3,7 @@ Catalog-hygiene tools — Epic 9 (Stories 9.1-9.7).
 
 Wave 0 (this file at story-open): empty `register()` skeleton + the convention
 contract below. Each Wave 1/2 story plugs its tool function into `register()`
-without touching shopify_mcp.py again.
+without touching server.py again.
 
 Write-tool convention — `confirm`, not `dryRun`:
     Trello card ualcSqFq pre-start gate: the spec's `dryRun: boolean` wording is

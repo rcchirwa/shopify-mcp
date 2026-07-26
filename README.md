@@ -128,9 +128,11 @@ pip install --no-deps -e .                               # the package itself; d
 ```
 
 `--require-hashes` makes pip refuse any package not listed in the lockfile
-with a matching hash. `shopify_client`, `tools`, and `validators`
-become importable from any working directory, and a `shopify-mcp` console
-command lands in `.venv/bin/`.
+with a matching hash. The editable install puts a single top-level name —
+`shopify_mcp` — on the import path, so the package is importable from any
+working directory as `shopify_mcp.tools`, `shopify_mcp.client` and so on
+(Story 10.47; the previous layout installed seven generic names instead).
+A `shopify-mcp` console command lands in `.venv/bin/`.
 
 Runtime-only installs (no dev tooling) can use `requirements.lock` instead of
 `requirements-dev.lock`.
@@ -334,9 +336,9 @@ a `src/` layout (Story 10.47). Two consequences worth knowing:
 
 - **The working tree is not importable.** `src/` is not on `sys.path`, so
   `pytest` exercises the *installed* distribution rather than the checkout —
-  which is why an editable install (`pip install -e .`, step 5) is required
-  before the suite will run, and why a module accidentally left out of the
-  package can no longer pass CI and break only on a real install.
+  which is why the editable install (`pip install --no-deps -e .`, step 3) is
+  required before the suite will run, and why a module accidentally left out
+  of the package can no longer pass CI and break only on a real install.
 - **No generic top-level names.** The previous layout installed `tools`,
   `settings`, `validators`, `shopify` and three more onto the import path of
   any environment installing this project. `shopify` in particular is owned by
@@ -394,7 +396,7 @@ shopify-mcp/
 │   │   ├── tools/              # 19 modules covering the MCP-tool surface
 │   │   ├── shopify/            # test_cache.py + operations/ (8 modules)
 │   │   ├── validators/         # test_naming.py
-│   │   └── test_{depcheck,logging_config,settings,shopify_client,paginate}.py
+│   │   └── test_{client,depcheck,logging_config,settings,paginate}.py
 │   ├── architecture/           # Structural guards: layering, lockfiles, docs, layout, packaging, src-layout
 │   └── live/                   # Smoke runners needing real credentials — excluded by default
 ├── pyproject.toml              # Package metadata, deps, console script, test/coverage config

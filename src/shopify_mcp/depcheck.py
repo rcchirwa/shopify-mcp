@@ -40,10 +40,11 @@ distribution simply absent). It deliberately does not:
   growing version/CVE logic of its own — see README.md's "Regenerating the
   lockfile" section for the re-sync workflow.
 
-It reads the pyproject.toml beside this module, i.e. the source tree of an
-editable install — the only layout this dev/ops tool is meant to run in.
+It reads the pyproject.toml at the repo root, two directories above this
+module since the src/ move (Story 10.47) — i.e. the source tree of an editable
+install, the only layout this dev/ops tool is meant to run in.
 
-Run with ``python -m depcheck`` or the ``shopify-mcp-check-deps`` console
+Run with ``python -m shopify_mcp.depcheck`` or the ``shopify-mcp-check-deps`` console
 script. Exit code 0 = in sync, 1 = drift detected.
 """
 

@@ -1,7 +1,7 @@
 """Shared HTTP policy for the raw-`requests` stack.
 
 The codebase talks HTTP two ways: the gql `RequestsHTTPTransport` in
-`shopify_client.py` (Shopify Admin GraphQL) and direct `requests` calls in
+`shopify_mcp/client.py` (Shopify Admin GraphQL) and direct `requests` calls in
 `tools/media/_upload.py` (image download + staged-upload PUT). This module is
 the single source of *header* policy for the latter so both stacks present a
 consistent identity — see TECH_DEBT N4 ("two HTTP stacks, no shared policy").

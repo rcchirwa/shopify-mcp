@@ -111,7 +111,12 @@ def _python_sources() -> list[Path]:
     sources: list[Path] = []
     for root in (_REPO_ROOT / package_dir, _TESTS_ROOT):
         sources.extend(sorted(root.rglob("*.py")))
-    return [path for path in sources if path.is_file() and not _is_hidden(path, _REPO_ROOT)]
+    # Filter on the *directory*, not the file. ``_is_hidden`` treats any
+    # component starting with ``__`` as a cache — a rule written for
+    # ``__pycache__`` directories. Applied to the leaf it also matches
+    # ``__init__.py`` and ``__main__.py``, which would silently drop every
+    # dunder module (17 of 113 files) from the sweeps below.
+    return [path for path in sources if path.is_file() and not _is_hidden(path.parent, _REPO_ROOT)]
 
 
 def test_the_repo_root_anchor_resolves():

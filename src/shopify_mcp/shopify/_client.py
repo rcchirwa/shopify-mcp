@@ -3,7 +3,7 @@
 A ``Protocol`` (not a concrete import of ``ShopifyClient``) keeps
 ``shopify.operations`` decoupled from both the MCP server and the rest of the
 codebase: any object exposing ``execute`` + ``paginate`` satisfies it. Both
-``shopify_client.ShopifyClient`` and the test ``FakeClient`` match structurally,
+``shopify_mcp.client.ShopifyClient`` and the test ``FakeClient`` match structurally,
 so operations are callable from non-MCP entry points and tests alike.
 """
 

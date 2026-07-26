@@ -69,11 +69,19 @@ def test_the_distribution_cannot_ship_test_fixtures():
         "Package discovery must stay scoped to src/ — widening it would sweep "
         f"the test tree back into the distribution: {setuptools['packages']!r}"
     )
-    assert not (_REPO_ROOT / "src" / "_testing").exists(), (
-        "_testing/ is under src/ and would be packaged — the doubles belong in tests/support/."
+    # The doubles must not be reachable by that discovery. Checked by walking
+    # src/ for the fixture package rather than by comparing _SUPPORT_ROOT to
+    # src/ — _SUPPORT_ROOT is a hardcoded constant, so such a comparison is
+    # decided by the constant's definition and can never fail (Story 10.47
+    # review).
+    packaged_fixtures = sorted(
+        str(p.relative_to(_REPO_ROOT))
+        for p in (_REPO_ROOT / "src").rglob("*")
+        if p.is_dir() and p.name in {"_testing", "support", "fixtures"}
     )
-    assert _SUPPORT_ROOT.is_dir() and (_REPO_ROOT / "src") not in _SUPPORT_ROOT.parents, (
-        f"The doubles at {_SUPPORT_ROOT} must live outside the packaged src/ tree."
+    assert not packaged_fixtures, (
+        f"Test-fixture directories found inside the packaged tree: {packaged_fixtures}. "
+        "The doubles belong under tests/support/, which discovery cannot see."
     )
 
 
@@ -89,14 +97,28 @@ def test_no_python_source_imports_the_old_testing_package():
     """AC: no test file imports from the removed `_testing` package."""
     this_file = Path(__file__).resolve()
     offenders = []
+    scanned = 0
     for path in sorted(_REPO_ROOT.rglob("*.py")):
         if path.resolve() == this_file:
             continue
-        if any(part.startswith(".") or part in _NON_SOURCE_DIRS for part in path.parts):
+        # Filter on the path *relative to the repo root*. Filtering the
+        # absolute path meant any checkout living beneath a dot-directory
+        # disabled this guard entirely — including this project's own
+        # `.claude/worktrees/<branch>` workflow, where it scanned 0 files and
+        # passed vacuously (found by the Story 10.47 review).
+        if any(
+            part.startswith(".") or part in _NON_SOURCE_DIRS
+            for part in path.relative_to(_REPO_ROOT).parts
+        ):
             continue
+        scanned += 1
         content = path.read_text(encoding="utf-8")
         if "from _testing" in content or "import _testing" in content:
             offenders.append(str(path.relative_to(_REPO_ROOT)))
+    assert scanned, (
+        "This sweep examined 0 files — it is passing without checking anything. "
+        "Check the directory filter above before trusting a green result."
+    )
     assert not offenders, f"Still importing the removed _testing package: {offenders}"
 
 
