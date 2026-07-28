@@ -34,3 +34,21 @@ def test_cap_honours_explicit_limit():
 def test_cap_at_exactly_the_limit_is_unchanged():
     exact = "A" * _scrub.REFLECT_MAX_LEN
     assert _scrub.cap(exact) == exact
+
+
+def test_sanitize_control_chars_escapes_newline():
+    assert _scrub.sanitize_control_chars("a\nb") == "a\\nb"
+
+
+def test_sanitize_control_chars_escapes_carriage_return():
+    assert _scrub.sanitize_control_chars("a\rb") == "a\\rb"
+
+
+def test_sanitize_control_chars_escapes_both_in_combination():
+    assert _scrub.sanitize_control_chars("a\r\nb\n\rc") == "a\\r\\nb\\n\\rc"
+
+
+def test_sanitize_control_chars_no_op_on_clean_text():
+    assert _scrub.sanitize_control_chars("plain text, no control chars") == (
+        "plain text, no control chars"
+    )

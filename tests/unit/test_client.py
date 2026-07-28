@@ -669,6 +669,55 @@ def test_fetch_bytes_retries_retryable_status_then_succeeds(no_sleep, monkeypatc
     assert len(no_sleep) == 1
 
 
+def test_fetch_bytes_retry_warning_escapes_newline_in_url(no_sleep, monkeypatch, caplog):
+    # SEC-20: `url` is caller-supplied (model-controlled via indirect prompt
+    # injection). The retry warning label embeds it verbatim; an unescaped
+    # \n would forge a second, spoofed-looking log line in the single-line
+    # stderr formatter. Assert exactly one warning record and that the
+    # newline survives only as the literal two-char token "\\n".
+    client = _make_client()
+    responses = [_FakeHTTPResp(503), _FakeHTTPResp(200, b"ok", {"Content-Type": "image/png"})]
+    monkeypatch.setattr(sc.requests, "get", lambda *a, **k: responses.pop(0))
+    evil_url = "https://cdn.example/x.png\n2099-01-01T00:00:00Z FAKE admin_login success"
+    with caplog.at_level("WARNING", logger="shopify_mcp.client"):
+        client.fetch_bytes(evil_url, max_size=1000)
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "\n" not in message
+    assert "\\n" in message
+    assert "FAKE admin_login success" in message
+
+
+def test_fetch_bytes_retry_warning_escapes_carriage_return_in_url(no_sleep, monkeypatch, caplog):
+    client = _make_client()
+    responses = [_FakeHTTPResp(503), _FakeHTTPResp(200, b"ok", {"Content-Type": "image/png"})]
+    monkeypatch.setattr(sc.requests, "get", lambda *a, **k: responses.pop(0))
+    evil_url = "https://cdn.example/x.png\rspoofed"
+    with caplog.at_level("WARNING", logger="shopify_mcp.client"):
+        client.fetch_bytes(evil_url, max_size=1000)
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "\r" not in message
+    assert "\\r" in message
+
+
+def test_fetch_bytes_retry_warning_unchanged_for_clean_url(
+    no_sleep, deterministic_jitter, monkeypatch, caplog
+):
+    # No control characters -> byte-identical label to before the change.
+    client = _make_client()
+    responses = [_FakeHTTPResp(503), _FakeHTTPResp(200, b"ok", {"Content-Type": "image/png"})]
+    monkeypatch.setattr(sc.requests, "get", lambda *a, **k: responses.pop(0))
+    clean_url = "https://cdn.example/x.png"
+    with caplog.at_level("WARNING", logger="shopify_mcp.client"):
+        client.fetch_bytes(clean_url, max_size=1000)
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert warnings[0].getMessage() == f"retryable fetch {clean_url} attempt=0 sleep=0.50s"
+
+
 @pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
 def test_fetch_bytes_retries_all_retryable_statuses(status, no_sleep, monkeypatch):
     client = _make_client()
