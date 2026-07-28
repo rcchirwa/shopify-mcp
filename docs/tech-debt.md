@@ -4,7 +4,19 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-07-18.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-07-28.
+
+---
+
+## 2026-07-28 — Story 10.55 (SEC-21 — Unicode-confusable and separator-variant closing-tag neutralization)
+
+Source: follow-up to SEC-18 (Story 10.52, https://trello.com/c/AyZG3fsy), which hardened `wrap()`'s closing-tag neutralization to be case-insensitive and whitespace-tolerant via a compiled regex, but explicitly deferred two residual gaps: Unicode homoglyph/confusable characters and the underscore separator variant (`UNTRUSTED_DATA`). Trello: https://trello.com/c/DGE7v3oj (Story 10.55, Epic 10).
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|----------------|
+| SEC-21 | ~~`wrap()`'s closing-tag neutralization (post-SEC-18) still missed the underscore separator variant (`</UNTRUSTED_DATA>`) and Unicode-confusable spellings — fullwidth bracket/slash characters (U+FF1C, U+FF0F, U+FF1E) and Unicode dash characters (hyphen U+2010, non-breaking hyphen U+2011, en-dash U+2013) standing in for `<`, `/`, `>`, and `-`~~ | `wrap()` now NFKC-normalizes `text` before scanning it. Verified empirically (not assumed) that NFKC folds the fullwidth bracket/slash confusables to ASCII 1:1, but does **not** fold the dash confusables to ASCII `-` (non-breaking hyphen only folds as far as plain hyphen U+2010; en-dash is untouched) — so those two codepoints are matched explicitly in the closing-tag regex's separator character class alongside `-` and `_`. Because every fold relevant to this pattern is 1-codepoint-in/1-codepoint-out, the wrapper operates entirely on the normalized copy for the rest of the call (no positional misalignment risk from unrelated NFKC-driven length changes elsewhere in the value). The single compiled `_CLOSE_TAG_PATTERN` (case-insensitive, whitespace-tolerant around `/` and the separator, accepting `-`/`_`/the three Unicode dash confusables) subsumes SEC-18's case/whitespace fix, since main had not yet merged SEC-18 when this branch was cut. Payload-preservation contract unchanged: neutralized, not dropped. Module docstring rewritten to describe the full defense with no stale "known gap" language. Full gate chain green: ruff + `ruff format --check` + mypy + 1316 offline tests at 100% coverage. |
 
 ---
 
