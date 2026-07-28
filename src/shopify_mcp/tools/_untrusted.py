@@ -26,8 +26,9 @@ an attacker can dodge it with:
   renderers treat as equivalent to the hyphen form;
 * **Unicode confusables** — fullwidth bracket/slash characters
   (U+FF1C, U+FF0F, U+FF1E) that render as the ASCII delimiter, and Unicode
-  dash characters (hyphen U+2010, non-breaking hyphen U+2011, en-dash
-  U+2013) that render as the interior ``-``.
+  dash characters (hyphen U+2010, non-breaking hyphen U+2011, figure dash
+  U+2012, en-dash U+2013, em-dash U+2014, horizontal bar U+2015, minus sign
+  U+2212) that render as the interior ``-``.
 
 The defense has two layers:
 
@@ -36,10 +37,13 @@ The defense has two layers:
    (verified directly, not assumed) NFKC folds the fullwidth bracket/slash
    confusables (U+FF1C, U+FF0F, U+FF1E) to their ASCII equivalents
    (each a 1-codepoint-to-1-codepoint fold), so no separate fullwidth branch is
-   needed in the regex below. NFKC does **not** fold the dash confusables to
-   ASCII ``-``: non-breaking hyphen (U+2011) only folds as far as hyphen
-   (U+2010), and en-dash (U+2013) is left untouched. Those two codepoints are
-   therefore matched explicitly in the separator character class.
+   needed in the regex below. Fullwidth hyphen-minus (U+FF0D) likewise folds
+   straight to ASCII ``-`` and needs no explicit handling. NFKC does **not**
+   fold the other dash confusables to ASCII ``-``: non-breaking hyphen
+   (U+2011) only folds as far as hyphen (U+2010); figure dash (U+2012),
+   en-dash (U+2013), em-dash (U+2014), horizontal bar (U+2015), and minus
+   sign (U+2212) are all left untouched. Those codepoints are therefore
+   matched explicitly in the separator character class.
 
    Every fold relevant to this pattern is 1 codepoint in -> 1 codepoint out,
    so normalizing does not shift character offsets for the substring we care
@@ -67,6 +71,18 @@ carried over from SEC-18: a forged opener cannot itself terminate a region —
 only a closer can — so there is nothing for an attacker to gain by forging
 one, and neutralizing it would just be noise.
 
+**Known residual gap (out of scope for SEC-21):** zero-width/invisible
+format characters (e.g. ZERO WIDTH SPACE U+200B, ZERO WIDTH NON-JOINER
+U+200C, ZERO WIDTH JOINER U+200D, ZERO WIDTH NO-BREAK SPACE/BOM U+FEFF)
+inserted inside the delimiter are not stripped or matched by ``\\s*`` and can
+still slip a visually-identical closing tag past :data:`_CLOSE_TAG_PATTERN`.
+This was deliberately not closed here: ZWJ/ZWNJ have legitimate uses in
+emoji sequences and in Persian/Indic script rendering, so indiscriminately
+stripping them from shopper-controlled content risks corrupting legitimate
+values, conflicting with this wrapper's "neutralized, not dropped" contract.
+Closing this gap needs a more careful design than blanket stripping and is
+tracked as a follow-up rather than solved under this story's scope.
+
 The payload is always preserved (neutralized, not dropped) so nothing is
 silently lost; non-string values are coerced via ``str`` exactly as the
 surrounding f-strings would have rendered them.
@@ -79,9 +95,13 @@ import unicodedata
 _UNTRUSTED = "<UNTRUSTED-DATA>{}</UNTRUSTED-DATA>"
 
 # Dash confusables that NFKC does not fold to ASCII '-': hyphen (U+2010),
-# non-breaking hyphen (U+2011), en-dash (U+2013). Written as escapes rather
-# than literal glyphs so the source stays free of ambiguous Unicode chars.
-_DASH_CONFUSABLES = "\u2010\u2011\u2013"
+# non-breaking hyphen (U+2011), figure dash (U+2012), en-dash (U+2013),
+# em-dash (U+2014), horizontal bar (U+2015), minus sign (U+2212). Fullwidth
+# hyphen-minus (U+FF0D) is deliberately absent: NFKC already folds it to
+# ASCII '-' (confirmed empirically), so listing it here would be redundant.
+# Written as escapes rather than literal glyphs so the source stays free of
+# ambiguous Unicode chars.
+_DASH_CONFUSABLES = "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"
 
 # Matches any spelling of the closing delimiter after NFKC normalization:
 # case-insensitive, tolerant of whitespace (including newlines/tabs) around
