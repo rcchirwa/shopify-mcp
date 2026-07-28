@@ -79,3 +79,49 @@ def test_audit_logger_propagate_not_mutated() -> None:
     audit.propagate = True  # default — configure_logging must not override this
     configure_logging(_settings())
     assert audit.propagate is True
+
+
+@pytest.mark.parametrize("noisy_logger", ["gql", "urllib3", "requests"])
+def test_noisy_loggers_clamped_to_warning_at_default_level(noisy_logger: str) -> None:
+    """SEC-19 / Story 10.53: gql/urllib3/requests must not inherit INFO from root."""
+    configure_logging(_settings(log_level="INFO"))
+    assert logging.getLogger(noisy_logger).getEffectiveLevel() >= logging.WARNING
+
+
+@pytest.mark.parametrize("noisy_logger", ["gql", "urllib3", "requests"])
+def test_noisy_loggers_clamped_to_warning_at_debug_level(noisy_logger: str) -> None:
+    """The clamp must hold even when LOG_LEVEL=DEBUG — max(level, WARNING)."""
+    configure_logging(_settings(log_level="DEBUG"))
+    assert logging.getLogger(noisy_logger).getEffectiveLevel() >= logging.WARNING
+
+
+def test_gql_info_record_produces_no_stderr_output(capsys: pytest.CaptureFixture[str]) -> None:
+    """Acceptance-critical: an INFO gql trace record must not reach stderr.
+
+    This is the actual leak vector — gql.transport.requests logs full request
+    payloads (including plaintext discount codes) and response bodies
+    (including staged-upload signing material) at INFO. Asserting on captured
+    handler output, not just the logger level, proves the record is dropped
+    before it reaches the configured stderr handler.
+    """
+    configure_logging(_settings(log_level="DEBUG"))
+    logging.getLogger("gql.transport.requests").info(
+        '>>> {"query": "...", "variables": {"code": "SECRET-DISCOUNT"}}'
+    )
+    captured = capsys.readouterr().err
+    assert "SECRET-DISCOUNT" not in captured
+    assert captured == ""
+
+
+def test_shopify_mcp_info_record_still_emits(capsys: pytest.CaptureFixture[str]) -> None:
+    """First-party loggers are unaffected by the third-party clamp."""
+    configure_logging(_settings(log_level="INFO"))
+    logging.getLogger("shopify_mcp.client").info("first-party info message")
+    assert "first-party info message" in capsys.readouterr().err
+
+
+def test_gql_warning_record_still_emits(capsys: pytest.CaptureFixture[str]) -> None:
+    """The clamp raises gql's floor to WARNING — it does not silence it entirely."""
+    configure_logging(_settings(log_level="INFO"))
+    logging.getLogger("gql").warning("gql warning message")
+    assert "gql warning message" in capsys.readouterr().err
