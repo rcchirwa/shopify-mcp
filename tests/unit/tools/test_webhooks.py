@@ -86,23 +86,42 @@ def test_list_webhooks_clamps_limit_to_250():
 # ---------- register_webhook ----------
 
 
-def test_register_preview_does_not_mutate(monkeypatch):
+def test_register_preview_refused_when_allowlist_and_allow_any_host_unset(monkeypatch):
+    """SEC-17: with no allowlist configured and no opt-out, register_webhook
+    fails closed — it must refuse (not preview) and perform no mutation, even
+    on the preview (confirm=False) path."""
     monkeypatch.delenv("WEBHOOK_ALLOWLIST_HOSTS", raising=False)
+    monkeypatch.delenv("WEBHOOK_ALLOW_ANY_HOST", raising=False)
     tools, fc = _build([])
     out = tools["register_webhook"](
         topic="ORDERS_CREATE",
         endpoint_url="https://example.com/hook",
     )
-    assert "PREVIEW — Register webhook" in out
-    assert "ORDERS_CREATE" in out
-    assert "https://example.com/hook" in out
-    assert "JSON" in out
-    assert "confirm=True" in out
+    assert out.startswith("Error:")
+    assert "WEBHOOK_ALLOWLIST_HOSTS" in out
+    assert "WEBHOOK_ALLOW_ANY_HOST" in out
+    assert len(fc.calls) == 0
+
+
+def test_register_confirmed_refused_when_allowlist_and_allow_any_host_unset(monkeypatch):
+    """SEC-17: confirm=True must not bypass the fail-closed default — no
+    mutation call is made to the fake client."""
+    monkeypatch.delenv("WEBHOOK_ALLOWLIST_HOSTS", raising=False)
+    monkeypatch.delenv("WEBHOOK_ALLOW_ANY_HOST", raising=False)
+    tools, fc = _build([])
+    out = tools["register_webhook"](
+        topic="ORDERS_CREATE",
+        endpoint_url="https://example.com/hook",
+        confirm=True,
+    )
+    assert out.startswith("Error:")
+    assert "WEBHOOK_ALLOWLIST_HOSTS" in out
+    assert "WEBHOOK_ALLOW_ANY_HOST" in out
     assert len(fc.calls) == 0
 
 
 def test_register_confirmed_submits_create(monkeypatch):
-    monkeypatch.delenv("WEBHOOK_ALLOWLIST_HOSTS", raising=False)
+    monkeypatch.setenv("WEBHOOK_ALLOWLIST_HOSTS", "example.com")
     tools, fc = _build(
         [
             {
@@ -140,7 +159,10 @@ def test_register_confirmed_submits_create(monkeypatch):
 
 
 def test_register_confirmed_surfaces_user_errors(monkeypatch):
-    monkeypatch.delenv("WEBHOOK_ALLOWLIST_HOSTS", raising=False)
+    # Note: endpoint_url is https and allowlisted so it clears _check_endpoint
+    # and reaches the mutation — this test is about surfacing Shopify-side
+    # userErrors, not our own scheme/allowlist gate (covered separately below).
+    monkeypatch.setenv("WEBHOOK_ALLOWLIST_HOSTS", "example.com")
     tools, fc = _build(
         [
             {
@@ -158,7 +180,7 @@ def test_register_confirmed_surfaces_user_errors(monkeypatch):
     )
     out = tools["register_webhook"](
         topic="ORDERS_CREATE",
-        endpoint_url="http://insecure.example.com/hook",
+        endpoint_url="https://example.com/hook",
         confirm=True,
     )
     assert out.startswith("Error:")
@@ -166,7 +188,7 @@ def test_register_confirmed_surfaces_user_errors(monkeypatch):
 
 
 def test_register_forwards_xml_format(monkeypatch):
-    monkeypatch.delenv("WEBHOOK_ALLOWLIST_HOSTS", raising=False)
+    monkeypatch.setenv("WEBHOOK_ALLOWLIST_HOSTS", "example.com")
     tools, fc = _build(
         [
             {
@@ -286,11 +308,14 @@ def test_delete_confirmed_missing_id_and_no_errors_is_error():
     assert "deletedWebhookSubscriptionId" in out
 
 
-# ---------- register_webhook — endpoint allowlist (M3) ----------
+# ---------- register_webhook — endpoint allowlist (M3 / SEC-17) ----------
 
 
-def test_register_preview_no_allowlist_shows_external_domain_warning(monkeypatch):
+def test_register_preview_allow_any_host_true_restores_external_domain_warning(monkeypatch):
+    """SEC-17: WEBHOOK_ALLOW_ANY_HOST=true is the explicit opt-out that
+    restores the pre-hardening warn-and-proceed behaviour byte-for-byte."""
     monkeypatch.delenv("WEBHOOK_ALLOWLIST_HOSTS", raising=False)
+    monkeypatch.setenv("WEBHOOK_ALLOW_ANY_HOST", "true")
     tools, fc = _build([])
     out = tools["register_webhook"](
         topic="ORDERS_CREATE",
@@ -298,6 +323,100 @@ def test_register_preview_no_allowlist_shows_external_domain_warning(monkeypatch
     )
     assert "⚠ EXTERNAL DOMAIN" in out
     assert "ORDERS_CREATE" in out
+    assert len(fc.calls) == 0
+
+
+def test_register_confirmed_https_with_empty_hostname_blocked(monkeypatch):
+    """An https:// URL with no hostname (e.g. "https:///hook") can't
+    IDNA-normalize to anything meaningful — it must be treated as "not
+    matched" rather than crashing or slipping through."""
+    monkeypatch.setenv("WEBHOOK_ALLOWLIST_HOSTS", "example.com")
+    tools, fc = _build([])
+    out = tools["register_webhook"](
+        topic="ORDERS_CREATE",
+        endpoint_url="https:///hook",
+        confirm=True,
+    )
+    assert out.startswith("Error:")
+    assert len(fc.calls) == 0
+
+
+def test_register_non_https_scheme_blocked_before_hostname_check(monkeypatch):
+    """A non-https scheme is refused before any hostname/allowlist/network
+    work — even for a host that IS allowlisted."""
+    monkeypatch.setenv("WEBHOOK_ALLOWLIST_HOSTS", "example.com")
+    tools, fc = _build([])
+    out = tools["register_webhook"](
+        topic="ORDERS_CREATE",
+        endpoint_url="http://example.com/hook",
+    )
+    assert out.startswith("Error:")
+    assert "https" in out.lower()
+    assert len(fc.calls) == 0
+
+
+def test_register_confirmed_non_https_scheme_blocked_with_allow_any_host(monkeypatch):
+    """Even the WEBHOOK_ALLOW_ANY_HOST opt-out does not waive the https-only
+    scheme check."""
+    monkeypatch.delenv("WEBHOOK_ALLOWLIST_HOSTS", raising=False)
+    monkeypatch.setenv("WEBHOOK_ALLOW_ANY_HOST", "true")
+    tools, fc = _build([])
+    out = tools["register_webhook"](
+        topic="ORDERS_CREATE",
+        endpoint_url="ftp://example.com/hook",
+        confirm=True,
+    )
+    assert out.startswith("Error:")
+    assert "https" in out.lower()
+    assert len(fc.calls) == 0
+
+
+def test_register_confirmed_idna_equivalent_hostname_matches_allowlist(monkeypatch):
+    """A Unicode allowlist entry and a punycode request hostname (or vice
+    versa) are the same host after IDNA normalization, so it's allowed."""
+    monkeypatch.setenv("WEBHOOK_ALLOWLIST_HOSTS", "münchen.de")
+    tools, fc = _build(
+        [
+            {
+                "webhookSubscriptionCreate": {
+                    "webhookSubscription": {
+                        "id": "gid://shopify/WebhookSubscription/42",
+                        "topic": "ORDERS_CREATE",
+                        "format": "JSON",
+                        "endpoint": {
+                            "__typename": "WebhookHttpEndpoint",
+                            "callbackUrl": "https://xn--mnchen-3ya.de/hook",
+                        },
+                    },
+                    "userErrors": [],
+                }
+            }
+        ]
+    )
+    out = tools["register_webhook"](
+        topic="ORDERS_CREATE",
+        endpoint_url="https://xn--mnchen-3ya.de/hook",
+        confirm=True,
+    )
+    assert out.startswith("Done.")
+    assert len(fc.calls) == 1
+
+
+def test_register_idna_lookalike_hostname_not_literally_allowlisted_blocked(monkeypatch):
+    """A visually similar (homograph) hostname that IDNA-normalizes to a
+    *different* punycode string than the allowlisted entry is not an
+    IDNA-equivalent match, so it must be refused, not silently accepted."""
+    monkeypatch.setenv("WEBHOOK_ALLOWLIST_HOSTS", "apple.com")
+    tools, fc = _build([])
+    # U+0430 CYRILLIC SMALL LETTER A in place of ASCII "a" (position 0) —
+    # IDNA-encodes to "xn--pple-43d.com", not "apple.com".
+    lookalike_host = "\u0430pple.com"
+    out = tools["register_webhook"](
+        topic="ORDERS_CREATE",
+        endpoint_url=f"https://{lookalike_host}/hook",
+        confirm=True,
+    )
+    assert out.startswith("Error:")
     assert len(fc.calls) == 0
 
 
@@ -373,7 +492,7 @@ def test_register_confirmed_hostname_not_in_allowlist_blocked(monkeypatch):
 
 def test_register_log_write_not_called_on_user_error(monkeypatch):
     """write_gate ensures log_write is never called when the mutation returns userErrors."""
-    monkeypatch.delenv("WEBHOOK_ALLOWLIST_HOSTS", raising=False)
+    monkeypatch.setenv("WEBHOOK_ALLOWLIST_HOSTS", "example.com")
     logged: list[int] = []
     monkeypatch.setattr(_wt, "log_write", lambda *a, **k: logged.append(1))
 
