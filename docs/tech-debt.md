@@ -4,9 +4,21 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-07-18.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-07-28.
 
 ---
+
+## 2026-07-28 — Story 10.53 (SEC-19 — root logger let gql dump request/response bodies)
+
+Trello: https://trello.com/c/lN4WTLaW (Story 10.53, Epic 10). The scan panel raised this as two findings on the same root cause, deduplicated by file/line rather than cause — **one fix closes both**.
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|----------------|
+| SEC-19 (F2 + F4) | ~~`configure_logging` (`logging_config.py`) set the level (F4, line ~25) and attached the stderr handler (F2, line ~40) on the **root** logger. The pinned `gql==3.5.3` `RequestsHTTPTransport` sets no level of its own and logs `log.info(">>> %s", json.dumps(payload))` / `log.info("<<< %s", response.text)` — inheriting root's effective level, every Shopify Admin API request (full query + all GraphQL variable values) and every response body was written verbatim to stderr at the *default* `log_level` (INFO), not just in a debug mode. Concretely: the plaintext discount code in `create_price_rule_discount_code` (masked as `code=***` in the audit log per SEC-12, but not in the gql trace), and the `stagedUploadsCreate` response body — signed upload URL + signing `parameters` — that `tools/media/_upload.py` deliberately withholds from callers per SEC-11. Both leaks bypassed `client.py`'s variable-key-only logging and the redaction intent documented at `docs/architecture-tech-debt.md:347`, because the leak happens inside the transport library, below the layer that does redaction.~~ | After `root.setLevel(level)` in `configure_logging` (`src/shopify_mcp/logging_config.py`), clamp `gql`, `urllib3`, and `requests` loggers to `max(level, logging.WARNING)`. Holds at WARNING even when `LOG_LEVEL=DEBUG`. Root logger configuration (F2's handler, F4's level) is otherwise unchanged — first-party code all logs under `shopify_mcp.*` and is unaffected. **Opt-in decision: none added.** No caller in this codebase has a use case for raw gql wire tracing; `client.py` already logs variable *keys* (not values) as the supported debugging path. If a genuine need for full payload/response tracing appears later, add a narrowly-scoped `debug_gql_trace` setting documented as secret-bearing in `.env.example`/`README.md`, rather than removing the clamp. Tests: effective-level assertions for all three loggers at default (INFO) and `LOG_LEVEL=DEBUG`; a captured-stderr assertion that an INFO record on `gql.transport.requests` produces no output (the acceptance-critical case — proves the handler never sees it, not just that the logger level would suppress it); confirms `shopify_mcp.*` INFO and `gql` WARNING records still emit. `tests/conftest.py`'s `_reset_root_logger` fixture extended to also reset the three clamped loggers to `NOTSET` between tests. |
+
+CI clean: `shopify-mcp-check-deps` + ruff + `ruff format --check` + mypy + full offline suite at 100% coverage.
 
 ## 2026-07-18 — Story 10.42 (SEC-09, SEC-10 — consistent batch-size caps + reserved-namespace case-fold)
 
