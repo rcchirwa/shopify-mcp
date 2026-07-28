@@ -8,6 +8,16 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-07-28 — Story 10.52 (SEC-18 — closing-tag neutralization case-sensitivity, delivered via SEC-21)
+
+Trello: https://trello.com/c/AyZG3fsy (Story 10.52, Epic 10). Recorded here for traceability: SEC-18 was implemented and reviewed on its own branch, but never merged as a separate change. Story 10.55 (SEC-21) was cut from a `main` that did not yet contain it, so SEC-21's implementation re-derived the case-insensitive/whitespace-tolerant regex and extended it. Merging 10.52 afterwards would have *regressed* `wrap()` to the narrower pattern, so the branch was retired and SEC-18 is closed by SEC-21's commit instead. No SEC-18 behaviour is missing from `main`.
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|----------------|
+| SEC-18 | ~~`wrap()`'s only escape defence was `str.replace(_CLOSE_TAG, _CLOSE_TAG_NEUTRALIZED)` — case-sensitive against the exact literal `</UNTRUSTED-DATA>`, so the same tag in any other casing (`</untrusted-data>`, `</UnTrUsTeD-DaTa>`) or with interior whitespace passed through verbatim, forged the closing delimiter, and let third-party store content escape the data region into instruction context~~ | Closed by SEC-21 (Story 10.55, https://trello.com/c/DGE7v3oj), whose compiled `_CLOSE_TAG_PATTERN` is case-insensitive and whitespace-tolerant — a strict superset of what SEC-18 implemented — and additionally covers NFKC-foldable confusables, the underscore separator, and Unicode dash variants. See the SEC-21 entry above for the full description and residual gaps. |
+
 ## 2026-07-28 — Story 10.55 (SEC-21 — Unicode-confusable and separator-variant closing-tag neutralization)
 
 Source: follow-up to SEC-18 (Story 10.52, https://trello.com/c/AyZG3fsy), which hardened `wrap()`'s closing-tag neutralization to be case-insensitive and whitespace-tolerant via a compiled regex, but explicitly deferred two residual gaps: Unicode homoglyph/confusable characters and the underscore separator variant (`UNTRUSTED_DATA`). Trello: https://trello.com/c/DGE7v3oj (Story 10.55, Epic 10).
@@ -63,7 +73,7 @@ Source: read-only security audit 2026-07-04. Trello: https://trello.com/c/jWndWx
 
 | # | Item | How it closed |
 |---|------|----------------|
-| SEC-04 | ~~Untrusted-data wrapping was per-tool (orders only); metafield values and media alt text reached the model unlabelled~~ | Extracted the `<UNTRUSTED-DATA>` literal + injection reminder into one shared helper, `tools/_untrusted.py` (`wrap(text)` + `INJECTION_REMINDER`); re-pointed `tools/orders.py` to it with byte-identical output for all legitimate content. Applied `wrap()` to the agreed field list and prefixed each affected output with `INJECTION_REMINDER`. There is now a single definition of the tag — no duplicated `<UNTRUSTED-DATA>` literals anywhere. Triple-threat review caught a delimiter-breakout: a value containing the literal `</UNTRUSTED-DATA>` could forge the closing tag and escape the untrusted region — `wrap()` now neutralizes any embedded closing tag before wrapping (payload preserved, not dropped), closing the escape at the single chokepoint for every call site. CI clean: ruff + format + mypy + 100% coverage. |
+| SEC-04 | ~~Untrusted-data wrapping was per-tool (orders only); metafield values and media alt text reached the model unlabelled~~ | Extracted the `<UNTRUSTED-DATA>` literal + injection reminder into one shared helper, `tools/_untrusted.py` (`wrap(text)` + `INJECTION_REMINDER`); re-pointed `tools/orders.py` to it with byte-identical output for all legitimate content. Applied `wrap()` to the agreed field list and prefixed each affected output with `INJECTION_REMINDER`. There is now a single definition of the tag — no duplicated `<UNTRUSTED-DATA>` literals anywhere. Triple-threat review caught a delimiter-breakout: a value containing the literal `</UNTRUSTED-DATA>` could forge the closing tag and escape the untrusted region — `wrap()` now neutralizes any embedded closing tag before wrapping (payload preserved, not dropped) at the single chokepoint for every call site. CI clean: ruff + format + mypy + 100% coverage. **Correction (2026-07-28):** this entry originally claimed the escape was closed outright. That held only for the exact uppercase literal `</UNTRUSTED-DATA>` — the neutralization was a case-sensitive `str.replace`, so other casings and interior-whitespace variants still escaped. Tracked as SEC-18 (Story 10.52) and closed by SEC-21 (Story 10.55); see those entries above. |
 
 ### Agreed in-scope field list (groomed for this story)
 
