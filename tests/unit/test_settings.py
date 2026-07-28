@@ -52,6 +52,26 @@ def test_webhook_allowlist_set_empty():
     assert s.webhook_allowlist_set == frozenset()
 
 
+def test_webhook_allowlist_set_idna_normalizes_unicode_hostname():
+    """A Unicode hostname in the allowlist is normalized to its IDNA/punycode
+    form, so a request against the punycode-equivalent host matches (SEC-17)."""
+    s = Settings(**_ok_kwargs(webhook_allowlist_hosts="münchen.de"))
+    assert s.webhook_allowlist_set == frozenset({"xn--mnchen-3ya.de"})
+
+
+def test_webhook_allowlist_set_idna_entry_that_fails_to_encode_is_dropped():
+    """An allowlist entry that can't be IDNA-encoded (empty label from a stray
+    dot, or an over-long label) must not silently become a wildcard-ish empty
+    match — it's dropped from the set instead of raising or matching anything."""
+    s = Settings(**_ok_kwargs(webhook_allowlist_hosts="example..com,good.example.com"))
+    assert s.webhook_allowlist_set == frozenset({"good.example.com"})
+
+
+def test_webhook_allow_any_host_defaults_false():
+    s = Settings(**_ok_kwargs())
+    assert s.webhook_allow_any_host is False
+
+
 def test_non_positive_channels_ttl_raises():
     """ge=1 guard: a zero/negative cache TTL would silently disable the metadata
     cache (TTLCache expires instantly), so Settings must reject it at startup."""

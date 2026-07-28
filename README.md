@@ -89,6 +89,7 @@ Requires `read_publications` and `write_publications` scopes. If the app was ins
 - **URL handles** are never modified unless `change_handle=True` is explicitly passed
 - Every write operation is logged to `aon_mcp_log.txt` with timestamp, tool name, and change detail
 - Product titles are validated against AON/Vanish naming conventions after every update
+- `register_webhook` fails closed (SEC-17 / Story 10.51): it refuses to register an endpoint unless its hostname is listed in `WEBHOOK_ALLOWLIST_HOSTS`, and only ever accepts `https://` endpoints. See [Webhook endpoint allowlist](#webhook-endpoint-allowlist) below.
 
 ---
 
@@ -229,6 +230,32 @@ SHOPIFY_STORE_URL=your-store.myshopify.com
 SHOPIFY_ACCESS_TOKEN=shpat_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 SHOPIFY_API_VERSION=2026-01
 ```
+
+#### Webhook endpoint allowlist
+
+`register_webhook` fails closed by default (SEC-17 / Story 10.51): with
+`WEBHOOK_ALLOWLIST_HOSTS` unset, every call is refused outright — no webhook
+is created, even with `confirm=True`. To use `register_webhook`, set the
+comma-separated list of hostnames you intend to register as endpoints:
+
+```
+WEBHOOK_ALLOWLIST_HOSTS=your-app.railway.app
+```
+
+Endpoints must also use `https://`; any other scheme is refused before any
+hostname or network work happens, including for an allowlisted host.
+
+If you need to register endpoints outside a known allowlist (e.g. local
+experimentation), you can opt back into the pre-SEC-17 warn-and-proceed
+behavior — any `https://` host is allowed, with a `⚠ EXTERNAL DOMAIN`
+warning shown in the preview — by setting:
+
+```
+WEBHOOK_ALLOW_ANY_HOST=true
+```
+
+This is an explicit escape hatch, not the default posture — prefer a real
+allowlist entry over leaving this set in a shared or production `.env`.
 
 ### 5. Create the Shopify Custom App
 
