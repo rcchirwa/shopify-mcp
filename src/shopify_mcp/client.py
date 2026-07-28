@@ -26,6 +26,7 @@ from shopify_mcp.shopify._cache import ShopifyMetadataCache
 # leaf modules (tools/_http, tools/_url_safety import nothing from here), so
 # this does not create an import cycle.
 from shopify_mcp.tools._http import default_headers
+from shopify_mcp.tools._scrub import sanitize_control_chars
 from shopify_mcp.tools._url_safety import _reject_if_private_host
 
 # Return type of the callable handed to ShopifyClient._with_retry.
@@ -262,6 +263,9 @@ class ShopifyClient:
                 )
             return result
 
+        # op_name is extracted via regex from an in-code GraphQL query string
+        # (never caller-controlled), so unlike fetch_bytes' `url` it carries
+        # no injection risk and doesn't need sanitize_control_chars (SEC-20).
         return self._with_retry(_attempt, label=f"op={op_name}")
 
     def fetch_bytes(
@@ -347,7 +351,12 @@ class ShopifyClient:
             content_type = resp.headers.get("Content-Type") or ""
             return bytes(buf), content_type
 
-        return self._with_retry(_attempt, label=f"fetch {url}")
+        # `url` is caller-supplied and reachable via indirect prompt injection
+        # (SEC-20); the retry warning logs `label` through a single-line
+        # stderr formatter that never neutralizes CR/LF, so an embedded
+        # newline could forge a second, spoofed-looking log entry. Escape it
+        # the same way the audit log already does (tools/_log.py).
+        return self._with_retry(_attempt, label=f"fetch {sanitize_control_chars(url)}")
 
     def paginate(
         self,
