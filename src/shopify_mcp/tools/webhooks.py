@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 from mcp.server.fastmcp import FastMCP
 
 from shopify_mcp.client import ShopifyClient
+from shopify_mcp.settings import idna_normalize
 from shopify_mcp.shopify.operations import webhooks as ops
 from shopify_mcp.shopify.queries.webhooks import CREATE_WEBHOOK, DELETE_WEBHOOK, LIST_WEBHOOKS
 from shopify_mcp.tools._gid import from_gid
@@ -44,16 +45,34 @@ def _check_endpoint(endpoint_url: str, client: ShopifyClient) -> tuple:
     allowed=True, annotation non-empty: prepend as warning to preview.
     allowed=True, annotation="": hostname is in allowlist; proceed silently.
     """
-    hostname = (urlparse(endpoint_url).hostname or "").lower()
+    parsed = urlparse(endpoint_url)
+    scheme = (parsed.scheme or "").lower()
+    if scheme != "https":
+        return False, (
+            f"Error: endpoint_url scheme {scheme or '(none)'!r} is not allowed — "
+            f"webhooks must use https."
+        )
+
+    hostname = (parsed.hostname or "").lower()
+    normalized_hostname = idna_normalize(hostname)
     allowlist = client._settings.webhook_allowlist_set
     if allowlist:
-        if hostname not in allowlist:
+        if normalized_hostname is None or normalized_hostname not in allowlist:
             return False, (
                 f"Error: endpoint hostname '{hostname}' is not in WEBHOOK_ALLOWLIST_HOSTS. "
                 f"Add it to the env var to permit this receiver."
             )
         return True, ""
-    return True, _EXTERNAL_DOMAIN_WARNING
+
+    if client._settings.webhook_allow_any_host:
+        return True, _EXTERNAL_DOMAIN_WARNING
+
+    return False, (
+        "Error: WEBHOOK_ALLOWLIST_HOSTS is not configured, so register_webhook refuses "
+        "to register endpoints by default. Add the endpoint's hostname to "
+        "WEBHOOK_ALLOWLIST_HOSTS, or set WEBHOOK_ALLOW_ANY_HOST=true to explicitly allow "
+        "any HTTPS host (restores the previous warn-and-proceed behaviour)."
+    )
 
 
 def _endpoint_url(endpoint: dict | None) -> str:

@@ -20,6 +20,23 @@ _STORE_URL_RE = re.compile(r"^[a-z0-9-]+\.myshopify\.com$", re.IGNORECASE)
 _API_VERSION_RE = re.compile(r"^\d{4}-\d{2}$")
 
 
+def idna_normalize(hostname: str) -> str | None:
+    """Normalize a hostname through IDNA encode/decode for allowlist comparison.
+
+    ``str.encode("idna")`` raises UnicodeError on empty or over-long labels
+    (e.g. "", "a"*64, or a bare trailing dot) — treat that as "cannot be
+    normalized" rather than letting it propagate, since the caller uses this
+    to build/consult an allowlist and a failure there should mean "not
+    matched", not a crash.
+    """
+    if not hostname:
+        return None
+    try:
+        return hostname.encode("idna").decode("ascii")
+    except UnicodeError:
+        return None
+
+
 class Settings(BaseSettings):
     # env_file=None: ShopifyClient calls load_dotenv(_ENV_PATH, override=True)
     # before instantiating Settings(), so we read only from process env. Letting
@@ -62,6 +79,11 @@ class Settings(BaseSettings):
     http_user_agent: str = "shopify-mcp/1.0 (+https://github.com/rcchirwa/shopify-mcp)"
 
     webhook_allowlist_hosts: str = ""
+    # SEC-17 (Story 10.51): register_webhook fails closed when
+    # webhook_allowlist_hosts is empty. Set this to true to explicitly opt back
+    # into the old warn-and-proceed behaviour (registers to any HTTPS host,
+    # with a cosmetic "external domain" warning) instead of refusing outright.
+    webhook_allow_any_host: bool = False
 
     # log_level / log_format wired by A4 (logging).
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
@@ -106,4 +128,10 @@ class Settings(BaseSettings):
         raw = self.webhook_allowlist_hosts.strip()
         if not raw:
             return frozenset()
-        return frozenset(h.strip().lower() for h in raw.split(",") if h.strip())
+        return frozenset(
+            normalized
+            for h in raw.split(",")
+            if h.strip()
+            for normalized in (idna_normalize(h.strip().lower()),)
+            if normalized is not None
+        )

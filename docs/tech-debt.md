@@ -20,6 +20,18 @@ Source: follow-up to SEC-18 (Story 10.52, https://trello.com/c/AyZG3fsy), which 
 
 ---
 
+## 2026-07-28 — Story 10.51 (SEC-17 — webhook endpoint allowlist fails closed)
+
+Source: security audit. Trello: https://trello.com/c/ki430erK (Story 10.51, Epic 10). `register_webhook`'s only control was `_check_endpoint` (`tools/webhooks.py`), which fail-*opened* when `WEBHOOK_ALLOWLIST_HOSTS` was unset (the shipped default) — it returned `allowed=True` with a cosmetic `⚠ EXTERNAL DOMAIN` warning instead of refusing, and on the `confirm=True` path that warning rendered only *after* `write_gate` had already created the webhook. There was also no scheme check at all: nothing but Shopify-side validation kept endpoints on `https`.
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|----------------|
+| SEC-17 | ~~`_check_endpoint` returned `(True, _EXTERNAL_DOMAIN_WARNING)` when `WEBHOOK_ALLOWLIST_HOSTS` was unset instead of refusing, so `register_webhook` fail-opened by default; no scheme check existed at all; and allowlist hostname comparison was a plain `.strip().lower()`, not IDNA-normalized~~ | `_check_endpoint` now rejects any non-`https` scheme before any hostname work. With `WEBHOOK_ALLOWLIST_HOSTS` unset, it returns `(False, …)` naming both `WEBHOOK_ALLOWLIST_HOSTS` and the new `WEBHOOK_ALLOW_ANY_HOST` env var, and performs zero mutation calls at either `confirm=False` or `confirm=True`. `WEBHOOK_ALLOW_ANY_HOST=true` (new `Settings` field, default `False`) is the explicit, documented opt-out that restores the previous warn-and-proceed behaviour byte-for-byte for deployments that intentionally want it. Both the allowlist entries (`Settings.webhook_allowlist_set`) and the request hostname are now normalized through IDNA (`hostname.encode("idna")`, wrapped in `try`/`except UnicodeError` — a failing encode is treated as "not in the allowlist" rather than raising) before comparison, closing a homograph/Unicode-equivalence gap. `.env.example` and `README.md` now present `WEBHOOK_ALLOWLIST_HOSTS` as required for `register_webhook` rather than optional, and document the `WEBHOOK_ALLOW_ANY_HOST` escape hatch. **Judgment call:** the card offered three possible mitigation shapes for the fail-open default; this implementation chose "fail closed with an explicit opt-out" over the other two (hard-refuse-with-no-escape-hatch, or scheme-check-only) so existing deployments aren't stranded — flagged for human confirmation at PR review. |
+
+CI clean: ruff + `ruff format --check` + mypy + full offline suite at 100% coverage.
+
 ## 2026-07-18 — Story 10.42 (SEC-09, SEC-10 — consistent batch-size caps + reserved-namespace case-fold)
 
 Source: security audit 2026-07-04. Trello: https://trello.com/c/yKELeIKb (Story 10.42, Epic 10). Metafield tools already capped input lists at 25 (`METAFIELDS_SET_MAX` / `METAFIELDS_DELETE_MAX`), but four list-accepting write tools had no per-call count cap, and the `app--` reserved-namespace guard was case-sensitive (so `APP--` slipped it client-side, even though Shopify rejects it either way).
