@@ -61,3 +61,5 @@ def _reset_root_logger() -> Generator[None, None, None]:
             handler.close()
             root.removeHandler(handler)
     root.setLevel(logging.WARNING)
+    for name in ("gql", "urllib3", "requests"):
+        logging.getLogger(name).setLevel(logging.NOTSET)
