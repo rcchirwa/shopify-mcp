@@ -8,6 +8,14 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-07-28 — Story 10.54 (SEC-20 — sanitize control characters in the retry log label)
+
+Trello: https://trello.com/c/kDhUrdKw
+
+| ID | Problem | Fix |
+|----|---------|-----|
+| SEC-20 | ~~`ShopifyClient._with_retry` (`client.py:230`) logs `label` through a single-line stderr formatter that never neutralized CR/LF. `fetch_bytes` (`client.py:350`) built its label as `f"fetch {url}"` from a caller-supplied, model-controlled `url` (reachable via indirect prompt injection); a URL containing an embedded newline followed by a plausible timestamped line could forge a second, spoofed-looking log entry. The audit-log path (`tools/_log.py:67`) already sanitized CR/LF, but the escaping had never been applied to this second sink~~ | New shared helper `tools/_scrub.py::sanitize_control_chars(text)` (escapes `\r`→`\\r`, `\n`→`\\n`) — a single control-character-escaping implementation reused by both sinks. `tools/_log.py::log_write` now delegates to it (order preserved: sanitize, then `cap`, so escaped tokens still count toward `MAX_DESC_LEN`). `client.py::fetch_bytes` now builds its retry label as `f"fetch {sanitize_control_chars(url)}"`. `execute`'s label (`f"op={op_name}"`) was deliberately left unsanitized — `op_name` comes from a regex match against an in-code GraphQL query string, never caller-controlled, so it carries no injection risk (documented inline at the call site). Severity was **Low** — log-integrity only, no authorization or data-access decision reads this log. |
+
 ## 2026-07-28 — Story 10.53 (SEC-19 — root logger let gql dump request/response bodies)
 
 Trello: https://trello.com/c/lN4WTLaW (Story 10.53, Epic 10). The scan panel raised this as two findings on the same root cause, deduplicated by file/line rather than cause — **one fix closes both**.

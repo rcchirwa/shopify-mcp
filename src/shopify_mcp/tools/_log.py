@@ -9,7 +9,7 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
-from shopify_mcp.tools._scrub import cap
+from shopify_mcp.tools._scrub import cap, sanitize_control_chars
 
 # The write-audit trail belongs at the repo root, beside the code being audited
 # — not inside the package. Under the flat layout that was two dirnames up from
@@ -64,7 +64,7 @@ def log_write(tool_name: str, description: str) -> None:
     # Sanitize control characters — caller-supplied identifiers containing \n/\r
     # must not forge additional log lines or break line-oriented audit parsing.
     # tool_name is always a fixed in-code literal, so it's not sanitized.
-    safe_description = description.replace("\r", "\\r").replace("\n", "\\n")
+    safe_description = sanitize_control_chars(description)
     # Cap after sanitization so the escaped tokens count toward the bound and
     # the on-disk line is what stays bounded.
     safe_description = cap(safe_description, MAX_DESC_LEN)
