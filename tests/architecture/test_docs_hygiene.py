@@ -82,3 +82,59 @@ def test_no_test_references_removed_env_keys():
                 f"Test file {test_file.relative_to(_REPO_ROOT)} still references {key}, "
                 f"which is receiver-only. Remove or update the test."
             )
+
+
+def test_no_test_registers_a_webhook_against_a_third_party_host():
+    """AC 1 (SEC-16 / Story 10.49): no test in the repo points a live webhook
+    registration at a third-party request-bin host."""
+    # Split so this file's own failure message (which names the banned host)
+    # doesn't trip the very check it's part of.
+    banned_host = "http" + "bin"
+    this_file = Path(__file__).resolve()
+    test_files = [p for p in sorted(_TESTS_ROOT.rglob("*.py")) if p.resolve() != this_file]
+    assert test_files, "No test files found to check"
+
+    for test_file in test_files:
+        content = test_file.read_text(encoding="utf-8")
+        assert banned_host not in content.lower(), (
+            f"Test file {test_file.relative_to(_REPO_ROOT)} still references a third-party "
+            f"request-bin host — SEC-16 requires the live webhook runner to register "
+            f"against a project-controlled endpoint instead."
+        )
+
+
+def test_live_webhook_opt_in_var_documented_as_test_only():
+    """AC 5 (SEC-16 / Story 10.49): SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST is
+    documented in .env.example (fenced as a test-only knob, not server config)
+    and covered in the README's live-runner section."""
+    env_content = (_REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+    assert "SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST" in env_content, (
+        "SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST is not documented in .env.example"
+    )
+    # Tied to the file's actual "# ===...===" section-header convention (the
+    # same style used for the pre-existing "NOT USED BY THIS SERVER" block)
+    # rather than an arbitrary character window, so reformatting within the
+    # fenced section can't silently defeat this check.
+    idx = env_content.index("SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST")
+    fence = "# " + "=" * 10
+    fence_idx = env_content.rfind(fence, 0, idx)
+    assert fence_idx != -1, (
+        "SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST must sit inside a '# ===...' "
+        "fenced section header in .env.example."
+    )
+    section = env_content[fence_idx:idx]
+    assert "test-only" in section.lower() or "test only" in section.lower(), (
+        "SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST must be fenced as a test-only knob "
+        "in .env.example, not presented as ordinary server config."
+    )
+
+    readme_content = (_REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST" in readme_content, (
+        "SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST is not documented in README.md"
+    )
+
+
+def test_tech_debt_records_sec_16_closed():
+    """AC 5 (SEC-16 / Story 10.49): docs/tech-debt.md records SEC-16 as closed."""
+    tech_debt_content = (_REPO_ROOT / "docs" / "tech-debt.md").read_text(encoding="utf-8")
+    assert "SEC-16" in tech_debt_content
