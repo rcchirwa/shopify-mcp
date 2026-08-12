@@ -290,6 +290,11 @@ WEBHOOK_ALLOW_ANY_HOST=true
 This is an explicit escape hatch, not the default posture — prefer a real
 allowlist entry over leaving this set in a shared or production `.env`.
 
+Setting `WEBHOOK_ALLOW_ANY_HOST=true` also logs a WARNING once at server
+startup (SEC-22 / Story 10.56), naming the consequence and how to restore the
+default posture — so the opt-out stays visible in the server logs for as long
+as it's set, not just recorded in `.env`.
+
 #### Live webhook test runner
 
 `tests/live/test_webhooks.py` exercises `list_webhooks` / `register_webhook` /

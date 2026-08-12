@@ -27,6 +27,7 @@ import shopify_mcp.tools.webhooks as webhooks_module
 from shopify_mcp.client import ShopifyClient
 from shopify_mcp.logging_config import configure_logging
 from shopify_mcp.settings import Settings
+from shopify_mcp.startup_warnings import startup_warnings
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +41,14 @@ _ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 
 def create_server() -> FastMCP:
     load_dotenv(dotenv_path=_ENV_PATH, override=True)
-    configure_logging(Settings())  # type: ignore[call-arg]
+    settings = Settings()  # type: ignore[call-arg]
+    configure_logging(settings)
+    # Startup-only (see startup_warnings.py docstring): fires once here, not on
+    # every register_webhook call.
+    for warning in startup_warnings(settings):
+        logger.warning(warning)
     server = FastMCP("shopify-aon")
-    client = ShopifyClient()
+    client = ShopifyClient(settings)
     logger.info("shopify-aon MCP server initialized")
 
     products_module.register(server, client)
