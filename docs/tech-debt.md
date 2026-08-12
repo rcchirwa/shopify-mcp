@@ -8,6 +8,16 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-08-11 — Story 10.56 (SEC-22 — surface a startup warning when the webhook allowlist opt-out is active)
+
+Operational hardening, not a vulnerability and not a finding from any security scan — carries a SEC-22 id purely to keep the SEC-17 lineage traceable in this ledger. Raised at PR review for Story 10.51 (SEC-17, https://trello.com/c/ki430erK, PR https://github.com/rcchirwa/shopify-mcp/pull/120) on 2026-07-28: SEC-17 made `register_webhook` fail closed by default and added `WEBHOOK_ALLOW_ANY_HOST=true` as an explicit opt-out restoring the old warn-and-proceed behavior, but nothing surfaced that the opt-out was active — a deployment could carry it indefinitely with no visible signal outside `.env`. Trello: https://trello.com/c/6a68944ca3c5a30d16dd6dc6 (Story 10.56, Epic 10).
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|----------------|
+| SEC-22 | ~~`create_server()` (`src/shopify_mcp/server.py`) constructed `Settings()` inline for `configure_logging()` and discarded it; `webhook_allow_any_host` was never read on the startup path, so `WEBHOOK_ALLOW_ANY_HOST=true` had no observable effect until someone actually called `register_webhook`~~ | New leaf module `src/shopify_mcp/startup_warnings.py::startup_warnings(settings) -> list[str]`, kept separate from `server.py` (which stays in the coverage `omit` list — unchanged, and `tests/architecture/test_src_layout.py` still passes unmodified) so the check itself is fully unit-testable. `create_server()` now captures its `Settings()` instance in a local, reuses it for `configure_logging()` and `ShopifyClient(settings)` instead of constructing it twice more, and logs each `startup_warnings(settings)` message at WARNING after `configure_logging()` has attached the stderr handler. **Startup-only, by design** (recorded in the module docstring): fires once at process start, not on every `register_webhook` call — the point is to catch the *configuration* sitting in a weakened posture, not to duplicate the per-call "EXTERNAL DOMAIN" annotation `tools/webhooks.py` already shows in the tool's own preview output. The warning text names the consequence (`register_webhook` accepts any https host, `WEBHOOK_ALLOWLIST_HOSTS` is bypassed) and how to restore the default posture, not just the flag name. Verified it survives the SEC-19 logger clamp (Story 10.53): the clamp raises `gql`/`urllib3`/`requests` to WARNING but leaves `shopify_mcp.*` alone, and the warning is logged through `shopify_mcp.server`, a first-party logger. Tests assert on captured stderr handler output (the pattern Story 10.53 established), not just on the returned list. `.env.example` and `README.md` now note that enabling the opt-out produces a startup warning. |
+
 ## 2026-08-11 — Story 10.57 (SEC-23 — stale transitive `cryptography` pin, dependency-audit gate repair)
 
 Trello: https://trello.com/c/yun1Dq4O (Story 10.57, Epic 10). **Not an exploitable hole in this codebase** — recorded here as a CI-gate repair and lockfile-hygiene fix, not a vulnerability closure in the usual sense.

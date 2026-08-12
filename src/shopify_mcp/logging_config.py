@@ -1,8 +1,10 @@
 """Root-logger configuration for shopify-mcp.
 
-Called exactly once at process start by ShopifyClient.__init__() after
-Settings is resolved. All output goes to stderr — stdout is the MCP
-JSON-RPC channel and must stay clean.
+Called at process start, once effectively — idempotent via the module-level
+_configured flag, so multiple call sites (create_server(), then
+ShopifyClient.__init__() as a safety net for any other construction path) are
+safe; only the first actually attaches a handler. All output goes to stderr —
+stdout is the MCP JSON-RPC channel and must stay clean.
 """
 
 import logging
