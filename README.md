@@ -201,10 +201,37 @@ Commit the regenerated lockfiles alongside the `pyproject.toml` change. CI's
 `dependency-audit` job (`.github/workflows/test.yml`) runs
 [`pip-audit`](https://github.com/pypa/pip-audit) against **both**
 `requirements.lock` and `requirements-dev.lock` on every PR and fails the
-build if any pinned dependency in either file has a known CVE — if it fails,
-bump the affected package's floor past the fixed version in `pyproject.toml`
-and regenerate the lockfiles, the same way `pytest` was bumped `>=7,<9` →
+build if any pinned dependency in either file has a known CVE.
+
+**If the flagged package is a *declared* dependency** (listed in
+`pyproject.toml`), bump its floor past the fixed version there and
+regenerate the lockfiles, the same way `pytest` was bumped `>=7,<9` →
 `>=9.0.3,<10` to close CVE-2025-71176.
+
+**If the flagged package is *transitive*** (pulled in by something you do
+depend on, but not itself listed in `pyproject.toml` — e.g. `cryptography`
+via `mcp`'s `pyjwt[crypto]` extra, SEC-23) there is no floor to bump, and a
+plain `pip-compile` re-run **will not fix it**: pip-tools treats an existing
+output file as a pin hint and keeps every package at its current locked
+version unless something forces a change, so re-running the same command
+regenerates an identical lockfile. Force just that package instead:
+
+```bash
+pip-compile --generate-hashes --allow-unsafe --strip-extras \
+  --upgrade-package <package>==<fixed-version> \
+  -o requirements.lock pyproject.toml
+pip-compile --extra dev --generate-hashes --allow-unsafe --strip-extras \
+  --upgrade-package <package>==<fixed-version> \
+  -o requirements-dev.lock pyproject.toml
+```
+
+`--upgrade-package` re-resolves only the named package (and anything that
+genuinely requires a newer version alongside it), leaving every other pin
+untouched — review the resulting diff to confirm nothing unrelated moved.
+Don't add the package to `pyproject.toml` just to give it a bumpable floor:
+that declares a dependency this project doesn't actually import, which
+confuses `depcheck.py`'s presence-only contract (see "Keeping your
+environment in sync" above).
 
 `pip-audit` itself is pinned in a third lockfile, `requirements-audit.lock`,
 generated from `requirements-audit.in` — the CI job installs it with

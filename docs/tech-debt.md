@@ -4,9 +4,21 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-07-28.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-08-11.
 
 ---
+
+## 2026-08-11 — Story 10.57 (SEC-23 — stale transitive `cryptography` pin, dependency-audit gate repair)
+
+Trello: https://trello.com/c/yun1Dq4O (Story 10.57, Epic 10). **Not an exploitable hole in this codebase** — recorded here as a CI-gate repair and lockfile-hygiene fix, not a vulnerability closure in the usual sense.
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|----------------|
+| SEC-23 | ~~`pip-audit -r requirements.lock --strict` and `pip-audit -r requirements-dev.lock --strict` both flagged `cryptography==49.0.0` for PYSEC-2026-3552 (a PKCS#7 decryption-oracle in `pkcs7_decrypt_der`/`_pem`/`_smime`), failing the `dependency-audit` job on every PR regardless of what it changed. `cryptography` is transitive and undeclared — pulled in only via `mcp` → `pyjwt[crypto]` for JWT signature verification — and neither lockfile had been re-resolved since Story 10.40 first generated them, so the pin simply aged into the CVE window. `grep -rn "import cryptography\|from cryptography\|pkcs7\|PKCS7\|import jwt\|EnvelopedData" src/ tests/` confirmed no first-party code imports `cryptography`, PKCS#7, or JWT — the vulnerable decrypt path is unreachable here.~~ | Regenerated both lockfiles pinning `cryptography==50.0.0` (the current release; nothing caps it). **Approach used: plain `pip-compile` regeneration, but forced with `--upgrade-package cryptography`** — a bare re-run of the documented command left the pin at 49.0.0 unchanged, because pip-tools treats an existing output file as a pin hint and won't move an unconstrained package unless told to. This is exactly the gap in README's old playbook: "bump the floor in `pyproject.toml`" only applies to a *declared* dependency, and `cryptography` isn't one. `--upgrade-package` re-resolved only `cryptography` (and nothing it forces) — diffed both lockfiles against pre-regen copies and confirmed zero other packages moved. `requirements-audit.lock` needed no change (`grep -c cryptography requirements-audit.lock` → 0; it pins `pip-audit`'s own deps, not this project's). Verified in a fresh Python 3.11 venv built from the regenerated `requirements-dev.lock` with `--require-hashes`: install succeeds, `tests/architecture/test_lockfiles.py` passes unmodified (9/9), both `pip-audit --strict` runs now exit 0 with zero known vulnerabilities, and the full offline suite passes at 100% coverage with no test breakage from the bump. README.md's "Regenerating the lockfile" section now documents the transitive-dependency case and the `--upgrade-package` workaround so the next transitive CVE doesn't re-derive this. The `dependency-audit` job firing here is the gate working as designed, not a new finding — the fix restores it to green, it doesn't patch a live vulnerability in this server. |
+
+CI clean: `shopify-mcp-check-deps` + ruff + `ruff format --check` + mypy + 1347 offline tests at 100% coverage + both `pip-audit --strict` runs clean.
 
 ## 2026-07-28 — Story 10.52 (SEC-18 — closing-tag neutralization case-sensitivity, delivered via SEC-21)
 
