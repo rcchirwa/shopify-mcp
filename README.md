@@ -290,6 +290,27 @@ WEBHOOK_ALLOW_ANY_HOST=true
 This is an explicit escape hatch, not the default posture — prefer a real
 allowlist entry over leaving this set in a shared or production `.env`.
 
+#### Live webhook test runner
+
+`tests/live/test_webhooks.py` exercises `list_webhooks` / `register_webhook` /
+`delete_webhook` end-to-end against a real store — it is guarded (SEC-16 /
+Story 10.49) because it registers a real webhook subscription:
+
+```bash
+export SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST=1   # required opt-in, test-only
+python3 tests/live/test_webhooks.py
+```
+
+Without `SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST=1` set to `1`, the runner exits
+before making any API call. It then refuses to proceed unless the configured
+store reports itself as a development store (`shop.plan.partnerDevelopment`),
+and registers its test webhook against `WEBHOOK_RECEIVER_URL` — the same
+project-controlled endpoint configured above — rather than a third-party host.
+`WEBHOOK_RECEIVER_URL`'s host must already be in `WEBHOOK_ALLOWLIST_HOSTS` or
+`register_webhook` itself refuses the call. The test topic is
+`PRODUCTS_UPDATE`, not `ORDERS_CREATE` — it carries no customer PII, so a
+webhook delivered during the brief registration window can't leak order data.
+
 ### 5. Create the Shopify Custom App
 
 In your Shopify Admin → **Settings → Apps and sales channels → Develop apps**:

@@ -5,27 +5,52 @@ end-to-end against the live Shopify store.
 Usage:
   cd ~/shopify-mcp
   source .venv/bin/activate
+  export SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST=1
   python3 tests/live/test_webhooks.py
 
 Guarantees cleanup: any webhook created by this test is deleted before exit,
 even on failure partway through.
 
-WARNING — this registers a *real* ORDERS_CREATE webhook on the live store,
-pointed at the public request bin below. Between registration and cleanup, any
-order placed on that store POSTs its full payload — customer name, email,
-shipping address, line items — to a third party. Cleanup is guaranteed, but the
-window is real. Run it against a development store, not a production one, and
-prefer repointing TEST_ENDPOINT at a sink you control.
+Guarded runner (SEC-16 / Story 10.49). This test registers a real webhook
+subscription on the configured store, so three checks run before anything is
+registered:
+
+  1. ``SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST=1`` must be set explicitly, or the
+     runner exits before touching the API at all.
+  2. The configured store must report itself as a development store
+     (``shop.plan.partnerDevelopment``), or the runner refuses to register
+     against it rather than risk subscribing a production order stream.
+  3. The registration endpoint is read from ``WEBHOOK_RECEIVER_URL`` — a host
+     the project controls, not a third party — and must already be present in
+     ``WEBHOOK_ALLOWLIST_HOSTS`` (SEC-17 / Story 10.51), or ``register_webhook``
+     itself refuses the call.
+
+The test topic is ``PRODUCTS_UPDATE`` rather than ``ORDERS_CREATE``: it
+exercises the identical register/list/delete round trip without the delivered
+payload ever carrying customer PII, shrinking what the registration window
+(step 3 to cleanup) can expose even though it can't be closed entirely.
 """
 
+import os
 import re
 import sys
 
 import shopify_mcp.tools.webhooks as webhooks_module
 from shopify_mcp.client import ShopifyClient
 
-TEST_TOPIC = "ORDERS_CREATE"
-TEST_ENDPOINT = "https://httpbin.org/post"
+ALLOW_ENV_VAR = "SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST"
+ENDPOINT_ENV_VAR = "WEBHOOK_RECEIVER_URL"
+
+TEST_TOPIC = "PRODUCTS_UPDATE"
+
+SHOP_PLAN_QUERY = """
+query {
+  shop {
+    myshopifyDomain
+    plan { partnerDevelopment }
+  }
+}
+"""
 
 
 class _Capture:
@@ -52,6 +77,50 @@ def _fail(step: str, detail: str):
     sys.exit(1)
 
 
+def require_opt_in(env: dict | None = None) -> None:
+    """Abort before any API call unless the opt-in var is set to '1'."""
+    env = os.environ if env is None else env
+    if env.get(ALLOW_ENV_VAR) != "1":
+        _fail(
+            "Startup guard",
+            f"{ALLOW_ENV_VAR} is not set to '1'. This runner registers a real "
+            f"webhook subscription on the configured store — set "
+            f"{ALLOW_ENV_VAR}=1 to run it deliberately.",
+        )
+
+
+def require_development_store(client) -> None:
+    """Abort before registering unless the store reports itself as a
+    development store, so a misconfigured SHOPIFY_STORE_URL can't subscribe
+    a production order stream."""
+    data = client.execute(SHOP_PLAN_QUERY)
+    shop = data.get("shop") or {}
+    plan = shop.get("plan") or {}
+    if plan.get("partnerDevelopment") is not True:
+        _fail(
+            "Startup guard",
+            f"SHOPIFY_STORE_URL ({shop.get('myshopifyDomain', '?')}) is not a "
+            f"development store (shop.plan.partnerDevelopment is not true) — "
+            f"refusing to register a live webhook against it.",
+        )
+
+
+def require_endpoint(env: dict | None = None) -> str:
+    """Read the registration endpoint from WEBHOOK_RECEIVER_URL — a host the
+    project controls — rather than hardcoding any endpoint in source."""
+    env = os.environ if env is None else env
+    endpoint = (env.get(ENDPOINT_ENV_VAR) or "").strip()
+    if not endpoint:
+        _fail(
+            "Startup guard",
+            f"{ENDPOINT_ENV_VAR} is not set. This runner registers its test "
+            f"webhook against a project-controlled endpoint, not a third "
+            f"party — set {ENDPOINT_ENV_VAR} to a host already listed in "
+            f"WEBHOOK_ALLOWLIST_HOSTS.",
+        )
+    return endpoint
+
+
 def _extract_subscription_id(output: str) -> str:
     m = re.search(r"Subscription ID\s*:\s*(\d+)", output)
     if not m:
@@ -60,7 +129,11 @@ def _extract_subscription_id(output: str) -> str:
 
 
 def main():
+    require_opt_in()
     client = ShopifyClient()
+    require_development_store(client)
+    test_endpoint = require_endpoint()
+
     capture = _Capture()
     webhooks_module.register(capture, client)
 
@@ -76,8 +149,8 @@ def main():
     print("Step 1 PASSED.\n")
 
     print("Step 2 — register_webhook preview")
-    preview = register_webhook(topic=TEST_TOPIC, endpoint_url=TEST_ENDPOINT)
-    if "PREVIEW" not in preview or TEST_TOPIC not in preview or TEST_ENDPOINT not in preview:
+    preview = register_webhook(topic=TEST_TOPIC, endpoint_url=test_endpoint)
+    if "PREVIEW" not in preview or TEST_TOPIC not in preview or test_endpoint not in preview:
         _fail("Step 2", f"preview missing expected fields:\n{preview}")
     print("Step 2 PASSED.\n")
 
@@ -85,7 +158,7 @@ def main():
     needs_cleanup = False
     try:
         print("Step 3 — register_webhook confirm=True")
-        created = register_webhook(topic=TEST_TOPIC, endpoint_url=TEST_ENDPOINT, confirm=True)
+        created = register_webhook(topic=TEST_TOPIC, endpoint_url=test_endpoint, confirm=True)
         if not created.startswith("Done."):
             _fail("Step 3", f"expected 'Done.' prefix:\n{created}")
         sub_id = _extract_subscription_id(created)
