@@ -233,6 +233,12 @@ that declares a dependency this project doesn't actually import, which
 confuses `depcheck.py`'s presence-only contract (see "Keeping your
 environment in sync" above).
 
+If `--upgrade-package` can't resolve — something else you depend on caps the
+transitive package below the fixed version — there is no floor to raise on
+your side; regenerate anyway to confirm the conflict, then either wait on the
+capping dependency's own fix or hand-edit the lockfile entry (matching
+hashes) as a stopgap, documenting why in the same ledger entry.
+
 `pip-audit` itself is pinned in a third lockfile, `requirements-audit.lock`,
 generated from `requirements-audit.in` — the CI job installs it with
 `--require-hashes` too, so the scanner isn't a floating, unverified install in
