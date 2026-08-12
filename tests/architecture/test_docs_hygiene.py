@@ -111,9 +111,19 @@ def test_live_webhook_opt_in_var_documented_as_test_only():
     assert "SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST" in env_content, (
         "SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST is not documented in .env.example"
     )
+    # Tied to the file's actual "# ===...===" section-header convention (the
+    # same style used for the pre-existing "NOT USED BY THIS SERVER" block)
+    # rather than an arbitrary character window, so reformatting within the
+    # fenced section can't silently defeat this check.
     idx = env_content.index("SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST")
-    nearby = env_content[max(0, idx - 400) : idx]
-    assert "test-only" in nearby.lower() or "test only" in nearby.lower(), (
+    fence = "# " + "=" * 10
+    fence_idx = env_content.rfind(fence, 0, idx)
+    assert fence_idx != -1, (
+        "SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST must sit inside a '# ===...' "
+        "fenced section header in .env.example."
+    )
+    section = env_content[fence_idx:idx]
+    assert "test-only" in section.lower() or "test only" in section.lower(), (
         "SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST must be fenced as a test-only knob "
         "in .env.example, not presented as ordinary server config."
     )

@@ -17,13 +17,18 @@ registered:
 
   1. ``SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST=1`` must be set explicitly, or the
      runner exits before touching the API at all.
-  2. The configured store must report itself as a development store
+  2. The registration endpoint is read from ``WEBHOOK_RECEIVER_URL`` — a host
+     the project controls, not a third party — never a literal in this file.
+  3. The configured store must report itself as a development store
      (``shop.plan.partnerDevelopment``), or the runner refuses to register
-     against it rather than risk subscribing a production order stream.
-  3. The registration endpoint is read from ``WEBHOOK_RECEIVER_URL`` — a host
-     the project controls, not a third party — and must already be present in
-     ``WEBHOOK_ALLOWLIST_HOSTS`` (SEC-17 / Story 10.51), or ``register_webhook``
-     itself refuses the call.
+     against it rather than risk a live registration against production.
+
+Whatever host ``WEBHOOK_RECEIVER_URL`` names, it is never a third party — but
+``register_webhook`` itself (``tools/webhooks.py::_check_endpoint``, SEC-17 /
+Story 10.51) additionally requires that host to be listed in
+``WEBHOOK_ALLOWLIST_HOSTS`` before it will register, *unless* the operator has
+set the ``WEBHOOK_ALLOW_ANY_HOST=true`` escape hatch — in which case that
+extra check is bypassed and any https host is accepted.
 
 The test topic is ``PRODUCTS_UPDATE`` rather than ``ORDERS_CREATE``: it
 exercises the identical register/list/delete round trip without the delivered
@@ -34,6 +39,7 @@ payload ever carrying customer PII, shrinking what the registration window
 import os
 import re
 import sys
+from collections.abc import Mapping
 
 import shopify_mcp.tools.webhooks as webhooks_module
 from shopify_mcp.client import ShopifyClient
@@ -77,7 +83,7 @@ def _fail(step: str, detail: str):
     sys.exit(1)
 
 
-def require_opt_in(env: dict | None = None) -> None:
+def require_opt_in(env: Mapping[str, str] | None = None) -> None:
     """Abort before any API call unless the opt-in var is set to '1'."""
     env = os.environ if env is None else env
     if env.get(ALLOW_ENV_VAR) != "1":
@@ -89,23 +95,7 @@ def require_opt_in(env: dict | None = None) -> None:
         )
 
 
-def require_development_store(client) -> None:
-    """Abort before registering unless the store reports itself as a
-    development store, so a misconfigured SHOPIFY_STORE_URL can't subscribe
-    a production order stream."""
-    data = client.execute(SHOP_PLAN_QUERY)
-    shop = data.get("shop") or {}
-    plan = shop.get("plan") or {}
-    if plan.get("partnerDevelopment") is not True:
-        _fail(
-            "Startup guard",
-            f"SHOPIFY_STORE_URL ({shop.get('myshopifyDomain', '?')}) is not a "
-            f"development store (shop.plan.partnerDevelopment is not true) — "
-            f"refusing to register a live webhook against it.",
-        )
-
-
-def require_endpoint(env: dict | None = None) -> str:
+def require_endpoint(env: Mapping[str, str] | None = None) -> str:
     """Read the registration endpoint from WEBHOOK_RECEIVER_URL — a host the
     project controls — rather than hardcoding any endpoint in source."""
     env = os.environ if env is None else env
@@ -121,6 +111,26 @@ def require_endpoint(env: dict | None = None) -> str:
     return endpoint
 
 
+def require_development_store(client) -> None:
+    """Abort before registering unless the store reports itself as a
+    development store, so a misconfigured SHOPIFY_STORE_URL can't run this
+    against production. Runs after the cheap local checks (opt-in, endpoint)
+    since it costs a real network round trip."""
+    try:
+        data = client.execute(SHOP_PLAN_QUERY)
+    except Exception as e:
+        _fail("Startup guard", f"could not read shop.plan to verify a development store: {e}")
+    shop = data.get("shop") or {}
+    plan = shop.get("plan") or {}
+    if plan.get("partnerDevelopment") is not True:
+        _fail(
+            "Startup guard",
+            f"SHOPIFY_STORE_URL ({shop.get('myshopifyDomain', '?')}) is not a "
+            f"development store (shop.plan.partnerDevelopment is not true) — "
+            f"refusing to register a live webhook against it.",
+        )
+
+
 def _extract_subscription_id(output: str) -> str:
     m = re.search(r"Subscription ID\s*:\s*(\d+)", output)
     if not m:
@@ -130,9 +140,9 @@ def _extract_subscription_id(output: str) -> str:
 
 def main():
     require_opt_in()
+    test_endpoint = require_endpoint()
     client = ShopifyClient()
     require_development_store(client)
-    test_endpoint = require_endpoint()
 
     capture = _Capture()
     webhooks_module.register(capture, client)

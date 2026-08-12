@@ -302,12 +302,15 @@ python3 tests/live/test_webhooks.py
 ```
 
 Without `SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST=1` set to `1`, the runner exits
-before making any API call. It then refuses to proceed unless the configured
-store reports itself as a development store (`shop.plan.partnerDevelopment`),
-and registers its test webhook against `WEBHOOK_RECEIVER_URL` — the same
-project-controlled endpoint configured above — rather than a third-party host.
-`WEBHOOK_RECEIVER_URL`'s host must already be in `WEBHOOK_ALLOWLIST_HOSTS` or
-`register_webhook` itself refuses the call. The test topic is
+before making any API call. It registers its test webhook against
+`WEBHOOK_RECEIVER_URL` — the same project-controlled endpoint configured
+above — rather than a third-party host, and refuses to proceed unless the
+configured store reports itself as a development store
+(`shop.plan.partnerDevelopment`). Whatever host `WEBHOOK_RECEIVER_URL` names,
+it is never a third party — but `register_webhook` itself additionally
+requires that host to be listed in `WEBHOOK_ALLOWLIST_HOSTS` before it will
+register, unless `WEBHOOK_ALLOW_ANY_HOST=true` is set (the escape hatch
+above), in which case that extra check is bypassed. The test topic is
 `PRODUCTS_UPDATE`, not `ORDERS_CREATE` — it carries no customer PII, so a
 webhook delivered during the brief registration window can't leak order data.
 

@@ -103,6 +103,16 @@ def test_require_development_store_passes_when_partner_development_true():
     assert fc.calls[0][0] == live_webhooks.SHOP_PLAN_QUERY
 
 
+def test_require_development_store_exits_cleanly_when_query_raises(capsys):
+    """A transport/GraphQL failure must route through the same clean _fail
+    path as every other guard, not propagate as a raw traceback."""
+    fc = FakeClient([RuntimeError("boom")])
+    with pytest.raises(SystemExit):
+        live_webhooks.require_development_store(fc)
+    out = capsys.readouterr().out
+    assert "boom" in out
+
+
 # ---------- topic swapped off the PII-bearing default ----------
 
 
