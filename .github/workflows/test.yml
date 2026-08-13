@@ -20,6 +20,19 @@ name: test
 # (compromised or not) can't slip into the build. The editable install that
 # follows uses `--no-deps`: its dependencies are already satisfied by the
 # lockfile install, so pip doesn't re-resolve them.
+#
+# Story 10.61 (SEC-26): every `uses:` step below is pinned to a full 40-char
+# commit SHA rather than a mutable tag like `v4` — a tag is a movable pointer
+# the upstream repo can repoint at any commit, and the next CI run executes
+# it with no diff on our side. Each SHA was resolved with
+# `gh api repos/<owner>/<repo>/git/ref/tags/<tag>` and cross-checked against
+# `gh api repos/<owner>/<repo>/tags` to confirm it matches the named release
+# tag in the trailing comment — re-run both commands to re-derive a pin.
+# `.github/dependabot.yml`'s `github-actions` entry keeps these pins from
+# aging the way the transitive `cryptography` pin did in SEC-23 (Story
+# 10.57): Dependabot opens a PR with the new SHA + tag comment whenever
+# actions/checkout or actions/setup-python cuts a release, instead of the
+# pin silently drifting behind upstream until a CVE forces a manual bump.
 
 on:
   push:
@@ -31,8 +44,8 @@ jobs:
   offline-tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
           cache: pip
@@ -61,8 +74,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
           cache: pip
@@ -98,8 +111,8 @@ jobs:
   dependency-audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
           cache: pip

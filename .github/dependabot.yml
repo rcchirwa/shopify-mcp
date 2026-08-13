@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # Story 10.61 (SEC-26): keeps the SHA-pinned actions in
+  # .github/workflows/test.yml from aging silently. Dependabot resolves the
+  # new release's commit SHA itself and opens a PR updating both the SHA and
+  # its trailing version comment, so the pins get bumped by review instead of
+  # by hand — the same failure mode SEC-23 (Story 10.57) hit with an
+  # unmonitored transitive dependency pin aging into a CVE window.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

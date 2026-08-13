@@ -4,9 +4,19 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-08-11.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-08-13.
 
 ---
+
+## 2026-08-13 — Story 10.61 (SEC-26 — pin CI marketplace actions to commit SHAs)
+
+Supply-chain hardening. Raised as a **Low (security)** finding by Story 10.40's triple-threat review (SEC-13/SEC-14) and explicitly deferred there: "actions/checkout@v4 / actions/setup-python@v5 pinned to mutable tags rather than commit SHAs... pinning every Marketplace action to a SHA repo-wide is a separate tech-debt item — out of scope for SEC-13/SEC-14." This is that item. Trello: https://trello.com/c/ha8UdzQR (Story 10.61, Epic 10).
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|----------------|
+| SEC-26 | ~~All six `uses:` steps across the three `.github/workflows/test.yml` jobs (`offline-tests`, `lint`, `dependency-audit`) referenced `actions/checkout@v4` and `actions/setup-python@v5` — mutable tags whoever controls the upstream repo can repoint at any commit, executed in a job with repository read access on every push/PR against `main`.~~ | Resolved each tag to the commit SHA it currently points at via `gh api repos/<owner>/<repo>/git/ref/tags/<tag>`, then cross-checked against `gh api repos/<owner>/<repo>/tags` to confirm the SHA matches the named release: `actions/checkout@v4` → `11d5960a326750d5838078e36cf38b85af677262` (`v4.4.0`), `actions/setup-python@v5` → `a26af69be951a213d495a4c3e4e4022e16d87065` (`v5.6.0`). All six lines now read `<owner>/<repo>@<40-char-sha> # <tag>`. Added `.github/dependabot.yml` with a `github-actions` ecosystem entry (weekly schedule) so the pins are bumped by PR instead of aging by hand — the same failure mode SEC-23 (Story 10.57) hit with an unmonitored transitive dependency pin. No `.github/dependabot.yml` existed before this story, so it was authored fresh rather than extended. `tests/architecture/test_ci_workflow_pins.py` (new) is the executable spec: asserts every `uses:` line across `.github/workflows/*.yml` is a 40-char commit SHA carrying a trailing version comment, so a future PR that reintroduces a mutable tag fails the offline suite instead of drifting silently. Verified on a pushed branch that all three jobs (`offline-tests`, `lint`, `dependency-audit`) still run and pass against the pinned actions — nothing local exercises the workflow itself, so that push was the only real verification of the pins working. |
 
 ## 2026-08-11 — Story 10.56 (SEC-22 — surface a startup warning when the webhook allowlist opt-out is active)
 
