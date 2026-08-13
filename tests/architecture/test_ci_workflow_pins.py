@@ -21,9 +21,14 @@ _WORKFLOWS_DIR = _REPO_ROOT / ".github" / "workflows"
 
 # Matches a `uses: owner/repo@ref` step, capturing the ref and any trailing
 # comment. A 40-char hex ref is a commit SHA; anything else (a tag like `v4`,
-# a branch, `main`) is mutable.
+# a branch, `main`) is mutable. The leading `-` is optional and NOT required
+# to share the line with `uses:`: GitHub Actions allows both the compact
+# `- uses: action@ref` form and the equally valid `- name: Foo` /
+# `  uses: action@ref` two-line form. Requiring the dash inline would let a
+# mutable-tag step written in the two-line style slip past this check
+# unnoticed — the exact regression this test exists to catch (Story 10.61).
 _USES_RE = re.compile(
-    r"^(?P<indent>\s*)-\s*uses:\s*(?P<action>\S+)@(?P<ref>\S+)(?:\s*#\s*(?P<comment>.+))?$"
+    r"^(?P<indent>\s*)(?:-\s*)?uses:\s*(?P<action>\S+)@(?P<ref>\S+)(?:\s*#\s*(?P<comment>.+))?$"
 )
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
