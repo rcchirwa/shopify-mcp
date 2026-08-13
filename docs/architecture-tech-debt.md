@@ -12,19 +12,46 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [tech-debt.
 
 ---
 
-## Backlog (priority-ordered)
+## Backlog: **empty**
 
-| Rank | ID | Item | Category | I | R | E | Score |
-|------|----|------|----------|---|---|---|-------|
-| 1 | A3 | Pagination helper for list reads — *helper shipped + read-path adoption Story 10.16* | Code | 2 | 3 | 3 | **15** |
-| 2 | A2 | `write_gate()` helper collapsing preview/confirm/error/audit boilerplate — *closed Story 10.22; 9 tools migrated; remaining tools triaged and deliberately excluded* | Code | 4 | 2 | 4 | **12** |
-| 3 | A5 | `shopify/` subpackage extraction (`queries/` + `operations/`) with GraphQL fragments — *closed Story 10.31; all 8 domains migrated (`products`, `catalog_hygiene`, `collections`, `discounts`, `inventory`, `orders`, `publications`, `webhooks`)* | Architecture | 2 | 1 | 2 | **12** |
-| 4 | A6 | HTTP client unification (single wrapper for `gql` + `requests`) — *closed: policy half N4/Story 10.21, transport half Story 10.24 (`client.fetch_bytes()` + shared `_with_retry`)* | Architecture | 2 | 2 | 3 | **12** |
-| 5 | A10 | Committed `uv.lock` for CI reproducibility | Dependency | 1 | 1 | 5 | **2** |
+> **Refreshed 2026-08-13.** All **13** items are closed — **A1–A8 and A10–A14**. Every deliverable below was verified present in the tree, not inferred from a story being marked done. **There is no open architectural debt in this ledger.**
+>
+> **A9 is absent because it was folded into A7, not because it was lost.** The original ledger (commit `79ca303`) carried the note *"(Folded in from former A9.)"* inside A7's entry — config validation was merged into the `Settings` class item. That parenthetical was **deleted** when A7 closed in commit `9746d34`, taking the only record of A9's fate with it, and leaving a gap in the id sequence with nothing to explain it. Restored here. **Closing an item should not delete the history of what was merged into it.**
+>
+> The table below is a **closure record**, not a work queue. It was previously headed "Backlog (priority-ordered)" and ranked 1–5 by score, which read as five open items to anyone skimming — the annotations saying otherwise were buried mid-cell. That framing is the single most misleading thing this document has done, and it is why A10 sat here for four weeks after SEC-13 closed it.
+
+| ID | Item | Category | Status | Verified at |
+|----|------|----------|--------|-------------|
+| A3 | Pagination helper for list reads | Code | ✅ closed — helper Story 10.6, read-path sweep Story 10.16 | `client.py` → `paginate` |
+| A2 | `write_gate()` helper collapsing preview/confirm/error/audit boilerplate | Code | ✅ closed — Story 10.22; 9 tools migrated, remainder triaged and deliberately excluded | `tools/_write_tool.py` |
+| A5 | `shopify/` subpackage extraction (`queries/` + `operations/`) with GraphQL fragments | Architecture | ✅ closed — Story 10.31; all 8 domains migrated | `shopify/queries/` — 8 modules |
+| A6 | HTTP client unification (single wrapper for `gql` + `requests`) | Architecture | ✅ closed — policy half N4/Story 10.21, transport half Story 10.24 | `client.py` → `fetch_bytes`, `_with_retry` |
+| A10 | Committed lockfile for CI reproducibility | Dependency | ✅ closed — Story 10.40 / SEC-13; shipped as `requirements.lock` + `requirements-dev.lock`, **not** `uv.lock` | both lockfiles, hash-verified in CI |
+
+Scores (I/R/E) are retained in each item's detail section below. They are historical inputs to a prioritisation that has finished, so they are no longer surfaced here where they invite re-ranking closed work.
 
 **Category coverage:** the 2026-04-25 review left Test debt and Documentation debt unrepresented, noting that coverage was at 100% and that tech-debt.md plus README covered most documentation needs. The 2026-07-25 folder-structure audit filled both gaps — **A11** (Test) and **A14** (Documentation). Note that neither was about *coverage* or *content*, which remain healthy; both were about *where files live*, which the original review's ten evaluation areas didn't probe.
 
-**All four folder-structure items (A11–A14) are closed** — Stories 10.45–10.48, PRs [#114](https://github.com/rcchirwa/shopify-mcp/pull/114), [#116](https://github.com/rcchirwa/shopify-mcp/pull/116), [#117](https://github.com/rcchirwa/shopify-mcp/pull/117), [#118](https://github.com/rcchirwa/shopify-mcp/pull/118). Details in the [Closed](#closed) section; the backlog above is back to its pre-audit contents.
+**All four folder-structure items (A11–A14) are closed** — Stories 10.45–10.48, PRs [#114](https://github.com/rcchirwa/shopify-mcp/pull/114), [#116](https://github.com/rcchirwa/shopify-mcp/pull/116), [#117](https://github.com/rcchirwa/shopify-mcp/pull/117), [#118](https://github.com/rcchirwa/shopify-mcp/pull/118). Details in the [Closed](#closed) section.
+
+---
+
+## ⚠️ Paths in this document predate the `src/` move
+
+Story 10.47 (A13) relocated everything under `src/shopify_mcp/`, and Stories 10.45/10.46 moved the tests. Entries written before then cite the **old flat paths** — **57** citations across this file (counted 2026-08-13). Those entries are historical records of what shipped at the time, so they are left as written rather than retro-edited; **current-state status lines have been corrected.**
+
+Translate with this mapping:
+
+| Cited as | Now lives at |
+|---|---|
+| `shopify_client.py` | `src/shopify_mcp/client.py` |
+| `shopify_mcp.py` | `src/shopify_mcp/server.py` |
+| `tools/…` | `src/shopify_mcp/tools/…` |
+| `validators/…` | `src/shopify_mcp/validators/…` |
+| `_testing/fake_client.py` | `tests/support/fake_client.py` |
+| `test_<name>_offline.py` (repo root) | `tests/unit/…` |
+
+A13's own entry cites pre-move paths while describing the move that invalidated them. That is not a defect to fix; it is the clearest possible illustration of why a static ledger needs a mapping note instead of forty edits.
 
 ---
 
@@ -64,7 +91,7 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [tech-debt.
 ### A3 — Pagination helper for list reads
 
 - **Category:** Code
-- **Status:** helper shipped — `ShopifyClient.paginate()` at [shopify_client.py:224](shopify_client.py:224), tested in [tests/unit/test_paginate.py](tests/unit/test_paginate.py), mirrored in `_testing/fake_client.py`. Every cleanly-paginable single-object read has adopted it (inventory + media under Story 10.6; orders, products, publications under Story 10.16). Remaining gaps are the two structural exceptions below.
+- **Status:** ✅ **closed.** Helper shipped — `ShopifyClient.paginate()` in `src/shopify_mcp/client.py` (re-verified 2026-08-13; the previous citation of `shopify_client.py:224` was stale on both path and line after the `src/` move, which is why this one names the symbol and not a line), tested in `tests/unit/test_paginate.py`, mirrored in `tests/support/fake_client.py`. Every cleanly-paginable single-object read has adopted it (inventory + media under Story 10.6; orders, products, publications under Story 10.16). Remaining gaps are the two structural exceptions below.
 - **Impact (2):** prevents silent truncation on stores with >50 variants per product or >100 media per product.
 - **Risk (3):** the helper-adopted read paths now auto-continue across pages. The residual risk is the two connections `paginate()` structurally cannot walk — both documented, note-only items in tech-debt.md (`A3-orders-lineitems-cap`, `A3-option-echo-cap`): `GET_ORDERS.nodes.lineItems` (a connection nested inside a list, so `get_orders` still caps per order) and the `UPDATE_PRODUCT_OPTION` mutation-response echo (mitigated by a pre-write at-cap warning).
 - **Effort (3):** historical estimate (~half a day). The helper and the read-path sweep are done; only the two structural exceptions remain, and neither is addressable by `paginate()` as designed.
@@ -214,7 +241,16 @@ Strategic, design-level technical debt for `shopify-mcp`. Sibling to [tech-debt.
 - **Plan:** unify under a single client wrapper exposing both GraphQL execution and arbitrary HTTP fetches. Image download in `tools/media/_upload.py` becomes `client.fetch_bytes(url, max_size=...)`. Pairs naturally with A1 (shared retry policy across both).
 - **Business justification:** rolls together with A1 — once the throttle-aware policy exists, having two HTTP stacks means only half of calls benefit.
 
-### A10 — Committed `uv.lock`
+### A10 — Committed lockfile ✅ CLOSED
+
+**Status: closed 2026-07-17 by Story 10.40 (SEC-13), which arrived from the security lineage rather than this ledger.** Shipped as `requirements.lock` + `requirements-dev.lock`, generated by `pip-compile --generate-hashes --allow-unsafe --strip-extras` — **not** `uv.lock` as planned below. Both dependency-installing CI jobs (`offline-tests`, `lint`) use `pip install --require-hashes`, and `tests/architecture/test_lockfiles.py` fails the suite if `pyproject.toml` drifts from the lockfiles. The companion SEC-14 added a `dependency-audit` CI job running `pip-audit --strict` against both, which is more than this item ever asked for.
+
+Two ways the original framing below turned out wrong, kept because the gap is the useful part:
+
+- **The trigger never fired.** This item said "do it after a real CI-vs-dev divergence." No divergence ever happened; the work landed because a *security* audit wanted hash-verified installs and a CVE gate. A dependency item scored purely on reproducibility under-prices the supply-chain reason to do it.
+- **Effort (5) — "~5 minutes" — was badly off.** The real story carried lockfile generation, two CI jobs rewired, a third pinned lockfile for the scanner itself, a `pytest` major-version bump forced by a CVE the new gate immediately caught, README documentation, and a parity test across both lockfiles. Closer to a day.
+
+Original entry retained for the record:
 
 - **Category:** Dependency
 - **Impact (1):** CI reproducibility. Today CI and dev runs may pull different patch versions of `gql`, `requests`, `mcp`.
@@ -240,7 +276,9 @@ Designed to interleave with feature work, not block it. No phase is more than ~3
 ~~**A2** — closed, Story 10.22. 9 tools use `write_gate()`; publications and catalog_hygiene standard tools deliberately excluded (incompatible control flow — see A2 item).~~
 ~~**A3** — closed, Story 10.16. `paginate()` helper shipped; all cleanly-paginable reads migrated.~~
 
-### Phase 3 — Restructure (do before reaching ~12 domains or starting multi-store work, ~3 days)
+### Phase 3 — Restructure (complete)
+
+Both items closed. The phase was gated on "do before reaching ~12 domains or starting multi-store work" — it landed at **8 domains** (`catalog_hygiene`, `collections`, `discounts`, `inventory`, `orders`, `products`, `publications`, `webhooks`, confirmed 2026-08-13 in `src/shopify_mcp/shopify/queries/`), so the restructure happened while it was still cheap, which was the entire point of the trigger.
 
 | Day | Item | Why |
 |-----|------|-----|
@@ -261,12 +299,14 @@ Added by the 2026-07-25 folder-structure audit and delivered the same day. Phase
 
 **Ordering held up in practice.** The one real cross-item constraint surfaced mid-phase rather than at planning time: Story 10.50 (ruff/mypy target alignment) edited `depcheck.py`, `tools/_log.py`, and `tools/discounts.py`, all of which A13 then relocated under `src/`, so it had to land *before* A13 or be redone against moved files. Sequencing a config-only change ahead of a large move is the transferable lesson.
 
-### Backlog (don't pre-refactor)
+### Backlog (don't pre-refactor) — **empty**
+
+Both deferred items closed. Neither closed on the trigger written for it, which is the interesting part: A8 landed *ahead* of its trigger and A10 landed on an unrelated one. See the refresh log for what that implies about trigger-gated items generally.
 
 | Item | Trigger |
 |------|---------|
 | ~~**A8** Caching~~ *(closed — Story 10.32; channels-only cross-call TTLCache, implemented ahead of trigger)* | ~~Call volume rises, or first real Shopify quota miss.~~ |
-| **A10** Lockfile | First CI-vs-dev divergence caused by a floated dep. |
+| ~~**A10** Lockfile~~ *(closed — Story 10.40 / SEC-13; landed on a supply-chain trigger, not this one — the stated trigger never fired)* | ~~First CI-vs-dev divergence caused by a floated dep.~~ |
 
 ---
 
@@ -365,7 +405,46 @@ Added by the 2026-07-25 folder-structure audit and delivered the same day. Phase
 ## How to use this file
 
 - **Add a new item** when an architecture pass surfaces design-level debt. Score it on the same I/R/E framework. Use the next free `A`-prefixed ID. Don't renumber existing IDs.
-- **Close an item** by deleting its row from the backlog table and moving its detail block to a `## Closed` section at the bottom (with the closing PR number). Keep the audit trail.
+- **Close an item** by setting its row's **Status** to `✅ closed` *with the artifact that proves it* (a path, a symbol, a lockfile — not just a story number), and moving its detail block to `## Closed` when the detail is no longer load-bearing.
+  > **Changed 2026-08-13.** This previously read *"delete its row from the backlog table and move its detail block to `## Closed`."* Nobody did that — five items were annotated in place instead, and because the table was headed "Backlog (priority-ordered)" and ranked 1–5, all five read as open work. **The instruction lost to the habit, so the instruction changed.** Annotating in place is the better behaviour anyway: it keeps the score and rationale next to the outcome. What was missing was a Status column and an honest section heading, both now present.
+- **Prove closure against the tree, not the tracker.** A story marked done is not evidence. Cite the file, symbol, or artifact — that is what makes a stale row detectable later.
 - **Reference an item from chat** by its stable ID (e.g. *"working on A2 today"*).
 - **Re-triage cadence:** after every `/architecture` review (annually-ish), or whenever the codebase doubles in tool count.
 - **Don't merge with tech-debt.md.** That ledger is tactical and high-frequency; this one is strategic and low-frequency. Mixing the two makes both worse — tech-debt.md's priority list would be permanently dominated by 1-week strategic items, and this document would be impossible to scan.
+
+---
+
+## Refresh log
+
+### 2026-08-13 — full re-verification, all 13 items
+
+Every item was checked against the tree rather than against its story's completion state. **Result: A1–A8 and A10–A14 all closed; no open architectural debt.** (A9 is not missing — see the note under Backlog.)
+
+Verified present, by symbol rather than line number so the citations survive edits: `client.py` → `paginate` (A3), `fetch_bytes` (A6), `_with_retry` (A1/A6) · `tools/_write_tool.py` (A2) · `shopify/queries/` with 8 domain modules (A5) · `settings.py` (A7) · `logging_config.py` (A4) · `shopify/_cache.py` (A8) · both hash-verified lockfiles (A10) · `tests/` + `tests/support/` + `src/` layout (A11–A13).
+
+**What was actually wrong, and it was framing rather than facts:**
+
+1. **A10 was recorded open** four weeks after SEC-13 closed it. It closed via the *security* lineage, not this ledger, so nothing prompted an update here.
+2. **The backlog table advertised five ranked open items** when all five were closed. The annotations were correct but buried mid-cell, behind a heading and a rank column that both said "open work."
+3. **A3's status line cited `shopify_client.py:224`** — stale on both path and line after the `src/` move. Re-pointed at `src/shopify_mcp/client.py` and the `paginate` symbol, deliberately without a line number: a line-anchored citation is what rotted in the first place, so every citation added by this refresh names a symbol instead.
+4. **~40 path citations predate the `src/` move.** Left as written (they are historical records) with a mapping table added near the top instead.
+5. **The "how to close an item" instruction had never been followed.** Reconciled to match actual practice.
+
+**Two lessons worth more than the corrections:**
+
+**Trigger-gated items don't close on their triggers.** Both deferred items — A8 and A10 — closed for reasons unrelated to the trigger written for them. A8 landed *ahead* of its trigger (caching, implemented before any quota miss); A10 landed on a supply-chain trigger from a security audit, while its own trigger ("first CI-vs-dev divergence") never fired at all. A trigger is a useful reason not to act *now*; it is not a reliable signal that will arrive later. Any item parked on one needs a periodic sweep, because the thing that eventually closes it probably will not be the thing you were watching for.
+
+**Estimates on deferred items rot in the direction of optimism.** A10's Effort(5) — "~5 minutes, `uv lock` and commit" — became roughly a day once it was real: two lockfiles, two CI jobs rewired, a third pinned lockfile for the scanner, a forced `pytest` major bump, README documentation, and a cross-lockfile parity test. The estimate was made when the item was abstract, and nothing re-estimated it across the ~12 weeks it sat parked (2026-04-25 → 2026-07-17). **Re-estimate on unpark, never trust a number set at parking time.**
+
+**Cross-document note.** The same 2026-08-13 audit swept three documents and found **seven** stale rows in total, distributed like this:
+
+| Document | Structure audited | Stale rows |
+|---|---|---|
+| `mcp-server-security-review.md` | Remediation ledger (standing table) | 3 — L4, L6, L8 |
+| `docs/tech-debt.md` | `### Active` tables (standing) | 3 — `T-9.6-media-cap`, `T-9.6-resolver-orphan`, `SEC-M2-collection-seo` |
+| this file | Backlog table (standing) | 1 — A10 |
+| `docs/tech-debt.md` | Dated per-story entries (journal) | **0** |
+
+**The split is by structure, not by document.** `docs/tech-debt.md` appears on both sides: its dated journal entries were flawless, its standing tables were as stale as everyone else's. So the lesson is not "trust tech-debt.md" — it is that an append-only journal is correct by construction, while any standing table is only as current as the last person who thought to look. Weight your trust by the shape of the section you are reading, not by which file it lives in.
+
+One of the three tech-debt.md rows was worse than stale: `SEC-M2-collection-seo` described a mismatch that had already been fixed, so the row's *premise* was false rather than merely out of date. Story 10.60 was filed against the real remaining problem instead.
