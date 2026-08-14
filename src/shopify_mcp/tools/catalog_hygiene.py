@@ -74,6 +74,7 @@ from shopify_mcp.shopify.queries.catalog_hygiene import (
 )
 from shopify_mcp.tools._gid import from_gid, to_gid
 from shopify_mcp.tools._log import log_write
+from shopify_mcp.tools._product_resolver import _resolve_product
 from shopify_mcp.tools._resolvers import resolve_variant_ids_with_variants
 from shopify_mcp.tools._response import extract_user_errors, format_user_errors, with_confirm_hint
 from shopify_mcp.tools._scrub import cap
@@ -135,7 +136,6 @@ PRODUCT_TYPE_MAX_LEN = 255
 
 _VALID_RESOLVE_STRATEGIES = ("exact", "best-match", "reject-ambiguous")
 _TAXONOMY_GID_PREFIX = "gid://shopify/TaxonomyCategory/"
-_PRODUCT_GID_PREFIX = "gid://shopify/Product/"
 # Cap user-supplied values echoed into error messages / logs to prevent log
 # flooding from attacker-controlled inputs that start with "gid://".
 _GID_DISPLAY_MAX = 200
@@ -1005,6 +1005,13 @@ def _resolve_product_gid(
 ) -> tuple[str | None, str | None]:
     """Map a product_id string to a Product GID.
 
+    Thin adapter over the shared `_resolve_product` dispatch (Story 10.62 /
+    T-9.5-resolver-fanout) that reshapes it into this function's historical
+    `(gid, error_str)` return shape, so this adapter's four callers observe no
+    behavior change. docs/tech-debt.md's T-9.5-resolver-fanout closure entry
+    is the single source of truth for *why* this adapter's behavior differs
+    from `_resolve_product`'s — see it before changing either.
+
     Accepts (no network call unless noted):
         numeric string  → wraps to gid://shopify/Product/<id>
         Product GID     → passes through unchanged
@@ -1018,35 +1025,21 @@ def _resolve_product_gid(
 
     Returns (gid, error). On success error is None; on failure gid is None.
     """
-    if not isinstance(product_id, str) or not product_id.strip():
-        return None, "product_id must be a non-empty string."
-    stripped = product_id.strip()
-
-    if stripped.startswith("gid://") and not stripped.startswith(_PRODUCT_GID_PREFIX):
-        return None, (
-            "product_id must be a numeric ID, Product GID, or handle"
-            f" — got non-Product GID: {_cap(stripped)!r}"
-        )
-
-    if stripped.startswith(_PRODUCT_GID_PREFIX):
-        if not stripped[len(_PRODUCT_GID_PREFIX) :]:
-            return None, f"Empty product GID body: {_cap(stripped)!r}"
-        return stripped, None
-
-    if stripped.isdigit():
-        return to_gid("Product", stripped), None
-
-    # Treat anything else as a handle. Shopify handles are lowercase
-    # alphanumerics/hyphens/underscores — but rather than gate here, we let
-    # the GraphQL query decide (returns null for unknown handles).
     try:
-        data = ops.read_product_by_handle_min(client, stripped)
+        gid, _snapshot = _resolve_product(client, product_id)
+    except ValueError as e:
+        msg = str(e)
+        # `_resolve_product`'s empty-input message lacks this function's
+        # original trailing period; every other validation message already
+        # matches verbatim.
+        if msg == "product_id must be a non-empty string":
+            return None, "product_id must be a non-empty string."
+        return None, msg
     except Exception as e:
         return None, f"Handle lookup failed ({type(e).__name__}): {e}"
-    product = (data or {}).get("productByHandle")
-    if not product:
-        return None, f"No product found with handle {_cap(stripped)!r}."
-    return product["id"], None
+    if gid is None:
+        return None, f"No product found with handle {_cap(product_id.strip())!r}."
+    return gid, None
 
 
 def _resolve_taxonomy_category(
@@ -1227,69 +1220,8 @@ def _shape_product_snapshot(product_node: dict[str, Any] | None) -> dict[str, An
 
 
 # ---------------------------------------------------------------------------
-# Helpers — shared resolver (Stories 9.2 / 9.4 / 9.5)
-# ---------------------------------------------------------------------------
-
-
-def _resolve_product_with_queries(
-    client: ShopifyClient,
-    product_id: str,
-    query_by_id: str,
-    query_by_handle: str,
-) -> tuple[str | None, dict]:
-    """Shared dispatch used by the three snapshot-returning product-id resolvers.
-
-    Accepts numeric string, Product GID, or handle. Returns (gid, snapshot)
-    on success, (None, {}) when the product is not found. Raises ValueError
-    on obviously-garbage inputs (empty string, empty GID body, wrong-type GID)
-    so callers' try/except wrappers surface them as structured errors without
-    issuing a Shopify call.
-    """
-    if not isinstance(product_id, str) or not product_id.strip():
-        raise ValueError("product_id must be a non-empty string")
-    stripped = product_id.strip()
-
-    if stripped.startswith("gid://") and not stripped.startswith(_PRODUCT_GID_PREFIX):
-        raise ValueError(
-            "product_id must be a numeric ID, Product GID, or handle"
-            f" — got non-Product GID: {_cap(stripped)!r}"
-        )
-
-    if stripped.startswith(_PRODUCT_GID_PREFIX):
-        if not stripped[len(_PRODUCT_GID_PREFIX) :]:
-            raise ValueError(f"Empty product GID body: {_cap(stripped)!r}")
-        gid = stripped
-    elif stripped.isdigit():
-        gid = to_gid("Product", stripped)
-    else:
-        # Handle path — separate query.
-        data = ops.read_product_snapshot_by_handle(client, query_by_handle, stripped)
-        product = (data or {}).get("productByHandle") or {}
-        if not product:
-            return None, {}
-        return product.get("id"), product
-
-    # Numeric / GID path shares the same query.
-    data = ops.read_product_snapshot_by_id(client, query_by_id, gid)
-    product = (data or {}).get("product") or {}
-    if not product:
-        return None, {}
-    return product.get("id") or gid, product
-
-
-# ---------------------------------------------------------------------------
 # Helpers — Story 9.2 (update_product_vendor)
 # ---------------------------------------------------------------------------
-
-
-def _resolve_product_id(client: ShopifyClient, product_id: str) -> tuple[str | None, dict]:
-    """Resolve a numeric/GID/handle product_id to (product_gid, product_snapshot).
-
-    Delegates to _resolve_product_with_queries with the vendor query pair.
-    """
-    return _resolve_product_with_queries(
-        client, product_id, GET_PRODUCT_VENDOR, GET_PRODUCT_VENDOR_BY_HANDLE
-    )
 
 
 def _normalize_vendor(vendor: str | None) -> tuple[str | None, str | None]:
@@ -1340,16 +1272,6 @@ def _format_vendor_payload(
 def _vendor_text(vendor: str | None) -> str:
     """Human-readable vendor display: None or empty/whitespace → '(cleared)'."""
     return "(cleared)" if not (vendor and vendor.strip()) else vendor
-
-
-def _resolve_product_id_for_type(client: ShopifyClient, product_id: str) -> tuple[str | None, dict]:
-    """Resolve a numeric/GID/handle product_id to (product_gid, product_snapshot).
-
-    Delegates to _resolve_product_with_queries with the productType query pair.
-    """
-    return _resolve_product_with_queries(
-        client, product_id, GET_PRODUCT_TYPE, GET_PRODUCT_TYPE_BY_HANDLE
-    )
 
 
 def _normalize_product_type(product_type: str | None) -> tuple[str, str | None]:
@@ -1404,18 +1326,6 @@ def _type_text(product_type: str) -> str:
 # ---------------------------------------------------------------------------
 # Helpers — Story 9.5 (update_product_options)
 # ---------------------------------------------------------------------------
-
-
-def _resolve_product_id_for_options(
-    client: ShopifyClient, product_id: str
-) -> tuple[str | None, dict]:
-    """Resolve a numeric/GID/handle product_id to (product_gid, product_snapshot).
-
-    Delegates to _resolve_product_with_queries with the options+variants query pair.
-    """
-    return _resolve_product_with_queries(
-        client, product_id, GET_PRODUCT_OPTIONS, GET_PRODUCT_OPTIONS_BY_HANDLE
-    )
 
 
 def _normalize_option_input(
@@ -2115,7 +2025,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
 
         try:
-            product_gid, product = _resolve_product_id(client, product_id)
+            product_gid, product = _resolve_product(
+                client,
+                product_id,
+                query_by_id=GET_PRODUCT_VENDOR,
+                query_by_handle=GET_PRODUCT_VENDOR_BY_HANDLE,
+            )
         except Exception as exc:
             msg = f"Error resolving product_id ({type(exc).__name__}): {exc}"
             return f"{msg}\n\n" + _format_vendor_payload(
@@ -2285,7 +2200,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
 
         try:
-            product_gid, product = _resolve_product_id_for_type(client, product_id)
+            product_gid, product = _resolve_product(
+                client,
+                product_id,
+                query_by_id=GET_PRODUCT_TYPE,
+                query_by_handle=GET_PRODUCT_TYPE_BY_HANDLE,
+            )
         except Exception as exc:
             msg = f"Error resolving product_id ({type(exc).__name__}): {exc}"
             return f"{msg}\n\n" + _format_type_payload(
@@ -3792,7 +3712,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # options + variants in the same query (handle path uses the _BY_HANDLE
         # twin; either way `product` carries the full snapshot we need).
         try:
-            product_gid, product = _resolve_product_id_for_options(client, product_id)
+            product_gid, product = _resolve_product(
+                client,
+                product_id,
+                query_by_id=GET_PRODUCT_OPTIONS,
+                query_by_handle=GET_PRODUCT_OPTIONS_BY_HANDLE,
+            )
         except Exception as exc:
             msg = f"Error resolving product_id ({type(exc).__name__}): {exc}"
             return f"{msg}\n\n" + _format_options_payload(
