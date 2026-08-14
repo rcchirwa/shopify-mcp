@@ -43,19 +43,40 @@ def _cap(s: str) -> str:
     return cap(s, _GID_DISPLAY_MAX)
 
 
+def _lookup_by_handle(
+    client: ShopifyClient,
+    handle: str,
+    query_by_handle: str | None,
+) -> tuple[str | None, dict[str, Any]]:
+    """productByHandle lookup — always one network call, never a GID wrap."""
+    data = (
+        ops.read_product_snapshot_by_handle(client, query_by_handle, handle)
+        if query_by_handle is not None
+        else ops.read_product_by_handle_min(client, handle)
+    )
+    product = (data or {}).get("productByHandle") or {}
+    if not product:
+        return None, {}
+    return product.get("id"), product
+
+
 def _resolve_product(
     client: ShopifyClient,
-    product_id: str,
+    product_id: str = "",
     *,
+    handle: str = "",
     query_by_id: str | None = None,
     query_by_handle: str | None = None,
 ) -> tuple[str | None, dict[str, Any]]:
-    """Resolve a numeric / Product-GID / handle `product_id` to `(gid, snapshot)`.
+    """Resolve a numeric / Product-GID / handle input to `(gid, snapshot)`.
 
-    Accepts:
+    Accepts, via `product_id`:
         numeric string  → wraps to gid://shopify/Product/<id>
         Product GID     → passes through unchanged
         handle string   → productByHandle lookup (always one network call)
+
+    ...or, via the keyword-only `handle`, a handle that is looked up with
+    **no** numeric classification at all. Supplying both raises `ValueError`.
 
     `query_by_id` / `query_by_handle` are the caller's own snapshot-shaped
     GraphQL query strings. When `query_by_id` is omitted, a numeric/GID input
@@ -69,13 +90,42 @@ def _resolve_product(
     not an error at this layer, callers decide how to report it.
 
     Raises `ValueError` on malformed input (empty/non-string, empty GID body,
-    a GID of the wrong resource type) before any network call. Does not catch
-    exceptions raised by the underlying GraphQL read — those propagate to the
-    caller.
+    a GID of the wrong resource type, or both identifiers at once) before any
+    network call. Does not catch exceptions raised by the underlying GraphQL
+    read — those propagate to the caller.
+
+    **Story 10.64 (T-9.5-numeric-handle) — why `handle` exists.** Shopify
+    permits a purely-numeric product handle: `Product.handle` allows letters,
+    hyphens and numbers, and handleize() of a product titled "2024" yields the
+    handle `2024` (https://shopify.dev/docs/api/admin-graphql/latest/objects/Product).
+    Such a handle is indistinguishable from a legacy numeric product ID once
+    it is inside `product_id`, so `handle=` is the unambiguous channel.
+
+    **Accepted residual, not an oversight.** Bare digits in `product_id` still
+    mean "numeric ID" — that keeps every existing caller working and preserves
+    the zero-network-call path above. A caller who passes a numeric *handle*
+    through `product_id` therefore still resolves to the wrong product,
+    silently. Closing that would mean rejecting bare numerics outright (a
+    breaking change to every tool that accepts one today); the trade-off was
+    made deliberately in Story 10.64. See docs/tech-debt.md.
     """
+    handle_arg = handle.strip() if isinstance(handle, str) else ""
+    pid_arg = product_id.strip() if isinstance(product_id, str) else ""
+
+    if pid_arg and handle_arg:
+        raise ValueError(
+            "Supply product_id or handle, not both"
+            f" — got product_id={_cap(pid_arg)!r} and handle={_cap(handle_arg)!r}"
+        )
+
+    if handle_arg:
+        return _lookup_by_handle(client, handle_arg, query_by_handle)
+
+    # No handle supplied — the historical single-argument contract, including
+    # its exact error text, which `catalog_hygiene._resolve_product_gid` maps.
     if not isinstance(product_id, str) or not product_id.strip():
         raise ValueError("product_id must be a non-empty string")
-    stripped = product_id.strip()
+    stripped = pid_arg
 
     if stripped.startswith("gid://") and not stripped.startswith(_PRODUCT_GID_PREFIX):
         raise ValueError(
@@ -87,18 +137,15 @@ def _resolve_product(
         if not stripped[len(_PRODUCT_GID_PREFIX) :]:
             raise ValueError(f"Empty product GID body: {_cap(stripped)!r}")
         gid = stripped
-    elif stripped.isdigit():
+    elif stripped.isascii() and stripped.isdigit():
+        # `.isascii()` guard: `str.isdigit()` is Unicode-aware and returns True
+        # for superscript ('²'), fullwidth (U+FF10..U+FF19) and Arabic-Indic
+        # ('٤٢') digits, which would be wrapped into a malformed
+        # `gid://shopify/Product/²`. Shopify IDs are ASCII, so those fall
+        # through to the handle lookup below and simply do not resolve.
         gid = to_gid("Product", stripped)
     else:
-        data = (
-            ops.read_product_snapshot_by_handle(client, query_by_handle, stripped)
-            if query_by_handle is not None
-            else ops.read_product_by_handle_min(client, stripped)
-        )
-        product = (data or {}).get("productByHandle") or {}
-        if not product:
-            return None, {}
-        return product.get("id"), product
+        return _lookup_by_handle(client, stripped, query_by_handle)
 
     if query_by_id is None:
         return gid, {}

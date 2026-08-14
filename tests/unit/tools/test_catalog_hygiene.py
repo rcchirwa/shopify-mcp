@@ -7800,6 +7800,51 @@ def test_s911_product_not_found_returns_structured_error():
     assert tail["metafields"] == []
 
 
+# ----- Story 10.64 (T-9.5-numeric-handle) — the explicit handle channel ------
+#
+# `get_product_metafields` documents `handle` as "Resolved via productByHandle
+# before the metafield query", but collapsed both params into one ambiguous
+# argument (`pid or hdl`). An all-digit handle supplied through the explicit,
+# documented channel was therefore classified as a numeric product ID and read
+# the WRONG product — a caller doing everything right got silently bad data.
+
+
+def test_s1064_all_digit_handle_resolves_via_product_by_handle():
+    """`handle="2024"` must hit productByHandle, not become Product/2024."""
+    tools, fc = _build(
+        [
+            {"productByHandle": {"id": _S911_PRODUCT_GID}},
+            _s911_product_response([_s911_metafield_node()]),
+        ]
+    )
+    out = tools["get_product_metafields"](handle="2024")
+    # First call must be the handle resolution, carrying the handle verbatim.
+    assert fc.calls[0][1] == {"handle": "2024"}
+    # And the metafields query must run against the RESOLVED gid, not a gid
+    # fabricated from the digits of the handle.
+    assert "gid://shopify/Product/2024" not in str(fc.calls)
+    tail = _parse_tail(out)
+    assert tail["ok"] is True
+
+
+def test_s1064_numeric_product_id_still_short_circuits_without_handle_lookup():
+    """Backward compatibility: a bare numeric `product_id` keeps its
+    zero-network-call resolution and never consults productByHandle."""
+    tools, fc = _build([_s911_product_response([_s911_metafield_node()])])
+    out = tools["get_product_metafields"](product_id="8581472649369")
+    assert all("productByHandle" not in q for q, _v in fc.calls)
+    assert _parse_tail(out)["ok"] is True
+
+
+def test_s1064_product_id_wins_when_both_supplied():
+    """The tool documents product_id as taking precedence; it must not raise
+    the resolver's both-supplied ValueError at the tool surface."""
+    tools, fc = _build([_s911_product_response([_s911_metafield_node()])])
+    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID, handle="2024")
+    assert all("productByHandle" not in q for q, _v in fc.calls)
+    assert _parse_tail(out)["ok"] is True
+
+
 # ----- AC #12 — network exception -------------------------------------------
 
 

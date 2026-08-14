@@ -1001,9 +1001,11 @@ def _format_payload(
 
 def _resolve_product_gid(
     client: ShopifyClient,
-    product_id: str,
+    product_id: str = "",
+    *,
+    handle: str = "",
 ) -> tuple[str | None, str | None]:
-    """Map a product_id string to a Product GID.
+    """Map a product_id string (or an explicit handle) to a Product GID.
 
     Thin adapter over the shared `_resolve_product` dispatch (Story 10.62 /
     T-9.5-resolver-fanout) that reshapes it into this function's historical
@@ -1017,16 +1019,22 @@ def _resolve_product_gid(
         Product GID     → passes through unchanged
         handle string   → productByHandle lookup (one network call)
 
+    Story 10.64 (T-9.5-numeric-handle) adds the keyword-only `handle`, which
+    forces the productByHandle lookup with no numeric classification — the
+    only way to resolve an all-digit handle such as `2024`. Supplying both
+    identifiers is rejected by `_resolve_product` before any network call.
+
     Rejects with (None, error_string):
         empty / non-string  → "product_id must be a non-empty string."
         wrong-type GID      → "product_id must be … — got non-Product GID: '<v>'" (no network)
+        both identifiers    → "Supply product_id or handle, not both — …" (no network)
         handle not found    → "No product found with handle '...'."
         transport failure   → "Handle lookup failed (...): ..."
 
     Returns (gid, error). On success error is None; on failure gid is None.
     """
     try:
-        gid, _snapshot = _resolve_product(client, product_id)
+        gid, _snapshot = _resolve_product(client, product_id, handle=handle)
     except ValueError as e:
         msg = str(e)
         # `_resolve_product`'s empty-input message lacks this function's
@@ -1038,7 +1046,9 @@ def _resolve_product_gid(
     except Exception as e:
         return None, f"Handle lookup failed ({type(e).__name__}): {e}"
     if gid is None:
-        return None, f"No product found with handle {_cap(product_id.strip())!r}."
+        # Report whichever identifier the caller actually supplied.
+        supplied = handle.strip() if handle else product_id.strip()
+        return None, f"No product found with handle {_cap(supplied)!r}."
     return gid, None
 
 
@@ -3395,8 +3405,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         product_id : numeric product ID or full Product GID. e.g.
                      '8581472649369' or 'gid://shopify/Product/8581472649369'.
                      Used if non-empty; otherwise `handle` must be supplied.
+                     A bare number here always means a product ID — pass an
+                     all-digit *handle* (e.g. '2024') via `handle` instead.
         handle     : product handle slug. Used when product_id is empty.
-                     Resolved via productByHandle before the metafield query.
+                     Resolved via productByHandle before the metafield query,
+                     with no numeric-ID classification — so an all-digit
+                     handle such as '2024' resolves correctly (Story 10.64).
         namespace  : optional metafield namespace filter (e.g. 'google',
                      'custom'). Empty means "all namespaces". Shopify's Admin
                      API forbids the simultaneous use of `namespace` and
@@ -3452,7 +3466,17 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # ---- Phase 2 — resolve owner GID --------------------------------
         # `_resolve_product_gid` short-circuits for numeric IDs and GIDs;
         # the handle path costs one extra round-trip via productByHandle.
-        product_gid, resolve_err = _resolve_product_gid(client, pid or hdl)
+        #
+        # Story 10.64: `handle` goes through the explicit keyword channel, not
+        # merged into `product_id`. The old `pid or hdl` collapse meant an
+        # all-digit handle (e.g. "2024") supplied through this tool's own
+        # documented `handle` parameter was classified as a numeric product ID
+        # and read the wrong product. `product_id` still wins when both are
+        # supplied, which is what this tool's docstring promises.
+        if pid:
+            product_gid, resolve_err = _resolve_product_gid(client, pid)
+        else:
+            product_gid, resolve_err = _resolve_product_gid(client, handle=hdl)
         if resolve_err or not product_gid:
             msg = resolve_err or "Unable to resolve product."
             return _render(f"Error: {msg}", _err_payload(msg, key="metafields"))
