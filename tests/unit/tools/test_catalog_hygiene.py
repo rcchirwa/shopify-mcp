@@ -7802,11 +7802,10 @@ def test_s911_product_not_found_returns_structured_error():
 
 # ----- Story 10.64 (T-9.5-numeric-handle) — the explicit handle channel ------
 #
-# `get_product_metafields` documents `handle` as "Resolved via productByHandle
-# before the metafield query", but collapsed both params into one ambiguous
-# argument (`pid or hdl`). An all-digit handle supplied through the explicit,
-# documented channel was therefore classified as a numeric product ID and read
-# the WRONG product — a caller doing everything right got silently bad data.
+# `get_product_metafields` collapsed its two documented parameters into one
+# ambiguous argument (`pid or hdl`), so an all-digit handle supplied through
+# the explicit `handle` channel was classified as a numeric product ID and
+# read the WRONG product. See docs/tech-debt.md's T-9.5-numeric-handle entry.
 
 
 def test_s1064_all_digit_handle_resolves_via_product_by_handle():
@@ -7834,6 +7833,43 @@ def test_s1064_numeric_product_id_still_short_circuits_without_handle_lookup():
     out = tools["get_product_metafields"](product_id="8581472649369")
     assert all("productByHandle" not in q for q, _v in fc.calls)
     assert _parse_tail(out)["ok"] is True
+
+
+def test_s1064_adapter_reshapes_both_supplied_error_without_raising():
+    """`_resolve_product_gid` documents the both-identifiers reject row; prove
+    it reshapes that ValueError into the (None, error_str) contract its four
+    callers rely on rather than letting it escape."""
+    fc = FakeClient([])
+    gid, err = catalog_hygiene._resolve_product_gid(fc, "123", handle="2024")
+    assert gid is None
+    assert err is not None and "not both" in err
+    assert fc.calls == []
+
+
+def test_s1064_adapter_reshapes_non_string_handle_without_raising():
+    fc = FakeClient([])
+    gid, err = catalog_hygiene._resolve_product_gid(fc, "ghost-handle", handle=2024)
+    assert gid is None
+    assert err is not None and "handle must be a string" in err
+    assert fc.calls == []
+
+
+def test_s1064_adapter_not_found_names_the_identifier_actually_queried():
+    """A whitespace-only `handle` must not be reported as the missing
+    identifier — the resolver looked up `product_id`, so the error must say so."""
+    fc = FakeClient([{"productByHandle": None}])
+    gid, err = catalog_hygiene._resolve_product_gid(fc, "ghost-handle", handle="   ")
+    assert gid is None
+    assert err == "No product found with handle 'ghost-handle'."
+
+
+def test_s1064_product_gid_via_handle_channel_still_short_circuits():
+    """Regression guard: a GID supplied through `handle=` must not cost a
+    wasted productByHandle round-trip."""
+    fc = FakeClient([])
+    gid, err = catalog_hygiene._resolve_product_gid(fc, handle=_S911_PRODUCT_GID)
+    assert (gid, err) == (_S911_PRODUCT_GID, None)
+    assert fc.calls == []
 
 
 def test_s1064_product_id_wins_when_both_supplied():

@@ -1019,13 +1019,20 @@ def _resolve_product_gid(
         Product GID     → passes through unchanged
         handle string   → productByHandle lookup (one network call)
 
-    Story 10.64 (T-9.5-numeric-handle) adds the keyword-only `handle`, which
-    forces the productByHandle lookup with no numeric classification — the
-    only way to resolve an all-digit handle such as `2024`. Supplying both
-    identifiers is rejected by `_resolve_product` before any network call.
+    Story 10.64 (T-9.5-numeric-handle) adds the keyword-only `handle`, on
+    which bare digits always mean a handle — the only way to resolve an
+    all-digit handle such as `2024`. A Product GID is still accepted there.
+    See docs/tech-debt.md's T-9.5-numeric-handle entry for the rationale.
+
+    **Contract movement from that story, for the three unchanged callers:**
+    non-ASCII-digit input (`'²'`, `'٤٢'`) previously took the zero-network
+    numeric branch and returned `(gid, None)`; it now falls through to the
+    handle lookup, so it can reach one `productByHandle` round-trip and
+    therefore the not-found and transport-failure strings below.
 
     Rejects with (None, error_string):
         empty / non-string  → "product_id must be a non-empty string."
+        non-string handle   → "handle must be a string — got <type>" (no network)
         wrong-type GID      → "product_id must be … — got non-Product GID: '<v>'" (no network)
         both identifiers    → "Supply product_id or handle, not both — …" (no network)
         handle not found    → "No product found with handle '...'."
@@ -1046,9 +1053,13 @@ def _resolve_product_gid(
     except Exception as e:
         return None, f"Handle lookup failed ({type(e).__name__}): {e}"
     if gid is None:
-        # Report whichever identifier the caller actually supplied.
-        supplied = handle.strip() if handle else product_id.strip()
-        return None, f"No product found with handle {_cap(supplied)!r}."
+        # Report whichever identifier the caller actually supplied, using the
+        # same stripped/isinstance predicate `_resolve_product` picks its
+        # channel with — testing the raw value here would name an identifier
+        # that was never queried (e.g. a whitespace-only `handle`).
+        h = handle.strip() if isinstance(handle, str) else ""
+        p = product_id.strip() if isinstance(product_id, str) else ""
+        return None, f"No product found with handle {_cap(h or p)!r}."
     return gid, None
 
 
@@ -3467,12 +3478,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # `_resolve_product_gid` short-circuits for numeric IDs and GIDs;
         # the handle path costs one extra round-trip via productByHandle.
         #
-        # Story 10.64: `handle` goes through the explicit keyword channel, not
-        # merged into `product_id`. The old `pid or hdl` collapse meant an
-        # all-digit handle (e.g. "2024") supplied through this tool's own
-        # documented `handle` parameter was classified as a numeric product ID
-        # and read the wrong product. `product_id` still wins when both are
-        # supplied, which is what this tool's docstring promises.
+        # Story 10.64: `handle` goes through the explicit keyword channel
+        # rather than being merged into `product_id` — see docs/tech-debt.md's
+        # T-9.5-numeric-handle entry. `product_id` still wins when both are
+        # supplied, which is what this tool's docstring promises, so the
+        # resolver's both-supplied ValueError is never reached from here.
         if pid:
             product_gid, resolve_err = _resolve_product_gid(client, pid)
         else:
