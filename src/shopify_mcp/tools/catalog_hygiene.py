@@ -1007,15 +1007,10 @@ def _resolve_product_gid(
 
     Thin adapter over the shared `_resolve_product` dispatch (Story 10.62 /
     T-9.5-resolver-fanout) that reshapes it into this function's historical
-    `(gid, error_str)` return shape — the numeric/GID/handle dispatch itself
-    now lives in exactly one place, but this adapter's four callers observe
-    no behavior change: unlike `_resolve_product`, this function still never
-    raises (malformed input and handle-lookup transport failures come back as
-    an error string) and still emits its own specific not-found message
-    rather than the shared dispatch's silent `(None, {})`. See
-    docs/tech-debt.md's T-9.5-resolver-fanout closure entry for the full list
-    of return-shape / error-signaling differences found across the six old
-    twins and the decision made about each.
+    `(gid, error_str)` return shape, so this adapter's four callers observe no
+    behavior change. docs/tech-debt.md's T-9.5-resolver-fanout closure entry
+    is the single source of truth for *why* this adapter's behavior differs
+    from `_resolve_product`'s — see it before changing either.
 
     Accepts (no network call unless noted):
         numeric string  → wraps to gid://shopify/Product/<id>

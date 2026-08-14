@@ -7,33 +7,22 @@ ran and in their return shape. `_resolve_product` below is now the single
 place that dispatch lives; `query_by_id` / `query_by_handle` let each caller
 supply its own snapshot projection instead of copying the dispatch logic.
 
-Two return-shape conventions coexisted across the old twins:
-  - `_resolve_product_gid` returned `(gid, error_str)`, catching its own
-    transport failures and never raising.
-  - `_resolve_product_with_queries` (and its three thin per-story wrappers)
-    returned `(gid, snapshot_dict)`, raised `ValueError` on malformed input,
-    and let transport failures propagate to the caller's own try/except.
+This function raises `ValueError` on bad input and lets transport errors
+propagate — `catalog_hygiene._resolve_product_gid` survives as a thin adapter
+reshaping that into its historical `(gid, error_str)` shape so none of its
+four callers' observable behavior changes. `tools/publications.py`'s
+`_resolve_product_gid_and_meta` is a deliberate, documented non-participant —
+a different input contract (separate `product_id`/`handle` params, numeric-ID
+only), not a copy of this dispatch. **docs/tech-debt.md's T-9.5-resolver-fanout
+closure entry is the single source of truth** for the full list of behavioral
+differences found across the six old twins and the decision made about each —
+don't re-enumerate them here or in `_resolve_product_gid`'s docstring; update
+that entry instead and let both docstrings keep pointing at it.
 
-This function standardizes on the second convention (raise on bad input,
-propagate transport errors, `(None, {})` on not-found with no exception) —
-`catalog_hygiene._resolve_product_gid` now survives as a thin adapter that
-catches `ValueError`/transport exceptions and reshapes them into its
-historical `(gid, error_str)` text, so none of its four callers' observable
-behavior changes. See docs/tech-debt.md's T-9.5-resolver-fanout closure entry
-for the full list of behavioral differences found during consolidation and
-the decision made about each.
-
-`tools/publications.py`'s `_resolve_product_gid_and_meta` is a deliberate,
-documented non-participant: it takes `product_id` and `handle` as two
-separate tool parameters (the caller picks one) rather than a single
-dispatched string, and its `product_id` path is numeric-ID-only — passing it
-a full GID or a handle would double-wrap into a broken GID. That is a
-different input contract, not a copy of this dispatch, so folding it in here
-would change publications.py's public behavior, which is out of scope for
-this pure refactor. This module lives under `tools/` (not inside
-`catalog_hygiene.py`) specifically so `publications.py` — or any future
-tool module — can import `_resolve_product` without a layering violation,
-should that contract ever narrow to match.
+This module lives under `tools/` (not inside `catalog_hygiene.py`)
+specifically so `publications.py` — or any future tool module — can import
+`_resolve_product` without a layering violation, should its contract ever
+narrow to match.
 """
 
 from typing import Any
