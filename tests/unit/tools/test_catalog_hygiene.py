@@ -9352,7 +9352,15 @@ def _s1067_scanned_modules():
 # that reflects one. Deliberately wider than the shapes present today: `{e!s}`
 # is already live in `client.py`, so a copy of it into a scanned module must not
 # pass silently. `(?P<m>...)` marks the matched occurrence for the cap check.
-_S1067_EXC_NAMES = r"e|exc|err|ex|error|exception"
+# The bare binding names Python's `except X as <name>` conventionally uses.
+#
+# Widening this to "any identifier containing err/exc" was tried and reverted:
+# it matched `{err_summary}`, `{vendor_err}` and friends (already-formatted,
+# internally-generated validator strings that are bounded by construction) and
+# even `{old_desc_excerpt}` — 15 false positives, all of which would have had to
+# be silenced with exemption markers. A lint whose exemption list is longer than
+# its findings teaches people to add markers, not to cap.
+_S1067_EXC_NAMES = r"e|exc|err"
 _S1067_REFLECT = re.compile(
     rf"\{{\s*(?:{_S1067_EXC_NAMES})\s*(?:![sra])?(?::[^}}]*)?\s*\}}"
     rf"|(?:str|repr)\(\s*(?:{_S1067_EXC_NAMES})\s*\)"
@@ -9381,7 +9389,7 @@ def _s1067_uncapped_occurrences(line: str) -> list[str]:
                 if depth:
                     depth -= 1
                 else:
-                    capped = bool(re.search(r"\b_?cap(?:_text)?$", prefix[:i]))
+                    capped = bool(re.search(r"\b(?:_?cap(?:_text)?|_bound)$", prefix[:i]))
                     break
         if not capped:
             bad.append(m.group(0))
@@ -9398,15 +9406,33 @@ _S1067_EXEMPT = re.compile(r"#\s*reflect-ok:")
 _S1067_FENCE = re.compile(r'"""' + r"|'''")
 
 
-def test_s1067_no_uncapped_exception_reflection_in_any_tool_module():
-    """AC1 as an executable invariant over the whole surface, not an allowlist.
+def test_s1067_conventional_exception_reflections_are_capped():
+    """A tripwire for the common regression. **Not a completeness proof.**
 
-    The module-by-module split arose because nothing stopped a new uncapped site
-    from being added. This fails on the next one — in any tool module, not just
-    the four that happened to be known when the story was written.
+    It catches the shape that actually recurs: someone adds
+    `f"... {exc}"` or `str(e)` to a tool module and forgets `cap`. That is worth
+    having — it is how the `catalog_hygiene` / `publications` split arose in the
+    first place.
 
-    Docstring and comment bodies are skipped: they discuss `str(exc)` as prose
-    often enough that scanning them yields noise rather than signal.
+    What it does NOT prove, stated here so no one reads a green run as a
+    guarantee (over-claiming is the exact failure mode SEC-27 exists to close):
+
+    * It matches only the conventional binding names `e` / `exc` / `err`. A
+      differently-named local — `poll_error`, `resolve_err` — is invisible to it.
+      Widening the pattern was tried and produced 15 false positives, so the
+      narrow version is the deliberate choice.
+    * It skips `raise` lines. Those are bounded at whichever reflection site
+      catches them, or at the source in `client.py`.
+    * It is line-scoped, so an interpolation split across lines from its `cap()`
+      reads as uncapped, and vice versa.
+    * Docstring and comment bodies are skipped — they discuss `str(exc)` as
+      prose often enough that scanning them yields noise rather than signal.
+
+    The guarantee this story actually rests on is the **source-level** bound in
+    `client.py` (`_bound` / `_format_errors` / `poll_job`), which holds
+    regardless of what any call site remembers to do, plus the per-tool
+    behavioural tests above that assert real output. This lint is a convenience
+    on top of those, not the thing being relied on.
     """
     offenders = []
     for path in _s1067_scanned_modules():
@@ -9550,4 +9576,35 @@ def test_s1067_variant_media_mutation_failures_are_capped_not_raised(
     )
     assert label in out
     assert cap(_S1067_HUGE) in out
+    assert _S1067_HUGE[: REFLECT_MAX_LEN + 1] not in out
+
+
+def test_s1067_append_exception_after_successful_detach_still_rolls_back():
+    """The regression round 2 caught: guarding `append_variant_media` with a
+    plain `return` skipped `_handle_append_failure_after_detach`.
+
+    By that point detach has already succeeded, so the variants are in the
+    Section 5.4 zero-media state. Returning a generic bounded error would drop
+    the rollback attempt AND the `appendFailedAfterDetach` / `zeroMediaVariants`
+    disclosure — leaving media destructively unbound with nothing telling the
+    caller. A transport failure must take the same exit as a userError failure.
+    """
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
+
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
+        variants=[(_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_2])],
+    )
+    # detach succeeds, append then raises — the destructive window.
+    tools, _fc = _build([combined, _s96_detach_response(), RuntimeError(_S1067_HUGE)])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    # The disclosure the plain-return guard was dropping.
+    assert "appendFailedAfterDetach" in json.dumps(tail) or "zeroMediaVariants" in json.dumps(tail)
+    # And the exception text is still bounded on this path.
     assert _S1067_HUGE[: REFLECT_MAX_LEN + 1] not in out

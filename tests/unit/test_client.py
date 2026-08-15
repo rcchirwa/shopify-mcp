@@ -104,9 +104,17 @@ def test_execute_truncates_large_non_dict_preview():
     with pytest.raises(RuntimeError) as exc_info:
         client.execute("query { __typename }")
     msg = str(exc_info.value)
-    # Preview is capped at 500 chars — full 10k payload must not appear.
+    # Story 10.67 (SEC-27) migrated this from a hand-rolled `[:500]` slice to
+    # the shared `_scrub.cap` bound (REFLECT_MAX_LEN, 300), so there is one
+    # slicing implementation and one bound for reflected upstream text. The
+    # 500-char literal here was the second implementation the story exists to
+    # remove; the property under test — the full 10k payload never appears — is
+    # unchanged and now asserted against the shared constant.
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
+
     assert len(msg) < 1000
-    assert "x" * 500 in msg
+    assert "x" * REFLECT_MAX_LEN in msg
+    assert "x" * (REFLECT_MAX_LEN + 1) not in msg
 
 
 # ---------- transport exception path still works (regression for 98c9bed) ----------
@@ -899,3 +907,85 @@ def test_poll_job_budget_respects_next_sleep_size(monkeypatch):
     result = poll_job(_make_always_not_done_client(), "gid://shopify/Job/1", timeout_s=3)
     assert result["timed_out"] is True
     assert clock.sleeps == [0.5, 1.0]
+
+
+# ---------- Story 10.67 (SEC-27): bounding at the source ----------
+#
+# The round-1 design capped only at reflection sites and argued no unbounded
+# consumer remained; `tools/collections.py` disproved that. The bound now lives
+# in `client.py`, so it holds regardless of what any call site remembers to do.
+# These test that layer directly — the round-1 change shipped with coverage only
+# via tool-level tests, which is why an uncapped branch survived it.
+
+_S1067_HUGE = "Z" * 10_000
+
+
+@pytest.mark.parametrize(
+    ("errors", "label"),
+    [
+        (_S1067_HUGE, "bare string"),
+        ({"message": _S1067_HUGE}, "non-list, non-string"),
+        ([{"message": _S1067_HUGE}], "list of dicts"),
+        ([_S1067_HUGE], "list of strings"),
+    ],
+)
+def test_s1067_format_errors_bounds_every_shape(errors, label):
+    """`TransportQueryError.errors` has four documented shapes and the first cut
+    capped only the list-join, leaving two returns unbounded on the very shapes
+    the function's docstring says occur in practice."""
+    from shopify_mcp.client import _format_errors
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
+
+    out = _format_errors(errors)
+    assert _S1067_HUGE[: REFLECT_MAX_LEN + 1] not in out, label
+    assert len(out) <= REFLECT_MAX_LEN + len(" …[truncated]"), label
+
+
+def test_s1067_truncation_is_announced_not_silent():
+    """A silent cut after the "; " join can delete the 2nd and 3rd Shopify
+    errors outright, and an access-denied message is not always first. The
+    marker distinguishes "Shopify said one thing" from "you are seeing one of
+    three"."""
+    from shopify_mcp.client import _format_errors
+
+    assert "…[truncated]" in _format_errors([{"message": _S1067_HUGE}])
+    assert "…[truncated]" not in _format_errors([{"message": "short and complete"}])
+
+
+def test_s1067_format_errors_leaves_short_text_byte_for_byte():
+    from shopify_mcp.client import _format_errors
+
+    assert _format_errors([{"message": "Access denied"}]) == "Access denied"
+    assert _format_errors(None) == "(no error details)"
+
+
+def test_s1067_capping_does_not_disturb_error_classification():
+    """The cap must not change retry/throttle routing: `_is_throttled` reads the
+    structured payload and `_is_retryable_http` the raw exception, both before
+    any capping. Pinned because a source-level cap is exactly the kind of change
+    that could silently break classification."""
+    from gql.transport.exceptions import TransportServerError
+
+    from shopify_mcp.client import _is_retryable_http, _is_throttled
+
+    assert _is_throttled([{"extensions": {"code": "THROTTLED"}, "message": _S1067_HUGE}])
+    assert _is_retryable_http(TransportServerError("503 Service Unavailable " + _S1067_HUGE))
+
+
+def test_s1067_transport_protocol_error_is_caught_and_bounded():
+    """gql raises this when Shopify returns a non-GraphQL answer — an HTML error
+    page, a WAF interstitial — and embeds the ENTIRE raw response body. It was
+    uncaught, so it bypassed `_format_errors` and every cap; it was the largest
+    remaining path for unbounded upstream text to reach model context."""
+    from gql.transport.exceptions import TransportProtocolError
+
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
+
+    body = "<html>" + ("Q" * 10_000) + "</html>"
+    client = _make_client(exc=TransportProtocolError(body))
+    with pytest.raises(ShopifyError) as exc_info:
+        client.execute("query { __typename }")
+    msg = str(exc_info.value)
+    assert "protocol error" in msg
+    assert "Q" * REFLECT_MAX_LEN not in msg or len(msg) < len(body)
+    assert body[: REFLECT_MAX_LEN + 1] not in msg

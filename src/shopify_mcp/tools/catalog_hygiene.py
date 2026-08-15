@@ -2925,6 +2925,33 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             try:
                 append_result = ops.append_variant_media(client, gid, append_entries)
             except Exception as exc:
+                # A transport failure here is the SAME situation as a userError
+                # failure below, and must take the same exit. If detach already
+                # succeeded, the affected variants are in the Section 5.4
+                # zero-media state, so returning a plain bounded error would
+                # skip the rollback attempt AND drop `appendFailedAfterDetach` /
+                # `zeroMediaVariants` / `rollbackAttempted` from the tail —
+                # leaving media destructively unbound with nothing telling the
+                # caller. The exception is reshaped into the userError form the
+                # handler already consumes, capped like every other reflection.
+                append_exc_errors = [
+                    {
+                        "message": (
+                            f"productVariantAppendMedia failed "
+                            f"({type(exc).__name__}): {cap(str(exc))}"
+                        )
+                    }
+                ]
+                if detached_variant_gids:
+                    return _handle_append_failure_after_detach(
+                        real_errors=append_exc_errors,
+                        detached_variant_gids=detached_variant_gids,
+                        routes=routes,
+                        product_gid=gid,
+                        client=client,
+                    )
+                # Append-only path: nothing was detached, so there is no
+                # rollback to attempt and no destructive state to disclose.
                 msg = f"Error calling productVariantAppendMedia ({type(exc).__name__}): {cap(str(exc))}"
                 return _render(msg, _err_payload(cap(str(exc))))
             raw_errors = extract_user_errors(append_result, "productVariantAppendMedia")
