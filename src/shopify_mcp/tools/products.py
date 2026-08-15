@@ -42,6 +42,7 @@ from shopify_mcp.tools._filters import (
 )
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
+from shopify_mcp.tools._product_resolver import identifier_error
 from shopify_mcp.tools._response import extract_user_errors, with_confirm_hint
 from shopify_mcp.tools._write_tool import write_gate
 from shopify_mcp.validators.naming import format_validation_diff
@@ -107,9 +108,16 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
     @server.tool()
     def get_product(product_id: str = "", handle: str = "") -> str:
-        """Get a single product by id or handle."""
-        if not product_id and not handle:
-            return "Provide either product_id or handle."
+        """Get a single product by id or handle.
+
+        Supply exactly one of them. Supplying both is rejected before any
+        network call rather than resolved by `product_id` with the `handle`
+        silently discarded (Story 10.68 — a contract change; see the module
+        docstring of `shopify._identifiers`).
+        """
+        err = identifier_error(product_id, handle)
+        if err:
+            return err
         p, variants_nodes, capped = ops.read_product(client, product_id=product_id, handle=handle)
         if not p:
             return "No product found."
@@ -362,9 +370,16 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
     @server.tool()
     def get_product_description(product_id: str = "", handle: str = "") -> str:
-        """Get the raw body_html description for a single product by id or handle."""
-        if not product_id and not handle:
-            return "Provide either product_id or handle."
+        """Get the raw body_html description for a single product by id or handle.
+
+        Supply exactly one of them. Supplying both is rejected before any
+        network call rather than resolved by `product_id` with the `handle`
+        silently discarded (Story 10.68 — a contract change; see the module
+        docstring of `shopify._identifiers`).
+        """
+        err = identifier_error(product_id, handle)
+        if err:
+            return err
         p = ops.read_product_description(client, product_id=product_id, handle=handle)
         if not p:
             return "No product found."
@@ -414,9 +429,15 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         """
         Get a full product record: id, title, handle, status, body_html, tags,
         product_type, vendor, seo, category, variants, and options.
+
+        Supply exactly one of product_id / handle. Supplying both is rejected
+        before any network call rather than resolved by `product_id` with the
+        `handle` silently discarded (Story 10.68 — a contract change; see the
+        module docstring of `shopify._identifiers`).
         """
-        if not product_id and not handle:
-            return "Provide either product_id or handle."
+        err = identifier_error(product_id, handle)
+        if err:
+            return err
         p, variants_nodes, capped = ops.read_product_full(
             client, product_id=product_id, handle=handle
         )

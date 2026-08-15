@@ -10,6 +10,8 @@ Usage:
   pytest tests/unit/tools/test_products.py -v
 """
 
+import pytest
+
 from shopify_mcp.tools import products
 from shopify_mcp.tools.products import (
     GET_PRODUCT_BY_HANDLE,
@@ -1942,3 +1944,105 @@ def test_update_variant_inventory_policy_warns_when_capped():
         confirm=False,
     )
     assert "WARNING" in out and "max-pages cap" in out
+
+
+# ---------- Story 10.68 (T-10.65-refuse-both-fanout) ----------
+#
+# Story 10.65 made an ambiguous `product_id` + `handle` pair an error on the six
+# catalog_hygiene tools; 10.68 extends that one rule to the three product reads
+# here. The fixture names two DIFFERENT products on purpose — `_S1068_DECOY_ID`
+# is the legacy id of one, `_S1068_HANDLE` the handle of another — because the
+# behaviour being removed is "the wrong product was silently chosen", which a
+# fixture pointing both parameters at one product could not distinguish from a
+# plain not-found.
+_S1068_DECOY_ID = "111"
+_S1068_DECOY_GID = f"gid://shopify/Product/{_S1068_DECOY_ID}"
+_S1068_HANDLE = "some-other-product"
+_S1068_HANDLE_OWNER = "222"
+
+_S1068_TOOLS = ["get_product", "get_product_description", "get_product_full"]
+
+
+@pytest.mark.parametrize("tool_name", _S1068_TOOLS)
+def test_s1068_both_identifiers_supplied_is_refused_before_any_network(tool_name):
+    """The ambiguous call must die before a single round-trip."""
+    tools, fc = _build([])
+    out = tools[tool_name](product_id=_S1068_DECOY_ID, handle=_S1068_HANDLE)
+    assert "not both" in out
+    assert fc.calls == []
+
+
+@pytest.mark.parametrize("tool_name", _S1068_TOOLS)
+def test_s1068_both_supplied_never_reads_the_product_id_twin(tool_name):
+    """The specific outcome: `product_id`-wins returned the decoy product's
+    data while the caller's handle was discarded. Prove that GID is never
+    addressed."""
+    tools, fc = _build([])
+    tools[tool_name](product_id=_S1068_DECOY_ID, handle=_S1068_HANDLE)
+    assert _S1068_DECOY_GID not in str(fc.calls)
+
+
+@pytest.mark.parametrize("tool_name", _S1068_TOOLS)
+def test_s1068_refusal_is_returned_as_a_string_not_raised(tool_name):
+    """Every tool renders the refusal through its own error path, so an MCP
+    caller gets a readable message rather than a transport-level exception."""
+    tools, _ = _build([])
+    out = tools[tool_name](product_id=_S1068_DECOY_ID, handle=_S1068_HANDLE)
+    assert isinstance(out, str)
+    assert out == "Supply product_id or handle, not both."
+
+
+@pytest.mark.parametrize("tool_name", _S1068_TOOLS)
+def test_s1068_both_halves_of_the_rule_are_shaped_alike(tool_name):
+    """The two halves of one caller mistake should not arrive in two different
+    shapes — a review pass caught the both-supplied case carrying an `Error:`
+    prefix its neither-supplied sibling does not."""
+    tools, _ = _build([])
+    neither = tools[tool_name]()
+    both = tools[tool_name](product_id=_S1068_DECOY_ID, handle=_S1068_HANDLE)
+    assert neither == "Provide either product_id or handle."
+    assert both == "Supply product_id or handle, not both."
+    assert not both.startswith("Error:")
+
+
+@pytest.mark.parametrize("tool_name", _S1068_TOOLS)
+@pytest.mark.parametrize("blank", ["", "   ", None])
+def test_s1068_blank_handle_alongside_product_id_is_not_ambiguous(tool_name, blank):
+    """A client that fills unused schema fields with a blank value alongside a
+    real identifier is making an unambiguous call. Refusing it would be a
+    regression, and a whitespace-only `handle` did exactly that until the
+    shared predicate replaced bare truthiness."""
+    tools, fc = _build([_product_read(_S1068_DECOY_ID, "Decoy", "decoy")])
+    out = tools[tool_name](product_id=_S1068_DECOY_ID, handle=blank)
+    assert "not both" not in out
+    assert fc.calls[0][1]["id"] == _S1068_DECOY_GID
+
+
+@pytest.mark.parametrize("tool_name", _S1068_TOOLS)
+def test_s1068_neither_identifier_message_is_unchanged(tool_name):
+    """Regression guard: tightening the both-supplied case must not disturb
+    the neither-supplied message these tools have always returned."""
+    tools, fc = _build([])
+    assert tools[tool_name]() == "Provide either product_id or handle."
+    assert fc.calls == []
+
+
+def test_s1068_product_id_alone_still_resolves_by_id():
+    """Regression guard, `product_id` channel: unchanged, one by-id query."""
+    tools, fc = _build([_product_read(_S1068_DECOY_ID, "Decoy", "decoy")])
+    out = tools["get_product"](product_id=_S1068_DECOY_ID)
+    assert "Decoy" in out
+    assert fc.calls[0][0] == GET_PRODUCT_BY_ID
+    assert fc.calls[0][1]["id"] == _S1068_DECOY_GID
+
+
+def test_s1068_handle_alone_still_resolves_by_handle():
+    """Regression guard, `handle` channel: unchanged, one by-handle query, and
+    the handle is never wrapped into a Product GID."""
+    resp = _product_read(_S1068_HANDLE_OWNER, "Handle Owner", _S1068_HANDLE)
+    tools, fc = _build([{"productByHandle": resp["product"]}])
+    out = tools["get_product"](handle=_S1068_HANDLE)
+    assert "Handle Owner" in out
+    assert fc.calls[0][0] == GET_PRODUCT_BY_HANDLE
+    assert fc.calls[0][1]["handle"] == _S1068_HANDLE
+    assert f"gid://shopify/Product/{_S1068_HANDLE}" not in str(fc.calls)

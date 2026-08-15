@@ -12,6 +12,7 @@ preview/confirm flow, userError mapping, and string formatting on top.
 from typing import Any
 
 from shopify_mcp.shopify._client import GraphQLClient
+from shopify_mcp.shopify._identifiers import reject_both_identifiers
 from shopify_mcp.shopify._ids import to_gid
 from shopify_mcp.shopify.queries.publications import (
     GET_PRODUCT_PUBLICATIONS_BY_HANDLE,
@@ -46,11 +47,26 @@ def read_product_publications(
     """Read a product and all its resourcePublications, paginated.
 
     Resolves by ``product_id`` (coerced to a Product GID) when given, else by
-    ``handle``; ``product_id`` wins when both are supplied. Returns
-    ``(product_or_None, resource_publication_nodes, capped)``. ``product_or_None``
-    is the product node (``id title handle ...``) or None when neither identifier
-    is supplied or Shopify returns a null product (deleted / wrong id / unknown
-    handle). ``capped`` is True when pagination hit the max-pages cap."""
+    ``handle``. **Supplying both raises ``ValueError`` before any network
+    call** — Story 10.68 (``T-10.65-refuse-both-fanout``) replaced the
+    ``product_id``-wins precedence this function applied through Story 10.67,
+    which silently discarded the handle and so could resolve — and, via the
+    three publication write tools above this layer, mutate — the wrong product.
+    The rule is shared with ``operations/products.py`` via
+    ``shopify._identifiers``. This guard is what holds the rule for **non-MCP
+    callers** (CLI, scripts) and for any future caller that forgets; the four
+    ``tools/publications.py`` tools do **not** rely on it for their message —
+    each vets the pair itself before its sales-channel reads, because a refusal
+    inherited from here would arrive a round-trip late and be rendered with a
+    misleading scope hint. See ``tools/_product_resolver.identifier_error``.
+
+    Returns ``(product_or_None, resource_publication_nodes, capped)``.
+    ``product_or_None`` is the product node (``id title handle ...``) or None
+    when neither identifier is supplied or Shopify returns a null product
+    (deleted / wrong id / unknown handle) — the neither-supplied case keeps
+    returning rather than raising, deliberately unchanged by 10.68. ``capped``
+    is True when pagination hit the max-pages cap."""
+    reject_both_identifiers(product_id, handle)
     if product_id:
         data, rps, capped = client.paginate(
             GET_PRODUCT_PUBLICATIONS_BY_ID,

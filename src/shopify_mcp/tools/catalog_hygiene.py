@@ -43,6 +43,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from shopify_mcp.client import ShopifyClient
+from shopify_mcp.shopify._identifiers import is_supplied
 from shopify_mcp.shopify.operations import catalog_hygiene as ops
 from shopify_mcp.shopify.queries.catalog_hygiene import (
     GET_PRODUCT_BY_HANDLE_MIN,
@@ -999,18 +1000,19 @@ def _format_payload(
     return f"{body}\n\n```json\n{json.dumps(payload)}\n```"
 
 
-def _is_supplied(value: object) -> bool:
-    """Was this identifier *present*, regardless of whether it is well-formed?
-
-    `None` and a blank/whitespace string are absent. Any other non-string (an
-    int from a client that ignores the schema) counts as supplied, so it is
-    routed to its own channel and rejected there rather than being silently
-    discarded — a discarded `product_id` would hand the operation to `handle`
-    and write to the wrong product.
-    """
-    if value is None:
-        return False
-    return bool(value.strip()) if isinstance(value, str) else True
+# Was this identifier *present*, regardless of whether it is well-formed?
+# `None` and a blank/whitespace string are absent. Any other non-string (an int
+# from a client that ignores the schema) counts as supplied, so it is routed to
+# its own channel and rejected there rather than being silently discarded — a
+# discarded `product_id` would hand the operation to `handle` and write to the
+# wrong product.
+#
+# Story 10.68 promoted this predicate to `shopify._identifiers.is_supplied` and
+# left this name as an alias: the seven tools that story brought under the rule
+# have to agree with these six on *what counts as supplied*, or "one rule" is
+# true only of the error string and not of the behaviour. Aliased rather than
+# re-implemented so the two can't drift.
+_is_supplied = is_supplied
 
 
 def _identifier_channel(product_id: object, handle: object) -> tuple[Any, Any, str]:
@@ -1035,14 +1037,16 @@ def _identifier_channel(product_id: object, handle: object) -> tuple[Any, Any, s
     non-empty string" rejection fires unchanged from when `product_id` was
     these tools' only parameter.
 
-    **Supplying both is an error** on all six product-resolving tools in *this
-    module* — deliberately scoped, not repo-wide: `products.py`'s
-    `get_product` / `get_product_description` / `get_product_full` and the four
-    `publications.py` tools take the same two parameters and still apply a
-    silent `product_id`-wins precedence. Widening this rule to them is a
-    separate change to two other modules; until it happens the guarantee here
-    stops at this module's boundary, and docs/tech-debt.md records that as an
-    open residual rather than letting the claim read as repo-wide.
+    **Supplying both is an error** on all six product-resolving tools in this
+    module — and, since Story 10.68 (`T-10.65-refuse-both-fanout`), on every
+    other product-resolving tool in the repo too: `products.py`'s `get_product`
+    / `get_product_description` / `get_product_full` and the four
+    `publications.py` tools, which took the same two parameters and applied a
+    silent `product_id`-wins precedence until that story refused it at their
+    two operations-layer chokepoints. The rule is one sentence defined once, in
+    `shopify._identifiers`, which this module's `_resolve_product` also uses —
+    so the guarantee is now repo-wide rather than stopping at this module's
+    boundary, as an earlier revision of this docstring correctly said it did.
 
     Both values are passed through untouched so `_resolve_product`'s own
     "Supply product_id or handle, not both" rejection fires before any network

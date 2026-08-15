@@ -10,6 +10,7 @@ Usage:
   pytest tests/unit/tools/test_publications.py -v
 """
 
+import pytest
 from pydantic import SecretStr
 
 from shopify_mcp.settings import Settings
@@ -1387,3 +1388,175 @@ def test_force_refresh_on_name_miss_bypasses_warm_cross_call_cache():
     assert fc.calls[1][0] == LIST_PUBLICATIONS
     _, vars_put = fc.calls[3]
     assert vars_put["input"] == [{"publicationId": tiktok["id"]}]
+
+
+# ---------- Story 10.68 (T-10.65-refuse-both-fanout) ----------
+#
+# All four tools below take `product_id` and `handle` and, before this story,
+# silently applied a `product_id`-wins precedence that discarded the handle.
+# Three of them are writes, so that precedence could publish or unpublish the
+# WRONG product. The fixture names two different products deliberately:
+# `_S1068_DECOY_ID` is one product's legacy id, `_S1068_HANDLE` another's handle.
+#
+# Note these tools load the sales-channel list before resolving the product, so
+# "before any network call" is asserted precisely: no product query and no
+# mutation fire — the channels read that legitimately precedes them is allowed.
+_S1068_DECOY_ID = "111"
+_S1068_DECOY_GID = f"gid://shopify/Product/{_S1068_DECOY_ID}"
+_S1068_HANDLE = "some-other-product"
+
+
+# Each entry is (tool_name, kwargs, responses). The response scripts are
+# deliberately COMPLETE — enough for the call to run all the way through to its
+# mutation under the old `product_id`-wins precedence. A short script would let
+# these tests pass on FakeClient's "unexpected extra execute()" exhaustion
+# instead of on the refusal, which is the bug they exist to catch. The decoy
+# product is published to Online Store (1) and not to Point of Sale (2), so
+# every write below has real work to do and would fire.
+def _s1068_decoy_pubs():
+    return _product_pubs(
+        pid=_S1068_DECOY_ID, handle="decoy", published_ids=[1], not_published_ids=[2, 3, 4]
+    )
+
+
+_S1068_BOTH_SUPPLIED_CALLS = [
+    ("get_product_publications", {}, [_channels_response(), _s1068_decoy_pubs()]),
+    (
+        "publish_product_to_channels",
+        {"channel_names": ["Point of Sale"], "confirm": True},
+        [_channels_response(), _s1068_decoy_pubs(), _publish_ok()],
+    ),
+    (
+        "unpublish_product_from_channels",
+        {"channel_names": ["Online Store"], "confirm": True},
+        [_channels_response(), _s1068_decoy_pubs(), _unpublish_ok()],
+    ),
+    (
+        # Declarative set to {Point of Sale}: publishes 2, unpublishes 1 — both
+        # mutations fire under the old behaviour.
+        "set_product_publications",
+        {"channel_names": ["Point of Sale"], "confirm": True},
+        [_channels_response(), _s1068_decoy_pubs(), _publish_ok(), _unpublish_ok()],
+    ),
+]
+
+_S1068_WRITE_CALLS = [c for c in _S1068_BOTH_SUPPLIED_CALLS if c[0] != "get_product_publications"]
+
+_S1068_PRODUCT_QUERIES = (
+    GET_PRODUCT_PUBLICATIONS_BY_HANDLE,
+    publications.GET_PRODUCT_PUBLICATIONS_BY_ID,
+)
+
+
+@pytest.mark.parametrize(("tool_name", "kwargs", "responses"), _S1068_BOTH_SUPPLIED_CALLS)
+def test_s1068_both_identifiers_supplied_is_refused(tool_name, kwargs, responses):
+    """One rule across the repo — the ambiguous pair is rejected rather than
+    resolved by `product_id` with the handle silently dropped."""
+    tools, _fc = _build(responses)
+    out = tools[tool_name](product_id=_S1068_DECOY_ID, handle=_S1068_HANDLE, **kwargs)
+    assert "not both" in out
+
+
+@pytest.mark.parametrize(("tool_name", "kwargs", "responses"), _S1068_BOTH_SUPPLIED_CALLS)
+def test_s1068_both_supplied_never_queries_a_product(tool_name, kwargs, responses):
+    """No product is read at all — in particular not the decoy the old
+    `product_id`-wins precedence would have resolved."""
+    tools, fc = _build(responses)
+    tools[tool_name](product_id=_S1068_DECOY_ID, handle=_S1068_HANDLE, **kwargs)
+    assert not [q for q, _v in fc.calls if q in _S1068_PRODUCT_QUERIES]
+    assert _S1068_DECOY_GID not in str(fc.calls)
+
+
+@pytest.mark.parametrize(("tool_name", "kwargs", "responses"), _S1068_WRITE_CALLS)
+def test_s1068_both_supplied_fires_no_mutation(tool_name, kwargs, responses):
+    """The three publication writes are the reason this matters: prove the
+    refusal lands before publishablePublish / publishableUnpublish, even with
+    confirm=True and a response script that would have carried the mutation
+    through."""
+    tools, fc = _build(responses)
+    tools[tool_name](product_id=_S1068_DECOY_ID, handle=_S1068_HANDLE, **kwargs)
+    assert not [q for q, _v in fc.calls if q in (PUBLISHABLE_PUBLISH, PUBLISHABLE_UNPUBLISH)]
+
+
+@pytest.mark.parametrize(("tool_name", "kwargs", "responses"), _S1068_BOTH_SUPPLIED_CALLS)
+def test_s1068_neither_identifier_message_is_unchanged(tool_name, kwargs, responses):
+    """Regression guard: the neither-supplied path keeps its original message
+    and still short-circuits before the channel read."""
+    tools, fc = _build(responses)
+    assert tools[tool_name](**kwargs) == "Provide either product_id or handle."
+    assert fc.calls == []
+
+
+def test_s1068_product_id_alone_still_resolves_by_id():
+    """Regression guard, `product_id` channel: unchanged by-id resolution."""
+    tools, fc = _build(
+        [_channels_response(), _product_pubs(pid=_S1068_DECOY_ID, published_ids=[1])]
+    )
+    out = tools["get_product_publications"](product_id=_S1068_DECOY_ID)
+    assert "Online Store" in out
+    assert fc.calls[1][0] == publications.GET_PRODUCT_PUBLICATIONS_BY_ID
+    assert fc.calls[1][1]["id"] == _S1068_DECOY_GID
+
+
+def test_s1068_handle_alone_still_resolves_by_handle():
+    """Regression guard, `handle` channel: unchanged by-handle resolution, and
+    the handle is never wrapped into a Product GID."""
+    resp = _product_pubs(pid="222", handle=_S1068_HANDLE, published_ids=[1])
+    tools, fc = _build([_channels_response(), {"productByHandle": resp["product"]}])
+    out = tools["get_product_publications"](handle=_S1068_HANDLE)
+    assert "Online Store" in out
+    assert fc.calls[1][0] == GET_PRODUCT_PUBLICATIONS_BY_HANDLE
+    assert fc.calls[1][1]["handle"] == _S1068_HANDLE
+    assert f"gid://shopify/Product/{_S1068_HANDLE}" not in str(fc.calls)
+
+
+# ---------- Story 10.68, review round 2: how the refusal is rendered ----------
+#
+# The first cut let the operations-layer ValueError surface through each tool's
+# generic `except Exception`, which appends SCOPE_HINT. That told an LLM caller
+# to reinstall the Shopify app when the real fix was dropping one argument, and
+# it meant the refusal fired only after the sales-channel read. Both are pinned
+# here so neither can come back.
+
+
+@pytest.mark.parametrize(("tool_name", "kwargs", "responses"), _S1068_BOTH_SUPPLIED_CALLS)
+def test_s1068_refusal_carries_no_scope_hint(tool_name, kwargs, responses):
+    """An ambiguous argument pair is not a permissions problem — the refusal
+    must not suggest reinstalling the app."""
+    tools, _fc = _build(responses)
+    out = tools[tool_name](product_id=_S1068_DECOY_ID, handle=_S1068_HANDLE, **kwargs)
+    assert out == "Supply product_id or handle, not both."
+    assert "reinstall" not in out
+    assert publications.SCOPE_HINT not in out
+
+
+@pytest.mark.parametrize(("tool_name", "kwargs", "responses"), _S1068_BOTH_SUPPLIED_CALLS)
+def test_s1068_refusal_costs_no_network_call_at_all(tool_name, kwargs, responses):
+    """Not just "no product query" — *no* query. The channel read used to run
+    first, so an ambiguous call still cost a round-trip and warmed the channels
+    cache. The pair is now vetted ahead of everything else."""
+    tools, fc = _build(responses)
+    tools[tool_name](product_id=_S1068_DECOY_ID, handle=_S1068_HANDLE, **kwargs)
+    assert fc.calls == []
+
+
+def test_s1068_identifier_error_is_not_masked_by_a_channel_argument_error():
+    """With both identifiers AND no channel selector, the caller must hear about
+    the ambiguous pair. Channel resolution used to run first and answer
+    "provide channel_names or publication_ids", hiding the real problem."""
+    tools, fc = _build([_channels_response()])
+    out = tools["publish_product_to_channels"](
+        product_id=_S1068_DECOY_ID, handle=_S1068_HANDLE, confirm=True
+    )
+    assert out == "Supply product_id or handle, not both."
+    assert fc.calls == []
+
+
+@pytest.mark.parametrize("blank", ["", "   ", None])
+def test_s1068_blank_handle_alongside_product_id_is_not_ambiguous(blank):
+    """Regression guard shared with the products suite: a blank or
+    whitespace-only `handle` is absent, not ambiguous."""
+    tools, fc = _build([_channels_response(), _s1068_decoy_pubs()])
+    out = tools["get_product_publications"](product_id=_S1068_DECOY_ID, handle=blank)
+    assert "not both" not in out
+    assert fc.calls[1][1]["id"] == _S1068_DECOY_GID

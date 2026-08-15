@@ -31,8 +31,9 @@ from shopify_mcp.shopify.queries.publications import (
     PUBLISHABLE_PUBLISH,
     PUBLISHABLE_UNPUBLISH,
 )
-from shopify_mcp.tools._gid import from_gid, to_gid
+from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
+from shopify_mcp.tools._product_resolver import identifier_error, to_gid
 from shopify_mcp.tools._response import extract_user_errors, with_confirm_hint
 from shopify_mcp.tools._scrub import cap
 
@@ -171,7 +172,13 @@ def _resolve_product_gid_and_meta(
     ``shopify.operations.publications.read_product_publications`` and reshapes its
     ``(product_or_None, rps, capped)`` result into the 4-tuple the tool formatting
     uses; the pagination cap is not surfaced for publications, so ``capped`` is
-    dropped here exactly as before the migration."""
+    dropped here exactly as before the migration.
+
+    Raises ``ValueError`` when both identifiers are supplied — the refusal is
+    enforced in the operations layer (Story 10.68), so all four tools inherit it
+    through this one funnel without a per-tool check. Each already wraps this
+    call in ``try/except`` and renders the message through its structured error
+    path, which is also where the reflection bound (``cap``) is applied."""
     p, rps, _capped = ops.read_product_publications(client, product_id, handle)
     if not p:
         return None, None, None, []
@@ -228,9 +235,21 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
     @server.tool()
     def get_product_publications(product_id: str = "", handle: str = "") -> str:
-        """Show which sales channels a product is published to, and which it is not."""
-        if not product_id and not handle:
-            return "Provide either product_id or handle."
+        """Show which sales channels a product is published to, and which it is not.
+
+        Supply exactly one of product_id / handle. Supplying both is rejected
+        before the product is read rather than resolved by `product_id` with the
+        `handle` silently discarded (Story 10.68 — a contract change; see the
+        module docstring of `shopify._identifiers`).
+        """
+        # Story 10.68: vet the identifier pair FIRST — ahead of the sales-channel
+        # reads below. Inheriting the refusal from the operations layer would let
+        # an ambiguous call cost a round-trip, let a channel-resolution failure
+        # mask the argument error, and route the message through the generic
+        # handler that appends a misleading reinstall-the-app scope hint.
+        err = identifier_error(product_id, handle)
+        if err:
+            return err
         try:
             _ensure_channels(client, channel_cache)
         except Exception as e:
@@ -299,9 +318,21 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         Publish a product to one or more sales channels. Idempotent — republishing
         an already-published channel is reported as unchanged, not an error.
         Returns a preview unless confirm=True.
+
+        Supply exactly one of product_id / handle. **Supplying both is refused
+        before the mutation** rather than resolved by `product_id` with the
+        `handle` silently discarded — on a write tool that precedence could
+        publish the WRONG product (Story 10.68 — a contract change; see the
+        module docstring of `shopify._identifiers`).
         """
-        if not product_id and not handle:
-            return "Provide either product_id or handle."
+        # Story 10.68: vet the identifier pair FIRST — ahead of the sales-channel
+        # reads below. Inheriting the refusal from the operations layer would let
+        # an ambiguous call cost a round-trip, let a channel-resolution failure
+        # mask the argument error, and route the message through the generic
+        # handler that appends a misleading reinstall-the-app scope hint.
+        err = identifier_error(product_id, handle)
+        if err:
+            return err
         channel_names = channel_names or []
         publication_ids = publication_ids or []
 
@@ -382,9 +413,21 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         Unpublish a product from one or more sales channels. Idempotent —
         unpublishing an already-unpublished channel is reported as unchanged,
         not an error. Returns a preview unless confirm=True.
+
+        Supply exactly one of product_id / handle. **Supplying both is refused
+        before the mutation** rather than resolved by `product_id` with the
+        `handle` silently discarded — on a write tool that precedence could
+        unpublish the WRONG product (Story 10.68 — a contract change; see the
+        module docstring of `shopify._identifiers`).
         """
-        if not product_id and not handle:
-            return "Provide either product_id or handle."
+        # Story 10.68: vet the identifier pair FIRST — ahead of the sales-channel
+        # reads below. Inheriting the refusal from the operations layer would let
+        # an ambiguous call cost a round-trip, let a channel-resolution failure
+        # mask the argument error, and route the message through the generic
+        # handler that appends a misleading reinstall-the-app scope hint.
+        err = identifier_error(product_id, handle)
+        if err:
+            return err
         channel_names = channel_names or []
         publication_ids = publication_ids or []
 
@@ -464,9 +507,21 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         Declarative — set the exact list of sales channels the product should be
         on. Publishes to missing channels, unpublishes from extras. Returns a
         preview unless confirm=True.
+
+        Supply exactly one of product_id / handle. **Supplying both is refused
+        before either mutation** rather than resolved by `product_id` with the
+        `handle` silently discarded — on a write tool that precedence could
+        rewrite the WRONG product's channel set (Story 10.68 — a contract
+        change; see the module docstring of `shopify._identifiers`).
         """
-        if not product_id and not handle:
-            return "Provide either product_id or handle."
+        # Story 10.68: vet the identifier pair FIRST — ahead of the sales-channel
+        # reads below. Inheriting the refusal from the operations layer would let
+        # an ambiguous call cost a round-trip, let a channel-resolution failure
+        # mask the argument error, and route the message through the generic
+        # handler that appends a misleading reinstall-the-app scope hint.
+        err = identifier_error(product_id, handle)
+        if err:
+            return err
         if channel_names is None:
             return "Provide channel_names (list of channel names for the exact desired state)."
 
