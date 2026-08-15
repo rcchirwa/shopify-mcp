@@ -8701,3 +8701,292 @@ def test_s1019_oversized_media_gid_step4_is_capped():
     assert "media GIDs not on product" in out
     assert oversized[: _GID_DISPLAY_MAX + 1] not in out
     assert _cap(oversized) in out
+
+
+# =============================================================================
+# Story 10.65 (T-9.5-mutator-handle) — the explicit handle channel on the five
+# catalog-hygiene mutators.
+#
+# Story 10.64 added `_resolve_product`'s keyword-only `handle` channel but wired
+# it into `get_product_metafields` alone, so the five mutators below still took
+# `product_id` only. Shopify permits an all-digit product handle, so a caller
+# naming a product by such a handle had no channel that would not classify it
+# as a legacy numeric ID — the resulting write landed on whichever product
+# carried that number as its ID. Every fixture here is built so the numeric
+# handle and the numeric ID belong to two DIFFERENT products: the outcome under
+# test is a wrong-product WRITE, not a not-found. Rationale and the residual
+# that remains live in docs/tech-debt.md's T-9.5-mutator-handle entry.
+# =============================================================================
+
+# "2024" is the handle. It belongs to Product/8899 — NOT to Product/2024, which
+# is a different product that exists and would be silently mutated instead.
+_S1065_DIGIT_HANDLE = "2024"
+_S1065_HANDLE_OWNER = "8899"
+_S1065_DECOY_GID = "gid://shopify/Product/2024"
+
+
+def _assert_never_touched_decoy(fc):
+    """The whole point: no call may address the numeric-ID twin of the handle."""
+    assert _S1065_DECOY_GID not in str(fc.calls)
+
+
+# ---- update_product_vendor ---------------------------------------------------
+
+
+def test_s1065_vendor_all_digit_handle_writes_to_the_handle_owner():
+    tools, fc = _build(
+        [
+            _vendor_read_by_handle(pid=_S1065_HANDLE_OWNER, vendor="Old"),
+            _update_ok(pid=_S1065_HANDLE_OWNER),
+        ]
+    )
+    out = tools["update_product_vendor"](handle=_S1065_DIGIT_HANDLE, vendor="Vanish", confirm=True)
+    assert fc.calls[0][0] == GET_PRODUCT_VENDOR_BY_HANDLE
+    assert fc.calls[0][1] == {"handle": _S1065_DIGIT_HANDLE}
+    assert fc.calls[1][0] == UPDATE_PRODUCT_VENDOR
+    assert fc.calls[1][1]["product"]["id"] == f"gid://shopify/Product/{_S1065_HANDLE_OWNER}"
+    _assert_never_touched_decoy(fc)
+    assert _extract_json(out)["ok"] is True
+
+
+def test_s1065_vendor_product_id_wins_when_both_supplied():
+    tools, fc = _build([_vendor_read(pid="5234567890"), _update_ok(pid="5234567890")])
+    out = tools["update_product_vendor"](
+        product_id="5234567890", handle=_S1065_DIGIT_HANDLE, vendor="Vanish", confirm=True
+    )
+    assert all("productByHandle" not in q for q, _v in fc.calls)
+    assert fc.calls[0][1] == {"id": "gid://shopify/Product/5234567890"}
+    assert _extract_json(out)["ok"] is True
+
+
+def test_s1065_vendor_handle_not_found_names_the_handle():
+    tools, fc = _build([{"productByHandle": None}])
+    out = tools["update_product_vendor"](handle=_S1065_DIGIT_HANDLE, vendor="Vanish")
+    assert f"no product found for {_S1065_DIGIT_HANDLE!r}" in out
+    assert _extract_json(out)["ok"] is False
+
+
+# ---- update_product_type -----------------------------------------------------
+
+
+def test_s1065_type_all_digit_handle_writes_to_the_handle_owner():
+    tools, fc = _build(
+        [
+            _type_read_by_handle(pid=_S1065_HANDLE_OWNER),
+            _type_update_ok(pid=_S1065_HANDLE_OWNER),
+        ]
+    )
+    out = tools["update_product_type"](
+        handle=_S1065_DIGIT_HANDLE, product_type="Crewneck Sweatshirt", confirm=True
+    )
+    assert fc.calls[0][0] == GET_PRODUCT_TYPE_BY_HANDLE
+    assert fc.calls[0][1] == {"handle": _S1065_DIGIT_HANDLE}
+    assert fc.calls[1][1]["product"]["id"] == f"gid://shopify/Product/{_S1065_HANDLE_OWNER}"
+    _assert_never_touched_decoy(fc)
+    assert _extract_json(out)["ok"] is True
+
+
+def test_s1065_type_product_id_wins_when_both_supplied():
+    tools, fc = _build([_type_read(pid="5234567890"), _type_update_ok(pid="5234567890")])
+    out = tools["update_product_type"](
+        product_id="5234567890",
+        handle=_S1065_DIGIT_HANDLE,
+        product_type="Crewneck Sweatshirt",
+        confirm=True,
+    )
+    assert fc.calls[0][0] == GET_PRODUCT_TYPE
+    assert fc.calls[0][1] == {"id": "gid://shopify/Product/5234567890"}
+    assert _extract_json(out)["ok"] is True
+
+
+def test_s1065_type_handle_not_found_names_the_handle():
+    tools, _ = _build([{"productByHandle": None}])
+    out = tools["update_product_type"](handle=_S1065_DIGIT_HANDLE, product_type="Tee")
+    assert f"no product found for {_S1065_DIGIT_HANDLE!r}" in out
+    assert _extract_json(out)["ok"] is False
+
+
+# ---- update_product_options --------------------------------------------------
+
+
+def test_s1065_options_all_digit_handle_reads_the_handle_owner():
+    owner_gid = f"gid://shopify/Product/{_S1065_HANDLE_OWNER}"
+    tools, fc = _build([_options_read_response(product_gid=owner_gid, by_handle=True)])
+    out = tools["update_product_options"](handle=_S1065_DIGIT_HANDLE, option={"id": _OPT_GID})
+    assert fc.calls[0][0] == GET_PRODUCT_OPTIONS_BY_HANDLE
+    assert fc.calls[0][1] == {"handle": _S1065_DIGIT_HANDLE}
+    _assert_never_touched_decoy(fc)
+    assert _parse_tail(out)["product"]["id"] == owner_gid
+
+
+def test_s1065_options_all_digit_handle_writes_to_the_handle_owner():
+    owner_gid = f"gid://shopify/Product/{_S1065_HANDLE_OWNER}"
+    tools, fc = _build(
+        [
+            _options_read_response(product_gid=owner_gid, by_handle=True),
+            _options_mutation_ok(product_gid=owner_gid, option_name="Fit"),
+        ]
+    )
+    out = tools["update_product_options"](
+        handle=_S1065_DIGIT_HANDLE, option={"id": _OPT_GID, "name": "Fit"}, confirm=True
+    )
+    assert fc.calls[-1][0] == UPDATE_PRODUCT_OPTION
+    assert fc.calls[-1][1]["productId"] == owner_gid
+    _assert_never_touched_decoy(fc)
+    assert _parse_tail(out)["ok"] is True
+
+
+def test_s1065_options_product_id_wins_when_both_supplied():
+    tools, fc = _build([_options_read_response()])
+    tools["update_product_options"](
+        product_id="100", handle=_S1065_DIGIT_HANDLE, option={"id": _OPT_GID}
+    )
+    assert fc.calls[0][0] == GET_PRODUCT_OPTIONS
+    assert fc.calls[0][1] == {"id": "gid://shopify/Product/100"}
+
+
+def test_s1065_options_handle_not_found_names_the_handle():
+    tools, _ = _build([{"productByHandle": None}])
+    out = tools["update_product_options"](handle=_S1065_DIGIT_HANDLE, option={"id": _OPT_GID})
+    assert f"no product found for {_S1065_DIGIT_HANDLE!r}" in out
+    assert _parse_tail(out)["ok"] is False
+
+
+# ---- update_product_category -------------------------------------------------
+
+
+def test_s1065_category_all_digit_handle_writes_to_the_handle_owner():
+    owner_gid = f"gid://shopify/Product/{_S1065_HANDLE_OWNER}"
+    tools, fc = _build(
+        [
+            {"productByHandle": {"id": owner_gid, "title": "2024 Drop", "category": None}},
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Apparel & Accessories > Clothing > Shirts & Tops > Sweatshirts",
+                    "name": "Sweatshirts",
+                }
+            ),
+            _product_read_response(),
+            _product_update_ok(),
+        ]
+    )
+    out = tools["update_product_category"](
+        handle=_S1065_DIGIT_HANDLE, category="sweatshirt", confirm=True
+    )
+    assert fc.calls[0][0] == GET_PRODUCT_BY_HANDLE_MIN
+    assert fc.calls[0][1] == {"handle": _S1065_DIGIT_HANDLE}
+    assert fc.calls[-1][1]["product"]["id"] == owner_gid
+    _assert_never_touched_decoy(fc)
+    assert _extract_json_tail(out)["ok"] is True
+
+
+def test_s1065_category_product_id_wins_when_both_supplied():
+    tools, fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Apparel & Accessories > Clothing > Shirts & Tops > Sweatshirts",
+                    "name": "Sweatshirts",
+                }
+            ),
+            _product_read_response(),
+            _product_update_ok(),
+        ]
+    )
+    tools["update_product_category"](
+        product_id="gid://shopify/Product/5234567890",
+        handle=_S1065_DIGIT_HANDLE,
+        category="sweatshirt",
+        confirm=True,
+    )
+    assert all("productByHandle" not in q for q, _v in fc.calls)
+
+
+def test_s1065_category_handle_not_found_names_the_handle():
+    tools, fc = _build([{"productByHandle": None}])
+    out = tools["update_product_category"](handle=_S1065_DIGIT_HANDLE, category="sweatshirt")
+    assert f"No product found with handle {_S1065_DIGIT_HANDLE!r}" in out
+    assert len(fc.calls) == 1
+    assert _extract_json_tail(out)["ok"] is False
+
+
+# ---- update_variant_image_binding --------------------------------------------
+
+
+def test_s1065_binding_all_digit_handle_writes_to_the_handle_owner():
+    tools, fc = _build(
+        [
+            {"productByHandle": {"id": _S96_PRODUCT_GID}},
+            _s96_combined_response(
+                media_ids=[_S96_MEDIA_1],
+                variants=[(_S96_VARIANT_A, "SKU-A", [])],
+            ),
+            _s96_mutation_response([(_S96_VARIANT_A, [(_S96_MEDIA_1, None, None)])]),
+        ]
+    )
+    out = tools["update_variant_image_binding"](
+        handle=_S1065_DIGIT_HANDLE,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    assert fc.calls[0][0] == GET_PRODUCT_BY_HANDLE_MIN
+    assert fc.calls[0][1] == {"handle": _S1065_DIGIT_HANDLE}
+    assert fc.calls[1][1]["id"] == _S96_PRODUCT_GID
+    _assert_never_touched_decoy(fc)
+    assert _parse_tail(out)["ok"] is True
+
+
+def test_s1065_binding_product_id_wins_when_both_supplied():
+    tools, fc = _build(
+        [
+            _s96_combined_response(
+                media_ids=[_S96_MEDIA_1],
+                variants=[(_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_1])],
+            )
+        ]
+    )
+    tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        handle=_S1065_DIGIT_HANDLE,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+    )
+    assert all("productByHandle" not in q for q, _v in fc.calls)
+    assert fc.calls[0][1]["id"] == _S96_PRODUCT_GID
+
+
+def test_s1065_binding_handle_owner_vanishes_names_the_handle():
+    """The post-resolve media read returning a null product must report the
+    identifier the caller actually supplied, not an empty `product_id`."""
+    tools, _ = _build([{"productByHandle": {"id": _S96_PRODUCT_GID}}, {"product": None}])
+    out = tools["update_variant_image_binding"](
+        handle=_S1065_DIGIT_HANDLE,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+    )
+    assert f"No product found with id {_S1065_DIGIT_HANDLE}." in out
+    assert _parse_tail(out)["ok"] is False
+
+
+# ---- cross-cutting -----------------------------------------------------------
+
+
+def test_s1065_product_gid_via_handle_channel_still_short_circuits():
+    """AC #4 — PR #134 restored the Product-GID passthrough on the handle
+    channel; threading `handle` through the mutators must not cost a wasted
+    productByHandle round-trip when a GID arrives that way."""
+    tools, fc = _build([_vendor_read(pid="7777", vendor="Old"), _update_ok(pid="7777")])
+    out = tools["update_product_vendor"](
+        handle="gid://shopify/Product/7777", vendor="Vanish", confirm=True
+    )
+    assert fc.calls[0][0] == GET_PRODUCT_VENDOR
+    assert fc.calls[0][1] == {"id": "gid://shopify/Product/7777"}
+    assert _extract_json(out)["ok"] is True
+
+
+def test_s1065_neither_identifier_supplied_errors_without_network():
+    tools, fc = _build([])
+    out = tools["update_product_vendor"](vendor="Vanish")
+    assert "product_id must be a non-empty string" in out
+    assert fc.calls == []
+    assert _extract_json(out)["ok"] is False

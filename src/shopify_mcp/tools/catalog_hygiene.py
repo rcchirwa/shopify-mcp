@@ -999,6 +999,28 @@ def _format_payload(
     return f"{body}\n\n```json\n{json.dumps(payload)}\n```"
 
 
+def _identifier_channel(product_id: str, handle: str) -> tuple[str, str]:
+    """Split a tool's two identifier params into the resolver's two channels.
+
+    Returns `(product_id_arg, handle_arg)` with at most one of them non-empty,
+    ready to splat into `_resolve_product` / `_resolve_product_gid`.
+
+    `product_id` wins when both are supplied — the precedence
+    `get_product_metafields` has documented since Story 10.64, and the reason
+    the resolver's both-supplied `ValueError` is never reachable from a tool
+    surface. When neither is supplied, both channels stay empty and the
+    resolver's "product_id must be a non-empty string" rejection fires
+    unchanged from when `product_id` was these tools' only parameter.
+
+    The `isinstance` guard mirrors the resolver's own: a non-string
+    `product_id` (from a client that ignores the schema) is treated as absent
+    rather than crashing here, so it still reaches the resolver's typed
+    rejection. Story 10.65 (T-9.5-mutator-handle) — see docs/tech-debt.md.
+    """
+    pid = product_id.strip() if isinstance(product_id, str) else ""
+    return (product_id, "") if pid else ("", handle)
+
+
 def _resolve_product_gid(
     client: ShopifyClient,
     product_id: str = "",
@@ -1787,15 +1809,22 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
     @server.tool()
     def update_product_category(
-        product_id: str,
-        category: str,
+        product_id: str = "",
+        category: str = "",
         resolve_strategy: str = "best-match",
         confirm: bool = False,
+        handle: str = "",
     ) -> str:
         """
         Set or change a product's Standard Product Taxonomy category.
 
-        `product_id` accepts numeric ID, GID, or handle.
+        `product_id` accepts numeric ID, GID, or handle. A bare number here
+        always means a product ID — pass an all-digit *handle* (e.g. '2024')
+        via `handle` instead, or the write lands on whichever product carries
+        that number as its ID (Story 10.65).
+        `handle` is the unambiguous by-handle channel: no numeric-ID
+        classification, so an all-digit handle resolves correctly. Used when
+        `product_id` is empty; `product_id` wins when both are supplied.
         `category` accepts a TaxonomyCategory GID or a free-text search string.
         `resolve_strategy` ∈ {"exact", "best-match", "reject-ambiguous"} — only
         meaningful when `category` is a search string; ignored for GID inputs.
@@ -1830,7 +1859,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
 
         # --- Resolve productId → Product GID (numeric / GID / handle).
-        product_gid, prod_err = _resolve_product_gid(client, product_id)
+        pid_arg, handle_arg = _identifier_channel(product_id, handle)
+        product_gid, prod_err = _resolve_product_gid(client, pid_arg, handle=handle_arg)
         if prod_err or not product_gid:
             return _format_payload(
                 f"Error — update_product_category\n  {prod_err}",
@@ -2011,18 +2041,26 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
     @server.tool()
     def update_product_vendor(
-        product_id: str,
+        product_id: str = "",
         vendor: str | None = None,
         confirm: bool = False,
+        handle: str = "",
     ) -> str:
         """
         Set or clear a product's vendor (brand).
 
         Args:
-            product_id: Numeric ID, GID, or handle.
+            product_id: Numeric ID, GID, or handle. A bare number here always
+                means a product ID — pass an all-digit *handle* (e.g. '2024')
+                via `handle` instead, or the write lands on whichever product
+                carries that number as its ID (Story 10.65).
             vendor: New vendor name (trimmed, ≤ 255 chars). Pass None to clear.
             confirm: When False (default) returns a preview without calling
                 productUpdate. When True executes the mutation.
+            handle: Unambiguous by-handle channel — no numeric-ID
+                classification, so an all-digit handle resolves correctly.
+                Used when `product_id` is empty; `product_id` wins when both
+                are supplied.
 
         Returns a human-readable preview/confirmation block followed by a
         fenced ```json``` block carrying `{ok, product{id, vendor}, errors, preview}`.
@@ -2045,10 +2083,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 ],
             )
 
+        pid_arg, handle_arg = _identifier_channel(product_id, handle)
         try:
             product_gid, product = _resolve_product(
                 client,
-                product_id,
+                pid_arg,
+                handle=handle_arg,
                 query_by_id=GET_PRODUCT_VENDOR,
                 query_by_handle=GET_PRODUCT_VENDOR_BY_HANDLE,
             )
@@ -2063,7 +2103,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
 
         if not product_gid:
-            msg = f"Error: no product found for {_cap(product_id)!r}."
+            # Name the identifier actually queried, not a blank `product_id`,
+            # now that the caller may have supplied only `handle`.
+            msg = f"Error: no product found for {_cap(pid_arg or handle_arg)!r}."
             return f"{msg}\n\n" + _format_vendor_payload(
                 product_gid="",
                 vendor=new_vendor,
@@ -2180,21 +2222,31 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
     @server.tool()
     def update_product_type(
-        product_id: str,
-        product_type: str,
+        product_id: str = "",
+        product_type: str | None = None,
         confirm: bool = False,
+        handle: str = "",
     ) -> str:
         """
         Set or clear a product's legacy free-text productType.
 
         Args:
-            product_id: Numeric ID, GID, or handle.
+            product_id: Numeric ID, GID, or handle. A bare number here always
+                means a product ID — pass an all-digit *handle* (e.g. '2024')
+                via `handle` instead, or the write lands on whichever product
+                carries that number as its ID (Story 10.65).
             product_type: New productType (trimmed, ≤ 255 chars). Empty string
                 or whitespace-only clears the field — Shopify treats `""` as
                 cleared for productType (distinct from vendor, where `null`
-                is the clear path).
+                is the clear path). Required: omitting it is rejected rather
+                than treated as a clear, so a forgotten argument can never
+                silently wipe the field.
             confirm: When False (default) returns a preview without calling
                 productUpdate. When True executes the mutation.
+            handle: Unambiguous by-handle channel — no numeric-ID
+                classification, so an all-digit handle resolves correctly.
+                Used when `product_id` is empty; `product_id` wins when both
+                are supplied.
 
         Distinct from category (Story 9.1) — both fields coexist on the
         product. Themes, Liquid templates, and smart-collection rules still
@@ -2220,10 +2272,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 ],
             )
 
+        pid_arg, handle_arg = _identifier_channel(product_id, handle)
         try:
             product_gid, product = _resolve_product(
                 client,
-                product_id,
+                pid_arg,
+                handle=handle_arg,
                 query_by_id=GET_PRODUCT_TYPE,
                 query_by_handle=GET_PRODUCT_TYPE_BY_HANDLE,
             )
@@ -2238,7 +2292,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
 
         if not product_gid:
-            msg = f"Error: no product found for {_cap(product_id)!r}."
+            # Name the identifier actually queried, not a blank `product_id`,
+            # now that the caller may have supplied only `handle`.
+            msg = f"Error: no product found for {_cap(pid_arg or handle_arg)!r}."
             return f"{msg}\n\n" + _format_type_payload(
                 product_gid="",
                 product_type=new_type,
@@ -2356,14 +2412,23 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
     @server.tool()
     def update_variant_image_binding(
-        product_id: str,
+        product_id: str = "",
         variant_media: list[dict[str, Any]] | None = None,
         confirm: bool = False,
+        handle: str = "",
     ) -> str:
         """
         Bind existing product media to one or more product variants.
 
-        product_id  : numeric ID, Product GID, or handle of the product.
+        product_id  : numeric ID, Product GID, or handle of the product. A bare
+                      number here always means a product ID — pass an all-digit
+                      *handle* (e.g. '2024') via `handle` instead, or the write
+                      lands on whichever product carries that number as its ID
+                      (Story 10.65).
+        handle      : unambiguous by-handle channel — no numeric-ID
+                      classification, so an all-digit handle resolves
+                      correctly. Used when `product_id` is empty; `product_id`
+                      wins when both are supplied.
         variant_media: non-empty list of entries. Each entry is a dict with:
             - variantId : str — numeric ID, ProductVariant GID, or SKU on this product
             - mediaIds  : list[str] — non-empty list of MediaImage / Video / Model3d GIDs
@@ -2422,10 +2487,15 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             normalized.append((raw_variant_id.strip(), list(raw_media_ids)))
 
         # Step 2 — resolve product_id (numeric / GID short-circuit; handle via network)
-        gid, resolve_err = _resolve_product_gid(client, product_id)
+        pid_arg, handle_arg = _identifier_channel(product_id, handle)
+        gid, resolve_err = _resolve_product_gid(client, pid_arg, handle=handle_arg)
         if resolve_err or not gid:
             err = resolve_err or "product_id could not be resolved."
             return _render(f"Error: {err}", _err_payload(err))
+        # Whichever identifier the caller actually supplied — echoed in every
+        # head/log line below, which would otherwise render blank for a
+        # handle-only call now that `handle` is its own channel.
+        product_ref = pid_arg or handle_arg
 
         # Step 3 — fetch product media + per-variant bound media. The combined
         # query already pulls every variant's id + sku, so we feed that list
@@ -2440,7 +2510,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
             product = (data or {}).get("product")
             if not product:
-                msg = f"No product found with id {product_id}."
+                msg = f"No product found with id {product_ref}."
                 return _render(msg, _err_payload(msg))
 
             all_media_nodes: list[dict[str, Any]] = (product.get("media") or {}).get(
@@ -2460,7 +2530,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 )
                 _page_product = (_page_data or {}).get("product")
                 if not _page_product:
-                    msg = f"No product found with id {product_id}."
+                    msg = f"No product found with id {product_ref}."
                     return _render(msg, _err_payload(msg))
                 _page_media = _page_product.get("media") or {}
                 all_media_nodes.extend(_page_media.get("nodes", []) or [])
@@ -2632,7 +2702,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         preview_blocks = [_variant_block(r) for r in routes]
         preview_head = (
             f"PREVIEW — Bind variant images\n"
-            f"  Product : {title} (id: {product_id})\n"
+            f"  Product : {title} (id: {product_ref})\n"
             f"  Variants ({len(routes)}) — net-new media bindings: {total_new}"
             + (f" — WARNING: {will_lose_count} binding(s) will be lost" if will_lose_count else "")
             + "\n"
@@ -2671,11 +2741,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if all_no_op:
             log_write(
                 "update_variant_image_binding",
-                f"product={product_id} variants={len(routes)} media_bound=0 (idempotent)",
+                f"product={product_ref} variants={len(routes)} media_bound=0 (idempotent)",
             )
             head = (
                 f"CONFIRMED — Bind variant images (no-op)\n"
-                f"  Product : {title} (id: {product_id})\n"
+                f"  Product : {title} (id: {product_ref})\n"
                 f"  Variants ({len(routes)}) — all requested media already bound."
             )
             return _render(
@@ -2771,11 +2841,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         log_write(
             "update_variant_image_binding",
-            f"product={product_id} variants={len(routes)} detached={total_detach} appended={total_new}",
+            f"product={product_ref} variants={len(routes)} detached={total_detach} appended={total_new}",
         )
         head = (
             f"CONFIRMED — Bind variant images\n"
-            f"  Product : {title} (id: {product_id})\n"
+            f"  Product : {title} (id: {product_ref})\n"
             f"  Variants ({len(routes)}) — net-new media bindings: {total_new}\n"
             + "\n".join(preview_blocks)
         )
@@ -3678,16 +3748,25 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
     @server.tool()
     def update_product_options(
-        product_id: str,
-        option: dict[str, Any],
+        product_id: str = "",
+        option: dict[str, Any] | None = None,
         option_values_to_update: list[dict[str, Any]] | None = None,
         variant_strategy: str = "LEAVE_AS_IS",
         confirm: bool = False,
+        handle: str = "",
     ) -> str:
         """
         Rename a product's variant option name and/or its option value names.
 
-        product_id  : numeric ID, GID, or handle.
+        product_id  : numeric ID, GID, or handle. A bare number here always
+                      means a product ID — pass an all-digit *handle* (e.g.
+                      '2024') via `handle` instead, or the write lands on
+                      whichever product carries that number as its ID
+                      (Story 10.65).
+        handle      : unambiguous by-handle channel — no numeric-ID
+                      classification, so an all-digit handle resolves
+                      correctly. Used when `product_id` is empty; `product_id`
+                      wins when both are supplied.
         option      : dict — `{"id": "<ProductOption GID>", "name": "<new name>"?}`.
                       The option GID is required; `name` is optional (omit to
                       keep the current option name).
@@ -3745,10 +3824,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # Step 2 — resolve product_id (numeric / GID / handle) and pre-fetch
         # options + variants in the same query (handle path uses the _BY_HANDLE
         # twin; either way `product` carries the full snapshot we need).
+        pid_arg, handle_arg = _identifier_channel(product_id, handle)
         try:
             product_gid, product = _resolve_product(
                 client,
-                product_id,
+                pid_arg,
+                handle=handle_arg,
                 query_by_id=GET_PRODUCT_OPTIONS,
                 query_by_handle=GET_PRODUCT_OPTIONS_BY_HANDLE,
             )
@@ -3762,7 +3843,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
 
         if not product_gid:
-            msg = f"Error: no product found for {_cap(product_id)!r}."
+            # Name the identifier actually queried, not a blank `product_id`,
+            # now that the caller may have supplied only `handle`.
+            msg = f"Error: no product found for {_cap(pid_arg or handle_arg)!r}."
             return f"{msg}\n\n" + _format_options_payload(
                 product_snapshot=_shape_options_snapshot(None),
                 ok=False,
@@ -3792,7 +3875,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             None,
         )
         if matching_option is None:
-            msg = f"Error: option.id {_cap(normalized['option_id'])!r} is not on product {_cap(product_id)!r}."
+            msg = (
+                f"Error: option.id {_cap(normalized['option_id'])!r} is not on "
+                f"product {_cap(pid_arg or handle_arg)!r}."
+            )
             return f"{msg}\n\n" + _format_options_payload(
                 product_snapshot=_shape_options_snapshot(product),
                 ok=False,
