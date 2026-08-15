@@ -20,6 +20,7 @@ Usage:
 """
 
 import json
+import pathlib
 import re
 from typing import Any
 
@@ -9300,61 +9301,253 @@ def test_s1067_oversized_exception_is_capped_in_the_json_tail(tool_name, kwargs)
     """The structured half is built from `str(exc)` separately from the head —
     capping only the head would leave the unbounded body in `errors[].message`,
     which is the half a machine caller actually consumes."""
-    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN, cap
 
     tools, _fc = _s1067_raising_client()
     out = tools[tool_name](product_id="123", **kwargs)
     messages = " ".join(str(e.get("message", "")) for e in _parse_tail(out).get("errors", []))
-    assert messages
+    # Paired, per this block's header: `assert messages` alone would be
+    # satisfied by any unrelated error text, so a dropped reflection would pass.
+    assert cap(_S1067_HUGE) in messages
     assert _S1067_HUGE[: REFLECT_MAX_LEN + 1] not in messages
 
 
-def test_s1067_metafield_write_tools_cap_oversized_exceptions():
+_S1067_METAFIELD_CALLS = [
+    ("set_product_metafields", {"metafields": [_s97_entry()], "confirm": True}),
+    (
+        "delete_product_metafields",
+        {"metafields": [{"metafieldId": _S910_METAFIELD_GID}], "confirm": True},
+    ),
+]
+
+
+@pytest.mark.parametrize(("tool_name", "kwargs"), _S1067_METAFIELD_CALLS)
+def test_s1067_metafield_write_tools_cap_oversized_exceptions(tool_name, kwargs):
     """`set_`/`delete_product_metafields` resolve no product, so they reach
     their reflection sites through the mutation call instead."""
     from shopify_mcp.tools._scrub import REFLECT_MAX_LEN, cap
 
-    for name, kwargs in (
-        ("set_product_metafields", {"metafields": [_s97_entry()], "confirm": True}),
-        (
-            "delete_product_metafields",
-            {"metafields": [{"metafieldId": _S910_METAFIELD_GID}], "confirm": True},
-        ),
-    ):
-        tools, _fc = _s1067_raising_client()
-        out = tools[name](**kwargs)
-        assert cap(_S1067_HUGE) in out, name
-        assert _S1067_HUGE[: REFLECT_MAX_LEN + 1] not in out, name
+    tools, _fc = _s1067_raising_client()
+    out = tools[tool_name](**kwargs)
+    assert cap(_S1067_HUGE) in out
+    assert _S1067_HUGE[: REFLECT_MAX_LEN + 1] not in out
 
 
-def test_s1067_no_uncapped_exception_reflection_remains_in_the_tool_surface():
-    """AC1 as an executable invariant, not a one-time sweep.
+def _s1067_scanned_modules():
+    """Every module that can reflect an exception to a caller or a log.
 
-    The module-by-module split this story closes arose because nothing stopped a
-    new `{exc}` site from being added uncapped. Every exception interpolation in
-    the reflecting tool modules must route through `cap`/`_cap`; this fails on
-    the next one that does not, which a per-tool behavioural test cannot do.
+    The first cut of this test hardcoded four files, which is how
+    `collections.py` — reflecting a raw `poll_job` error — survived the sweep
+    that this story's own ledger entry then certified as complete. The scan is
+    now the whole tool surface plus `client.py`, so a new module is covered on
+    the day it is written rather than when someone remembers to add it.
     """
-    import re
-    from pathlib import Path
+    import shopify_mcp
 
-    src = Path(catalog_hygiene.__file__).parent
-    targets = [
-        src / "catalog_hygiene.py",
-        src / "publications.py",
-        src / "inventory.py",
-        src / "media" / "_upload.py",
-    ]
-    # An exception value interpolated into an f-string or stringified, where the
-    # same line does not route it through the shared cap helper.
-    interp = re.compile(r"\{(?:e|exc|err)\}|str\((?:e|exc|err)\)")
-    capped = re.compile(r"_?cap\(")
+    root = pathlib.Path(shopify_mcp.__file__).parent
+    return sorted([*(root / "tools").rglob("*.py"), root / "client.py"])
+
+
+# Exception-ish binding names, and every interpolation/stringification shape
+# that reflects one. Deliberately wider than the shapes present today: `{e!s}`
+# is already live in `client.py`, so a copy of it into a scanned module must not
+# pass silently. `(?P<m>...)` marks the matched occurrence for the cap check.
+_S1067_EXC_NAMES = r"e|exc|err|ex|error|exception"
+_S1067_REFLECT = re.compile(
+    rf"\{{\s*(?:{_S1067_EXC_NAMES})\s*(?:![sra])?(?::[^}}]*)?\s*\}}"
+    rf"|(?:str|repr)\(\s*(?:{_S1067_EXC_NAMES})\s*\)"
+)
+
+
+def _s1067_uncapped_occurrences(line: str) -> list[str]:
+    """Occurrences on `line` that are NOT wrapped in cap()/_cap().
+
+    Occurrence-granular on purpose. A line-granular check (`"cap(" in line`)
+    exempts an uncapped exception whenever the same line caps something else —
+    and `catalog_hygiene.py` has 51 identifier `_cap()` sites routinely
+    co-located with error text, which made that the likeliest way for the next
+    regression to slip through.
+    """
+    bad = []
+    for m in _S1067_REFLECT.finditer(line):
+        # Walk left from the occurrence; it is capped iff the nearest enclosing
+        # unclosed call is cap( / _cap(.
+        prefix, depth, capped = line[: m.start()], 0, False
+        for i in range(len(prefix) - 1, -1, -1):
+            ch = prefix[i]
+            if ch == ")":
+                depth += 1
+            elif ch == "(":
+                if depth:
+                    depth -= 1
+                else:
+                    capped = bool(re.search(r"\b_?cap(?:_text)?$", prefix[:i]))
+                    break
+        if not capped:
+            bad.append(m.group(0))
+    return bad
+
+
+# A site may opt out with a trailing `# reflect-ok: <reason>` marker. That is
+# deliberately different from the file allowlist this test replaced: an
+# exemption lives ON the line it exempts, carries its justification, and shows
+# up in the diff when that line changes — whereas a curated list of *files*
+# silently stops covering a module the day someone adds one, which is exactly
+# how `collections.py` escaped this story's first sweep.
+_S1067_EXEMPT = re.compile(r"#\s*reflect-ok:")
+_S1067_FENCE = re.compile(r'"""' + r"|'''")
+
+
+def test_s1067_no_uncapped_exception_reflection_in_any_tool_module():
+    """AC1 as an executable invariant over the whole surface, not an allowlist.
+
+    The module-by-module split arose because nothing stopped a new uncapped site
+    from being added. This fails on the next one — in any tool module, not just
+    the four that happened to be known when the story was written.
+
+    Docstring and comment bodies are skipped: they discuss `str(exc)` as prose
+    often enough that scanning them yields noise rather than signal.
+    """
     offenders = []
-    for path in targets:
+    for path in _s1067_scanned_modules():
+        in_doc = False
         for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             stripped = line.strip()
-            if stripped.startswith("#") or "raise " in stripped:
+            odd_fence = len(_S1067_FENCE.findall(stripped)) % 2 == 1
+            if in_doc:
+                in_doc = not odd_fence
                 continue
-            if interp.search(line) and not capped.search(line):
-                offenders.append(f"{path.name}:{n}: {stripped[:90]}")
+            if odd_fence:
+                in_doc = True
+                continue
+            if stripped.startswith("#") or stripped.startswith("raise "):
+                continue
+            # The marker must sit on the same physical line as the occurrence.
+            # Keep the reason terse enough that the line stays inside the
+            # 100-char limit: `ruff format` re-wraps a longer line and moves the
+            # trailing comment off the occurrence it was annotating, which
+            # silently un-exempts the site.
+            if _S1067_EXEMPT.search(line):
+                continue
+            for occ in _s1067_uncapped_occurrences(line):
+                offenders.append(f"{path.name}:{n}: {occ}  |  {stripped[:80]}")
     assert not offenders, "uncapped exception reflection:\n" + "\n".join(offenders)
+
+
+def test_s1067_every_exemption_carries_a_reason():
+    """A bare `# reflect-ok:` is an unexplained hole in the invariant."""
+    bare = []
+    for path in _s1067_scanned_modules():
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            m = _S1067_EXEMPT.search(line)
+            if m and not line[m.end() :].strip():
+                bare.append(f"{path.name}:{n}")
+    assert not bare, "reflect-ok marker with no reason: " + ", ".join(bare)
+
+
+def test_s1067_every_ops_call_in_catalog_hygiene_is_exception_guarded():
+    """The class the regex invariant structurally cannot see.
+
+    An entirely unguarded `ops.*` call reflects nothing — it lets the raw
+    exception escape to FastMCP, which renders it uncapped, bypassing every cap
+    in this module. Three such calls survived this story's first cut, including
+    one in the very function it had just hardened. A source-grep cannot detect
+    an absence, so this walks the AST instead.
+    """
+    import ast
+
+    src = pathlib.Path(catalog_hygiene.__file__)
+    tree = ast.parse(src.read_text(encoding="utf-8"))
+    parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
+
+    def inside_try_body(node):
+        cur = node
+        while cur in parents:
+            parent = parents[cur]
+            if isinstance(parent, ast.Try) and any(
+                cur is stmt or cur in set(ast.walk(stmt)) for stmt in parent.body
+            ):
+                return True
+            cur = parent
+        return False
+
+    unguarded = [
+        f"line {n.lineno}: ops.{n.func.attr}()"
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and isinstance(n.func.value, ast.Name)
+        and n.func.value.id == "ops"
+        and not inside_try_body(n)
+    ]
+    assert not unguarded, "ops call not wrapped in try/except:\n" + "\n".join(unguarded)
+
+
+# The three mutation calls that were entirely unguarded until the round-2
+# review: an unguarded `ops.*` call reflects nothing, it lets the raw exception
+# escape to FastMCP, which renders it uncapped — bypassing every cap in this
+# module. `test_s1067_every_ops_call_in_catalog_hygiene_is_exception_guarded`
+# pins that none remain; these pin that each guard renders a bounded error
+# instead of raising.
+
+
+def _s1067_pricing_read():
+    return {
+        "product": {
+            "id": "gid://shopify/Product/1",
+            "title": "T",
+            "variants": {
+                "nodes": [
+                    {
+                        "id": _S96_VARIANT_A,
+                        "sku": "A",
+                        "price": "5.00",
+                        "compareAtPrice": None,
+                    }
+                ]
+            },
+        }
+    }
+
+
+def test_s1067_pricing_mutation_failure_is_capped_not_raised():
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN, cap
+
+    tools, _fc = _build([_s1067_pricing_read(), RuntimeError(_S1067_HUGE)])
+    out = tools["update_product_pricing"](
+        "1", variants=[{"variantId": "100", "price": "10.00"}], confirm=True
+    )
+    assert "productVariantsBulkUpdate" in out
+    assert cap(_S1067_HUGE) in out
+    assert _S1067_HUGE[: REFLECT_MAX_LEN + 1] not in out
+
+
+@pytest.mark.parametrize(
+    ("label", "existing_media", "desired"),
+    [
+        # Append-only: variant starts with no bindings, so only APPEND fires.
+        ("productVariantAppendMedia", [], [_S96_MEDIA_1]),
+        # Detach-reattach: variant already holds MEDIA_2, so DETACH fires first.
+        ("productVariantDetachMedia", [_S96_MEDIA_2], [_S96_MEDIA_1]),
+    ],
+)
+def test_s1067_variant_media_mutation_failures_are_capped_not_raised(
+    label, existing_media, desired
+):
+    """Both mutation calls in this flow were unguarded. Driving each path
+    separately proves each guard, rather than one covering for the other."""
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN, cap
+
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
+        variants=[(_S96_VARIANT_A, "SKU-A", existing_media)],
+    )
+    tools, _fc = _build([combined, RuntimeError(_S1067_HUGE)])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": desired}],
+        confirm=True,
+    )
+    assert label in out
+    assert cap(_S1067_HUGE) in out
+    assert _S1067_HUGE[: REFLECT_MAX_LEN + 1] not in out

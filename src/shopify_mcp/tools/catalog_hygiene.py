@@ -1670,14 +1670,19 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # Wide read pulls id+sku+price+compareAtPrice in one call. The same
         # variants list feeds both SKU resolution and the old→new preview.
         #
-        # Story 10.67 (SEC-27) added the guard. This was the only product read
-        # in the module not wrapped, so a transport or Shopify error propagated
-        # out of the tool and FastMCP rendered the raw exception — the one path
-        # where an unbounded upstream body still reached model context after
-        # every reflection site in this module was capped. Capping the two
-        # local-validation sites above while leaving this open would have been
-        # a half-fix. Deliberate contract change: this tool now returns a
-        # structured error where it previously raised, matching every sibling.
+        # Story 10.67 (SEC-27) added the guard. An unguarded ops call lets the
+        # raw exception escape to FastMCP, which renders it uncapped — bypassing
+        # every reflection cap in this module. Capping the two local-validation
+        # sites above while leaving this open would have been a half-fix.
+        # Deliberate contract change: this tool now returns a structured error
+        # where it previously raised, matching every sibling.
+        #
+        # An earlier revision of this comment called it "the only product read
+        # in the module not wrapped". That was wrong — the round-2 review found
+        # three unguarded `ops.*` calls, two of them in
+        # `update_variant_image_binding`. `test_s1067_every_ops_call_in_
+        # catalog_hygiene_is_exception_guarded` now walks the AST so the claim
+        # is enforced rather than asserted; don't restate it in prose here.
         try:
             data = ops.read_variants_for_pricing(client, product_gid)
         except Exception as exc:
@@ -1829,7 +1834,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 cap_intent_by_gid[gid] = entry["compareAtPrice"]  # value or None
             variants_input.append(payload)
 
-        result = ops.update_variants_pricing(client, product_gid, variants_input)
+        # Guarded for the same reason as the read above (Story 10.67 / SEC-27):
+        # an unguarded ops call lets the raw exception escape to FastMCP, which
+        # renders it uncapped — bypassing every reflection cap in this module.
+        try:
+            result = ops.update_variants_pricing(client, product_gid, variants_input)
+        except Exception as exc:
+            msg = f"Error calling productVariantsBulkUpdate ({type(exc).__name__}): {cap(str(exc))}"
+            return _render(msg, _err_payload(cap(str(exc))))
 
         user_errors = extract_user_errors(result, "productVariantsBulkUpdate")
         if user_errors:
@@ -2596,8 +2608,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         pid_arg, handle_arg, product_ref = _identifier_channel(product_id, handle)
         gid, resolve_err = _resolve_product_gid(client, pid_arg, handle=handle_arg)
         if resolve_err or not gid:
+            # `err` is already a bounded message from `_resolve_product_gid`
+            # (it caps the exception it embeds), so it is reflected as-is in
+            # BOTH halves. The first cut of Story 10.67 capped only the head,
+            # which re-truncated an already-capped string — dropping the tail of
+            # genuine text — while leaving the JSON tail unbounded. Bind once
+            # and use it twice so the two halves cannot diverge again.
             err = resolve_err or "product_id could not be resolved."
-            return _render(f"Error: {cap(str(err))}", _err_payload(err))
+            return _render(f"Error: {err}", _err_payload(err))  # reflect-ok: producer-bounded
 
         # Step 3 — fetch product media + per-variant bound media. The combined
         # query already pulls every variant's id + sku, so we feed that list
@@ -2883,7 +2901,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # Step 9b — DETACH first. HALT on any userError; do NOT proceed to append.
         detached_variant_gids: list[str] = []
         if detach_entries:
-            detach_result = ops.detach_variant_media(client, gid, detach_entries)
+            # Guarded per Story 10.67 (SEC-27). The rollback path below already
+            # wrapped its own ops call, so leaving these two bare made the guard
+            # inconsistent inside a single flow.
+            try:
+                detach_result = ops.detach_variant_media(client, gid, detach_entries)
+            except Exception as exc:
+                msg = f"Error calling productVariantDetachMedia ({type(exc).__name__}): {cap(str(exc))}"
+                return _render(msg, _err_payload(cap(str(exc))))
             detach_errors = extract_user_errors(detach_result, "productVariantDetachMedia")
             if detach_errors:
                 msgs = _format_user_errors(detach_errors)
@@ -2897,7 +2922,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # All entries are batched into a single mutation call.
         append_result: dict[str, Any] = {}
         if append_entries:
-            append_result = ops.append_variant_media(client, gid, append_entries)
+            try:
+                append_result = ops.append_variant_media(client, gid, append_entries)
+            except Exception as exc:
+                msg = f"Error calling productVariantAppendMedia ({type(exc).__name__}): {cap(str(exc))}"
+                return _render(msg, _err_payload(cap(str(exc))))
             raw_errors = extract_user_errors(append_result, "productVariantAppendMedia")
             real_errors = [
                 e for e in raw_errors if not _is_already_bound_error(e.get("message") or "")
@@ -3318,7 +3347,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 continue
             owner_gid, owner_type, err = _resolve_owner_gid_for_metafield(client, entry["ownerId"])
             if err:
-                msg = f"Error resolving metafields[{idx}]: {cap(str(err))}"
+                # Same head/tail binding as the resolve site above: `err` is
+                # already bounded by its producer, so both halves reflect the
+                # identical string rather than one capped and one raw.
+                msg = f"Error resolving metafields[{idx}]: {err}"  # reflect-ok: producer-bounded
                 return _render(msg, _err_payload(err, key="deleted"))
             classified.append(
                 {

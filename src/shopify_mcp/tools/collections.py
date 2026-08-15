@@ -29,6 +29,7 @@ from shopify_mcp.tools._filters import (
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._response import format_user_errors, with_confirm_hint
+from shopify_mcp.tools._scrub import cap
 from shopify_mcp.tools._write_tool import write_gate
 
 # The GraphQL strings now live in shopify.queries.collections. They are
@@ -241,7 +242,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 body += f"\n  Job        : {numeric} (done=True after {elapsed_s:.1f}s)"
             elif timed_out and poll_error:
                 body += (
-                    f"\n  Job        : {numeric} (poll failed: {poll_error} — "
+                    f"\n  Job        : {numeric} (poll failed: {cap(str(poll_error))} — "
                     f"underlying write succeeded, check server-side for completion)"
                 )
             elif timed_out:

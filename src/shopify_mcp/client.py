@@ -26,6 +26,10 @@ from shopify_mcp.shopify._cache import ShopifyMetadataCache
 # leaf modules (tools/_http, tools/_url_safety import nothing from here), so
 # this does not create an import cycle.
 from shopify_mcp.tools._http import default_headers
+
+# Aliased: `_backoff_delay` takes a float parameter named `cap`, so importing
+# the bound-text helper under its bare name would shadow it there.
+from shopify_mcp.tools._scrub import cap as cap_text
 from shopify_mcp.tools._scrub import sanitize_control_chars
 from shopify_mcp.tools._url_safety import _reject_if_private_host
 
@@ -123,7 +127,7 @@ def _is_throttled(errors: Any) -> bool:
             msg = err.get("message") or ""
             if isinstance(msg, str) and "THROTTLED" in msg:
                 return True
-        elif "THROTTLED" in (err if isinstance(err, str) else str(err)):
+        elif "THROTTLED" in (err if isinstance(err, str) else str(err)):  # reflect-ok: predicate
             return True
     return False
 
@@ -136,7 +140,7 @@ def _is_retryable_http(exc: TransportServerError) -> bool:
     gql 4.0 has no structured status attribute, so string matching is
     unavoidable; \b ensures "v503" or "503abc" are not treated as status codes.
     """
-    return bool(_RETRYABLE_HTTP_RE.search(str(exc)))
+    return bool(_RETRYABLE_HTTP_RE.search(str(exc)))  # reflect-ok: predicate
 
 
 def _human_bytes(n: int) -> str:
@@ -447,7 +451,11 @@ def poll_job(
             # Reset done on failure so a stale True from a prior iteration
             # can't combine with a later failed poll to misreport success.
             last_done = False
-            last_error = str(e)
+            # Capped at the source (Story 10.67 / SEC-27): this string is
+            # returned as the job result's "error" and reflected verbatim by
+            # `tools/collections.py`, which is how an unbounded body survived
+            # the first pass of this story's sweep.
+            last_error = cap_text(str(e))
 
         elapsed = time.monotonic() - start
         if last_done:
@@ -490,12 +498,19 @@ def _format_errors(errors: Any) -> str:
         return errors
     if not isinstance(errors, list):
         return str(errors)
-    return "; ".join(_format_one_error(err) for err in errors)
+    # Story 10.67 (SEC-27) bounds the join. This is the constructor for the
+    # message every ShopifyError carries, and it concatenates arbitrary upstream
+    # text — so it is the actual unbounded source, not the call sites that echo
+    # it. Capping here means a consumer that forgets to cap (as
+    # `tools/collections.py` did, via poll_job) cannot leak an unbounded body.
+    # The call sites still cap; this is the backstop that makes enumerating
+    # them unnecessary for safety.
+    return cap_text("; ".join(_format_one_error(err) for err in errors))
 
 
 def _format_one_error(err: Any) -> str:
     if isinstance(err, dict):
-        return err.get("message") or str(err)
+        return err.get("message") or str(err)  # reflect-ok: capped by _format_errors
     if isinstance(err, str):
         return err
-    return str(err)
+    return str(err)  # reflect-ok: capped by _format_errors
