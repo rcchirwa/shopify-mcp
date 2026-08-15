@@ -9240,3 +9240,121 @@ def test_s1065_no_product_resolving_mutator_has_an_empty_required_list():
     ):
         required = func_metadata(tools[tool_name]).arg_model.model_json_schema().get("required")
         assert required, f"{tool_name} has no required parameter in its generated schema"
+
+
+# ---------- Story 10.67 (SEC-27): exception reflections are capped ----------
+#
+# The repo held two documented positions on whether exception text reflected to
+# the caller must be bounded. `publications.py`, `inventory.py` and
+# `media/_upload.py` capped it (SEC-11); this module did not, at any of its 37
+# interpolation sites. These tests pin the settled rule — cap, at
+# `REFLECT_MAX_LEN` — end to end, per tool.
+#
+# The bound is asserted in BOTH halves of the dual output because they are built
+# separately: the head interpolates `{exc}` while the JSON tail carries
+# `str(exc)` into `errors[].message`. Capping one and not the other is the exact
+# half-fix these tests exist to catch.
+#
+# Each assertion is paired positive+negative, matching the existing cap tests:
+# the bounded text must be present AND nothing one char longer may survive. A
+# negative-only assertion passes vacuously if a refactor drops the reflection.
+
+_S1067_HUGE = "Shopify GraphQL error: " + "A" * 10_000
+
+_S1067_TOOL_CALLS = [
+    ("update_product_pricing", {"variants": [{"variantId": "100", "price": "10.00"}]}),
+    ("update_product_category", {"category": "sweatshirt", "confirm": True}),
+    ("update_product_vendor", {"vendor": "Vanish", "confirm": True}),
+    ("update_product_type", {"product_type": "Crewneck Sweatshirt", "confirm": True}),
+    (
+        "update_variant_image_binding",
+        {"variant_media": [{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}]},
+    ),
+    ("update_product_options", {"option": {"id": _OPT_GID, "name": "Fit"}, "confirm": True}),
+    ("get_product_metafields", {}),
+]
+
+
+def _s1067_raising_client():
+    """A client whose very first GraphQL call raises an oversized error.
+
+    FakeClient raises any BaseException in its response script, so this drives
+    each tool down its first exception-reflecting path — the product resolve —
+    without needing a per-tool response sequence.
+    """
+    return _build([RuntimeError(_S1067_HUGE)])
+
+
+@pytest.mark.parametrize(("tool_name", "kwargs"), _S1067_TOOL_CALLS)
+def test_s1067_oversized_exception_is_capped_in_the_head(tool_name, kwargs):
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN, cap
+
+    tools, _fc = _s1067_raising_client()
+    out = tools[tool_name](product_id="123", **kwargs)
+    assert cap(_S1067_HUGE) in out
+    assert _S1067_HUGE[: REFLECT_MAX_LEN + 1] not in out
+
+
+@pytest.mark.parametrize(("tool_name", "kwargs"), _S1067_TOOL_CALLS)
+def test_s1067_oversized_exception_is_capped_in_the_json_tail(tool_name, kwargs):
+    """The structured half is built from `str(exc)` separately from the head —
+    capping only the head would leave the unbounded body in `errors[].message`,
+    which is the half a machine caller actually consumes."""
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
+
+    tools, _fc = _s1067_raising_client()
+    out = tools[tool_name](product_id="123", **kwargs)
+    messages = " ".join(str(e.get("message", "")) for e in _parse_tail(out).get("errors", []))
+    assert messages
+    assert _S1067_HUGE[: REFLECT_MAX_LEN + 1] not in messages
+
+
+def test_s1067_metafield_write_tools_cap_oversized_exceptions():
+    """`set_`/`delete_product_metafields` resolve no product, so they reach
+    their reflection sites through the mutation call instead."""
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN, cap
+
+    for name, kwargs in (
+        ("set_product_metafields", {"metafields": [_s97_entry()], "confirm": True}),
+        (
+            "delete_product_metafields",
+            {"metafields": [{"metafieldId": _S910_METAFIELD_GID}], "confirm": True},
+        ),
+    ):
+        tools, _fc = _s1067_raising_client()
+        out = tools[name](**kwargs)
+        assert cap(_S1067_HUGE) in out, name
+        assert _S1067_HUGE[: REFLECT_MAX_LEN + 1] not in out, name
+
+
+def test_s1067_no_uncapped_exception_reflection_remains_in_the_tool_surface():
+    """AC1 as an executable invariant, not a one-time sweep.
+
+    The module-by-module split this story closes arose because nothing stopped a
+    new `{exc}` site from being added uncapped. Every exception interpolation in
+    the reflecting tool modules must route through `cap`/`_cap`; this fails on
+    the next one that does not, which a per-tool behavioural test cannot do.
+    """
+    import re
+    from pathlib import Path
+
+    src = Path(catalog_hygiene.__file__).parent
+    targets = [
+        src / "catalog_hygiene.py",
+        src / "publications.py",
+        src / "inventory.py",
+        src / "media" / "_upload.py",
+    ]
+    # An exception value interpolated into an f-string or stringified, where the
+    # same line does not route it through the shared cap helper.
+    interp = re.compile(r"\{(?:e|exc|err)\}|str\((?:e|exc|err)\)")
+    capped = re.compile(r"_?cap\(")
+    offenders = []
+    for path in targets:
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("#") or "raise " in stripped:
+                continue
+            if interp.search(line) and not capped.search(line):
+                offenders.append(f"{path.name}:{n}: {stripped[:90]}")
+    assert not offenders, "uncapped exception reflection:\n" + "\n".join(offenders)
