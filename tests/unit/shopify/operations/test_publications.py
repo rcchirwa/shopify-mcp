@@ -15,6 +15,8 @@ Usage:
   pytest tests/unit/shopify/operations/test_publications.py -v
 """
 
+import pytest
+
 from shopify_mcp.shopify.operations import publications as ops
 from shopify_mcp.shopify.queries import publications as q
 from tests.support import FakeClient
@@ -109,14 +111,32 @@ def test_read_product_publications_by_handle_passes_handle_var():
     assert fc.calls[0][1] == {"handle": "tee", "first": 50, "after": None}
 
 
-def test_read_product_publications_product_id_wins_when_both_given():
-    """Mirrors the prior tool behavior: when both identifiers are supplied the
-    by-id read is taken (handle ignored), so only the by-id query fires."""
-    resp = _product_pubs_response("product", pid="123")
-    fc = FakeClient([resp])
-    ops.read_product_publications(fc, "123", "tee")
-    assert len(fc.calls) == 1
-    assert fc.calls[0][0] == q.GET_PRODUCT_PUBLICATIONS_BY_ID
+# Story 10.68 (T-10.65-refuse-both-fanout). This replaces
+# `test_read_product_publications_product_id_wins_when_both_given`, which pinned
+# the silent `product_id`-wins precedence this story deliberately breaks. The two
+# identifiers name *different* products on purpose — the failure under test is
+# "the wrong one was silently chosen", which a same-product fixture cannot show.
+_S1068_DECOY_ID = "123"
+_S1068_HANDLE = "some-other-product"
+_S1068_DECOY_GID = f"gid://shopify/Product/{_S1068_DECOY_ID}"
+
+
+def test_s1068_both_identifiers_refused_before_any_network():
+    """One rule across the repo: an ambiguous identifier pair is a caller bug
+    surfaced loudly, not a precedence that discards the handle in silence."""
+    fc = FakeClient([])
+    with pytest.raises(ValueError, match="not both"):
+        ops.read_product_publications(fc, _S1068_DECOY_ID, _S1068_HANDLE)
+    assert fc.calls == []
+
+
+def test_s1068_both_supplied_never_reads_the_product_id_twin():
+    """Under the old precedence this call read gid://shopify/Product/123 and
+    dropped the handle. Prove that GID is never addressed."""
+    fc = FakeClient([])
+    with pytest.raises(ValueError):
+        ops.read_product_publications(fc, _S1068_DECOY_ID, _S1068_HANDLE)
+    assert _S1068_DECOY_GID not in str(fc.calls)
 
 
 def test_read_product_publications_neither_id_nor_handle_skips_client():

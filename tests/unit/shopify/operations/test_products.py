@@ -254,3 +254,48 @@ def test_update_variant_inventory_policy_builds_input():
         "productId": "gid://shopify/Product/5",
         "variants": [{"id": "gid://shopify/ProductVariant/1", "inventoryPolicy": "DENY"}],
     }
+
+
+# ---------- Story 10.68 (T-10.65-refuse-both-fanout): both-supplied is refused ----------
+
+# The two identifiers deliberately name *different* products: `_S1068_DECOY_ID`
+# is the legacy id of one product, `_S1068_HANDLE` the handle of another. The
+# failure this guards is "the wrong one was silently chosen", so a fixture where
+# both point at the same product could not tell the two outcomes apart.
+_S1068_DECOY_ID = "111"
+_S1068_HANDLE = "some-other-product"
+_S1068_DECOY_GID = f"gid://shopify/Product/{_S1068_DECOY_ID}"
+
+_S1068_READS = [ops.read_product, ops.read_product_full, ops.read_product_description]
+
+
+@pytest.mark.parametrize("fn", _S1068_READS, ids=lambda f: f.__name__)
+def test_s1068_both_identifiers_refused_before_any_network(fn):
+    """Story 10.68 extends Story 10.65's rule past catalog_hygiene: supplying
+    both identifiers is ambiguous, so it is rejected here rather than silently
+    resolved by `product_id` with the handle discarded."""
+    fc = FakeClient([])
+    with pytest.raises(ValueError, match="not both"):
+        fn(fc, product_id=_S1068_DECOY_ID, handle=_S1068_HANDLE)
+    assert fc.calls == []
+
+
+@pytest.mark.parametrize("fn", _S1068_READS, ids=lambda f: f.__name__)
+def test_s1068_both_supplied_never_reads_the_product_id_twin(fn):
+    """The specific outcome the old precedence produced: the `product_id`
+    product was read and the handle silently dropped. Prove that GID is never
+    addressed at all."""
+    fc = FakeClient([])
+    with pytest.raises(ValueError):
+        fn(fc, product_id=_S1068_DECOY_ID, handle=_S1068_HANDLE)
+    assert _S1068_DECOY_GID not in str(fc.calls)
+
+
+@pytest.mark.parametrize("fn", _S1068_READS, ids=lambda f: f.__name__)
+def test_s1068_neither_identifier_still_raises_its_original_message(fn):
+    """Regression guard: the both-supplied rejection must not disturb the
+    neither-supplied guard `_require_discriminator` already provided."""
+    fc = FakeClient([])
+    with pytest.raises(ValueError, match="provide either product_id or handle"):
+        fn(fc, product_id="", handle="")
+    assert fc.calls == []

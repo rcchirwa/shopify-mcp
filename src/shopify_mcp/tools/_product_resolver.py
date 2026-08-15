@@ -32,6 +32,7 @@ narrow to match.
 from typing import Any
 
 from shopify_mcp.client import ShopifyClient
+from shopify_mcp.shopify._identifiers import BOTH_IDENTIFIERS_ERROR
 from shopify_mcp.shopify.operations import catalog_hygiene as ops
 from shopify_mcp.tools._gid import to_gid
 from shopify_mcp.tools._scrub import cap
@@ -114,8 +115,13 @@ def _resolve_product(
     pid_arg = product_id.strip() if isinstance(product_id, str) else ""
 
     if pid_arg and handle_arg:
+        # Story 10.68 promoted the sentence itself to `shopify._identifiers` so
+        # this refusal and the operations-layer one the seven products.py /
+        # publications.py tools inherit are literally the same string. The
+        # `_cap`-bounded tail stays here: `shopify/` cannot import `tools/`, so
+        # only this layer can reach the reflection bound.
         raise ValueError(
-            "Supply product_id or handle, not both"
+            f"{BOTH_IDENTIFIERS_ERROR}"
             f" — got product_id={_cap(pid_arg)!r} and handle={_cap(handle_arg)!r}"
         )
 

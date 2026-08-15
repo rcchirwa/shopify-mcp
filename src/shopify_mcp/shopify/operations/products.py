@@ -10,6 +10,7 @@ the preview/confirm flow, and string formatting on top.
 from typing import Any
 
 from shopify_mcp.shopify._client import GraphQLClient
+from shopify_mcp.shopify._identifiers import reject_both_identifiers
 from shopify_mcp.shopify._ids import to_gid
 from shopify_mcp.shopify.queries.products import (
     GET_PRODUCT_BY_HANDLE,
@@ -42,12 +43,20 @@ VARIANTS_PAGE_CAP = 250
 
 
 def _require_discriminator(product_id: str, handle: str) -> None:
-    """Fail loud when neither id nor handle is given.
+    """Fail loud when the identifier pair is unusable — neither, or both.
 
-    The MCP tool layer guards this upstream, but as standalone operations
-    (callable from CLI/scripts) the by-id/by-handle reads would otherwise
-    silently issue a ``productByHandle(handle: "")`` query.
+    Neither: the MCP tool layer guards this upstream, but as standalone
+    operations (callable from CLI/scripts) the by-id/by-handle reads would
+    otherwise silently issue a ``productByHandle(handle: "")`` query.
+
+    Both: Story 10.68 (``T-10.65-refuse-both-fanout``). These three reads used
+    to take ``product_id`` and discard ``handle``, so a caller naming two
+    different products got the first with no signal the second was ignored.
+    The rule now comes from ``shopify._identifiers``, shared with
+    ``operations/publications.py`` and with ``tools/_product_resolver.py`` —
+    see that module for why one definition rather than three parallel copies.
     """
+    reject_both_identifiers(product_id, handle)
     if not product_id and not handle:
         raise ValueError("provide either product_id or handle")
 
@@ -63,8 +72,10 @@ def read_product(
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], bool]:
     """Read a single product (core fields) by id or handle, paginating variants.
 
-    Returns ``(product_or_None, variant_nodes, capped)``. The caller decides
-    which discriminator to pass; ``product_id`` wins when both are given.
+    Returns ``(product_or_None, variant_nodes, capped)``. The caller passes
+    exactly one discriminator: supplying both raises ``ValueError`` before any
+    network call (Story 10.68 — this **replaces** the ``product_id``-wins
+    precedence this function documented through Story 10.67).
     """
     _require_discriminator(product_id, handle)
     if product_id:

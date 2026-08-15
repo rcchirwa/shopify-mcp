@@ -12,7 +12,9 @@ Enables Claude to read products, check inventory, manage collections, handle dis
 | Tool | Description |
 |------|-------------|
 | `get_products` | List all products with id, title, handle, status, variants |
-| `get_product` | Fetch a single product by id or handle |
+| `get_product` | Fetch a single product by id or handle (one identifier only — see the note below the table) |
+| `get_product_description` | Fetch the raw `body_html` for a single product by id or handle (one identifier only — see the note below the table) |
+| `get_product_full` | Fetch a full product record — body_html, tags, type, vendor, seo, category, variants, options — by id or handle (one identifier only — see the note below the table) |
 | `update_product_title` | Update a product title (preview + confirm pattern) |
 | `update_product_description` | Update a product's HTML description |
 | `update_product_tags` | Update product tags — replace / append / remove modes (preview + confirm) |
@@ -21,6 +23,8 @@ Enables Claude to read products, check inventory, manage collections, handle dis
 | `update_product_pricing` | Bulk update variant `price` / `compareAtPrice` via `productVariantsBulkUpdate`; resolves variant IDs from numeric / GID / SKU (preview + confirm) |
 | `get_products_by_collection` | List all products in a collection by handle |
 | `get_product_collections` | List every collection a product belongs to (manual + smart, with type label) |
+
+**One identifier, not both.** `get_product`, `get_product_description` and `get_product_full` take `product_id` **or** `handle`. Supplying both is refused before any network call — a **breaking change in Story 10.68**, replacing the previous `product_id`-wins precedence that silently discarded the handle, so a caller naming one product by id and a *different* one by handle got the first with nothing indicating the second was ignored. The same rule governs the four Publications tools below and the six `get_product_metafields`-family tools (Story 10.65); it is now the single rule for this parameter pair across every product-resolving tool in the repo.
 
 ### Media
 | Tool | Description |
@@ -78,6 +82,8 @@ Requires `write_files` and `write_products` scopes. Local-file source paths are 
 | `publish_product_to_channels` | Publish a product to one or more channels (idempotent, preview + confirm) |
 | `unpublish_product_from_channels` | Unpublish from one or more channels (idempotent, preview + confirm) |
 | `set_product_publications` | Declarative — diff current vs. desired channels, apply minimal publish/unpublish (preview + confirm) |
+
+**One identifier, not both.** All four tools above take `product_id` **or** `handle`. Supplying both is refused before the product is read and before any mutation — a **breaking change in Story 10.68**, replacing the previous `product_id`-wins precedence that silently discarded the handle. Three of these four are *writes*, so under the old precedence an ambiguous pair could publish, unpublish, or rewrite the channel set of the **wrong product**; the refusal is a loud structured error in its place.
 
 Requires `read_publications` and `write_publications` scopes. If the app was installed before these were added, reinstall it on the store.
 
