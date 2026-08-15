@@ -1012,13 +1012,21 @@ def _identifier_channel(product_id: str, handle: str) -> tuple[str, str]:
     resolver's "product_id must be a non-empty string" rejection fires
     unchanged from when `product_id` was these tools' only parameter.
 
-    The `isinstance` guard mirrors the resolver's own: a non-string
-    `product_id` (from a client that ignores the schema) is treated as absent
-    rather than crashing here, so it still reaches the resolver's typed
-    rejection. Story 10.65 (T-9.5-mutator-handle) — see docs/tech-debt.md.
+    "Supplied" deliberately means *present*, not *well-formed*: `None` and a
+    blank/whitespace string are absent, but any other non-string (an int from
+    a client that ignores the schema) counts as supplied and is routed to the
+    `product_id` channel, where the resolver rejects it. Treating a malformed
+    `product_id` as absent would silently invert the documented precedence and
+    resolve by `handle` instead — a wrong-target *write* on these five tools,
+    exactly what this story exists to prevent. Better a structured error than
+    a confident write to the other product.
+
+    Story 10.65 (T-9.5-mutator-handle) — see docs/tech-debt.md.
     """
-    pid = product_id.strip() if isinstance(product_id, str) else ""
-    return (product_id, "") if pid else ("", handle)
+    pid_supplied = product_id is not None and (
+        bool(product_id.strip()) if isinstance(product_id, str) else True
+    )
+    return (product_id, "") if pid_supplied else ("", handle)
 
 
 def _resolve_product_gid(
@@ -1115,11 +1123,17 @@ def _resolve_taxonomy_category(
         # fabricate a fullName; the post-write snapshot from productUpdate fills it.
         return {"id": stripped, "fullName": None, "name": None}, [], None
 
-    # Ordering: taxonomy search runs before the product read (on the caller
-    # side) so a 0-result / ambiguous / no-exact-match failure bails CHEAP,
-    # without paying for an unused product fetch. The trade-off: a transport
-    # failure here happens before we've validated the product exists. The
-    # try/except below makes that surface as a structured error (AC #8),
+    # Ordering, corrected in Story 10.65: this comment used to claim the
+    # taxonomy search runs *before* the product read on the caller side. It
+    # does not — `update_product_category` resolves the product first, then
+    # calls this. The consequence is the reverse of what was described: a
+    # 0-result / ambiguous / no-exact-match failure is reached only after the
+    # product resolve has already been paid for (one `productByHandle`
+    # round-trip on a handle input). Left as-is rather than reordered — the
+    # product-resolve error is the more useful one to surface first when both
+    # inputs are bad — but recorded accurately so the next reader does not
+    # rely on a cheapness guarantee the code does not provide. The try/except
+    # below still surfaces a transport failure as a structured error (AC #8),
     # mirroring the product-read and mutation wrappers in the caller.
     try:
         data = ops.search_taxonomy_categories(client, stripped)
@@ -1810,7 +1824,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def update_product_category(
         product_id: str = "",
-        category: str = "",
+        *,
+        category: str,
         resolve_strategy: str = "best-match",
         confirm: bool = False,
         handle: str = "",
@@ -2042,7 +2057,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def update_product_vendor(
         product_id: str = "",
-        vendor: str | None = None,
+        *,
+        vendor: str | None,
         confirm: bool = False,
         handle: str = "",
     ) -> str:
@@ -2055,6 +2071,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 via `handle` instead, or the write lands on whichever product
                 carries that number as its ID (Story 10.65).
             vendor: New vendor name (trimmed, ≤ 255 chars). Pass None to clear.
+                Keyword-only and required — `None` is the *deliberate* clear
+                signal, so it must never double as "argument omitted", or an
+                under-specified call would silently wipe the field.
             confirm: When False (default) returns a preview without calling
                 productUpdate. When True executes the mutation.
             handle: Unambiguous by-handle channel — no numeric-ID
@@ -2223,7 +2242,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def update_product_type(
         product_id: str = "",
-        product_type: str | None = None,
+        *,
+        product_type: str,
         confirm: bool = False,
         handle: str = "",
     ) -> str:
@@ -2238,9 +2258,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             product_type: New productType (trimmed, ≤ 255 chars). Empty string
                 or whitespace-only clears the field — Shopify treats `""` as
                 cleared for productType (distinct from vendor, where `null`
-                is the clear path). Required: omitting it is rejected rather
-                than treated as a clear, so a forgotten argument can never
-                silently wipe the field.
+                is the clear path). Keyword-only and required, so a forgotten
+                argument can never be mistaken for a deliberate clear.
             confirm: When False (default) returns a preview without calling
                 productUpdate. When True executes the mutation.
             handle: Unambiguous by-handle channel — no numeric-ID
@@ -2413,6 +2432,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def update_variant_image_binding(
         product_id: str = "",
+        *,
         variant_media: list[dict[str, Any]] | None = None,
         confirm: bool = False,
         handle: str = "",
@@ -2493,9 +2513,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             err = resolve_err or "product_id could not be resolved."
             return _render(f"Error: {err}", _err_payload(err))
         # Whichever identifier the caller actually supplied — echoed in every
-        # head/log line below, which would otherwise render blank for a
-        # handle-only call now that `handle` is its own channel.
-        product_ref = pid_arg or handle_arg
+        # head/log line and rejection below, which would otherwise render
+        # blank for a handle-only call now that `handle` is its own channel.
+        # Capped at the definition site so all six reflection points inherit
+        # the bound, matching the `_cap(...)` already applied to the sibling
+        # tools' resolver-error messages.
+        product_ref = _cap(str(pid_arg or handle_arg))
 
         # Step 3 — fetch product media + per-variant bound media. The combined
         # query already pulls every variant's id + sku, so we feed that list
@@ -2583,7 +2606,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             if resolved_gid not in variant_media_map and resolved_gid not in unknown_variant_gids:
                 unknown_variant_gids.append(resolved_gid)
         if unknown_variant_gids:
-            msg = f"variant GIDs not on product {_cap(str(product_id))}: " + _cap(
+            msg = f"variant GIDs not on product {product_ref}: " + _cap(
                 ", ".join(from_gid(g) for g in unknown_variant_gids)
             )
             return _render(f"Error: {msg}", _err_payload(msg))
@@ -2595,7 +2618,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 if mid not in product_media_set and mid not in unknown:
                     unknown.append(mid)
         if unknown:
-            msg = f"media GIDs not on product {_cap(str(product_id))}: {_cap(', '.join(unknown))}"
+            msg = f"media GIDs not on product {product_ref}: {_cap(', '.join(unknown))}"
             return _render(f"Error: {msg}", _err_payload(msg))
 
         # Step 5a — collapse duplicate variantIds: same resolved variant appearing
@@ -3553,10 +3576,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # T-9.5-numeric-handle entry. `product_id` still wins when both are
         # supplied, which is what this tool's docstring promises, so the
         # resolver's both-supplied ValueError is never reached from here.
-        if pid:
-            product_gid, resolve_err = _resolve_product_gid(client, pid)
-        else:
-            product_gid, resolve_err = _resolve_product_gid(client, handle=hdl)
+        #
+        # Story 10.65: that precedence now lives in `_identifier_channel`,
+        # shared with the five mutators. This tool is the precedent the helper
+        # was modelled on, so it uses it too rather than keeping a sixth
+        # hand-rolled copy.
+        pid_arg, handle_arg = _identifier_channel(product_id, handle)
+        product_gid, resolve_err = _resolve_product_gid(client, pid_arg, handle=handle_arg)
         if resolve_err or not product_gid:
             msg = resolve_err or "Unable to resolve product."
             return _render(f"Error: {msg}", _err_payload(msg, key="metafields"))
@@ -3749,7 +3775,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def update_product_options(
         product_id: str = "",
-        option: dict[str, Any] | None = None,
+        *,
+        option: dict[str, Any],
         option_values_to_update: list[dict[str, Any]] | None = None,
         variant_strategy: str = "LEAVE_AS_IS",
         confirm: bool = False,

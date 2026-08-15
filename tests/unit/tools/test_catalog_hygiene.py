@@ -8990,3 +8990,140 @@ def test_s1065_neither_identifier_supplied_errors_without_network():
     assert "product_id must be a non-empty string" in out
     assert fc.calls == []
     assert _extract_json(out)["ok"] is False
+
+
+# =============================================================================
+# Story 10.65 — triple-threat review fixes.
+# =============================================================================
+
+# Giving `product_id` a default would otherwise cascade defaults onto every
+# parameter after it, dropping them from the FastMCP-generated schema's
+# `required` list. For `vendor` that is destructive: `None` is the *deliberate*
+# clear signal, so an omitted argument would silently wipe the field — and with
+# `product_id` optional, `update_product_vendor` would have had no required
+# parameter at all. Keyword-only restores requiredness for each genuinely
+# required argument while keeping `product_id` optional. These pin the
+# signature that generates the schema.
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "kwargs"),
+    [
+        ("update_product_vendor", {"product_id": "123"}),
+        ("update_product_type", {"product_id": "123"}),
+        ("update_product_category", {"product_id": "123"}),
+        ("update_product_options", {"product_id": "123"}),
+    ],
+)
+def test_s1065_required_argument_cannot_be_omitted(tool_name, kwargs):
+    tools, fc = _build([])
+    with pytest.raises(TypeError, match="required keyword-only argument"):
+        tools[tool_name](**kwargs)
+    assert fc.calls == []
+
+
+def test_s1065_vendor_none_still_clears_when_explicitly_passed():
+    """Requiredness must not cost the documented clear path: an explicit
+    `vendor=None` still clears, it is only *omission* that is now rejected."""
+    tools, fc = _build([_vendor_read(pid="123", vendor="Nike"), _update_ok(pid="123")])
+    out = tools["update_product_vendor"](product_id="123", vendor=None, confirm=True)
+    assert fc.calls[1][1]["product"]["vendor"] is None
+    assert _extract_json(out)["ok"] is True
+
+
+def test_s1065_product_type_empty_string_still_clears():
+    """Same for productType, where `""` rather than None is the clear value."""
+    tools, fc = _build([_type_read(pid="123", product_type="Old"), _type_update_ok(pid="123")])
+    out = tools["update_product_type"](product_id="123", product_type="", confirm=True)
+    assert fc.calls[1][1]["product"]["productType"] == ""
+    assert _extract_json(out)["ok"] is True
+
+
+# A non-string `product_id` must not be mistaken for "absent" and silently
+# hand the write to `handle` — that inverts the documented precedence into a
+# wrong-target write, the exact outcome this story exists to close.
+
+
+def test_s1065_non_string_product_id_does_not_hand_the_write_to_handle():
+    tools, fc = _build([])
+    out = tools["update_product_vendor"](
+        product_id=2024, handle="a-different-product", vendor="Vanish", confirm=True
+    )
+    assert fc.calls == []
+    assert "product_id must be a non-empty string" in out
+    assert _extract_json(out)["ok"] is False
+
+
+def test_s1065_none_product_id_is_absent_and_defers_to_handle():
+    """`None` is genuinely 'not supplied' (a JSON null / omitted field), unlike
+    a malformed value, so it must still defer to the handle channel."""
+    tools, fc = _build([_vendor_read_by_handle(pid="8899"), _update_ok(pid="8899")])
+    out = tools["update_product_vendor"](
+        product_id=None, handle=_S1065_DIGIT_HANDLE, vendor="Vanish", confirm=True
+    )
+    assert fc.calls[0][1] == {"handle": _S1065_DIGIT_HANDLE}
+    assert _extract_json(out)["ok"] is True
+
+
+def test_s1065_whitespace_product_id_is_absent_and_defers_to_handle():
+    tools, fc = _build([_vendor_read_by_handle(pid="8899"), _update_ok(pid="8899")])
+    out = tools["update_product_vendor"](
+        product_id="   ", handle=_S1065_DIGIT_HANDLE, vendor="Vanish", confirm=True
+    )
+    assert fc.calls[0][1] == {"handle": _S1065_DIGIT_HANDLE}
+    assert _extract_json(out)["ok"] is True
+
+
+# The two `update_variant_image_binding` rejection messages that the first
+# `product_ref` sweep missed — they rendered a blank identifier on a
+# handle-only call, the very defect this story claims to have eliminated.
+
+
+def test_s1065_binding_unknown_variant_rejection_names_the_handle():
+    tools, _ = _build(
+        [
+            {"productByHandle": {"id": _S96_PRODUCT_GID}},
+            _s96_combined_response(
+                media_ids=[_S96_MEDIA_1],
+                variants=[(_S96_VARIANT_A, "SKU-A", [])],
+            ),
+        ]
+    )
+    out = tools["update_variant_image_binding"](
+        handle=_S1065_DIGIT_HANDLE,
+        variant_media=[{"variantId": _S96_VARIANT_B, "mediaIds": [_S96_MEDIA_1]}],
+    )
+    assert f"variant GIDs not on product {_S1065_DIGIT_HANDLE}:" in out
+    assert "not on product :" not in out
+
+
+def test_s1065_binding_unknown_media_rejection_names_the_handle():
+    tools, _ = _build(
+        [
+            {"productByHandle": {"id": _S96_PRODUCT_GID}},
+            _s96_combined_response(
+                media_ids=[_S96_MEDIA_1],
+                variants=[(_S96_VARIANT_A, "SKU-A", [])],
+            ),
+        ]
+    )
+    out = tools["update_variant_image_binding"](
+        handle=_S1065_DIGIT_HANDLE,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_CROSS]}],
+    )
+    assert f"media GIDs not on product {_S1065_DIGIT_HANDLE}:" in out
+    assert "not on product :" not in out
+
+
+def test_s1065_binding_product_ref_is_capped_in_reflected_output():
+    """`product_ref` is reflected into six head/log sites; cap it once at the
+    definition site so an oversized caller-supplied handle cannot flood any."""
+    from shopify_mcp.tools.catalog_hygiene import _GID_DISPLAY_MAX
+
+    oversized = "h" * 10_000
+    tools, _ = _build([{"productByHandle": None}])
+    out = tools["update_variant_image_binding"](
+        handle=oversized,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+    )
+    assert oversized[: _GID_DISPLAY_MAX + 1] not in out
