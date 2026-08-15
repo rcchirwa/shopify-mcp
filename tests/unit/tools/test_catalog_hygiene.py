@@ -9082,10 +9082,14 @@ def test_s1065_binding_product_ref_is_capped_in_reflected_output():
 # `product_id`-wins left one wrong-product write reachable through the new
 # parameter: a client holding a single identifier and filling both slots with
 # it. For an all-digit handle that resolves as a numeric ID and mutates
-# whichever product carries that number. The five mutators now refuse the
-# ambiguous call outright — the only outcome that cannot corrupt the wrong
-# product. `get_product_metafields` deliberately keeps the precedence: a wrong
-# read misleads, a wrong write corrupts, and its contract is pinned by 10.64.
+# whichever product carries that number.
+#
+# ALL SIX product-resolving tools in this module now refuse the ambiguous call
+# outright — the only outcome that cannot corrupt the wrong product. An
+# intermediate commit exempted `get_product_metafields` on read-vs-write blast
+# radius; that exemption was dropped, since the precedence silently discarded
+# the handle there too. Scope stops at this module: `products.py` and
+# `publications.py` still apply the precedence — see docs/tech-debt.md.
 # =============================================================================
 
 _S1065_BOTH_SUPPLIED_CALLS = [
@@ -9182,3 +9186,57 @@ def test_s1065_blank_handle_alongside_product_id_is_not_ambiguous():
     )
     assert fc.calls[0][1] == {"id": "gid://shopify/Product/5234567890"}
     assert _extract_json(out)["ok"] is True
+
+
+# =============================================================================
+# Story 10.65 review round 2 — pin the GENERATED SCHEMA, not just the signature.
+#
+# The keyword-only conversion exists to keep each genuinely-required argument
+# in the FastMCP-generated JSON schema's `required` list; that is what stops an
+# LLM client emitting a call with the argument omitted. Asserting a Python-level
+# TypeError proves the signature, not the schema — so a FastMCP upgrade that
+# changed keyword-only handling could silently reintroduce the
+# zero-required-parameter hazard (an omitted `vendor` is a field-wipe) with the
+# whole suite still green. These pin the artefact the safety property actually
+# depends on.
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "expected_required"),
+    [
+        ("update_product_vendor", {"vendor"}),
+        ("update_product_type", {"product_type"}),
+        ("update_product_category", {"category"}),
+        ("update_product_options", {"option"}),
+        ("update_variant_image_binding", {"variant_media"}),
+    ],
+)
+def test_s1065_generated_schema_marks_required_args_required(tool_name, expected_required):
+    from mcp.server.fastmcp.utilities.func_metadata import func_metadata
+
+    tools, _ = _build([])
+    schema = func_metadata(tools[tool_name]).arg_model.model_json_schema()
+    assert set(schema.get("required") or []) == expected_required
+    # `product_id` must stay OPTIONAL — that is what makes a handle-only call
+    # expressible, and it is the change that cascaded the defaults in the first
+    # place. Both halves have to hold together or the story's shape is broken.
+    assert "product_id" not in (schema.get("required") or [])
+    assert "handle" not in (schema.get("required") or [])
+
+
+def test_s1065_no_product_resolving_mutator_has_an_empty_required_list():
+    """The zero-required-parameter shape is the hazard itself: it makes an
+    under-specified call schema-valid. No mutator may present it."""
+    from mcp.server.fastmcp.utilities.func_metadata import func_metadata
+
+    tools, _ = _build([])
+    for tool_name in (
+        "update_product_vendor",
+        "update_product_type",
+        "update_product_category",
+        "update_product_options",
+        "update_variant_image_binding",
+    ):
+        required = func_metadata(tools[tool_name]).arg_model.model_json_schema().get("required")
+        assert required, f"{tool_name} has no required parameter in its generated schema"

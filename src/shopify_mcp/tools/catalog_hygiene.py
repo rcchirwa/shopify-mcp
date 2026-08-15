@@ -1013,16 +1013,37 @@ def _is_supplied(value: object) -> bool:
     return bool(value.strip()) if isinstance(value, str) else True
 
 
-def _identifier_channel(product_id: str, handle: str) -> tuple[str, str]:
+def _identifier_channel(product_id: object, handle: object) -> tuple[Any, Any, str]:
     """Split a tool's two identifier params into the resolver's two channels.
 
-    Returns `(product_id_arg, handle_arg)` ready to splat into
-    `_resolve_product` / `_resolve_product_gid`. When neither is supplied,
-    both channels stay empty and the resolver's "product_id must be a
+    Returns `(product_id_arg, handle_arg, display_ref)`. The first two splat
+    into `_resolve_product` / `_resolve_product_gid`; `display_ref` is the
+    identifier the caller actually supplied, `_cap`-bounded and stringified
+    once here so every head, log and rejection message inherits the bound
+    instead of each site remembering to apply it.
+
+    The parameters are typed `object`, not `str`, on purpose: a client that
+    ignores the schema can send an int or a null, this function's whole job is
+    to route such values somewhere they get rejected rather than discarded,
+    and its tests exercise exactly that. Returning `Any` for the two channel
+    values is the honest signature — a malformed value is passed through
+    untouched for the resolver to adjudicate, so claiming `str` here would be
+    a lie that only type-checks because every call site is annotated `str`.
+
+    When neither is supplied, both channels stay empty and the resolver's
+    "product_id must be a
     non-empty string" rejection fires unchanged from when `product_id` was
     these tools' only parameter.
 
-    **Supplying both is an error**, on every tool that resolves a product.
+    **Supplying both is an error** on all six product-resolving tools in *this
+    module* — deliberately scoped, not repo-wide: `products.py`'s
+    `get_product` / `get_product_description` / `get_product_full` and the four
+    `publications.py` tools take the same two parameters and still apply a
+    silent `product_id`-wins precedence. Widening this rule to them is a
+    separate change to two other modules; until it happens the guarantee here
+    stops at this module's boundary, and docs/tech-debt.md records that as an
+    open residual rather than letting the claim read as repo-wide.
+
     Both values are passed through untouched so `_resolve_product`'s own
     "Supply product_id or handle, not both" rejection fires before any network
     call, and each tool renders it through its existing structured-error path.
@@ -1054,8 +1075,13 @@ def _identifier_channel(product_id: str, handle: str) -> tuple[str, str]:
         # write this branch exists to stop. Stringifying keeps the ambiguity
         # visible to the check; the value is only ever reflected into a capped
         # error message, never used as an identifier.
-        return str(product_id), handle
-    return (product_id, "") if pid_supplied else ("", handle)
+        return str(product_id), handle, _cap(str(product_id))
+    pid_arg, handle_arg = (product_id, "") if pid_supplied else ("", handle)
+    # `str()` before `_cap`: `_scrub.cap` slices, so it raises TypeError on a
+    # non-string. A malformed identifier only ever reaches a display site if
+    # some future edit lets it past the resolver — the cast means that edit
+    # produces a truncated echo rather than a crash inside an error handler.
+    return pid_arg, handle_arg, _cap(str(pid_arg or handle_arg))
 
 
 def _resolve_product_gid(
@@ -1905,7 +1931,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
 
         # --- Resolve productId → Product GID (numeric / GID / handle).
-        pid_arg, handle_arg = _identifier_channel(product_id, handle)
+        pid_arg, handle_arg, _product_ref = _identifier_channel(product_id, handle)
         product_gid, prod_err = _resolve_product_gid(client, pid_arg, handle=handle_arg)
         if prod_err or not product_gid:
             return _format_payload(
@@ -2135,7 +2161,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 ],
             )
 
-        pid_arg, handle_arg = _identifier_channel(product_id, handle)
+        pid_arg, handle_arg, product_ref = _identifier_channel(product_id, handle)
         try:
             product_gid, product = _resolve_product(
                 client,
@@ -2157,7 +2183,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not product_gid:
             # Name the identifier actually queried, not a blank `product_id`,
             # now that the caller may have supplied only `handle`.
-            msg = f"Error: no product found for {_cap(pid_arg or handle_arg)!r}."
+            msg = f"Error: no product found for {product_ref!r}."
             return f"{msg}\n\n" + _format_vendor_payload(
                 product_gid="",
                 vendor=new_vendor,
@@ -2326,7 +2352,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 ],
             )
 
-        pid_arg, handle_arg = _identifier_channel(product_id, handle)
+        pid_arg, handle_arg, product_ref = _identifier_channel(product_id, handle)
         try:
             product_gid, product = _resolve_product(
                 client,
@@ -2348,7 +2374,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not product_gid:
             # Name the identifier actually queried, not a blank `product_id`,
             # now that the caller may have supplied only `handle`.
-            msg = f"Error: no product found for {_cap(pid_arg or handle_arg)!r}."
+            msg = f"Error: no product found for {product_ref!r}."
             return f"{msg}\n\n" + _format_type_payload(
                 product_gid="",
                 product_type=new_type,
@@ -2468,7 +2494,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     def update_variant_image_binding(
         product_id: str = "",
         *,
-        variant_media: list[dict[str, Any]] | None = None,
+        variant_media: list[dict[str, Any]] | None,
         confirm: bool = False,
         handle: str = "",
     ) -> str:
@@ -2486,7 +2512,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                       ambiguous call naming a product twice is refused before
                       any network call, because the one thing it must never do
                       is guess and write to the wrong product.
-        variant_media: non-empty list of entries. Each entry is a dict with:
+        variant_media: non-empty list of entries. Keyword-only and required —
+                      without it this tool would have no required parameter at
+                      all once `product_id` became optional, the same
+                      zero-required-parameter shape that made an omitted
+                      `vendor` a silent field-wipe. An explicit `null` is still
+                      accepted and rejected at validation, as before.
+                      Each entry is a dict with:
             - variantId : str — numeric ID, ProductVariant GID, or SKU on this product
             - mediaIds  : list[str] — non-empty list of MediaImage / Video / Model3d GIDs
                           already attached to this product
@@ -2544,18 +2576,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             normalized.append((raw_variant_id.strip(), list(raw_media_ids)))
 
         # Step 2 — resolve product_id (numeric / GID short-circuit; handle via network)
-        pid_arg, handle_arg = _identifier_channel(product_id, handle)
+        pid_arg, handle_arg, product_ref = _identifier_channel(product_id, handle)
         gid, resolve_err = _resolve_product_gid(client, pid_arg, handle=handle_arg)
         if resolve_err or not gid:
             err = resolve_err or "product_id could not be resolved."
             return _render(f"Error: {err}", _err_payload(err))
-        # Whichever identifier the caller actually supplied — echoed in every
-        # head/log line and rejection below, which would otherwise render
-        # blank for a handle-only call now that `handle` is its own channel.
-        # Capped at the definition site so all six reflection points inherit
-        # the bound, matching the `_cap(...)` already applied to the sibling
-        # tools' resolver-error messages.
-        product_ref = _cap(str(pid_arg or handle_arg))
 
         # Step 3 — fetch product media + per-variant bound media. The combined
         # query already pulls every variant's id + sku, so we feed that list
@@ -3605,10 +3630,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         """
         # ---- Phase 1 — client-side validation ----------------------------
         # Reject before any network call when no identifier was supplied —
-        # spec AC #1. The trimmed-empty check covers `"   "` callers too.
-        pid = product_id.strip() if isinstance(product_id, str) else ""
-        hdl = handle.strip() if isinstance(handle, str) else ""
-        if not pid and not hdl:
+        # spec AC #1. `_is_supplied` covers the `"   "` caller and, unlike the
+        # hand-rolled predicate this replaced, agrees with `_identifier_channel`
+        # on non-string input: a `product_id` of `2024` (an int, from a client
+        # ignoring the schema) IS supplied, so it must fall through to the
+        # resolver's typed rejection rather than be reported as "no identifier
+        # given", which was both wrong and confusing.
+        if not _is_supplied(product_id) and not _is_supplied(handle):
             msg = "At least one of product_id or handle is required."
             return _render(f"Error: {msg}", _err_payload(msg, key="metafields"))
 
@@ -3618,20 +3646,19 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # `_resolve_product_gid` short-circuits for numeric IDs and GIDs;
         # the handle path costs one extra round-trip via productByHandle.
         #
-        # Story 10.64: `handle` goes through the explicit keyword channel
-        # rather than being merged into `product_id` — see docs/tech-debt.md's
-        # T-9.5-numeric-handle entry. `product_id` still wins when both are
-        # supplied, which is what this tool's docstring promises, so the
-        # resolver's both-supplied ValueError is never reached from here.
+        # Story 10.64 gave `handle` its own explicit keyword channel rather
+        # than merging it into `product_id` — see docs/tech-debt.md's
+        # T-9.5-numeric-handle entry.
         #
-        # Story 10.65 REPLACES that precedence: `_identifier_channel` — shared
-        # with the five mutators — now refuses a both-supplied call here too,
-        # so the resolver's both-supplied rejection IS reachable from this
-        # surface and the comment above describes the superseded contract.
-        # One rule across all six product-resolving tools beats a read/write
-        # split a caller has to remember. This is the story's one deliberate
-        # breaking change; see docs/tech-debt.md.
-        pid_arg, handle_arg = _identifier_channel(product_id, handle)
+        # Story 10.65 replaced that story's `product_id`-wins precedence with
+        # a refusal, shared with the five mutators via `_identifier_channel`:
+        # supplying both is now an error, and the resolver's both-supplied
+        # ValueError IS deliberately reachable from this surface — it is the
+        # mechanism, not an accident. One rule across all six
+        # product-resolving tools beats a read/write split a caller has to
+        # remember. This is the story's one deliberate MCP contract reversal;
+        # see docs/tech-debt.md.
+        pid_arg, handle_arg, _product_ref = _identifier_channel(product_id, handle)
         product_gid, resolve_err = _resolve_product_gid(client, pid_arg, handle=handle_arg)
         if resolve_err or not product_gid:
             msg = resolve_err or "Unable to resolve product."
@@ -3903,7 +3930,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # Step 2 — resolve product_id (numeric / GID / handle) and pre-fetch
         # options + variants in the same query (handle path uses the _BY_HANDLE
         # twin; either way `product` carries the full snapshot we need).
-        pid_arg, handle_arg = _identifier_channel(product_id, handle)
+        pid_arg, handle_arg, product_ref = _identifier_channel(product_id, handle)
         try:
             product_gid, product = _resolve_product(
                 client,
@@ -3924,7 +3951,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not product_gid:
             # Name the identifier actually queried, not a blank `product_id`,
             # now that the caller may have supplied only `handle`.
-            msg = f"Error: no product found for {_cap(pid_arg or handle_arg)!r}."
+            msg = f"Error: no product found for {product_ref!r}."
             return f"{msg}\n\n" + _format_options_payload(
                 product_snapshot=_shape_options_snapshot(None),
                 ok=False,
@@ -3956,7 +3983,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if matching_option is None:
             msg = (
                 f"Error: option.id {_cap(normalized['option_id'])!r} is not on "
-                f"product {_cap(pid_arg or handle_arg)!r}."
+                f"product {product_ref!r}."
             )
             return f"{msg}\n\n" + _format_options_payload(
                 product_snapshot=_shape_options_snapshot(product),
