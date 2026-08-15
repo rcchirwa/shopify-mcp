@@ -999,33 +999,63 @@ def _format_payload(
     return f"{body}\n\n```json\n{json.dumps(payload)}\n```"
 
 
-def _identifier_channel(product_id: str, handle: str) -> tuple[str, str]:
+def _is_supplied(value: object) -> bool:
+    """Was this identifier *present*, regardless of whether it is well-formed?
+
+    `None` and a blank/whitespace string are absent. Any other non-string (an
+    int from a client that ignores the schema) counts as supplied, so it is
+    routed to its own channel and rejected there rather than being silently
+    discarded — a discarded `product_id` would hand the operation to `handle`
+    and write to the wrong product.
+    """
+    if value is None:
+        return False
+    return bool(value.strip()) if isinstance(value, str) else True
+
+
+def _identifier_channel(
+    product_id: str,
+    handle: str,
+    *,
+    reject_both: bool = True,
+) -> tuple[str, str]:
     """Split a tool's two identifier params into the resolver's two channels.
 
-    Returns `(product_id_arg, handle_arg)` with at most one of them non-empty,
-    ready to splat into `_resolve_product` / `_resolve_product_gid`.
+    Returns `(product_id_arg, handle_arg)` ready to splat into
+    `_resolve_product` / `_resolve_product_gid`. When neither is supplied,
+    both channels stay empty and the resolver's "product_id must be a
+    non-empty string" rejection fires unchanged from when `product_id` was
+    these tools' only parameter.
 
-    `product_id` wins when both are supplied — the precedence
-    `get_product_metafields` has documented since Story 10.64, and the reason
-    the resolver's both-supplied `ValueError` is never reachable from a tool
-    surface. When neither is supplied, both channels stay empty and the
-    resolver's "product_id must be a non-empty string" rejection fires
-    unchanged from when `product_id` was these tools' only parameter.
+    **Both supplied is an error by default** (`reject_both=True`): both values
+    are passed through untouched so `_resolve_product`'s own "Supply
+    product_id or handle, not both" rejection fires before any network call,
+    and each tool renders it through its existing structured-error path. This
+    is the safe default because the case it catches is a client holding *one*
+    identifier and filling *both* parameters with it — a plausible LLM-client
+    behaviour, and one where an all-digit handle in `product_id` silently
+    resolves to whichever product carries that number as its ID. On a write
+    tool that is a wrong-product mutation; refusing the ambiguous call is the
+    only outcome that cannot corrupt the wrong product.
 
-    "Supplied" deliberately means *present*, not *well-formed*: `None` and a
-    blank/whitespace string are absent, but any other non-string (an int from
-    a client that ignores the schema) counts as supplied and is routed to the
-    `product_id` channel, where the resolver rejects it. Treating a malformed
-    `product_id` as absent would silently invert the documented precedence and
-    resolve by `handle` instead — a wrong-target *write* on these five tools,
-    exactly what this story exists to prevent. Better a structured error than
-    a confident write to the other product.
-
-    Story 10.65 (T-9.5-mutator-handle) — see docs/tech-debt.md.
+    `reject_both=False` restores the older `product_id`-wins precedence. Only
+    `get_product_metafields` uses it: that precedence is its documented
+    contract since Story 10.64 and is pinned by tests, and a wrong *read*
+    misleads a caller where a wrong *write* corrupts a product. The asymmetry
+    between the read tool and the five mutators is deliberate, not an
+    oversight. Story 10.65 (T-9.5-mutator-handle) — see docs/tech-debt.md.
     """
-    pid_supplied = product_id is not None and (
-        bool(product_id.strip()) if isinstance(product_id, str) else True
-    )
+    pid_supplied = _is_supplied(product_id)
+    if reject_both and pid_supplied and _is_supplied(handle):
+        # Adjudicated by the resolver, which already raises on both — no
+        # second copy of that error string lives here. `str()` is load-bearing:
+        # `_resolve_product` normalises a non-string `product_id` to "" BEFORE
+        # its both-check, so passing an int through unchanged would slip past
+        # the rejection and resolve by `handle` — the exact silent wrong-target
+        # write this branch exists to stop. Stringifying keeps the ambiguity
+        # visible to the check; the value is only ever reflected into a capped
+        # error message, never used as an identifier.
+        return str(product_id), handle
     return (product_id, "") if pid_supplied else ("", handle)
 
 
@@ -1838,8 +1868,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         via `handle` instead, or the write lands on whichever product carries
         that number as its ID (Story 10.65).
         `handle` is the unambiguous by-handle channel: no numeric-ID
-        classification, so an all-digit handle resolves correctly. Used when
-        `product_id` is empty; `product_id` wins when both are supplied.
+        classification, so an all-digit handle resolves correctly. Supply this
+        *or* `product_id`, never both: an ambiguous call naming a product
+        twice is refused before any network call, because the one thing it
+        must never do is guess and write to the wrong product.
         `category` accepts a TaxonomyCategory GID or a free-text search string.
         `resolve_strategy` ∈ {"exact", "best-match", "reject-ambiguous"} — only
         meaningful when `category` is a search string; ignored for GID inputs.
@@ -2078,8 +2110,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 productUpdate. When True executes the mutation.
             handle: Unambiguous by-handle channel — no numeric-ID
                 classification, so an all-digit handle resolves correctly.
-                Used when `product_id` is empty; `product_id` wins when both
-                are supplied.
+                Supply this *or* `product_id`, never both: an ambiguous call
+                naming a product twice is refused before any network call,
+                because the one thing it must never do is guess and write to
+                the wrong product.
 
         Returns a human-readable preview/confirmation block followed by a
         fenced ```json``` block carrying `{ok, product{id, vendor}, errors, preview}`.
@@ -2264,8 +2298,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 productUpdate. When True executes the mutation.
             handle: Unambiguous by-handle channel — no numeric-ID
                 classification, so an all-digit handle resolves correctly.
-                Used when `product_id` is empty; `product_id` wins when both
-                are supplied.
+                Supply this *or* `product_id`, never both: an ambiguous call
+                naming a product twice is refused before any network call,
+                because the one thing it must never do is guess and write to
+                the wrong product.
 
         Distinct from category (Story 9.1) — both fields coexist on the
         product. Themes, Liquid templates, and smart-collection rules still
@@ -2447,8 +2483,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                       (Story 10.65).
         handle      : unambiguous by-handle channel — no numeric-ID
                       classification, so an all-digit handle resolves
-                      correctly. Used when `product_id` is empty; `product_id`
-                      wins when both are supplied.
+                      correctly. Supply this *or* `product_id`, never both: an
+                      ambiguous call naming a product twice is refused before
+                      any network call, because the one thing it must never do
+                      is guess and write to the wrong product.
         variant_media: non-empty list of entries. Each entry is a dict with:
             - variantId : str — numeric ID, ProductVariant GID, or SKU on this product
             - mediaIds  : list[str] — non-empty list of MediaImage / Video / Model3d GIDs
@@ -3580,8 +3618,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # Story 10.65: that precedence now lives in `_identifier_channel`,
         # shared with the five mutators. This tool is the precedent the helper
         # was modelled on, so it uses it too rather than keeping a sixth
-        # hand-rolled copy.
-        pid_arg, handle_arg = _identifier_channel(product_id, handle)
+        # hand-rolled copy — but with `reject_both=False`, because the five
+        # mutators now REFUSE a both-supplied call and this tool must not.
+        # `product_id`-wins is this tool's documented contract and is pinned
+        # by tests; the asymmetry is deliberate, and it is justified by
+        # read-vs-write blast radius, not by consistency.
+        pid_arg, handle_arg = _identifier_channel(product_id, handle, reject_both=False)
         product_gid, resolve_err = _resolve_product_gid(client, pid_arg, handle=handle_arg)
         if resolve_err or not product_gid:
             msg = resolve_err or "Unable to resolve product."
@@ -3792,8 +3834,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                       (Story 10.65).
         handle      : unambiguous by-handle channel — no numeric-ID
                       classification, so an all-digit handle resolves
-                      correctly. Used when `product_id` is empty; `product_id`
-                      wins when both are supplied.
+                      correctly. Supply this *or* `product_id`, never both: an
+                      ambiguous call naming a product twice is refused before
+                      any network call, because the one thing it must never do
+                      is guess and write to the wrong product.
         option      : dict — `{"id": "<ProductOption GID>", "name": "<new name>"?}`.
                       The option GID is required; `name` is optional (omit to
                       keep the current option name).

@@ -8749,16 +8749,6 @@ def test_s1065_vendor_all_digit_handle_writes_to_the_handle_owner():
     assert _extract_json(out)["ok"] is True
 
 
-def test_s1065_vendor_product_id_wins_when_both_supplied():
-    tools, fc = _build([_vendor_read(pid="5234567890"), _update_ok(pid="5234567890")])
-    out = tools["update_product_vendor"](
-        product_id="5234567890", handle=_S1065_DIGIT_HANDLE, vendor="Vanish", confirm=True
-    )
-    assert all("productByHandle" not in q for q, _v in fc.calls)
-    assert fc.calls[0][1] == {"id": "gid://shopify/Product/5234567890"}
-    assert _extract_json(out)["ok"] is True
-
-
 def test_s1065_vendor_handle_not_found_names_the_handle():
     tools, fc = _build([{"productByHandle": None}])
     out = tools["update_product_vendor"](handle=_S1065_DIGIT_HANDLE, vendor="Vanish")
@@ -8783,19 +8773,6 @@ def test_s1065_type_all_digit_handle_writes_to_the_handle_owner():
     assert fc.calls[0][1] == {"handle": _S1065_DIGIT_HANDLE}
     assert fc.calls[1][1]["product"]["id"] == f"gid://shopify/Product/{_S1065_HANDLE_OWNER}"
     _assert_never_touched_decoy(fc)
-    assert _extract_json(out)["ok"] is True
-
-
-def test_s1065_type_product_id_wins_when_both_supplied():
-    tools, fc = _build([_type_read(pid="5234567890"), _type_update_ok(pid="5234567890")])
-    out = tools["update_product_type"](
-        product_id="5234567890",
-        handle=_S1065_DIGIT_HANDLE,
-        product_type="Crewneck Sweatshirt",
-        confirm=True,
-    )
-    assert fc.calls[0][0] == GET_PRODUCT_TYPE
-    assert fc.calls[0][1] == {"id": "gid://shopify/Product/5234567890"}
     assert _extract_json(out)["ok"] is True
 
 
@@ -8836,15 +8813,6 @@ def test_s1065_options_all_digit_handle_writes_to_the_handle_owner():
     assert _parse_tail(out)["ok"] is True
 
 
-def test_s1065_options_product_id_wins_when_both_supplied():
-    tools, fc = _build([_options_read_response()])
-    tools["update_product_options"](
-        product_id="100", handle=_S1065_DIGIT_HANDLE, option={"id": _OPT_GID}
-    )
-    assert fc.calls[0][0] == GET_PRODUCT_OPTIONS
-    assert fc.calls[0][1] == {"id": "gid://shopify/Product/100"}
-
-
 def test_s1065_options_handle_not_found_names_the_handle():
     tools, _ = _build([{"productByHandle": None}])
     out = tools["update_product_options"](handle=_S1065_DIGIT_HANDLE, option={"id": _OPT_GID})
@@ -8881,29 +8849,6 @@ def test_s1065_category_all_digit_handle_writes_to_the_handle_owner():
     assert _extract_json_tail(out)["ok"] is True
 
 
-def test_s1065_category_product_id_wins_when_both_supplied():
-    tools, fc = _build(
-        [
-            _taxonomy_response(
-                {
-                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
-                    "fullName": "Apparel & Accessories > Clothing > Shirts & Tops > Sweatshirts",
-                    "name": "Sweatshirts",
-                }
-            ),
-            _product_read_response(),
-            _product_update_ok(),
-        ]
-    )
-    tools["update_product_category"](
-        product_id="gid://shopify/Product/5234567890",
-        handle=_S1065_DIGIT_HANDLE,
-        category="sweatshirt",
-        confirm=True,
-    )
-    assert all("productByHandle" not in q for q, _v in fc.calls)
-
-
 def test_s1065_category_handle_not_found_names_the_handle():
     tools, fc = _build([{"productByHandle": None}])
     out = tools["update_product_category"](handle=_S1065_DIGIT_HANDLE, category="sweatshirt")
@@ -8936,24 +8881,6 @@ def test_s1065_binding_all_digit_handle_writes_to_the_handle_owner():
     assert fc.calls[1][1]["id"] == _S96_PRODUCT_GID
     _assert_never_touched_decoy(fc)
     assert _parse_tail(out)["ok"] is True
-
-
-def test_s1065_binding_product_id_wins_when_both_supplied():
-    tools, fc = _build(
-        [
-            _s96_combined_response(
-                media_ids=[_S96_MEDIA_1],
-                variants=[(_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_1])],
-            )
-        ]
-    )
-    tools["update_variant_image_binding"](
-        product_id=_S96_PRODUCT_GID,
-        handle=_S1065_DIGIT_HANDLE,
-        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
-    )
-    assert all("productByHandle" not in q for q, _v in fc.calls)
-    assert fc.calls[0][1]["id"] == _S96_PRODUCT_GID
 
 
 def test_s1065_binding_handle_owner_vanishes_names_the_handle():
@@ -9045,10 +8972,24 @@ def test_s1065_product_type_empty_string_still_clears():
 
 
 def test_s1065_non_string_product_id_does_not_hand_the_write_to_handle():
+    """A malformed `product_id` alongside a handle is still two identifiers,
+    so it must be refused — not silently discarded, which would resolve by
+    `handle` and write to a product the caller never named on that channel.
+    `_resolve_product` normalises a non-string to "" before its both-check, so
+    this only holds because the helper stringifies before delegating."""
     tools, fc = _build([])
     out = tools["update_product_vendor"](
         product_id=2024, handle="a-different-product", vendor="Vanish", confirm=True
     )
+    assert fc.calls == []
+    assert "not both" in out
+    assert _extract_json(out)["ok"] is False
+
+
+def test_s1065_non_string_product_id_alone_still_rejects_without_network():
+    """With no handle to be confused with, the historical message stands."""
+    tools, fc = _build([])
+    out = tools["update_product_vendor"](product_id=2024, vendor="Vanish", confirm=True)
     assert fc.calls == []
     assert "product_id must be a non-empty string" in out
     assert _extract_json(out)["ok"] is False
@@ -9127,3 +9068,94 @@ def test_s1065_binding_product_ref_is_capped_in_reflected_output():
         variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
     )
     assert oversized[: _GID_DISPLAY_MAX + 1] not in out
+
+
+# =============================================================================
+# Story 10.65 follow-up — close the both-supplied trap on the WRITE tools.
+#
+# `product_id`-wins left one wrong-product write reachable through the new
+# parameter: a client holding a single identifier and filling both slots with
+# it. For an all-digit handle that resolves as a numeric ID and mutates
+# whichever product carries that number. The five mutators now refuse the
+# ambiguous call outright — the only outcome that cannot corrupt the wrong
+# product. `get_product_metafields` deliberately keeps the precedence: a wrong
+# read misleads, a wrong write corrupts, and its contract is pinned by 10.64.
+# =============================================================================
+
+_S1065_BOTH_SUPPLIED_CALLS = [
+    ("update_product_vendor", {"vendor": "Vanish", "confirm": True}),
+    ("update_product_type", {"product_type": "Crewneck Sweatshirt", "confirm": True}),
+    ("update_product_category", {"category": "sweatshirt", "confirm": True}),
+    ("update_product_options", {"option": {"id": _OPT_GID, "name": "Fit"}, "confirm": True}),
+    (
+        "update_variant_image_binding",
+        {
+            "variant_media": [{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+            "confirm": True,
+        },
+    ),
+]
+
+
+@pytest.mark.parametrize(("tool_name", "kwargs"), _S1065_BOTH_SUPPLIED_CALLS)
+def test_s1065_both_identifiers_supplied_is_refused_before_any_network(tool_name, kwargs):
+    """The ambiguous call must die before a single round-trip — and long
+    before the mutation."""
+    tools, fc = _build([])
+    out = tools[tool_name](product_id="2024", handle=_S1065_DIGIT_HANDLE, **kwargs)
+    assert "not both" in out
+    assert fc.calls == []
+
+
+@pytest.mark.parametrize(("tool_name", "kwargs"), _S1065_BOTH_SUPPLIED_CALLS)
+def test_s1065_both_supplied_never_writes_to_the_numeric_id_twin(tool_name, kwargs):
+    """The specific catastrophe: `product_id`-wins would have wrapped the
+    all-digit handle into gid://shopify/Product/2024 and mutated that
+    product. Prove that GID is never addressed at all."""
+    tools, fc = _build([])
+    tools[tool_name](product_id=_S1065_DIGIT_HANDLE, handle=_S1065_DIGIT_HANDLE, **kwargs)
+    assert _S1065_DECOY_GID not in str(fc.calls)
+    assert fc.calls == []
+
+
+def test_s1065_both_supplied_error_is_structured_not_raised():
+    """Every tool renders the refusal through its existing error path, so the
+    JSON tail stays well-formed for a machine caller."""
+    tools, _ = _build([])
+    out = tools["update_product_vendor"](
+        product_id="2024", handle=_S1065_DIGIT_HANDLE, vendor="Vanish", confirm=True
+    )
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+    assert payload["errors"]
+
+
+def test_s1065_get_product_metafields_keeps_product_id_wins_deliberately():
+    """The read tool is the documented exception — asymmetric on purpose,
+    justified by read-vs-write blast radius rather than by consistency."""
+    tools, fc = _build([_s911_product_response([_s911_metafield_node()])])
+    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID, handle="2024")
+    assert all("productByHandle" not in q for q, _v in fc.calls)
+    assert _parse_tail(out)["ok"] is True
+
+
+def test_s1065_handle_alone_still_works_after_the_both_supplied_guard():
+    """Regression guard: refusing both must not break the single-channel case
+    the story exists to enable."""
+    tools, fc = _build(
+        [_vendor_read_by_handle(pid=_S1065_HANDLE_OWNER), _update_ok(pid=_S1065_HANDLE_OWNER)]
+    )
+    out = tools["update_product_vendor"](handle=_S1065_DIGIT_HANDLE, vendor="Vanish", confirm=True)
+    assert fc.calls[0][1] == {"handle": _S1065_DIGIT_HANDLE}
+    assert _extract_json(out)["ok"] is True
+
+
+def test_s1065_blank_handle_alongside_product_id_is_not_ambiguous():
+    """A whitespace-only `handle` is absent, not a second identifier — it must
+    not trip the both-supplied refusal."""
+    tools, fc = _build([_vendor_read(pid="5234567890"), _update_ok(pid="5234567890")])
+    out = tools["update_product_vendor"](
+        product_id="5234567890", handle="   ", vendor="Vanish", confirm=True
+    )
+    assert fc.calls[0][1] == {"id": "gid://shopify/Product/5234567890"}
+    assert _extract_json(out)["ok"] is True
