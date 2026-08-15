@@ -7872,13 +7872,19 @@ def test_s1064_product_gid_via_handle_channel_still_short_circuits():
     assert fc.calls == []
 
 
-def test_s1064_product_id_wins_when_both_supplied():
-    """The tool documents product_id as taking precedence; it must not raise
-    the resolver's both-supplied ValueError at the tool surface."""
-    tools, fc = _build([_s911_product_response([_s911_metafield_node()])])
+def test_s1065_supersedes_s1064_product_id_wins_with_a_refusal():
+    """Story 10.64 documented `product_id`-wins here and this test pinned it.
+    Story 10.65 replaces that precedence with a refusal across all six
+    product-resolving tools: silently discarding the handle meant a caller who
+    named one product by ID and another by handle got data for the first with
+    no indication the second was ignored. Deliberate breaking change — this is
+    the only tool where a caller could have relied on the old behaviour."""
+    tools, fc = _build([])
     out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID, handle="2024")
-    assert all("productByHandle" not in q for q, _v in fc.calls)
-    assert _parse_tail(out)["ok"] is True
+    assert fc.calls == []
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert any("not both" in e["message"] for e in tail["errors"])
 
 
 # ----- AC #12 — network exception -------------------------------------------
@@ -8701,3 +8707,536 @@ def test_s1019_oversized_media_gid_step4_is_capped():
     assert "media GIDs not on product" in out
     assert oversized[: _GID_DISPLAY_MAX + 1] not in out
     assert _cap(oversized) in out
+
+
+# =============================================================================
+# Story 10.65 (T-9.5-mutator-handle) — the explicit handle channel on the five
+# catalog-hygiene mutators.
+#
+# Story 10.64 added `_resolve_product`'s keyword-only `handle` channel but wired
+# it into `get_product_metafields` alone, so the five mutators below still took
+# `product_id` only. Shopify permits an all-digit product handle, so a caller
+# naming a product by such a handle had no channel that would not classify it
+# as a legacy numeric ID — the resulting write landed on whichever product
+# carried that number as its ID. Every fixture here is built so the numeric
+# handle and the numeric ID belong to two DIFFERENT products: the outcome under
+# test is a wrong-product WRITE, not a not-found. Rationale and the residual
+# that remains live in docs/tech-debt.md's T-9.5-mutator-handle entry.
+# =============================================================================
+
+# "2024" is the handle. It belongs to Product/8899 — NOT to Product/2024, which
+# is a different product that exists and would be silently mutated instead.
+_S1065_DIGIT_HANDLE = "2024"
+_S1065_HANDLE_OWNER = "8899"
+_S1065_DECOY_GID = "gid://shopify/Product/2024"
+
+
+def _assert_never_touched_decoy(fc):
+    """The whole point: no call may address the numeric-ID twin of the handle."""
+    assert _S1065_DECOY_GID not in str(fc.calls)
+
+
+# ---- update_product_vendor ---------------------------------------------------
+
+
+def test_s1065_vendor_all_digit_handle_writes_to_the_handle_owner():
+    tools, fc = _build(
+        [
+            _vendor_read_by_handle(pid=_S1065_HANDLE_OWNER, vendor="Old"),
+            _update_ok(pid=_S1065_HANDLE_OWNER),
+        ]
+    )
+    out = tools["update_product_vendor"](handle=_S1065_DIGIT_HANDLE, vendor="Vanish", confirm=True)
+    assert fc.calls[0][0] == GET_PRODUCT_VENDOR_BY_HANDLE
+    assert fc.calls[0][1] == {"handle": _S1065_DIGIT_HANDLE}
+    assert fc.calls[1][0] == UPDATE_PRODUCT_VENDOR
+    assert fc.calls[1][1]["product"]["id"] == f"gid://shopify/Product/{_S1065_HANDLE_OWNER}"
+    _assert_never_touched_decoy(fc)
+    assert _extract_json(out)["ok"] is True
+
+
+def test_s1065_vendor_handle_not_found_names_the_handle():
+    tools, fc = _build([{"productByHandle": None}])
+    out = tools["update_product_vendor"](handle=_S1065_DIGIT_HANDLE, vendor="Vanish")
+    assert f"no product found for {_S1065_DIGIT_HANDLE!r}" in out
+    assert _extract_json(out)["ok"] is False
+
+
+# ---- update_product_type -----------------------------------------------------
+
+
+def test_s1065_type_all_digit_handle_writes_to_the_handle_owner():
+    tools, fc = _build(
+        [
+            _type_read_by_handle(pid=_S1065_HANDLE_OWNER),
+            _type_update_ok(pid=_S1065_HANDLE_OWNER),
+        ]
+    )
+    out = tools["update_product_type"](
+        handle=_S1065_DIGIT_HANDLE, product_type="Crewneck Sweatshirt", confirm=True
+    )
+    assert fc.calls[0][0] == GET_PRODUCT_TYPE_BY_HANDLE
+    assert fc.calls[0][1] == {"handle": _S1065_DIGIT_HANDLE}
+    assert fc.calls[1][1]["product"]["id"] == f"gid://shopify/Product/{_S1065_HANDLE_OWNER}"
+    _assert_never_touched_decoy(fc)
+    assert _extract_json(out)["ok"] is True
+
+
+def test_s1065_type_handle_not_found_names_the_handle():
+    tools, _ = _build([{"productByHandle": None}])
+    out = tools["update_product_type"](handle=_S1065_DIGIT_HANDLE, product_type="Tee")
+    assert f"no product found for {_S1065_DIGIT_HANDLE!r}" in out
+    assert _extract_json(out)["ok"] is False
+
+
+# ---- update_product_options --------------------------------------------------
+
+
+def test_s1065_options_all_digit_handle_reads_the_handle_owner():
+    owner_gid = f"gid://shopify/Product/{_S1065_HANDLE_OWNER}"
+    tools, fc = _build([_options_read_response(product_gid=owner_gid, by_handle=True)])
+    out = tools["update_product_options"](handle=_S1065_DIGIT_HANDLE, option={"id": _OPT_GID})
+    assert fc.calls[0][0] == GET_PRODUCT_OPTIONS_BY_HANDLE
+    assert fc.calls[0][1] == {"handle": _S1065_DIGIT_HANDLE}
+    _assert_never_touched_decoy(fc)
+    assert _parse_tail(out)["product"]["id"] == owner_gid
+
+
+def test_s1065_options_all_digit_handle_writes_to_the_handle_owner():
+    owner_gid = f"gid://shopify/Product/{_S1065_HANDLE_OWNER}"
+    tools, fc = _build(
+        [
+            _options_read_response(product_gid=owner_gid, by_handle=True),
+            _options_mutation_ok(product_gid=owner_gid, option_name="Fit"),
+        ]
+    )
+    out = tools["update_product_options"](
+        handle=_S1065_DIGIT_HANDLE, option={"id": _OPT_GID, "name": "Fit"}, confirm=True
+    )
+    assert fc.calls[-1][0] == UPDATE_PRODUCT_OPTION
+    assert fc.calls[-1][1]["productId"] == owner_gid
+    _assert_never_touched_decoy(fc)
+    assert _parse_tail(out)["ok"] is True
+
+
+def test_s1065_options_handle_not_found_names_the_handle():
+    tools, _ = _build([{"productByHandle": None}])
+    out = tools["update_product_options"](handle=_S1065_DIGIT_HANDLE, option={"id": _OPT_GID})
+    assert f"no product found for {_S1065_DIGIT_HANDLE!r}" in out
+    assert _parse_tail(out)["ok"] is False
+
+
+# ---- update_product_category -------------------------------------------------
+
+
+def test_s1065_category_all_digit_handle_writes_to_the_handle_owner():
+    owner_gid = f"gid://shopify/Product/{_S1065_HANDLE_OWNER}"
+    tools, fc = _build(
+        [
+            {"productByHandle": {"id": owner_gid, "title": "2024 Drop", "category": None}},
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Apparel & Accessories > Clothing > Shirts & Tops > Sweatshirts",
+                    "name": "Sweatshirts",
+                }
+            ),
+            _product_read_response(),
+            _product_update_ok(),
+        ]
+    )
+    out = tools["update_product_category"](
+        handle=_S1065_DIGIT_HANDLE, category="sweatshirt", confirm=True
+    )
+    assert fc.calls[0][0] == GET_PRODUCT_BY_HANDLE_MIN
+    assert fc.calls[0][1] == {"handle": _S1065_DIGIT_HANDLE}
+    assert fc.calls[-1][1]["product"]["id"] == owner_gid
+    _assert_never_touched_decoy(fc)
+    assert _extract_json_tail(out)["ok"] is True
+
+
+def test_s1065_category_handle_not_found_names_the_handle():
+    tools, fc = _build([{"productByHandle": None}])
+    out = tools["update_product_category"](handle=_S1065_DIGIT_HANDLE, category="sweatshirt")
+    assert f"No product found with handle {_S1065_DIGIT_HANDLE!r}" in out
+    assert len(fc.calls) == 1
+    assert _extract_json_tail(out)["ok"] is False
+
+
+# ---- update_variant_image_binding --------------------------------------------
+
+
+def test_s1065_binding_all_digit_handle_writes_to_the_handle_owner():
+    tools, fc = _build(
+        [
+            {"productByHandle": {"id": _S96_PRODUCT_GID}},
+            _s96_combined_response(
+                media_ids=[_S96_MEDIA_1],
+                variants=[(_S96_VARIANT_A, "SKU-A", [])],
+            ),
+            _s96_mutation_response([(_S96_VARIANT_A, [(_S96_MEDIA_1, None, None)])]),
+        ]
+    )
+    out = tools["update_variant_image_binding"](
+        handle=_S1065_DIGIT_HANDLE,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    assert fc.calls[0][0] == GET_PRODUCT_BY_HANDLE_MIN
+    assert fc.calls[0][1] == {"handle": _S1065_DIGIT_HANDLE}
+    assert fc.calls[1][1]["id"] == _S96_PRODUCT_GID
+    _assert_never_touched_decoy(fc)
+    assert _parse_tail(out)["ok"] is True
+
+
+def test_s1065_binding_handle_owner_vanishes_names_the_handle():
+    """The post-resolve media read returning a null product must report the
+    identifier the caller actually supplied, not an empty `product_id`."""
+    tools, _ = _build([{"productByHandle": {"id": _S96_PRODUCT_GID}}, {"product": None}])
+    out = tools["update_variant_image_binding"](
+        handle=_S1065_DIGIT_HANDLE,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+    )
+    assert f"No product found with id {_S1065_DIGIT_HANDLE}." in out
+    assert _parse_tail(out)["ok"] is False
+
+
+# ---- cross-cutting -----------------------------------------------------------
+
+
+def test_s1065_product_gid_via_handle_channel_still_short_circuits():
+    """AC #4 — PR #134 restored the Product-GID passthrough on the handle
+    channel; threading `handle` through the mutators must not cost a wasted
+    productByHandle round-trip when a GID arrives that way."""
+    tools, fc = _build([_vendor_read(pid="7777", vendor="Old"), _update_ok(pid="7777")])
+    out = tools["update_product_vendor"](
+        handle="gid://shopify/Product/7777", vendor="Vanish", confirm=True
+    )
+    assert fc.calls[0][0] == GET_PRODUCT_VENDOR
+    assert fc.calls[0][1] == {"id": "gid://shopify/Product/7777"}
+    assert _extract_json(out)["ok"] is True
+
+
+def test_s1065_neither_identifier_supplied_errors_without_network():
+    tools, fc = _build([])
+    out = tools["update_product_vendor"](vendor="Vanish")
+    assert "product_id must be a non-empty string" in out
+    assert fc.calls == []
+    assert _extract_json(out)["ok"] is False
+
+
+# =============================================================================
+# Story 10.65 — triple-threat review fixes.
+# =============================================================================
+
+# Giving `product_id` a default would otherwise cascade defaults onto every
+# parameter after it, dropping them from the FastMCP-generated schema's
+# `required` list. For `vendor` that is destructive: `None` is the *deliberate*
+# clear signal, so an omitted argument would silently wipe the field — and with
+# `product_id` optional, `update_product_vendor` would have had no required
+# parameter at all. Keyword-only restores requiredness for each genuinely
+# required argument while keeping `product_id` optional. These pin the
+# signature that generates the schema.
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "kwargs"),
+    [
+        ("update_product_vendor", {"product_id": "123"}),
+        ("update_product_type", {"product_id": "123"}),
+        ("update_product_category", {"product_id": "123"}),
+        ("update_product_options", {"product_id": "123"}),
+    ],
+)
+def test_s1065_required_argument_cannot_be_omitted(tool_name, kwargs):
+    tools, fc = _build([])
+    with pytest.raises(TypeError, match="required keyword-only argument"):
+        tools[tool_name](**kwargs)
+    assert fc.calls == []
+
+
+def test_s1065_vendor_none_still_clears_when_explicitly_passed():
+    """Requiredness must not cost the documented clear path: an explicit
+    `vendor=None` still clears, it is only *omission* that is now rejected."""
+    tools, fc = _build([_vendor_read(pid="123", vendor="Nike"), _update_ok(pid="123")])
+    out = tools["update_product_vendor"](product_id="123", vendor=None, confirm=True)
+    assert fc.calls[1][1]["product"]["vendor"] is None
+    assert _extract_json(out)["ok"] is True
+
+
+def test_s1065_product_type_empty_string_still_clears():
+    """Same for productType, where `""` rather than None is the clear value."""
+    tools, fc = _build([_type_read(pid="123", product_type="Old"), _type_update_ok(pid="123")])
+    out = tools["update_product_type"](product_id="123", product_type="", confirm=True)
+    assert fc.calls[1][1]["product"]["productType"] == ""
+    assert _extract_json(out)["ok"] is True
+
+
+# A non-string `product_id` must not be mistaken for "absent" and silently
+# hand the write to `handle` — that inverts the documented precedence into a
+# wrong-target write, the exact outcome this story exists to close.
+
+
+def test_s1065_non_string_product_id_does_not_hand_the_write_to_handle():
+    """A malformed `product_id` alongside a handle is still two identifiers,
+    so it must be refused — not silently discarded, which would resolve by
+    `handle` and write to a product the caller never named on that channel.
+    `_resolve_product` normalises a non-string to "" before its both-check, so
+    this only holds because the helper stringifies before delegating."""
+    tools, fc = _build([])
+    out = tools["update_product_vendor"](
+        product_id=2024, handle="a-different-product", vendor="Vanish", confirm=True
+    )
+    assert fc.calls == []
+    assert "not both" in out
+    assert _extract_json(out)["ok"] is False
+
+
+def test_s1065_non_string_product_id_alone_still_rejects_without_network():
+    """With no handle to be confused with, the historical message stands."""
+    tools, fc = _build([])
+    out = tools["update_product_vendor"](product_id=2024, vendor="Vanish", confirm=True)
+    assert fc.calls == []
+    assert "product_id must be a non-empty string" in out
+    assert _extract_json(out)["ok"] is False
+
+
+def test_s1065_none_product_id_is_absent_and_defers_to_handle():
+    """`None` is genuinely 'not supplied' (a JSON null / omitted field), unlike
+    a malformed value, so it must still defer to the handle channel."""
+    tools, fc = _build([_vendor_read_by_handle(pid="8899"), _update_ok(pid="8899")])
+    out = tools["update_product_vendor"](
+        product_id=None, handle=_S1065_DIGIT_HANDLE, vendor="Vanish", confirm=True
+    )
+    assert fc.calls[0][1] == {"handle": _S1065_DIGIT_HANDLE}
+    assert _extract_json(out)["ok"] is True
+
+
+def test_s1065_whitespace_product_id_is_absent_and_defers_to_handle():
+    tools, fc = _build([_vendor_read_by_handle(pid="8899"), _update_ok(pid="8899")])
+    out = tools["update_product_vendor"](
+        product_id="   ", handle=_S1065_DIGIT_HANDLE, vendor="Vanish", confirm=True
+    )
+    assert fc.calls[0][1] == {"handle": _S1065_DIGIT_HANDLE}
+    assert _extract_json(out)["ok"] is True
+
+
+# The two `update_variant_image_binding` rejection messages that the first
+# `product_ref` sweep missed — they rendered a blank identifier on a
+# handle-only call, the very defect this story claims to have eliminated.
+
+
+def test_s1065_binding_unknown_variant_rejection_names_the_handle():
+    tools, _ = _build(
+        [
+            {"productByHandle": {"id": _S96_PRODUCT_GID}},
+            _s96_combined_response(
+                media_ids=[_S96_MEDIA_1],
+                variants=[(_S96_VARIANT_A, "SKU-A", [])],
+            ),
+        ]
+    )
+    out = tools["update_variant_image_binding"](
+        handle=_S1065_DIGIT_HANDLE,
+        variant_media=[{"variantId": _S96_VARIANT_B, "mediaIds": [_S96_MEDIA_1]}],
+    )
+    assert f"variant GIDs not on product {_S1065_DIGIT_HANDLE}:" in out
+    assert "not on product :" not in out
+
+
+def test_s1065_binding_unknown_media_rejection_names_the_handle():
+    tools, _ = _build(
+        [
+            {"productByHandle": {"id": _S96_PRODUCT_GID}},
+            _s96_combined_response(
+                media_ids=[_S96_MEDIA_1],
+                variants=[(_S96_VARIANT_A, "SKU-A", [])],
+            ),
+        ]
+    )
+    out = tools["update_variant_image_binding"](
+        handle=_S1065_DIGIT_HANDLE,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_CROSS]}],
+    )
+    assert f"media GIDs not on product {_S1065_DIGIT_HANDLE}:" in out
+    assert "not on product :" not in out
+
+
+def test_s1065_binding_product_ref_is_capped_in_reflected_output():
+    """`product_ref` is reflected into six head/log sites; cap it once at the
+    definition site so an oversized caller-supplied handle cannot flood any."""
+    from shopify_mcp.tools.catalog_hygiene import _GID_DISPLAY_MAX
+
+    oversized = "h" * 10_000
+    tools, _ = _build([{"productByHandle": None}])
+    out = tools["update_variant_image_binding"](
+        handle=oversized,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+    )
+    assert oversized[: _GID_DISPLAY_MAX + 1] not in out
+
+
+# =============================================================================
+# Story 10.65 follow-up — close the both-supplied trap on the WRITE tools.
+#
+# `product_id`-wins left one wrong-product write reachable through the new
+# parameter: a client holding a single identifier and filling both slots with
+# it. For an all-digit handle that resolves as a numeric ID and mutates
+# whichever product carries that number.
+#
+# ALL SIX product-resolving tools in this module now refuse the ambiguous call
+# outright — the only outcome that cannot corrupt the wrong product. An
+# intermediate commit exempted `get_product_metafields` on read-vs-write blast
+# radius; that exemption was dropped, since the precedence silently discarded
+# the handle there too. Scope stops at this module: `products.py` and
+# `publications.py` still apply the precedence — see docs/tech-debt.md.
+# =============================================================================
+
+_S1065_BOTH_SUPPLIED_CALLS = [
+    ("update_product_vendor", {"vendor": "Vanish", "confirm": True}),
+    ("update_product_type", {"product_type": "Crewneck Sweatshirt", "confirm": True}),
+    ("update_product_category", {"category": "sweatshirt", "confirm": True}),
+    ("update_product_options", {"option": {"id": _OPT_GID, "name": "Fit"}, "confirm": True}),
+    (
+        "update_variant_image_binding",
+        {
+            "variant_media": [{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+            "confirm": True,
+        },
+    ),
+]
+
+
+@pytest.mark.parametrize(("tool_name", "kwargs"), _S1065_BOTH_SUPPLIED_CALLS)
+def test_s1065_both_identifiers_supplied_is_refused_before_any_network(tool_name, kwargs):
+    """The ambiguous call must die before a single round-trip — and long
+    before the mutation."""
+    tools, fc = _build([])
+    out = tools[tool_name](product_id="2024", handle=_S1065_DIGIT_HANDLE, **kwargs)
+    assert "not both" in out
+    assert fc.calls == []
+
+
+@pytest.mark.parametrize(("tool_name", "kwargs"), _S1065_BOTH_SUPPLIED_CALLS)
+def test_s1065_both_supplied_never_writes_to_the_numeric_id_twin(tool_name, kwargs):
+    """The specific catastrophe: `product_id`-wins would have wrapped the
+    all-digit handle into gid://shopify/Product/2024 and mutated that
+    product. Prove that GID is never addressed at all."""
+    tools, fc = _build([])
+    tools[tool_name](product_id=_S1065_DIGIT_HANDLE, handle=_S1065_DIGIT_HANDLE, **kwargs)
+    assert _S1065_DECOY_GID not in str(fc.calls)
+    assert fc.calls == []
+
+
+def test_s1065_both_supplied_error_is_structured_not_raised():
+    """Every tool renders the refusal through its existing error path, so the
+    JSON tail stays well-formed for a machine caller."""
+    tools, _ = _build([])
+    out = tools["update_product_vendor"](
+        product_id="2024", handle=_S1065_DIGIT_HANDLE, vendor="Vanish", confirm=True
+    )
+    payload = _extract_json(out)
+    assert payload["ok"] is False
+    assert payload["errors"]
+
+
+def test_s1065_get_product_metafields_refuses_both_like_the_mutators():
+    """No read/write exception: one rule across all six product-resolving
+    tools. Refused before any network call, like the five mutators."""
+    tools, fc = _build([])
+    out = tools["get_product_metafields"](product_id="8581472649369", handle="2024")
+    assert fc.calls == []
+    assert _parse_tail(out)["ok"] is False
+
+
+def test_s1065_get_product_metafields_single_channel_calls_still_work():
+    """Regression guard: refusing both must not disturb either channel alone."""
+    tools, fc = _build([_s911_product_response([_s911_metafield_node()])])
+    assert _parse_tail(tools["get_product_metafields"](product_id=_S911_PRODUCT_GID))["ok"] is True
+    assert all("productByHandle" not in q for q, _v in fc.calls)
+
+    tools2, fc2 = _build(
+        [
+            {"productByHandle": {"id": _S911_PRODUCT_GID}},
+            _s911_product_response([_s911_metafield_node()]),
+        ]
+    )
+    assert _parse_tail(tools2["get_product_metafields"](handle="2024"))["ok"] is True
+    assert fc2.calls[0][1] == {"handle": "2024"}
+    assert "gid://shopify/Product/2024" not in str(fc2.calls)
+
+
+def test_s1065_handle_alone_still_works_after_the_both_supplied_guard():
+    """Regression guard: refusing both must not break the single-channel case
+    the story exists to enable."""
+    tools, fc = _build(
+        [_vendor_read_by_handle(pid=_S1065_HANDLE_OWNER), _update_ok(pid=_S1065_HANDLE_OWNER)]
+    )
+    out = tools["update_product_vendor"](handle=_S1065_DIGIT_HANDLE, vendor="Vanish", confirm=True)
+    assert fc.calls[0][1] == {"handle": _S1065_DIGIT_HANDLE}
+    assert _extract_json(out)["ok"] is True
+
+
+def test_s1065_blank_handle_alongside_product_id_is_not_ambiguous():
+    """A whitespace-only `handle` is absent, not a second identifier — it must
+    not trip the both-supplied refusal."""
+    tools, fc = _build([_vendor_read(pid="5234567890"), _update_ok(pid="5234567890")])
+    out = tools["update_product_vendor"](
+        product_id="5234567890", handle="   ", vendor="Vanish", confirm=True
+    )
+    assert fc.calls[0][1] == {"id": "gid://shopify/Product/5234567890"}
+    assert _extract_json(out)["ok"] is True
+
+
+# =============================================================================
+# Story 10.65 review round 2 — pin the GENERATED SCHEMA, not just the signature.
+#
+# The keyword-only conversion exists to keep each genuinely-required argument
+# in the FastMCP-generated JSON schema's `required` list; that is what stops an
+# LLM client emitting a call with the argument omitted. Asserting a Python-level
+# TypeError proves the signature, not the schema — so a FastMCP upgrade that
+# changed keyword-only handling could silently reintroduce the
+# zero-required-parameter hazard (an omitted `vendor` is a field-wipe) with the
+# whole suite still green. These pin the artefact the safety property actually
+# depends on.
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "expected_required"),
+    [
+        ("update_product_vendor", {"vendor"}),
+        ("update_product_type", {"product_type"}),
+        ("update_product_category", {"category"}),
+        ("update_product_options", {"option"}),
+        ("update_variant_image_binding", {"variant_media"}),
+    ],
+)
+def test_s1065_generated_schema_marks_required_args_required(tool_name, expected_required):
+    from mcp.server.fastmcp.utilities.func_metadata import func_metadata
+
+    tools, _ = _build([])
+    schema = func_metadata(tools[tool_name]).arg_model.model_json_schema()
+    assert set(schema.get("required") or []) == expected_required
+    # `product_id` must stay OPTIONAL — that is what makes a handle-only call
+    # expressible, and it is the change that cascaded the defaults in the first
+    # place. Both halves have to hold together or the story's shape is broken.
+    assert "product_id" not in (schema.get("required") or [])
+    assert "handle" not in (schema.get("required") or [])
+
+
+def test_s1065_no_product_resolving_mutator_has_an_empty_required_list():
+    """The zero-required-parameter shape is the hazard itself: it makes an
+    under-specified call schema-valid. No mutator may present it."""
+    from mcp.server.fastmcp.utilities.func_metadata import func_metadata
+
+    tools, _ = _build([])
+    for tool_name in (
+        "update_product_vendor",
+        "update_product_type",
+        "update_product_category",
+        "update_product_options",
+        "update_variant_image_binding",
+    ):
+        required = func_metadata(tools[tool_name]).arg_model.model_json_schema().get("required")
+        assert required, f"{tool_name} has no required parameter in its generated schema"
