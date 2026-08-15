@@ -15,7 +15,6 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from shopify_mcp.client import ShopifyClient
-from shopify_mcp.shopify._identifiers import reject_both_identifiers
 from shopify_mcp.shopify.operations import products as ops
 from shopify_mcp.shopify.queries.products import (
     GET_PRODUCT_BY_HANDLE,
@@ -43,8 +42,8 @@ from shopify_mcp.tools._filters import (
 )
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
+from shopify_mcp.tools._product_resolver import identifier_error
 from shopify_mcp.tools._response import extract_user_errors, with_confirm_hint
-from shopify_mcp.tools._scrub import cap
 from shopify_mcp.tools._write_tool import write_gate
 from shopify_mcp.validators.naming import format_validation_diff
 from shopify_mcp.validators.seo import SEO_DESCRIPTION_MAX_CHARS, SEO_TITLE_MAX_CHARS
@@ -82,36 +81,6 @@ def slugify_shopify_handle(title: str) -> str:
     return s.strip("-")
 
 
-def _identifier_error(product_id: str, handle: str) -> str | None:
-    """Vet the `product_id` / `handle` pair for the three product reads.
-
-    Returns the message to hand back to the caller, or None to proceed. One
-    helper for all three tools, replacing the identical inline neither-supplied
-    check each carried.
-
-    Story 10.68 (`T-10.65-refuse-both-fanout`) adds the both-supplied refusal.
-    `shopify.operations.products._require_discriminator` enforces the same rule
-    and is the real chokepoint — it also covers non-MCP callers, and it is what
-    makes the guarantee hold if this layer is ever bypassed. This call exists so
-    an MCP caller gets a rendered string rather than an exception escaping the
-    tool, and so the refusal is visibly ahead of the network call rather than
-    inside it. The rule itself is defined once, in `shopify._identifiers`.
-
-    `cap` bounds the reflected message: the operations layer cannot reach
-    `_scrub` across the layering boundary, so the bound is applied here. It is a
-    no-op on today's value-free message and is kept so a future edit that starts
-    echoing the caller's identifiers inherits the bound instead of having to
-    remember it.
-    """
-    if not product_id and not handle:
-        return "Provide either product_id or handle."
-    try:
-        reject_both_identifiers(product_id, handle)
-    except ValueError as e:
-        return f"Error: {cap(str(e))}"
-    return None
-
-
 PRODUCT_STATUS_VALUES = ("ACTIVE", "DRAFT", "ARCHIVED")
 INVENTORY_POLICY_VALUES = ("DENY", "CONTINUE")
 TAG_MODES = ("replace", "append", "remove")
@@ -146,7 +115,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         silently discarded (Story 10.68 — a contract change; see the module
         docstring of `shopify._identifiers`).
         """
-        err = _identifier_error(product_id, handle)
+        err = identifier_error(product_id, handle)
         if err:
             return err
         p, variants_nodes, capped = ops.read_product(client, product_id=product_id, handle=handle)
@@ -408,7 +377,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         silently discarded (Story 10.68 — a contract change; see the module
         docstring of `shopify._identifiers`).
         """
-        err = _identifier_error(product_id, handle)
+        err = identifier_error(product_id, handle)
         if err:
             return err
         p = ops.read_product_description(client, product_id=product_id, handle=handle)
@@ -466,7 +435,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         `handle` silently discarded (Story 10.68 — a contract change; see the
         module docstring of `shopify._identifiers`).
         """
-        err = _identifier_error(product_id, handle)
+        err = identifier_error(product_id, handle)
         if err:
             return err
         p, variants_nodes, capped = ops.read_product_full(

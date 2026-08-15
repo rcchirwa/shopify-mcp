@@ -43,6 +43,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from shopify_mcp.client import ShopifyClient
+from shopify_mcp.shopify._identifiers import is_supplied
 from shopify_mcp.shopify.operations import catalog_hygiene as ops
 from shopify_mcp.shopify.queries.catalog_hygiene import (
     GET_PRODUCT_BY_HANDLE_MIN,
@@ -999,18 +1000,19 @@ def _format_payload(
     return f"{body}\n\n```json\n{json.dumps(payload)}\n```"
 
 
-def _is_supplied(value: object) -> bool:
-    """Was this identifier *present*, regardless of whether it is well-formed?
-
-    `None` and a blank/whitespace string are absent. Any other non-string (an
-    int from a client that ignores the schema) counts as supplied, so it is
-    routed to its own channel and rejected there rather than being silently
-    discarded — a discarded `product_id` would hand the operation to `handle`
-    and write to the wrong product.
-    """
-    if value is None:
-        return False
-    return bool(value.strip()) if isinstance(value, str) else True
+# Was this identifier *present*, regardless of whether it is well-formed?
+# `None` and a blank/whitespace string are absent. Any other non-string (an int
+# from a client that ignores the schema) counts as supplied, so it is routed to
+# its own channel and rejected there rather than being silently discarded — a
+# discarded `product_id` would hand the operation to `handle` and write to the
+# wrong product.
+#
+# Story 10.68 promoted this predicate to `shopify._identifiers.is_supplied` and
+# left this name as an alias: the seven tools that story brought under the rule
+# have to agree with these six on *what counts as supplied*, or "one rule" is
+# true only of the error string and not of the behaviour. Aliased rather than
+# re-implemented so the two can't drift.
+_is_supplied = is_supplied
 
 
 def _identifier_channel(product_id: object, handle: object) -> tuple[Any, Any, str]:

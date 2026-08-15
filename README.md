@@ -83,7 +83,7 @@ Requires `write_files` and `write_products` scopes. Local-file source paths are 
 | `unpublish_product_from_channels` | Unpublish from one or more channels (idempotent, preview + confirm) |
 | `set_product_publications` | Declarative — diff current vs. desired channels, apply minimal publish/unpublish (preview + confirm) |
 
-**One identifier, not both.** All four tools above take `product_id` **or** `handle`. Supplying both is refused before the product is read and before any mutation — a **breaking change in Story 10.68**, replacing the previous `product_id`-wins precedence that silently discarded the handle. Three of these four are *writes*, so under the old precedence an ambiguous pair could publish, unpublish, or rewrite the channel set of the **wrong product**; the refusal is a loud structured error in its place.
+**One identifier, not both.** All four tools above take `product_id` **or** `handle`. Supplying both is refused before the product is read and before any mutation — a **breaking change in Story 10.68**, replacing the previous `product_id`-wins precedence that silently discarded the handle. Three of these four are *writes*, so under the old precedence an ambiguous pair could publish, unpublish, or rewrite the channel set of the **wrong product**; the refusal is a plain, immediately-diagnosable error in its place, returned before any network call.
 
 Requires `read_publications` and `write_publications` scopes. If the app was installed before these were added, reinstall it on the store.
 

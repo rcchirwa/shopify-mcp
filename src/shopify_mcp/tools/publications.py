@@ -31,8 +31,9 @@ from shopify_mcp.shopify.queries.publications import (
     PUBLISHABLE_PUBLISH,
     PUBLISHABLE_UNPUBLISH,
 )
-from shopify_mcp.tools._gid import from_gid, to_gid
+from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
+from shopify_mcp.tools._product_resolver import identifier_error, to_gid
 from shopify_mcp.tools._response import extract_user_errors, with_confirm_hint
 from shopify_mcp.tools._scrub import cap
 
@@ -241,8 +242,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         `handle` silently discarded (Story 10.68 — a contract change; see the
         module docstring of `shopify._identifiers`).
         """
-        if not product_id and not handle:
-            return "Provide either product_id or handle."
+        # Story 10.68: vet the identifier pair FIRST — ahead of the sales-channel
+        # reads below. Inheriting the refusal from the operations layer would let
+        # an ambiguous call cost a round-trip, let a channel-resolution failure
+        # mask the argument error, and route the message through the generic
+        # handler that appends a misleading reinstall-the-app scope hint.
+        err = identifier_error(product_id, handle)
+        if err:
+            return err
         try:
             _ensure_channels(client, channel_cache)
         except Exception as e:
@@ -318,8 +325,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         publish the WRONG product (Story 10.68 — a contract change; see the
         module docstring of `shopify._identifiers`).
         """
-        if not product_id and not handle:
-            return "Provide either product_id or handle."
+        # Story 10.68: vet the identifier pair FIRST — ahead of the sales-channel
+        # reads below. Inheriting the refusal from the operations layer would let
+        # an ambiguous call cost a round-trip, let a channel-resolution failure
+        # mask the argument error, and route the message through the generic
+        # handler that appends a misleading reinstall-the-app scope hint.
+        err = identifier_error(product_id, handle)
+        if err:
+            return err
         channel_names = channel_names or []
         publication_ids = publication_ids or []
 
@@ -407,8 +420,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         unpublish the WRONG product (Story 10.68 — a contract change; see the
         module docstring of `shopify._identifiers`).
         """
-        if not product_id and not handle:
-            return "Provide either product_id or handle."
+        # Story 10.68: vet the identifier pair FIRST — ahead of the sales-channel
+        # reads below. Inheriting the refusal from the operations layer would let
+        # an ambiguous call cost a round-trip, let a channel-resolution failure
+        # mask the argument error, and route the message through the generic
+        # handler that appends a misleading reinstall-the-app scope hint.
+        err = identifier_error(product_id, handle)
+        if err:
+            return err
         channel_names = channel_names or []
         publication_ids = publication_ids or []
 
@@ -495,8 +514,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         rewrite the WRONG product's channel set (Story 10.68 — a contract
         change; see the module docstring of `shopify._identifiers`).
         """
-        if not product_id and not handle:
-            return "Provide either product_id or handle."
+        # Story 10.68: vet the identifier pair FIRST — ahead of the sales-channel
+        # reads below. Inheriting the refusal from the operations layer would let
+        # an ambiguous call cost a round-trip, let a channel-resolution failure
+        # mask the argument error, and route the message through the generic
+        # handler that appends a misleading reinstall-the-app scope hint.
+        err = identifier_error(product_id, handle)
+        if err:
+            return err
         if channel_names is None:
             return "Provide channel_names (list of channel names for the exact desired state)."
 

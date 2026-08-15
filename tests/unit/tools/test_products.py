@@ -1989,7 +1989,33 @@ def test_s1068_refusal_is_returned_as_a_string_not_raised(tool_name):
     tools, _ = _build([])
     out = tools[tool_name](product_id=_S1068_DECOY_ID, handle=_S1068_HANDLE)
     assert isinstance(out, str)
-    assert out.startswith("Error:")
+    assert out == "Supply product_id or handle, not both."
+
+
+@pytest.mark.parametrize("tool_name", _S1068_TOOLS)
+def test_s1068_both_halves_of_the_rule_are_shaped_alike(tool_name):
+    """The two halves of one caller mistake should not arrive in two different
+    shapes — a review pass caught the both-supplied case carrying an `Error:`
+    prefix its neither-supplied sibling does not."""
+    tools, _ = _build([])
+    neither = tools[tool_name]()
+    both = tools[tool_name](product_id=_S1068_DECOY_ID, handle=_S1068_HANDLE)
+    assert neither == "Provide either product_id or handle."
+    assert both == "Supply product_id or handle, not both."
+    assert not both.startswith("Error:")
+
+
+@pytest.mark.parametrize("tool_name", _S1068_TOOLS)
+@pytest.mark.parametrize("blank", ["", "   ", None])
+def test_s1068_blank_handle_alongside_product_id_is_not_ambiguous(tool_name, blank):
+    """A client that fills unused schema fields with a blank value alongside a
+    real identifier is making an unambiguous call. Refusing it would be a
+    regression, and a whitespace-only `handle` did exactly that until the
+    shared predicate replaced bare truthiness."""
+    tools, fc = _build([_product_read(_S1068_DECOY_ID, "Decoy", "decoy")])
+    out = tools[tool_name](product_id=_S1068_DECOY_ID, handle=blank)
+    assert "not both" not in out
+    assert fc.calls[0][1]["id"] == _S1068_DECOY_GID
 
 
 @pytest.mark.parametrize("tool_name", _S1068_TOOLS)

@@ -53,9 +53,12 @@ def read_product_publications(
     which silently discarded the handle and so could resolve — and, via the
     three publication write tools above this layer, mutate — the wrong product.
     The rule is shared with ``operations/products.py`` via
-    ``shopify._identifiers``; this is the chokepoint all four
-    ``tools/publications.py`` tools inherit it through, since they funnel into
-    here via ``_resolve_product_gid_and_meta``.
+    ``shopify._identifiers``. This guard is what holds the rule for **non-MCP
+    callers** (CLI, scripts) and for any future caller that forgets; the four
+    ``tools/publications.py`` tools do **not** rely on it for their message —
+    each vets the pair itself before its sales-channel reads, because a refusal
+    inherited from here would arrive a round-trip late and be rendered with a
+    misleading scope hint. See ``tools/_product_resolver.identifier_error``.
 
     Returns ``(product_or_None, resource_publication_nodes, capped)``.
     ``product_or_None`` is the product node (``id title handle ...``) or None

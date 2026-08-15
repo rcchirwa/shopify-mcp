@@ -1508,3 +1508,55 @@ def test_s1068_handle_alone_still_resolves_by_handle():
     assert fc.calls[1][0] == GET_PRODUCT_PUBLICATIONS_BY_HANDLE
     assert fc.calls[1][1]["handle"] == _S1068_HANDLE
     assert f"gid://shopify/Product/{_S1068_HANDLE}" not in str(fc.calls)
+
+
+# ---------- Story 10.68, review round 2: how the refusal is rendered ----------
+#
+# The first cut let the operations-layer ValueError surface through each tool's
+# generic `except Exception`, which appends SCOPE_HINT. That told an LLM caller
+# to reinstall the Shopify app when the real fix was dropping one argument, and
+# it meant the refusal fired only after the sales-channel read. Both are pinned
+# here so neither can come back.
+
+
+@pytest.mark.parametrize(("tool_name", "kwargs", "responses"), _S1068_BOTH_SUPPLIED_CALLS)
+def test_s1068_refusal_carries_no_scope_hint(tool_name, kwargs, responses):
+    """An ambiguous argument pair is not a permissions problem — the refusal
+    must not suggest reinstalling the app."""
+    tools, _fc = _build(responses)
+    out = tools[tool_name](product_id=_S1068_DECOY_ID, handle=_S1068_HANDLE, **kwargs)
+    assert out == "Supply product_id or handle, not both."
+    assert "reinstall" not in out
+    assert publications.SCOPE_HINT not in out
+
+
+@pytest.mark.parametrize(("tool_name", "kwargs", "responses"), _S1068_BOTH_SUPPLIED_CALLS)
+def test_s1068_refusal_costs_no_network_call_at_all(tool_name, kwargs, responses):
+    """Not just "no product query" — *no* query. The channel read used to run
+    first, so an ambiguous call still cost a round-trip and warmed the channels
+    cache. The pair is now vetted ahead of everything else."""
+    tools, fc = _build(responses)
+    tools[tool_name](product_id=_S1068_DECOY_ID, handle=_S1068_HANDLE, **kwargs)
+    assert fc.calls == []
+
+
+def test_s1068_identifier_error_is_not_masked_by_a_channel_argument_error():
+    """With both identifiers AND no channel selector, the caller must hear about
+    the ambiguous pair. Channel resolution used to run first and answer
+    "provide channel_names or publication_ids", hiding the real problem."""
+    tools, fc = _build([_channels_response()])
+    out = tools["publish_product_to_channels"](
+        product_id=_S1068_DECOY_ID, handle=_S1068_HANDLE, confirm=True
+    )
+    assert out == "Supply product_id or handle, not both."
+    assert fc.calls == []
+
+
+@pytest.mark.parametrize("blank", ["", "   ", None])
+def test_s1068_blank_handle_alongside_product_id_is_not_ambiguous(blank):
+    """Regression guard shared with the products suite: a blank or
+    whitespace-only `handle` is absent, not ambiguous."""
+    tools, fc = _build([_channels_response(), _s1068_decoy_pubs()])
+    out = tools["get_product_publications"](product_id=_S1068_DECOY_ID, handle=blank)
+    assert "not both" not in out
+    assert fc.calls[1][1]["id"] == _S1068_DECOY_GID

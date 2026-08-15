@@ -32,7 +32,11 @@ narrow to match.
 from typing import Any
 
 from shopify_mcp.client import ShopifyClient
-from shopify_mcp.shopify._identifiers import BOTH_IDENTIFIERS_ERROR
+from shopify_mcp.shopify._identifiers import (
+    BOTH_IDENTIFIERS_ERROR,
+    both_identifiers_supplied,
+    is_supplied,
+)
 from shopify_mcp.shopify.operations import catalog_hygiene as ops
 from shopify_mcp.tools._gid import to_gid
 from shopify_mcp.tools._scrub import cap
@@ -46,6 +50,47 @@ _GID_DISPLAY_MAX = 200
 
 def _cap(s: str) -> str:
     return cap(s, _GID_DISPLAY_MAX)
+
+
+# The two halves of the identifier-pair rule as the plain-string tools render
+# them. The neither-supplied text is historical and pinned by tests across both
+# modules; the both-supplied text is Story 10.68's and is shaped to match it —
+# same voice, same punctuation, no `Error:` prefix on one and not the other.
+NEITHER_IDENTIFIER_MESSAGE = "Provide either product_id or handle."
+BOTH_IDENTIFIERS_MESSAGE = f"{BOTH_IDENTIFIERS_ERROR}."
+
+
+def identifier_error(product_id: object, handle: object) -> str | None:
+    """Vet a tool's `product_id` / `handle` pair. Returns a message, or None.
+
+    Shared by `tools/products.py`'s three reads and `tools/publications.py`'s
+    four tools (Story 10.68), replacing the seven identical inline
+    neither-supplied checks they each carried.
+
+    **Call this before doing any other work in the tool.** The operations layer
+    enforces the same both-supplied rule and is the real chokepoint — it also
+    covers non-MCP callers — but publications resolves sales channels over the
+    network *before* it reaches a product, so inheriting the refusal from
+    underneath would mean an ambiguous call still costs a round-trip, and a
+    channel-resolution failure would mask the argument error entirely. Checking
+    here makes "refused before any network call" true of the tool the caller
+    actually invokes, not just of the layer beneath it.
+
+    Returning a string rather than raising also keeps the refusal out of
+    publications' generic `except Exception` handler, which appends a
+    sales-channel scope hint — accurate for a transport failure, actively
+    misleading for a caller who simply passed one argument too many.
+
+    No caller value is echoed, so there is nothing to bound with `cap` here;
+    the message is a constant. `is_supplied` (not bare truthiness) decides
+    "supplied", so a blank or whitespace-only `handle` alongside a real
+    `product_id` stays an unambiguous call rather than becoming a refusal.
+    """
+    if both_identifiers_supplied(product_id, handle):
+        return BOTH_IDENTIFIERS_MESSAGE
+    if not is_supplied(product_id) and not is_supplied(handle):
+        return NEITHER_IDENTIFIER_MESSAGE
+    return None
 
 
 def _lookup_by_handle(
@@ -115,14 +160,16 @@ def _resolve_product(
     pid_arg = product_id.strip() if isinstance(product_id, str) else ""
 
     if pid_arg and handle_arg:
-        # Story 10.68 promoted the sentence itself to `shopify._identifiers` so
-        # this refusal and the operations-layer one the seven products.py /
-        # publications.py tools inherit are literally the same string. The
-        # `_cap`-bounded tail stays here: `shopify/` cannot import `tools/`, so
-        # only this layer can reach the reflection bound.
+        # Story 10.68 promoted the sentence to `shopify._identifiers` so this
+        # refusal and the one the seven products.py / publications.py tools get
+        # share a single constant rather than two hand-kept copies. This site
+        # extends it with a `_cap`-bounded tail naming the two values — the
+        # strings are the same claim, not byte-identical. The tail stays here
+        # because `shopify/` cannot import `tools/`, so only this layer can
+        # reach the reflection bound.
         raise ValueError(
-            f"{BOTH_IDENTIFIERS_ERROR}"
-            f" — got product_id={_cap(pid_arg)!r} and handle={_cap(handle_arg)!r}"
+            BOTH_IDENTIFIERS_ERROR
+            + f" — got product_id={_cap(pid_arg)!r} and handle={_cap(handle_arg)!r}"
         )
 
     # One classifier for both channels. `numeric_is_id` is the *only*
