@@ -1013,12 +1013,7 @@ def _is_supplied(value: object) -> bool:
     return bool(value.strip()) if isinstance(value, str) else True
 
 
-def _identifier_channel(
-    product_id: str,
-    handle: str,
-    *,
-    reject_both: bool = True,
-) -> tuple[str, str]:
+def _identifier_channel(product_id: str, handle: str) -> tuple[str, str]:
     """Split a tool's two identifier params into the resolver's two channels.
 
     Returns `(product_id_arg, handle_arg)` ready to splat into
@@ -1027,26 +1022,30 @@ def _identifier_channel(
     non-empty string" rejection fires unchanged from when `product_id` was
     these tools' only parameter.
 
-    **Both supplied is an error by default** (`reject_both=True`): both values
-    are passed through untouched so `_resolve_product`'s own "Supply
-    product_id or handle, not both" rejection fires before any network call,
-    and each tool renders it through its existing structured-error path. This
-    is the safe default because the case it catches is a client holding *one*
-    identifier and filling *both* parameters with it — a plausible LLM-client
-    behaviour, and one where an all-digit handle in `product_id` silently
-    resolves to whichever product carries that number as its ID. On a write
-    tool that is a wrong-product mutation; refusing the ambiguous call is the
-    only outcome that cannot corrupt the wrong product.
+    **Supplying both is an error**, on every tool that resolves a product.
+    Both values are passed through untouched so `_resolve_product`'s own
+    "Supply product_id or handle, not both" rejection fires before any network
+    call, and each tool renders it through its existing structured-error path.
+    The case this catches is a client holding *one* identifier and filling
+    *both* parameters with it — a plausible LLM-client behaviour, and one
+    where an all-digit handle in `product_id` silently resolves to whichever
+    product carries that number as its ID: a wrong-product write on the five
+    mutators, and wrong data returned on `get_product_metafields`.
 
-    `reject_both=False` restores the older `product_id`-wins precedence. Only
-    `get_product_metafields` uses it: that precedence is its documented
-    contract since Story 10.64 and is pinned by tests, and a wrong *read*
-    misleads a caller where a wrong *write* corrupts a product. The asymmetry
-    between the read tool and the five mutators is deliberate, not an
-    oversight. Story 10.65 (T-9.5-mutator-handle) — see docs/tech-debt.md.
+    Story 10.65 originally kept `product_id`-wins on `get_product_metafields`
+    alone, on the reasoning that a wrong read merely misleads where a wrong
+    write corrupts. That exception was dropped before merge: one rule across
+    all six tools is easier for a caller to hold than a read/write split, and
+    an ambiguous identifier is a caller bug worth surfacing loudly wherever it
+    happens. This **supersedes the `product_id`-wins precedence Story 10.64
+    documented** for that tool — the one deliberate breaking change in this
+    story, and the only place a caller could have been relying on the old
+    behaviour, since `handle` is new on the other five.
+
+    Story 10.65 (T-9.5-mutator-handle) — see docs/tech-debt.md.
     """
     pid_supplied = _is_supplied(product_id)
-    if reject_both and pid_supplied and _is_supplied(handle):
+    if pid_supplied and _is_supplied(handle):
         # Adjudicated by the resolver, which already raises on both — no
         # second copy of that error string lives here. `str()` is load-bearing:
         # `_resolve_product` normalises a non-string `product_id` to "" BEFORE
@@ -3546,13 +3545,23 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         product_id : numeric product ID or full Product GID. e.g.
                      '8581472649369' or 'gid://shopify/Product/8581472649369'.
-                     Used if non-empty; otherwise `handle` must be supplied.
-                     A bare number here always means a product ID — pass an
-                     all-digit *handle* (e.g. '2024') via `handle` instead.
-        handle     : product handle slug. Used when product_id is empty.
-                     Resolved via productByHandle before the metafield query,
-                     with no numeric-ID classification — so an all-digit
-                     handle such as '2024' resolves correctly (Story 10.64).
+                     Supply this or `handle`, never both. A bare number here
+                     always means a product ID — pass an all-digit *handle*
+                     (e.g. '2024') via `handle` instead.
+        handle     : product handle slug. Resolved via productByHandle before
+                     the metafield query, with no numeric-ID classification —
+                     so an all-digit handle such as '2024' resolves correctly
+                     (Story 10.64).
+
+                     **Contract change (Story 10.65):** supplying `product_id`
+                     AND `handle` together is now refused before any network
+                     call. It previously applied a `product_id`-wins
+                     precedence, which silently discarded the handle — so a
+                     caller who named one product by ID and another by handle
+                     got data for the first with no indication the second was
+                     ignored. All six product-resolving tools now share the
+                     one rule. This is the only place a caller could have
+                     depended on the old behaviour.
         namespace  : optional metafield namespace filter (e.g. 'google',
                      'custom'). Empty means "all namespaces". Shopify's Admin
                      API forbids the simultaneous use of `namespace` and
@@ -3615,15 +3624,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # supplied, which is what this tool's docstring promises, so the
         # resolver's both-supplied ValueError is never reached from here.
         #
-        # Story 10.65: that precedence now lives in `_identifier_channel`,
-        # shared with the five mutators. This tool is the precedent the helper
-        # was modelled on, so it uses it too rather than keeping a sixth
-        # hand-rolled copy — but with `reject_both=False`, because the five
-        # mutators now REFUSE a both-supplied call and this tool must not.
-        # `product_id`-wins is this tool's documented contract and is pinned
-        # by tests; the asymmetry is deliberate, and it is justified by
-        # read-vs-write blast radius, not by consistency.
-        pid_arg, handle_arg = _identifier_channel(product_id, handle, reject_both=False)
+        # Story 10.65 REPLACES that precedence: `_identifier_channel` — shared
+        # with the five mutators — now refuses a both-supplied call here too,
+        # so the resolver's both-supplied rejection IS reachable from this
+        # surface and the comment above describes the superseded contract.
+        # One rule across all six product-resolving tools beats a read/write
+        # split a caller has to remember. This is the story's one deliberate
+        # breaking change; see docs/tech-debt.md.
+        pid_arg, handle_arg = _identifier_channel(product_id, handle)
         product_gid, resolve_err = _resolve_product_gid(client, pid_arg, handle=handle_arg)
         if resolve_err or not product_gid:
             msg = resolve_err or "Unable to resolve product."

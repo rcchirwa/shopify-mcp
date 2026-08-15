@@ -7872,13 +7872,19 @@ def test_s1064_product_gid_via_handle_channel_still_short_circuits():
     assert fc.calls == []
 
 
-def test_s1064_product_id_wins_when_both_supplied():
-    """The tool documents product_id as taking precedence; it must not raise
-    the resolver's both-supplied ValueError at the tool surface."""
-    tools, fc = _build([_s911_product_response([_s911_metafield_node()])])
+def test_s1065_supersedes_s1064_product_id_wins_with_a_refusal():
+    """Story 10.64 documented `product_id`-wins here and this test pinned it.
+    Story 10.65 replaces that precedence with a refusal across all six
+    product-resolving tools: silently discarding the handle meant a caller who
+    named one product by ID and another by handle got data for the first with
+    no indication the second was ignored. Deliberate breaking change — this is
+    the only tool where a caller could have relied on the old behaviour."""
+    tools, fc = _build([])
     out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID, handle="2024")
-    assert all("productByHandle" not in q for q, _v in fc.calls)
-    assert _parse_tail(out)["ok"] is True
+    assert fc.calls == []
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert any("not both" in e["message"] for e in tail["errors"])
 
 
 # ----- AC #12 — network exception -------------------------------------------
@@ -9130,13 +9136,30 @@ def test_s1065_both_supplied_error_is_structured_not_raised():
     assert payload["errors"]
 
 
-def test_s1065_get_product_metafields_keeps_product_id_wins_deliberately():
-    """The read tool is the documented exception — asymmetric on purpose,
-    justified by read-vs-write blast radius rather than by consistency."""
+def test_s1065_get_product_metafields_refuses_both_like_the_mutators():
+    """No read/write exception: one rule across all six product-resolving
+    tools. Refused before any network call, like the five mutators."""
+    tools, fc = _build([])
+    out = tools["get_product_metafields"](product_id="8581472649369", handle="2024")
+    assert fc.calls == []
+    assert _parse_tail(out)["ok"] is False
+
+
+def test_s1065_get_product_metafields_single_channel_calls_still_work():
+    """Regression guard: refusing both must not disturb either channel alone."""
     tools, fc = _build([_s911_product_response([_s911_metafield_node()])])
-    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID, handle="2024")
+    assert _parse_tail(tools["get_product_metafields"](product_id=_S911_PRODUCT_GID))["ok"] is True
     assert all("productByHandle" not in q for q, _v in fc.calls)
-    assert _parse_tail(out)["ok"] is True
+
+    tools2, fc2 = _build(
+        [
+            {"productByHandle": {"id": _S911_PRODUCT_GID}},
+            _s911_product_response([_s911_metafield_node()]),
+        ]
+    )
+    assert _parse_tail(tools2["get_product_metafields"](handle="2024"))["ok"] is True
+    assert fc2.calls[0][1] == {"handle": "2024"}
+    assert "gid://shopify/Product/2024" not in str(fc2.calls)
 
 
 def test_s1065_handle_alone_still_works_after_the_both_supplied_guard():
