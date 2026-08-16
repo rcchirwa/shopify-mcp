@@ -63,10 +63,19 @@ def _get_logger() -> logging.Logger:
 def log_write(tool_name: str, description: str) -> None:
     # Sanitize control characters — caller-supplied identifiers containing \n/\r
     # must not forge additional log lines or break line-oriented audit parsing.
-    # tool_name is always a fixed in-code literal, so it's not sanitized.
+    # Both fields go through sanitize_control_chars (Story 10.58 / SEC-24,
+    # L1): tool_name is a fixed in-code literal at every present call site,
+    # but that fact lives in each caller, not in this function's signature —
+    # a future helper that threads tool_name from a parameter would silently
+    # reopen log forging with no test failing. Sanitizing here removes the
+    # dependence on that external invariant instead of merely documenting it.
+    safe_tool_name = sanitize_control_chars(tool_name)
     safe_description = sanitize_control_chars(description)
     # Cap after sanitization so the escaped tokens count toward the bound and
-    # the on-disk line is what stays bounded.
+    # the on-disk line is what stays bounded. tool_name gets no length cap:
+    # every caller passes a short, fixed in-code identifier (e.g.
+    # "update_product_pricing"), so there is no unbounded field to bound —
+    # unlike description, which can carry caller-controlled data.
     safe_description = cap(safe_description, MAX_DESC_LEN)
     timestamp = datetime.now(tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    _get_logger().info("[%s] %s | %s", timestamp, tool_name, safe_description)
+    _get_logger().info("[%s] %s | %s", timestamp, safe_tool_name, safe_description)

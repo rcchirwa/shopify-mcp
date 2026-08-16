@@ -68,6 +68,32 @@ def test_log_write_escapes_carriage_returns(tmp_log):
     assert contents.count("\n") == 1
 
 
+def test_log_write_escapes_newlines_in_tool_name(tmp_log):
+    # Story 10.58 (SEC-24 / L1): tool_name reaches the same line-oriented sink
+    # as description and must be sanitized too — a caller-supplied identifier
+    # containing \n must not forge additional log lines.
+    _log.log_write("update_product_pricing\nFAKE LOG LINE", "product=100")
+    contents = _read(tmp_log)
+    assert contents.count("\n") == 1  # Only the terminating newline.
+    assert "\\n" in contents  # Escaped form is present.
+    assert "FAKE LOG LINE" in contents  # Payload preserved, just escaped.
+
+
+def test_log_write_escapes_carriage_returns_in_tool_name(tmp_log):
+    _log.log_write("t\rINJECT", "x=1")
+    contents = _read(tmp_log)
+    assert "\\r" in contents
+    assert contents.count("\n") == 1
+
+
+def test_log_write_leaves_normal_tool_name_unchanged(tmp_log):
+    # No-op regression: an ordinary in-code-literal tool_name must render
+    # byte-identically to before the change.
+    _log.log_write("update_product_pricing", "product=100 variants=2")
+    contents = _read(tmp_log)
+    assert "update_product_pricing | product=100 variants=2" in contents
+
+
 def test_log_write_appends_across_multiple_calls(tmp_log):
     _log.log_write("t", "first")
     _log.log_write("t", "second")
