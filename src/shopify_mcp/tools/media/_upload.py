@@ -9,6 +9,7 @@ which are out of scope for v1.
 """
 
 import mimetypes
+import re
 import sys
 import time
 from pathlib import Path
@@ -45,6 +46,11 @@ from shopify_mcp.tools.media._graphql import (
 )
 
 
+# Maximum length for staged filenames passed to Shopify. Filenames exceeding
+# this length are truncated to prevent unbounded string storage (SEC-25).
+_MAX_STAGED_FILENAME_LEN = 100
+
+
 def _format_bytes(n: Any) -> str:
     try:
         n = int(n)
@@ -58,9 +64,23 @@ def _format_bytes(n: Any) -> str:
 
 
 def _filename_from_url(url: str) -> str:
-    """Extract a filename from a URL path; fall back to a generic name."""
+    """Extract a filename from a URL path; fall back to a generic name.
+
+    Sanitizes the filename by replacing characters outside [a-zA-Z0-9._-]
+    with underscores and enforcing a maximum length (SEC-25).
+    """
+    from urllib.parse import unquote
+
     path = urlparse(url).path
     name = Path(path).name
+    # Decode percent-encoded characters (e.g., %00 → null byte).
+    name = unquote(name)
+    # Sanitize: replace characters outside whitelist with underscores.
+    name = re.sub(r"[^a-zA-Z0-9._-]+", "_", name)
+    # Strip leading/trailing underscores that may have been added from edge chars.
+    name = name.strip("_")
+    # Enforce length cap and fall back if empty.
+    name = cap(name, _MAX_STAGED_FILENAME_LEN)
     return name or "upload.bin"
 
 

@@ -1109,6 +1109,80 @@ def test_upload_redirect_to_public_host_also_refused():
     assert "other-public.example" in out
 
 
+# ---------- _filename_from_url: character sanitization and length bounds ----------
+
+
+def test_filename_from_url_sanitizes_special_characters():
+    """Characters outside [a-zA-Z0-9._-] are replaced with underscores."""
+    from shopify_mcp.tools.media._upload import _filename_from_url
+
+    # Percent-encoded null becomes underscores
+    assert _filename_from_url("https://cdn.example.com/hero%00.exe.jpg") == "hero_.exe.jpg"
+    # Non-ASCII becomes underscores
+    assert _filename_from_url("https://cdn.example.com/café.jpg") == "caf_.jpg"
+    # Spaces become underscores
+    assert _filename_from_url("https://cdn.example.com/my photo.jpg") == "my_photo.jpg"
+
+
+def test_filename_from_url_enforces_length_cap():
+    """Filename exceeding the cap is truncated to 100 chars."""
+    from shopify_mcp.tools.media._upload import _filename_from_url
+
+    # Create a filename longer than 100 chars
+    long_name = "a" * 150 + ".jpg"
+    result = _filename_from_url(f"https://cdn.example.com/{long_name}")
+    assert len(result) <= 100
+    # Should be exactly 100 (truncated at 100, even if mid-extension)
+    assert len(result) == 100
+    assert result == "a" * 100
+
+
+def test_filename_from_url_falls_back_when_sanitized_to_empty():
+    """A name that sanitizes to empty (e.g., all special chars) falls back to 'upload.bin'."""
+    from shopify_mcp.tools.media._upload import _filename_from_url
+
+    # Just special characters
+    assert _filename_from_url("https://cdn.example.com/%00%00%00") == "upload.bin"
+    # Just spaces/hyphens
+    assert _filename_from_url("https://cdn.example.com/---") == "---"  # hyphens pass through
+    # Actually empty path
+    assert _filename_from_url("https://cdn.example.com/") == "upload.bin"
+
+
+def test_filename_from_url_preserves_extension():
+    """File extension survives sanitization for MIME type guessing."""
+    from shopify_mcp.tools.media._upload import _filename_from_url
+    import mimetypes
+
+    # Sanitized filename still has guessable extension
+    result = _filename_from_url("https://cdn.example.com/my photo.jpg")
+    guessed_type, _ = mimetypes.guess_type(result)
+    assert guessed_type == "image/jpeg"
+
+    # PNG extension preserved
+    result = _filename_from_url("https://cdn.example.com/café_image.png")
+    guessed_type, _ = mimetypes.guess_type(result)
+    assert guessed_type == "image/png"
+
+
+def test_filename_from_url_passes_ordinary_filenames_unchanged():
+    """Normal filenames like 'hero-shot.jpg' are byte-identically unchanged."""
+    from shopify_mcp.tools.media._upload import _filename_from_url
+
+    assert _filename_from_url("https://cdn.example.com/hero-shot.jpg") == "hero-shot.jpg"
+    assert _filename_from_url("https://cdn.example.com/image_1.2.png") == "image_1.2.png"
+    assert _filename_from_url("https://cdn.example.com/photo.JPEG") == "photo.JPEG"
+
+
+def test_filename_from_url_with_double_extension_normalized():
+    """Double extensions like '.exe.jpg' are handled safely."""
+    from shopify_mcp.tools.media._upload import _filename_from_url
+
+    # The whole name is preserved (no extension stripping), but special chars replaced
+    result = _filename_from_url("https://cdn.example.com/file%00.exe.jpg")
+    assert result == "file_.exe.jpg"
+
+
 # ---------- helper-level coverage: _as_product_gid, _format_bytes ----------
 
 
