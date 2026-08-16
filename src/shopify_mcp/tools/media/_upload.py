@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import requests
 from mcp.server.fastmcp import FastMCP
@@ -68,8 +68,6 @@ def _filename_from_url(url: str) -> str:
     Sanitizes the filename by replacing characters outside [a-zA-Z0-9._-]
     with underscores and enforcing a maximum length (SEC-25).
     """
-    from urllib.parse import unquote
-
     path = urlparse(url).path
     name = Path(path).name
     # Decode percent-encoded characters (e.g., %00 → null byte).
