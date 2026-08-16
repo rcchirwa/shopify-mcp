@@ -30,6 +30,26 @@ Findings **L1** and **L7** from the manual MCP server security review of 2026-05
 
 ---
 
+## 2026-08-16 — Story 10.59 (SEC-25 — Whitelist staged-filename charset in _filename_from_url)
+
+**Finding L2 from 2026-05-18 manual security review.** Filenames extracted from HTTP response headers and attacker-controlled URLs were passed to Shopify's media asset storage unfiltered: percent-encoded nulls, non-ASCII characters, and other non-alphanumeric sequences passed through, landing in Shopify's stored asset names. No path traversal bug (Path.name already strips parent segments) — the gap is that whatever characters survive the path parse go straight to Shopify unvalidated.
+
+**Solution: Character whitelist sanitization.** Approach 1 from the card — regex `[^a-zA-Z0-9._-]+` → `_` to enforce alphanumeric + dotted extension chars. URL-decode percent-encoded sequences first (so `%00` → null byte → `_`). Enforce 100-char cap via named constant `_MAX_STAGED_FILENAME_LEN`, declared like `_GID_DISPLAY_MAX` and `MAX_DESC_LEN` in the codebase. Strip leading/trailing underscores (sanitization of all-junk names to empty), fall back to generic `upload.bin` if result is empty.
+
+**Why this one:** Cosmetic risk (stored filename is Shopify's to handle), but a canonical example of untrusted strings reaching a third party unfiltered — fixes a category this codebase is systematically closing (SEC-04, SEC-11, SEC-20, SEC-27). Also the cheapest remaining item from the 2026-05-18 review (one regex + one cap constant inside a 10-line pure function).
+
+**Test coverage:** 6 new tests covering percent-encoded nulls, non-ASCII, spaces, length cap, empty-name fallback, extension preservation (MIME guessing), ordinary filenames unchanged, double-extension handling. Verified MIME type guessing still resolves when content-type header is absent (the fallback path that motivated the cap's placement).
+
+**Trello: https://trello.com/c/gHPckYJr (Story 10.59, Epic 10).** PR: #138. (Merged without this ledger entry — the entry was committed locally after the PR's final push and never made it to `origin/main`; reconstructed here verbatim from the local commit during Story 10.58's merge coordination so the record isn't lost.)
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|----------------|
+| SEC-25 | ~~Filenames extracted from URLs and stored in Shopify media asset names were neither validated nor sanitized — percent-encoded nulls, non-ASCII, and other edge cases passed through~~ | Character whitelist applied via regex replacement and length cap (100 chars). URL-decoded first. Falls back to `upload.bin` when result is empty. Verified with 6 edge-case tests; extension preservation and MIME guessing validated. |
+
+---
+
 ## 2026-08-15 — Story 10.67 (SEC-27 — settle whether exception reflections are capped, and apply one rule repo-wide)
 
 **The rule, stated once so nothing has to re-derive it: exception text reflected to a *caller* is capped at `REFLECT_MAX_LEN` (300), in every tool module and at the two `client.py` constructors that build it.** The one deliberate exception is the audit log, where `tools/_log.py` applies its own larger `MAX_DESC_LEN` (4000) — a log file is not model context and has different truncation economics. Stating "300 everywhere" would be wrong for that sink, and a reader who stops at this bolded line must not be misled. `tools/_scrub.cap` is the only slicing implementation; `catalog_hygiene._cap` remains a thin 200-char wrapper for *identifiers*, which is a different class of value and is unchanged. Trello: https://trello.com/c/jFyHjFrA (Story 10.67, Epic 10).
