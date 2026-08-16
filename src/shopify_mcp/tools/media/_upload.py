@@ -45,7 +45,6 @@ from shopify_mcp.tools.media._graphql import (
     STAGED_UPLOADS_CREATE,
 )
 
-
 # Maximum length for staged filenames passed to Shopify. Filenames exceeding
 # this length are truncated to prevent unbounded string storage (SEC-25).
 _MAX_STAGED_FILENAME_LEN = 100

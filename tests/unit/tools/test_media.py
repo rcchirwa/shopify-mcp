@@ -1151,8 +1151,9 @@ def test_filename_from_url_falls_back_when_sanitized_to_empty():
 
 def test_filename_from_url_preserves_extension():
     """File extension survives sanitization for MIME type guessing."""
-    from shopify_mcp.tools.media._upload import _filename_from_url
     import mimetypes
+
+    from shopify_mcp.tools.media._upload import _filename_from_url
 
     # Sanitized filename still has guessable extension
     result = _filename_from_url("https://cdn.example.com/my photo.jpg")
