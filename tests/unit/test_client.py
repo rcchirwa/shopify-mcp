@@ -117,6 +117,48 @@ def test_execute_truncates_large_non_dict_preview():
     assert "x" * (REFLECT_MAX_LEN + 1) not in msg
 
 
+def test_execute_non_dict_preview_escapes_control_chars():
+    # Story 10.58 (SEC-24 / L7): the non-dict preview was capped by SEC-27
+    # (Story 10.67) but never routed through sanitize_control_chars, so a
+    # CR/LF-bearing upstream payload could still forge extra log-like lines
+    # wherever this exception message is logged or displayed.
+    client = _make_client(result="line1\nFAKE LOG LINE\rline2")
+    with pytest.raises(RuntimeError) as exc_info:
+        client.execute("query { __typename }")
+    msg = str(exc_info.value)
+    assert "\\n" in msg
+    assert "\\r" in msg
+    assert "\n" not in msg
+    assert "\r" not in msg
+    assert "FAKE LOG LINE" in msg  # payload preserved, just escaped
+
+
+def test_execute_non_dict_preview_sanitizes_before_capping():
+    # Sanitize-then-cap order (matching tools/_log.py::log_write) so the
+    # escaped "\\n" tokens count toward the bound and the rendered message
+    # stays within REFLECT_MAX_LEN.
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
+
+    huge = "\n" * (REFLECT_MAX_LEN + 500)
+    client = _make_client(result=huge)
+    with pytest.raises(RuntimeError) as exc_info:
+        client.execute("query { __typename }")
+    msg = str(exc_info.value)
+    preview = msg.split("): ", 1)[1]
+    assert len(preview) == REFLECT_MAX_LEN
+    assert "\n" not in preview  # only escaped \\n tokens survive
+
+
+def test_execute_non_dict_preview_leaves_ordinary_payload_unchanged():
+    # No-op regression: a short, control-character-free non-dict payload
+    # must render byte-identically to before the change.
+    client = _make_client(result="Unauthorized: missing read_products scope")
+    with pytest.raises(RuntimeError) as exc_info:
+        client.execute("query { __typename }")
+    msg = str(exc_info.value)
+    assert "Unauthorized: missing read_products scope" in msg
+
+
 # ---------- transport exception path still works (regression for 98c9bed) ----------
 
 

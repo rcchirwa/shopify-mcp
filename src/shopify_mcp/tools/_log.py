@@ -32,6 +32,18 @@ _BACKUP_COUNT = 5  # keep 5 rotated files -> 50 MB cap total
 # are unchanged, small enough that one write can't dominate a 10 MB file.
 MAX_DESC_LEN = 4000
 
+# Bound on tool_name, much smaller than MAX_DESC_LEN because this field is an
+# identifier, not caller-controlled description text — mirrors the 200-char
+# bound this codebase already uses for identifier-class values elsewhere
+# (catalog_hygiene._GID_DISPLAY_MAX). Added by review (Story 10.58 / SEC-24):
+# every current caller passes a fixed in-code literal well under this bound,
+# but that is a call-site invariant this function cannot verify — the same
+# class of unenforced assumption the deleted "always a fixed in-code literal"
+# comment relied on to (wrongly) skip sanitizing tool_name in the first place.
+# Capping removes the dependence on that invariant instead of merely trusting
+# it, matching how MAX_DESC_LEN bounds description regardless of caller.
+MAX_TOOL_NAME_LEN = 200
+
 _logger: logging.Logger | None = None
 _current_log_file: str | None = None  # raw LOG_FILE value when _logger was created
 
@@ -63,10 +75,17 @@ def _get_logger() -> logging.Logger:
 def log_write(tool_name: str, description: str) -> None:
     # Sanitize control characters — caller-supplied identifiers containing \n/\r
     # must not forge additional log lines or break line-oriented audit parsing.
-    # tool_name is always a fixed in-code literal, so it's not sanitized.
+    # Both fields go through sanitize_control_chars (Story 10.58 / SEC-24,
+    # L1): tool_name is a fixed in-code literal at every present call site,
+    # but that fact lives in each caller, not in this function's signature —
+    # a future helper that threads tool_name from a parameter would silently
+    # reopen log forging with no test failing. Sanitizing here removes the
+    # dependence on that external invariant instead of merely documenting it.
+    safe_tool_name = sanitize_control_chars(tool_name)
     safe_description = sanitize_control_chars(description)
-    # Cap after sanitization so the escaped tokens count toward the bound and
-    # the on-disk line is what stays bounded.
+    # Cap after sanitization (for both fields) so the escaped tokens count
+    # toward the bound and the on-disk line is what stays bounded.
+    safe_tool_name = cap(safe_tool_name, MAX_TOOL_NAME_LEN)
     safe_description = cap(safe_description, MAX_DESC_LEN)
     timestamp = datetime.now(tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    _get_logger().info("[%s] %s | %s", timestamp, tool_name, safe_description)
+    _get_logger().info("[%s] %s | %s", timestamp, safe_tool_name, safe_description)

@@ -276,7 +276,16 @@ class ShopifyClient:
             if not isinstance(result, dict):
                 # Surface the real payload (scope error text, HTML error page, etc.)
                 # so callers don't crash downstream with 'str' object has no attribute 'get'.
-                preview = cap_text(str(result))
+                # Sanitize before capping (Story 10.58 / SEC-24, L7) — matching
+                # tools/_log.py::log_write's order — so escaped "\n"/"\r" tokens
+                # count toward the REFLECT_MAX_LEN bound rather than the raw
+                # control characters. SEC-27 (Story 10.67) already migrated this
+                # from a hand-rolled `[:500]` slice to the shared `cap` bound at
+                # REFLECT_MAX_LEN (300); this closes the remaining half — the
+                # preview was still an unscrubbed slice with no control-character
+                # stripping, so a CR/LF-bearing upstream payload could forge
+                # extra lines wherever this exception message is logged.
+                preview = cap_text(sanitize_control_chars(str(result)))
                 raise ShopifyError(
                     f"Shopify returned non-dict response (type={type(result).__name__}): {preview}"
                 )

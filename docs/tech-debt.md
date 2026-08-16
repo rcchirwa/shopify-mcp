@@ -4,7 +4,49 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-08-15.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-08-16.
+
+---
+
+## 2026-08-16 — Story 10.58 (SEC-24 — apply the existing scrub helpers at the two sites SEC-11/SEC-12 missed)
+
+Findings **L1** and **L7** from the manual MCP server security review of 2026-05-18 (`mcp-server-security-review.md`, Remediation Progress ledger). Both are sites Story 10.39 (SEC-11, SEC-12) built helpers for and then did not apply — defense-in-depth, neither was a live defect. Trello: https://trello.com/c/b42iDBl9 (Story 10.58, Epic 10).
+
+**L1 — closed by this story, in full.** `tools/_log.py::log_write` sanitized `description` (SEC-12/SEC-20) but not `tool_name`, on the strength of an inline comment asserting `tool_name` is always a fixed in-code literal. That comment was the load-bearing (and, as of any future `gate(...)`-style helper threading `tool_name` from a parameter, false) safety argument — it is deleted, and `tool_name` now goes through the same `sanitize_control_chars` call `description` already gets, sanitize-then-cap order unchanged for `description`.
+
+**The length-cap decision (Implementation step 3) reversed after review, and the reversal is the more defensible position.** The first cut recorded "no cap needed — every caller passes a short, fixed in-code identifier". The triple-threat code-quality review (Medium) pointed out that this rationale leans on the *exact same call-site invariant* — "every caller today happens to pass a safe value" — that L1's own fix had just finished distrusting for sanitization; `_write_tool.py::write_gate` already threads `tool_name` through 15 call sites via a bare `str` parameter, all literals today but none of it enforced by a type or a test. Verified against the codebase (`grep -rn "log_name=\|log_write("`) before accepting the finding: every present call site is a fixed literal under 34 chars. The fix is cheap enough that the invariant doesn't need to be trusted at all — a new `MAX_TOOL_NAME_LEN = 200` (mirroring the 200-char bound already used for identifier-class values elsewhere in this codebase, `catalog_hygiene._GID_DISPLAY_MAX`, rather than reusing `MAX_DESC_LEN`'s much larger caller-controlled-text bound) is applied after sanitization, same order as `description`. No current caller is affected — the cap sits nearly 6x above the longest existing tool name.
+
+**L7 — was already half-closed before this story started, and this story closes the other half.** The card's own text (written before Story 10.67 landed) describes `client.py:260` as a hand-rolled `str(result)[:500]` slice with no control-character stripping. By the time this story began, Story 10.67 (SEC-27, merged as PR #137, commit cbae8f1/5cd46a0) had already migrated that exact line to `cap_text(str(result))` — replacing the hand-rolled slice with the shared `tools/_scrub.cap` bound at `REFLECT_MAX_LEN` (300), as part of a repo-wide capping sweep unrelated to this card. That closed the *length-capping* half of L7 and pre-empted this card's own grooming question (300 vs. 500 — 300 already won, for the reason recorded in SEC-27's entry below: consistency with every other reflection site). It did **not** add `sanitize_control_chars` — SEC-27's scope was capping, not CR/LF escaping, and `client.py` still imports `sanitize_control_chars` and uses it elsewhere (the retry-warning `label` at line 378) without applying it to this preview. This story adds the missing call: `preview = cap_text(sanitize_control_chars(str(result)))`, sanitizing before capping so escaped `\n`/`\r` tokens count toward the 300-char bound, matching `log_write`'s order. **Recorded precisely so the ledger isn't misread either direction: SEC-27 did not close L7 outright, and this story did not do the length-capping work — each closed exactly one half.**
+
+**No second slicing or escaping implementation introduced.** Both sites route through the existing `tools/_scrub.py` helpers (`cap` from SEC-11, `sanitize_control_chars` from SEC-20); `client.py`'s import of `tools/_scrub` is the pre-existing, documented A6 client→tools-leaf exception, so no new layering edge was added — `tests/architecture/test_layering.py` passes unmodified.
+
+**Tests.** `tests/unit/tools/test_log.py` gains `\n`/`\r`-in-`tool_name` regression tests (single audit line, escaped tokens, payload preserved), a no-op regression pinning an ordinary literal `tool_name` unchanged, and — from the review fix — an oversized-`tool_name` cap test plus a sanitize-then-cap ordering test mirroring `description`'s pair; the pre-existing `description` tests are untouched. `tests/unit/test_client.py` gains a control-character-in-non-dict-payload test (escaped tokens present, no raw `\n`/`\r` in the raised message), a sanitize-then-cap ordering test (an all-newline payload still renders at exactly `REFLECT_MAX_LEN` chars post-escaping), and a no-op regression for a short, control-character-free payload; the pre-existing `test_execute_truncates_large_non_dict_preview` (added by SEC-27) is untouched. Full gate chain green, coverage 100%.
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|----------------|
+| SEC-24 | ~~`tools/_log.py::log_write`'s `tool_name` argument (L1) and `client.py:260`'s non-dict-response preview (L7) were the two sites Story 10.39 (SEC-11, SEC-12) built `cap`/`sanitize_control_chars` for and never applied~~ | L1: `tool_name` now routed through `sanitize_control_chars` alongside `description`; the now-false "always a fixed in-code literal" comment deleted. A first-cut decision to skip a length cap on `tool_name` was reversed after triple-threat review flagged it as leaning on the same unenforced call-site invariant L1's own sanitization fix had just distrusted — `tool_name` now also gets a `MAX_TOOL_NAME_LEN = 200` cap (identifier-class bound, not `description`'s much larger `MAX_DESC_LEN`), applied after sanitization. L7: SEC-27 (Story 10.67, merged before this story started) had already migrated the hand-rolled `[:500]` slice to the shared `cap` bound at `REFLECT_MAX_LEN` (300); this story adds the missing `sanitize_control_chars` call, sanitizing before capping. No second scrub implementation introduced; `tests/architecture/test_layering.py` passes unmodified. New tests in `tests/unit/tools/test_log.py` and `tests/unit/test_client.py`, each watched fail first. |
+
+---
+
+## 2026-08-16 — Story 10.59 (SEC-25 — Whitelist staged-filename charset in _filename_from_url)
+
+**Finding L2 from 2026-05-18 manual security review.** Filenames extracted from HTTP response headers and attacker-controlled URLs were passed to Shopify's media asset storage unfiltered: percent-encoded nulls, non-ASCII characters, and other non-alphanumeric sequences passed through, landing in Shopify's stored asset names. No path traversal bug (Path.name already strips parent segments) — the gap is that whatever characters survive the path parse go straight to Shopify unvalidated.
+
+**Solution: Character whitelist sanitization.** Approach 1 from the card — regex `[^a-zA-Z0-9._-]+` → `_` to enforce alphanumeric + dotted extension chars. URL-decode percent-encoded sequences first (so `%00` → null byte → `_`). Enforce 100-char cap via named constant `_MAX_STAGED_FILENAME_LEN`, declared like `_GID_DISPLAY_MAX` and `MAX_DESC_LEN` in the codebase. Strip leading/trailing underscores (sanitization of all-junk names to empty), fall back to generic `upload.bin` if result is empty.
+
+**Why this one:** Cosmetic risk (stored filename is Shopify's to handle), but a canonical example of untrusted strings reaching a third party unfiltered — fixes a category this codebase is systematically closing (SEC-04, SEC-11, SEC-20, SEC-27). Also the cheapest remaining item from the 2026-05-18 review (one regex + one cap constant inside a 10-line pure function).
+
+**Test coverage:** 6 new tests covering percent-encoded nulls, non-ASCII, spaces, length cap, empty-name fallback, extension preservation (MIME guessing), ordinary filenames unchanged, double-extension handling. Verified MIME type guessing still resolves when content-type header is absent (the fallback path that motivated the cap's placement).
+
+**Trello: https://trello.com/c/gHPckYJr (Story 10.59, Epic 10).** PR: #138. (Merged without this ledger entry — the entry was committed locally after the PR's final push and never made it to `origin/main`; reconstructed here verbatim from the local commit during Story 10.58's merge coordination so the record isn't lost.)
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|----------------|
+| SEC-25 | ~~Filenames extracted from URLs and stored in Shopify media asset names were neither validated nor sanitized — percent-encoded nulls, non-ASCII, and other edge cases passed through~~ | Character whitelist applied via regex replacement and length cap (100 chars). URL-decoded first. Falls back to `upload.bin` when result is empty. Verified with 6 edge-case tests; extension preservation and MIME guessing validated. |
 
 ---
 
