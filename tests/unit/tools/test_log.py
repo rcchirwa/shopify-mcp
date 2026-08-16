@@ -130,6 +130,30 @@ def test_log_write_caps_after_crlf_sanitization(tmp_log):
     assert "\n" not in desc  # only escaped \\n tokens survive, no raw newlines
 
 
+def test_log_write_caps_oversized_tool_name(tmp_log):
+    # Review fix (Story 10.58 / SEC-24 code-quality finding): tool_name is
+    # capped rather than relying solely on the call-site invariant that every
+    # caller today passes a short literal — the same class of unenforced
+    # assumption the deleted "always a fixed in-code literal" comment relied
+    # on to (wrongly) skip sanitization.
+    huge = "T" * (_log.MAX_TOOL_NAME_LEN + 500)
+    _log.log_write(huge, "d")
+    contents = _read(tmp_log)
+    name = contents.split("] ", 1)[1].split(" | ", 1)[0]
+    assert len(name) == _log.MAX_TOOL_NAME_LEN
+
+
+def test_log_write_caps_tool_name_after_crlf_sanitization(tmp_log):
+    # Sanitize-then-cap order, matching description's handling: escaped
+    # "\\n" tokens count toward the bound.
+    huge = "\n" * (_log.MAX_TOOL_NAME_LEN + 500)
+    _log.log_write(huge, "d")
+    contents = _read(tmp_log)
+    name = contents.split("] ", 1)[1].split(" | ", 1)[0]
+    assert len(name) == _log.MAX_TOOL_NAME_LEN
+    assert "\n" not in name  # only escaped \\n tokens survive, no raw newlines
+
+
 def test_rotating_handler_is_configured(tmp_log):
     _log.log_write("t", "init")  # trigger lazy-init
     assert len(_log._logger.handlers) == 1
