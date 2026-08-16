@@ -313,3 +313,23 @@ def test_html_strip_report_detects_stripped_tag_among_duplicate_tags():
     payload = "<p>a</p><style>body{color:red}</style><p>b</p>"
     report = html_strip_report(payload)
     assert any("style" in item for item in report)
+
+
+# ---------- description warning block formatter (Story 10.60) ----------
+
+
+def test_format_description_warning_block_with_findings():
+    """format_description_warning_block renders the block when findings exist."""
+    findings = ["<script", "javascript:"]
+    block = _filters.format_description_warning_block(findings)
+    assert "\n\n⚠ DANGEROUS HTML DETECTED in new description:\n" in block
+    assert "  • '<script'" in block
+    assert "  • 'javascript:'" in block
+    assert "\nStorefront themes render descriptionHtml without escaping." in block
+
+
+def test_format_description_warning_block_empty_findings():
+    """format_description_warning_block returns empty string when findings list is empty."""
+    findings: list[str] = []
+    block = _filters.format_description_warning_block(findings)
+    assert block == ""

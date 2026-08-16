@@ -21,6 +21,7 @@ from shopify_mcp.shopify.queries.collections import (
     UPDATE_COLLECTION,
 )
 from shopify_mcp.tools._filters import (
+    format_description_warning_block,
     format_strip_block,
     html_safety_findings,
     html_strip_report,
@@ -133,15 +134,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             raw_old = col.get("descriptionHtml") or ""
             old_desc_excerpt = raw_old[:80] + ("..." if len(raw_old) > 80 else "")
             danger = html_safety_findings(new_description)
-            warning_suffix = (
-                (
-                    "\n\n⚠ DANGEROUS HTML DETECTED in new description:\n"
-                    + "\n".join(f"  • {p!r}" for p in danger)
-                    + "\nStorefront themes render descriptionHtml without escaping."
-                )
-                if danger
-                else ""
-            )
+            warning_suffix = format_description_warning_block(danger)
             stripped = html_strip_report(new_description, sanitized_description)
             strip_suffix = format_strip_block(stripped)
             preview_lines.append(
