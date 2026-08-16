@@ -35,6 +35,7 @@ from shopify_mcp.shopify.queries.products import (
 )
 from shopify_mcp.tools._filters import (
     filter_variant_targets,
+    format_description_warning_block,
     format_strip_block,
     html_safety_findings,
     html_strip_report,
@@ -199,15 +200,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         old_desc = product.get("bodyHtml", "")
 
         danger = html_safety_findings(new_description)
-        warning_block = (
-            (
-                "\n\n⚠ DANGEROUS HTML DETECTED in new description:\n"
-                + "\n".join(f"  • {p!r}" for p in danger)
-                + "\nStorefront themes render descriptionHtml without escaping."
-            )
-            if danger
-            else ""
-        )
+        warning_block = format_description_warning_block(danger)
 
         sanitized_description = sanitize_html(new_description)
         stripped = html_strip_report(new_description, sanitized_description)
@@ -276,6 +269,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             new_seo_description or ""
         )
         if seo_danger:
+            # SEO warning intentionally kept in inline, comma-joined format (not the
+            # block format used by update_product_description / update_collection).
+            # It appends to a Warnings: list rather than standing alone, and the
+            # <head> caveat is genuinely different from the storefront one.
+            # (Story 10.60 / SEC-M2-collection-seo: approach 1)
             warnings.append(
                 "⚠ DANGEROUS HTML pattern detected in SEO field(s): "
                 + ", ".join(repr(p) for p in seo_danger)

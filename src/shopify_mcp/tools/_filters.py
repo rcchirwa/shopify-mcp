@@ -351,6 +351,21 @@ def format_strip_block(stripped: list[str]) -> str:
     )
 
 
+def format_description_warning_block(findings: list[str]) -> str:
+    """Render the dangerous-HTML warning block for description fields — shared
+    by ``update_product_description`` and ``update_collection`` so the wording
+    and format can't drift out of sync between them. Returns "" when no findings.
+    (Story 10.60 / SEC-M2-collection-seo)
+    """
+    if not findings:
+        return ""
+    return (
+        "\n\n⚠ DANGEROUS HTML DETECTED in new description:\n"
+        + "\n".join(f"  • {p!r}" for p in findings)
+        + "\nStorefront themes render descriptionHtml without escaping."
+    )
+
+
 def filter_variant_targets(
     variant_ids: list[str] | None,
     variants: list[dict[str, Any]] | None,
