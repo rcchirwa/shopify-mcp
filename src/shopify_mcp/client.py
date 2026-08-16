@@ -14,7 +14,11 @@ from typing import Any, TypeVar
 import requests
 from dotenv import load_dotenv
 from gql import Client, gql
-from gql.transport.exceptions import TransportQueryError, TransportServerError
+from gql.transport.exceptions import (
+    TransportProtocolError,
+    TransportQueryError,
+    TransportServerError,
+)
 from gql.transport.requests import RequestsHTTPTransport
 
 from shopify_mcp.logging_config import configure_logging
@@ -26,6 +30,10 @@ from shopify_mcp.shopify._cache import ShopifyMetadataCache
 # leaf modules (tools/_http, tools/_url_safety import nothing from here), so
 # this does not create an import cycle.
 from shopify_mcp.tools._http import default_headers
+
+# Aliased: `_backoff_delay` takes a float parameter named `cap`, so importing
+# the bound-text helper under its bare name would shadow it there.
+from shopify_mcp.tools._scrub import cap as cap_text
 from shopify_mcp.tools._scrub import sanitize_control_chars
 from shopify_mcp.tools._url_safety import _reject_if_private_host
 
@@ -123,7 +131,7 @@ def _is_throttled(errors: Any) -> bool:
             msg = err.get("message") or ""
             if isinstance(msg, str) and "THROTTLED" in msg:
                 return True
-        elif "THROTTLED" in (err if isinstance(err, str) else str(err)):
+        elif "THROTTLED" in (err if isinstance(err, str) else str(err)):  # reflect-ok: predicate
             return True
     return False
 
@@ -136,7 +144,7 @@ def _is_retryable_http(exc: TransportServerError) -> bool:
     gql 4.0 has no structured status attribute, so string matching is
     unavoidable; \b ensures "v503" or "503abc" are not treated as status codes.
     """
-    return bool(_RETRYABLE_HTTP_RE.search(str(exc)))
+    return bool(_RETRYABLE_HTTP_RE.search(str(exc)))  # reflect-ok: predicate
 
 
 def _human_bytes(n: int) -> str:
@@ -231,7 +239,9 @@ class ShopifyClient:
                     logger.warning("retryable %s attempt=%d sleep=%.2fs", label, attempt, delay)
                     time.sleep(delay)
                     continue
-                raise TransientShopifyError(f"{e} after {attempt + 1} attempts") from e
+                raise TransientShopifyError(
+                    f"{cap_text(str(e))} after {attempt + 1} attempts"
+                ) from e
         raise TransientShopifyError(f"{label} retry loop exhausted")  # pragma: no cover
 
     def execute(self, query_str: str, variables: dict | None = None) -> dict:
@@ -251,13 +261,22 @@ class ShopifyClient:
                 raise ShopifyError(f"Shopify GraphQL error: {_format_errors(e.errors)}") from e
             except TransportServerError as e:
                 if _is_retryable_http(e):
-                    raise TransientShopifyError(f"Shopify HTTP error: {e!s}") from e
-                raise ShopifyError(f"Shopify HTTP error: {e!s}") from e
+                    raise TransientShopifyError(f"Shopify HTTP error: {cap_text(str(e))}") from e
+                raise ShopifyError(f"Shopify HTTP error: {cap_text(str(e))}") from e
+            except TransportProtocolError as e:
+                # gql raises this when Shopify returns something that is not a
+                # GraphQL result — an HTML error page, a WAF interstitial, a
+                # 200 with garbage — and it embeds the **entire raw response
+                # body** in the message. It bypassed `_format_errors` entirely,
+                # so it was the single largest remaining path for unbounded
+                # upstream text to reach model context. Bounded here, at the
+                # only place that sees it. (Story 10.67 / SEC-27, round 2.)
+                raise ShopifyError(f"Shopify protocol error: {cap_text(str(e))}") from e
 
             if not isinstance(result, dict):
                 # Surface the real payload (scope error text, HTML error page, etc.)
                 # so callers don't crash downstream with 'str' object has no attribute 'get'.
-                preview = str(result)[:500]
+                preview = cap_text(str(result))
                 raise ShopifyError(
                     f"Shopify returned non-dict response (type={type(result).__name__}): {preview}"
                 )
@@ -313,14 +332,14 @@ class ShopifyClient:
                 # A transport error (DNS, connection reset, read timeout) is
                 # treated as permanent here — mirrors execute(), which only
                 # retries on parsed transient statuses, not raw socket errors.
-                raise ShopifyError(f"request failed: {e}") from e
+                raise ShopifyError(f"request failed: {cap_text(str(e))}") from e
 
             status = resp.status_code
             # `allow_redirects=False` makes a 3xx a terminal response. Refuse it:
             # following a redirect would re-issue the request to the Location
             # host without re-running the SSRF guard, re-opening the bypass.
             if 300 <= status < 400:
-                location = resp.headers.get("Location", "(no Location header)")
+                location = cap_text(resp.headers.get("Location", "(no Location header)"))
                 raise ShopifyError(
                     f"HTTP {status} redirect to {location} — refused; redirects can "
                     f"bypass the SSRF guard. Supply the final URL directly."
@@ -447,7 +466,11 @@ def poll_job(
             # Reset done on failure so a stale True from a prior iteration
             # can't combine with a later failed poll to misreport success.
             last_done = False
-            last_error = str(e)
+            # Capped at the source (Story 10.67 / SEC-27): this string is
+            # returned as the job result's "error" and reflected verbatim by
+            # `tools/collections.py`, which is how an unbounded body survived
+            # the first pass of this story's sweep.
+            last_error = cap_text(str(e))
 
         elapsed = time.monotonic() - start
         if last_done:
@@ -477,6 +500,21 @@ def poll_job(
         attempt += 1
 
 
+def _bound(text: str) -> str:
+    """Bound upstream text and say so when something was dropped.
+
+    Story 10.67 (SEC-27). `cap_text` truncates silently, which is fine for a
+    single identifier but not here: `_format_errors` joins multiple Shopify
+    errors with "; ", so a silent cut can delete the 2nd and 3rd messages
+    entirely — and an access-denied or missing-scope error is not always first.
+    The marker means a reader can tell "Shopify said one thing" from "Shopify
+    said three things and you are seeing one". Still `_scrub.cap` underneath;
+    this adds a suffix, it does not introduce a second slicing implementation.
+    """
+    bounded = cap_text(text)
+    return bounded if bounded == text else f"{bounded} …[truncated]"
+
+
 def _format_errors(errors: Any) -> str:
     # `TransportQueryError.errors` is typed Optional[List[Any]] in gql 4.0 — in
     # practice it can be a list of dicts, a list of GraphQLError objects, a
@@ -487,15 +525,22 @@ def _format_errors(errors: Any) -> str:
     if errors is None:
         return "(no error details)"
     if isinstance(errors, str):
-        return errors
+        return _bound(errors)
     if not isinstance(errors, list):
-        return str(errors)
-    return "; ".join(_format_one_error(err) for err in errors)
+        return _bound(str(errors))
+    # Story 10.67 (SEC-27) bounds the join. This is the constructor for the
+    # message every ShopifyError carries, and it concatenates arbitrary upstream
+    # text — so it is the actual unbounded source, not the call sites that echo
+    # it. Capping here means a consumer that forgets to cap (as
+    # `tools/collections.py` did, via poll_job) cannot leak an unbounded body.
+    # The call sites still cap; this is the backstop that makes enumerating
+    # them unnecessary for safety.
+    return _bound("; ".join(_format_one_error(err) for err in errors))
 
 
 def _format_one_error(err: Any) -> str:
     if isinstance(err, dict):
-        return err.get("message") or str(err)
+        return err.get("message") or str(err)  # reflect-ok: capped by _format_errors
     if isinstance(err, str):
         return err
-    return str(err)
+    return str(err)  # reflect-ok: capped by _format_errors

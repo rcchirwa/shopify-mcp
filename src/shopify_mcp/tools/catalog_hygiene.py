@@ -377,7 +377,7 @@ def _handle_append_failure_after_detach(
             ]
             rollback_ok = not rollback_errors
         except Exception as exc:
-            rollback_errors = [{"message": f"rollback raised: {exc}"}]
+            rollback_errors = [{"message": f"rollback raised: {cap(str(exc))}"}]
 
     head = f"Error: append failed after detach — {_format_user_errors(real_errors)}"
     return _render(
@@ -1132,7 +1132,7 @@ def _resolve_product_gid(
     try:
         gid, _snapshot = _resolve_product(client, product_id, handle=handle)
     except ValueError as e:
-        msg = str(e)
+        msg = cap(str(e))
         # `_resolve_product`'s empty-input message lacks this function's
         # original trailing period; every other validation message already
         # matches verbatim.
@@ -1140,7 +1140,7 @@ def _resolve_product_gid(
             return None, "product_id must be a non-empty string."
         return None, msg
     except Exception as e:
-        return None, f"Handle lookup failed ({type(e).__name__}): {e}"
+        return None, f"Handle lookup failed ({type(e).__name__}): {cap(str(e))}"
     if gid is None:
         # Report whichever identifier the caller actually supplied, using the
         # same stripped/isinstance predicate `_resolve_product` picks its
@@ -1197,7 +1197,7 @@ def _resolve_taxonomy_category(
     try:
         data = ops.search_taxonomy_categories(client, stripped)
     except Exception as e:
-        return None, [], f"Taxonomy search failed ({type(e).__name__}): {e}"
+        return None, [], f"Taxonomy search failed ({type(e).__name__}): {cap(str(e))}"
     nodes = ((data or {}).get("taxonomy") or {}).get("categories", {}).get("nodes") or []
     candidates = list(nodes)
     if not candidates:
@@ -1662,14 +1662,32 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             entries = _normalize_entries(variants)
         except ValueError as exc:
-            return _render(f"Error: {exc}", _err_payload(str(exc)))
+            return _render(f"Error: {cap(str(exc))}", _err_payload(cap(str(exc))))
 
         product_gid = to_gid("Product", product_id)
 
         # ---- Read existing pricing state (one round-trip) ---------------
         # Wide read pulls id+sku+price+compareAtPrice in one call. The same
         # variants list feeds both SKU resolution and the old→new preview.
-        data = ops.read_variants_for_pricing(client, product_gid)
+        #
+        # Story 10.67 (SEC-27) added the guard. An unguarded ops call lets the
+        # raw exception escape to FastMCP, which renders it uncapped — bypassing
+        # every reflection cap in this module. Capping the two local-validation
+        # sites above while leaving this open would have been a half-fix.
+        # Deliberate contract change: this tool now returns a structured error
+        # where it previously raised, matching every sibling.
+        #
+        # An earlier revision of this comment called it "the only product read
+        # in the module not wrapped". That was wrong — the round-2 review found
+        # three unguarded `ops.*` calls, two of them in
+        # `update_variant_image_binding`. `test_s1067_every_ops_call_in_
+        # catalog_hygiene_is_exception_guarded` now walks the AST so the claim
+        # is enforced rather than asserted; don't restate it in prose here.
+        try:
+            data = ops.read_variants_for_pricing(client, product_gid)
+        except Exception as exc:
+            msg = f"Error reading variants ({type(exc).__name__}): {cap(str(exc))}"
+            return _render(msg, _err_payload(cap(str(exc))))
         product = (data or {}).get("product")
         if not product:
             msg = f"No product found with id {product_id}."
@@ -1693,7 +1711,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 product_gid=product_gid,
             )
         except ValueError as exc:
-            return _render(f"Error: {exc}", _err_payload(str(exc)))
+            return _render(f"Error: {cap(str(exc))}", _err_payload(cap(str(exc))))
 
         # Two different raw inputs can resolve to the same variant (e.g.,
         # "201" and "SKU-A" if SKU-A's variant is 201). _normalize_entries
@@ -1816,7 +1834,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 cap_intent_by_gid[gid] = entry["compareAtPrice"]  # value or None
             variants_input.append(payload)
 
-        result = ops.update_variants_pricing(client, product_gid, variants_input)
+        # Guarded for the same reason as the read above (Story 10.67 / SEC-27):
+        # an unguarded ops call lets the raw exception escape to FastMCP, which
+        # renders it uncapped — bypassing every reflection cap in this module.
+        try:
+            result = ops.update_variants_pricing(client, product_gid, variants_input)
+        except Exception as exc:
+            msg = f"Error calling productVariantsBulkUpdate ({type(exc).__name__}): {cap(str(exc))}"
+            return _render(msg, _err_payload(cap(str(exc))))
 
         user_errors = extract_user_errors(result, "productVariantsBulkUpdate")
         if user_errors:
@@ -1984,12 +2009,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         except Exception as e:
             return _format_payload(
                 f"Error — update_product_category\n"
-                f"  Failed to read current product ({type(e).__name__}): {e}",
+                f"  Failed to read current product ({type(e).__name__}): {cap(str(e))}",
                 _build_payload(
                     ok=False,
                     product=None,
                     alternates=alternates,
-                    errors=[{"message": str(e), "stage": "product-read"}],
+                    errors=[{"message": cap(str(e)), "stage": "product-read"}],
                     preview=not confirm,
                 ),
                 confirm_hint=False,
@@ -2069,12 +2094,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             result = ops.update_product_category(client, product_gid, target_category_gid)
         except Exception as e:
             return _format_payload(
-                f"Error — update_product_category\n  Mutation failed ({type(e).__name__}): {e}",
+                f"Error — update_product_category\n  Mutation failed ({type(e).__name__}): {cap(str(e))}",
                 _build_payload(
                     ok=False,
                     product=None,
                     alternates=alternates,
-                    errors=[{"message": str(e), "stage": "product-update"}],
+                    errors=[{"message": cap(str(e)), "stage": "product-update"}],
                     preview=False,
                 ),
                 confirm_hint=False,
@@ -2175,13 +2200,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 query_by_handle=GET_PRODUCT_VENDOR_BY_HANDLE,
             )
         except Exception as exc:
-            msg = f"Error resolving product_id ({type(exc).__name__}): {exc}"
+            msg = f"Error resolving product_id ({type(exc).__name__}): {cap(str(exc))}"
             return f"{msg}\n\n" + _format_vendor_payload(
                 product_gid="",
                 vendor=new_vendor,
                 ok=False,
                 preview=False,
-                errors=[{"message": str(exc), "stage": "product-resolve"}],
+                errors=[{"message": cap(str(exc)), "stage": "product-resolve"}],
             )
 
         if not product_gid:
@@ -2248,13 +2273,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             result = ops.update_product_vendor(client, product_gid, new_vendor)
         except Exception as exc:
-            msg = f"Error calling productUpdate ({type(exc).__name__}): {exc}"
+            msg = f"Error calling productUpdate ({type(exc).__name__}): {cap(str(exc))}"
             return f"{msg}\n\n" + _format_vendor_payload(
                 product_gid=product_gid,
                 vendor=new_vendor,
                 ok=False,
                 preview=False,
-                errors=[{"message": str(exc), "stage": "product-update"}],
+                errors=[{"message": cap(str(exc)), "stage": "product-update"}],
             )
 
         vendor_user_errors = extract_user_errors(result, "productUpdate")
@@ -2366,13 +2391,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 query_by_handle=GET_PRODUCT_TYPE_BY_HANDLE,
             )
         except Exception as exc:
-            msg = f"Error resolving product_id ({type(exc).__name__}): {exc}"
+            msg = f"Error resolving product_id ({type(exc).__name__}): {cap(str(exc))}"
             return f"{msg}\n\n" + _format_type_payload(
                 product_gid="",
                 product_type=new_type,
                 ok=False,
                 preview=False,
-                errors=[{"message": str(exc), "stage": "product-resolve"}],
+                errors=[{"message": cap(str(exc)), "stage": "product-resolve"}],
             )
 
         if not product_gid:
@@ -2440,13 +2465,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             result = ops.update_product_type(client, product_gid, new_type)
         except Exception as exc:
-            msg = f"Error calling productUpdate ({type(exc).__name__}): {exc}"
+            msg = f"Error calling productUpdate ({type(exc).__name__}): {cap(str(exc))}"
             return f"{msg}\n\n" + _format_type_payload(
                 product_gid=product_gid,
                 product_type=new_type,
                 ok=False,
                 preview=False,
-                errors=[{"message": str(exc), "stage": "product-update"}],
+                errors=[{"message": cap(str(exc)), "stage": "product-update"}],
             )
 
         type_user_errors = extract_user_errors(result, "productUpdate")
@@ -2583,8 +2608,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         pid_arg, handle_arg, product_ref = _identifier_channel(product_id, handle)
         gid, resolve_err = _resolve_product_gid(client, pid_arg, handle=handle_arg)
         if resolve_err or not gid:
+            # `err` is already a bounded message from `_resolve_product_gid`
+            # (it caps the exception it embeds), so it is reflected as-is in
+            # BOTH halves. The first cut of Story 10.67 capped only the head,
+            # which re-truncated an already-capped string — dropping the tail of
+            # genuine text — while leaving the JSON tail unbounded. Bind once
+            # and use it twice so the two halves cannot diverge again.
             err = resolve_err or "product_id could not be resolved."
-            return _render(f"Error: {err}", _err_payload(err))
+            return _render(f"Error: {err}", _err_payload(err))  # reflect-ok: producer-bounded
 
         # Step 3 — fetch product media + per-variant bound media. The combined
         # query already pulls every variant's id + sku, so we feed that list
@@ -2632,8 +2663,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 _has_next_media = bool(_page_info.get("hasNextPage")) and bool(_media_cursor)
         except Exception as exc:
             return _render(
-                f"Error calling Shopify ({type(exc).__name__}): {exc}",
-                _err_payload(str(exc)),
+                f"Error calling Shopify ({type(exc).__name__}): {cap(str(exc))}",
+                _err_payload(cap(str(exc))),
             )
 
         title = product.get("title", "")
@@ -2659,7 +2690,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 product_gid=gid,
             )
         except ValueError as exc:
-            return _render(f"Error: {exc}", _err_payload(str(exc)))
+            return _render(f"Error: {cap(str(exc))}", _err_payload(cap(str(exc))))
 
         # Step 3b — reject resolved variant GIDs that don't belong to this product.
         # resolve_variant_ids_with_variants short-circuits numeric/GID inputs
@@ -2870,7 +2901,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # Step 9b — DETACH first. HALT on any userError; do NOT proceed to append.
         detached_variant_gids: list[str] = []
         if detach_entries:
-            detach_result = ops.detach_variant_media(client, gid, detach_entries)
+            # Guarded per Story 10.67 (SEC-27). The rollback path below already
+            # wrapped its own ops call, so leaving these two bare made the guard
+            # inconsistent inside a single flow.
+            try:
+                detach_result = ops.detach_variant_media(client, gid, detach_entries)
+            except Exception as exc:
+                msg = f"Error calling productVariantDetachMedia ({type(exc).__name__}): {cap(str(exc))}"
+                return _render(msg, _err_payload(cap(str(exc))))
             detach_errors = extract_user_errors(detach_result, "productVariantDetachMedia")
             if detach_errors:
                 msgs = _format_user_errors(detach_errors)
@@ -2884,7 +2922,38 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # All entries are batched into a single mutation call.
         append_result: dict[str, Any] = {}
         if append_entries:
-            append_result = ops.append_variant_media(client, gid, append_entries)
+            try:
+                append_result = ops.append_variant_media(client, gid, append_entries)
+            except Exception as exc:
+                # A transport failure here is the SAME situation as a userError
+                # failure below, and must take the same exit. If detach already
+                # succeeded, the affected variants are in the Section 5.4
+                # zero-media state, so returning a plain bounded error would
+                # skip the rollback attempt AND drop `appendFailedAfterDetach` /
+                # `zeroMediaVariants` / `rollbackAttempted` from the tail —
+                # leaving media destructively unbound with nothing telling the
+                # caller. The exception is reshaped into the userError form the
+                # handler already consumes, capped like every other reflection.
+                append_exc_errors = [
+                    {
+                        "message": (
+                            f"productVariantAppendMedia failed "
+                            f"({type(exc).__name__}): {cap(str(exc))}"
+                        )
+                    }
+                ]
+                if detached_variant_gids:
+                    return _handle_append_failure_after_detach(
+                        real_errors=append_exc_errors,
+                        detached_variant_gids=detached_variant_gids,
+                        routes=routes,
+                        product_gid=gid,
+                        client=client,
+                    )
+                # Append-only path: nothing was detached, so there is no
+                # rollback to attempt and no destructive state to disclose.
+                msg = f"Error calling productVariantAppendMedia ({type(exc).__name__}): {cap(str(exc))}"
+                return _render(msg, _err_payload(cap(str(exc))))
             raw_errors = extract_user_errors(append_result, "productVariantAppendMedia")
             real_errors = [
                 e for e in raw_errors if not _is_already_bound_error(e.get("message") or "")
@@ -3086,8 +3155,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             result = ops.set_metafields(client, mutation_input)
         except Exception as exc:
-            msg = f"Error calling metafieldsSet ({type(exc).__name__}): {exc}"
-            return _render(msg, _err_payload(str(exc), key="metafields"))
+            msg = f"Error calling metafieldsSet ({type(exc).__name__}): {cap(str(exc))}"
+            return _render(msg, _err_payload(cap(str(exc)), key="metafields"))
 
         user_errors = extract_user_errors(result, "metafieldsSet")
 
@@ -3305,7 +3374,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 continue
             owner_gid, owner_type, err = _resolve_owner_gid_for_metafield(client, entry["ownerId"])
             if err:
-                msg = f"Error resolving metafields[{idx}]: {err}"
+                # Same head/tail binding as the resolve site above: `err` is
+                # already bounded by its producer, so both halves reflect the
+                # identical string rather than one capped and one raw.
+                msg = f"Error resolving metafields[{idx}]: {err}"  # reflect-ok: producer-bounded
                 return _render(msg, _err_payload(err, key="deleted"))
             classified.append(
                 {
@@ -3327,8 +3399,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             batch_data = ops.resolve_metafields_batch(client, classified)
         except Exception as exc:
-            msg = f"Error resolving metafields ({type(exc).__name__}): {exc}"
-            return _render(msg, _err_payload(str(exc), key="deleted"))
+            msg = f"Error resolving metafields ({type(exc).__name__}): {cap(str(exc))}"
+            return _render(msg, _err_payload(cap(str(exc)), key="deleted"))
 
         # ---- Phase 2c: parse the batched response into per-entry resolved
         # records. NOT_FOUND in either addressing mode is treated as
@@ -3477,8 +3549,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             try:
                 result = ops.delete_metafields(client, mutation_input)
             except Exception as exc:
-                msg = f"Error calling metafieldsDelete ({type(exc).__name__}): {exc}"
-                return _render(msg, _err_payload(str(exc), key="deleted"))
+                msg = f"Error calling metafieldsDelete ({type(exc).__name__}): {cap(str(exc))}"
+                return _render(msg, _err_payload(cap(str(exc)), key="deleted"))
             user_errors = extract_user_errors(result, "metafieldsDelete")
 
         # ---- Map Shopify userErrors back to original entry index --------
@@ -3773,8 +3845,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                     else:
                         fetch_variants = False
         except Exception as exc:
-            msg = f"Error calling Shopify ({type(exc).__name__}): {exc}"
-            return _render(msg, _err_payload(str(exc), key="metafields"))
+            msg = f"Error calling Shopify ({type(exc).__name__}): {cap(str(exc))}"
+            return _render(msg, _err_payload(cap(str(exc)), key="metafields"))
 
         # ---- Phase 4 — format response ----------------------------------
         # `product_node` is guaranteed non-empty here — the loop returns
@@ -3944,12 +4016,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 query_by_handle=GET_PRODUCT_OPTIONS_BY_HANDLE,
             )
         except Exception as exc:
-            msg = f"Error resolving product_id ({type(exc).__name__}): {exc}"
+            msg = f"Error resolving product_id ({type(exc).__name__}): {cap(str(exc))}"
             return f"{msg}\n\n" + _format_options_payload(
                 product_snapshot=_shape_options_snapshot(None),
                 ok=False,
                 preview=False,
-                errors=[{"message": str(exc), "stage": "product-resolve"}],
+                errors=[{"message": cap(str(exc)), "stage": "product-resolve"}],
             )
 
         if not product_gid:
@@ -4149,12 +4221,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 normalized["variant_strategy"],
             )
         except Exception as exc:
-            msg = f"Error calling productOptionUpdate ({type(exc).__name__}): {exc}"
+            msg = f"Error calling productOptionUpdate ({type(exc).__name__}): {cap(str(exc))}"
             return f"{msg}\n\n" + _format_options_payload(
                 product_snapshot=_shape_options_snapshot(product),
                 ok=False,
                 preview=False,
-                errors=[{"message": str(exc), "stage": "option-update"}],
+                errors=[{"message": cap(str(exc)), "stage": "option-update"}],
             )
 
         user_errors = extract_user_errors(result, "productOptionUpdate")

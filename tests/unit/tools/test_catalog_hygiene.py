@@ -20,6 +20,7 @@ Usage:
 """
 
 import json
+import pathlib
 import re
 from typing import Any
 
@@ -9240,3 +9241,370 @@ def test_s1065_no_product_resolving_mutator_has_an_empty_required_list():
     ):
         required = func_metadata(tools[tool_name]).arg_model.model_json_schema().get("required")
         assert required, f"{tool_name} has no required parameter in its generated schema"
+
+
+# ---------- Story 10.67 (SEC-27): exception reflections are capped ----------
+#
+# The repo held two documented positions on whether exception text reflected to
+# the caller must be bounded. `publications.py`, `inventory.py` and
+# `media/_upload.py` capped it (SEC-11); this module did not, at any of its 37
+# interpolation sites. These tests pin the settled rule — cap, at
+# `REFLECT_MAX_LEN` — end to end, per tool.
+#
+# The bound is asserted in BOTH halves of the dual output because they are built
+# separately: the head interpolates `{exc}` while the JSON tail carries
+# `str(exc)` into `errors[].message`. Capping one and not the other is the exact
+# half-fix these tests exist to catch.
+#
+# Each assertion is paired positive+negative, matching the existing cap tests:
+# the bounded text must be present AND nothing one char longer may survive. A
+# negative-only assertion passes vacuously if a refactor drops the reflection.
+
+_S1067_HUGE = "Shopify GraphQL error: " + "A" * 10_000
+
+_S1067_TOOL_CALLS = [
+    ("update_product_pricing", {"variants": [{"variantId": "100", "price": "10.00"}]}),
+    ("update_product_category", {"category": "sweatshirt", "confirm": True}),
+    ("update_product_vendor", {"vendor": "Vanish", "confirm": True}),
+    ("update_product_type", {"product_type": "Crewneck Sweatshirt", "confirm": True}),
+    (
+        "update_variant_image_binding",
+        {"variant_media": [{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}]},
+    ),
+    ("update_product_options", {"option": {"id": _OPT_GID, "name": "Fit"}, "confirm": True}),
+    ("get_product_metafields", {}),
+]
+
+
+def _s1067_raising_client():
+    """A client whose very first GraphQL call raises an oversized error.
+
+    FakeClient raises any BaseException in its response script, so this drives
+    each tool down its first exception-reflecting path — the product resolve —
+    without needing a per-tool response sequence.
+    """
+    return _build([RuntimeError(_S1067_HUGE)])
+
+
+@pytest.mark.parametrize(("tool_name", "kwargs"), _S1067_TOOL_CALLS)
+def test_s1067_oversized_exception_is_capped_in_the_head(tool_name, kwargs):
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN, cap
+
+    tools, _fc = _s1067_raising_client()
+    out = tools[tool_name](product_id="123", **kwargs)
+    assert cap(_S1067_HUGE) in out
+    assert _S1067_HUGE[: REFLECT_MAX_LEN + 1] not in out
+
+
+@pytest.mark.parametrize(("tool_name", "kwargs"), _S1067_TOOL_CALLS)
+def test_s1067_oversized_exception_is_capped_in_the_json_tail(tool_name, kwargs):
+    """The structured half is built from `str(exc)` separately from the head —
+    capping only the head would leave the unbounded body in `errors[].message`,
+    which is the half a machine caller actually consumes."""
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN, cap
+
+    tools, _fc = _s1067_raising_client()
+    out = tools[tool_name](product_id="123", **kwargs)
+    messages = " ".join(str(e.get("message", "")) for e in _parse_tail(out).get("errors", []))
+    # Paired, per this block's header: `assert messages` alone would be
+    # satisfied by any unrelated error text, so a dropped reflection would pass.
+    assert cap(_S1067_HUGE) in messages
+    assert _S1067_HUGE[: REFLECT_MAX_LEN + 1] not in messages
+
+
+_S1067_METAFIELD_CALLS = [
+    ("set_product_metafields", {"metafields": [_s97_entry()], "confirm": True}),
+    (
+        "delete_product_metafields",
+        {"metafields": [{"metafieldId": _S910_METAFIELD_GID}], "confirm": True},
+    ),
+]
+
+
+@pytest.mark.parametrize(("tool_name", "kwargs"), _S1067_METAFIELD_CALLS)
+def test_s1067_metafield_write_tools_cap_oversized_exceptions(tool_name, kwargs):
+    """`set_`/`delete_product_metafields` resolve no product, so they reach
+    their reflection sites through the mutation call instead."""
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN, cap
+
+    tools, _fc = _s1067_raising_client()
+    out = tools[tool_name](**kwargs)
+    assert cap(_S1067_HUGE) in out
+    assert _S1067_HUGE[: REFLECT_MAX_LEN + 1] not in out
+
+
+def _s1067_scanned_modules():
+    """Every module that can reflect an exception to a caller or a log.
+
+    The first cut of this test hardcoded four files, which is how
+    `collections.py` — reflecting a raw `poll_job` error — survived the sweep
+    that this story's own ledger entry then certified as complete. The scan is
+    now the whole tool surface plus `client.py`, so a new module is covered on
+    the day it is written rather than when someone remembers to add it.
+    """
+    import shopify_mcp
+
+    root = pathlib.Path(shopify_mcp.__file__).parent
+    return sorted([*(root / "tools").rglob("*.py"), root / "client.py"])
+
+
+# Exception-ish binding names, and every interpolation/stringification shape
+# that reflects one. Deliberately wider than the shapes present today: `{e!s}`
+# is already live in `client.py`, so a copy of it into a scanned module must not
+# pass silently. `(?P<m>...)` marks the matched occurrence for the cap check.
+# The bare binding names Python's `except X as <name>` conventionally uses.
+#
+# Widening this to "any identifier containing err/exc" was tried and reverted:
+# it matched `{err_summary}`, `{vendor_err}` and friends (already-formatted,
+# internally-generated validator strings that are bounded by construction) and
+# even `{old_desc_excerpt}` — 15 false positives, all of which would have had to
+# be silenced with exemption markers. A lint whose exemption list is longer than
+# its findings teaches people to add markers, not to cap.
+_S1067_EXC_NAMES = r"e|exc|err"
+_S1067_REFLECT = re.compile(
+    rf"\{{\s*(?:{_S1067_EXC_NAMES})\s*(?:![sra])?(?::[^}}]*)?\s*\}}"
+    rf"|(?:str|repr)\(\s*(?:{_S1067_EXC_NAMES})\s*\)"
+)
+
+
+def _s1067_uncapped_occurrences(line: str) -> list[str]:
+    """Occurrences on `line` that are NOT wrapped in cap()/_cap().
+
+    Occurrence-granular on purpose. A line-granular check (`"cap(" in line`)
+    exempts an uncapped exception whenever the same line caps something else —
+    and `catalog_hygiene.py` has 51 identifier `_cap()` sites routinely
+    co-located with error text, which made that the likeliest way for the next
+    regression to slip through.
+    """
+    bad = []
+    for m in _S1067_REFLECT.finditer(line):
+        # Walk left from the occurrence; it is capped iff the nearest enclosing
+        # unclosed call is cap( / _cap(.
+        prefix, depth, capped = line[: m.start()], 0, False
+        for i in range(len(prefix) - 1, -1, -1):
+            ch = prefix[i]
+            if ch == ")":
+                depth += 1
+            elif ch == "(":
+                if depth:
+                    depth -= 1
+                else:
+                    capped = bool(re.search(r"\b(?:_?cap(?:_text)?|_bound)$", prefix[:i]))
+                    break
+        if not capped:
+            bad.append(m.group(0))
+    return bad
+
+
+# A site may opt out with a trailing `# reflect-ok: <reason>` marker. That is
+# deliberately different from the file allowlist this test replaced: an
+# exemption lives ON the line it exempts, carries its justification, and shows
+# up in the diff when that line changes — whereas a curated list of *files*
+# silently stops covering a module the day someone adds one, which is exactly
+# how `collections.py` escaped this story's first sweep.
+_S1067_EXEMPT = re.compile(r"#\s*reflect-ok:")
+_S1067_FENCE = re.compile(r'"""' + r"|'''")
+
+
+def test_s1067_conventional_exception_reflections_are_capped():
+    """A tripwire for the common regression. **Not a completeness proof.**
+
+    It catches the shape that actually recurs: someone adds
+    `f"... {exc}"` or `str(e)` to a tool module and forgets `cap`. That is worth
+    having — it is how the `catalog_hygiene` / `publications` split arose in the
+    first place.
+
+    What it does NOT prove, stated here so no one reads a green run as a
+    guarantee (over-claiming is the exact failure mode SEC-27 exists to close):
+
+    * It matches only the conventional binding names `e` / `exc` / `err`. A
+      differently-named local — `poll_error`, `resolve_err` — is invisible to it.
+      Widening the pattern was tried and produced 15 false positives, so the
+      narrow version is the deliberate choice.
+    * It skips `raise` lines. Those are bounded at whichever reflection site
+      catches them, or at the source in `client.py`.
+    * It is line-scoped, so an interpolation split across lines from its `cap()`
+      reads as uncapped, and vice versa.
+    * Docstring and comment bodies are skipped — they discuss `str(exc)` as
+      prose often enough that scanning them yields noise rather than signal.
+
+    The guarantee this story actually rests on is the **source-level** bound in
+    `client.py` (`_bound` / `_format_errors` / `poll_job`), which holds
+    regardless of what any call site remembers to do, plus the per-tool
+    behavioural tests above that assert real output. This lint is a convenience
+    on top of those, not the thing being relied on.
+    """
+    offenders = []
+    for path in _s1067_scanned_modules():
+        in_doc = False
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            stripped = line.strip()
+            odd_fence = len(_S1067_FENCE.findall(stripped)) % 2 == 1
+            if in_doc:
+                in_doc = not odd_fence
+                continue
+            if odd_fence:
+                in_doc = True
+                continue
+            if stripped.startswith("#") or stripped.startswith("raise "):
+                continue
+            # The marker must sit on the same physical line as the occurrence.
+            # Keep the reason terse enough that the line stays inside the
+            # 100-char limit: `ruff format` re-wraps a longer line and moves the
+            # trailing comment off the occurrence it was annotating, which
+            # silently un-exempts the site.
+            if _S1067_EXEMPT.search(line):
+                continue
+            for occ in _s1067_uncapped_occurrences(line):
+                offenders.append(f"{path.name}:{n}: {occ}  |  {stripped[:80]}")
+    assert not offenders, "uncapped exception reflection:\n" + "\n".join(offenders)
+
+
+def test_s1067_every_exemption_carries_a_reason():
+    """A bare `# reflect-ok:` is an unexplained hole in the invariant."""
+    bare = []
+    for path in _s1067_scanned_modules():
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            m = _S1067_EXEMPT.search(line)
+            if m and not line[m.end() :].strip():
+                bare.append(f"{path.name}:{n}")
+    assert not bare, "reflect-ok marker with no reason: " + ", ".join(bare)
+
+
+def test_s1067_every_ops_call_in_catalog_hygiene_is_exception_guarded():
+    """The class the regex invariant structurally cannot see.
+
+    An entirely unguarded `ops.*` call reflects nothing — it lets the raw
+    exception escape to FastMCP, which renders it uncapped, bypassing every cap
+    in this module. Three such calls survived this story's first cut, including
+    one in the very function it had just hardened. A source-grep cannot detect
+    an absence, so this walks the AST instead.
+    """
+    import ast
+
+    src = pathlib.Path(catalog_hygiene.__file__)
+    tree = ast.parse(src.read_text(encoding="utf-8"))
+    parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
+
+    def inside_try_body(node):
+        cur = node
+        while cur in parents:
+            parent = parents[cur]
+            if isinstance(parent, ast.Try) and any(
+                cur is stmt or cur in set(ast.walk(stmt)) for stmt in parent.body
+            ):
+                return True
+            cur = parent
+        return False
+
+    unguarded = [
+        f"line {n.lineno}: ops.{n.func.attr}()"
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and isinstance(n.func.value, ast.Name)
+        and n.func.value.id == "ops"
+        and not inside_try_body(n)
+    ]
+    assert not unguarded, "ops call not wrapped in try/except:\n" + "\n".join(unguarded)
+
+
+# The three mutation calls that were entirely unguarded until the round-2
+# review: an unguarded `ops.*` call reflects nothing, it lets the raw exception
+# escape to FastMCP, which renders it uncapped — bypassing every cap in this
+# module. `test_s1067_every_ops_call_in_catalog_hygiene_is_exception_guarded`
+# pins that none remain; these pin that each guard renders a bounded error
+# instead of raising.
+
+
+def _s1067_pricing_read():
+    return {
+        "product": {
+            "id": "gid://shopify/Product/1",
+            "title": "T",
+            "variants": {
+                "nodes": [
+                    {
+                        "id": _S96_VARIANT_A,
+                        "sku": "A",
+                        "price": "5.00",
+                        "compareAtPrice": None,
+                    }
+                ]
+            },
+        }
+    }
+
+
+def test_s1067_pricing_mutation_failure_is_capped_not_raised():
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN, cap
+
+    tools, _fc = _build([_s1067_pricing_read(), RuntimeError(_S1067_HUGE)])
+    out = tools["update_product_pricing"](
+        "1", variants=[{"variantId": "100", "price": "10.00"}], confirm=True
+    )
+    assert "productVariantsBulkUpdate" in out
+    assert cap(_S1067_HUGE) in out
+    assert _S1067_HUGE[: REFLECT_MAX_LEN + 1] not in out
+
+
+@pytest.mark.parametrize(
+    ("label", "existing_media", "desired"),
+    [
+        # Append-only: variant starts with no bindings, so only APPEND fires.
+        ("productVariantAppendMedia", [], [_S96_MEDIA_1]),
+        # Detach-reattach: variant already holds MEDIA_2, so DETACH fires first.
+        ("productVariantDetachMedia", [_S96_MEDIA_2], [_S96_MEDIA_1]),
+    ],
+)
+def test_s1067_variant_media_mutation_failures_are_capped_not_raised(
+    label, existing_media, desired
+):
+    """Both mutation calls in this flow were unguarded. Driving each path
+    separately proves each guard, rather than one covering for the other."""
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN, cap
+
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
+        variants=[(_S96_VARIANT_A, "SKU-A", existing_media)],
+    )
+    tools, _fc = _build([combined, RuntimeError(_S1067_HUGE)])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": desired}],
+        confirm=True,
+    )
+    assert label in out
+    assert cap(_S1067_HUGE) in out
+    assert _S1067_HUGE[: REFLECT_MAX_LEN + 1] not in out
+
+
+def test_s1067_append_exception_after_successful_detach_still_rolls_back():
+    """The regression round 2 caught: guarding `append_variant_media` with a
+    plain `return` skipped `_handle_append_failure_after_detach`.
+
+    By that point detach has already succeeded, so the variants are in the
+    Section 5.4 zero-media state. Returning a generic bounded error would drop
+    the rollback attempt AND the `appendFailedAfterDetach` / `zeroMediaVariants`
+    disclosure — leaving media destructively unbound with nothing telling the
+    caller. A transport failure must take the same exit as a userError failure.
+    """
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
+
+    combined = _s96_combined_response(
+        media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
+        variants=[(_S96_VARIANT_A, "SKU-A", [_S96_MEDIA_2])],
+    )
+    # detach succeeds, append then raises — the destructive window.
+    tools, _fc = _build([combined, _s96_detach_response(), RuntimeError(_S1067_HUGE)])
+    out = tools["update_variant_image_binding"](
+        product_id=_S96_PRODUCT_GID,
+        variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
+        confirm=True,
+    )
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    # The disclosure the plain-return guard was dropping.
+    assert "appendFailedAfterDetach" in json.dumps(tail) or "zeroMediaVariants" in json.dumps(tail)
+    # And the exception text is still bounded on this path.
+    assert _S1067_HUGE[: REFLECT_MAX_LEN + 1] not in out

@@ -13,6 +13,8 @@ import ipaddress
 import socket
 from urllib.parse import urlparse
 
+from shopify_mcp.tools._scrub import cap
+
 
 def _reject_if_private_host(url: str) -> None:
     """Raise RuntimeError if the URL's hostname resolves to a non-public IP
@@ -55,7 +57,7 @@ def _reject_if_private_host(url: str) -> None:
     try:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror as e:
-        raise RuntimeError(f"could not resolve host {host!r}: {e}") from e
+        raise RuntimeError(f"could not resolve host {host!r}: {cap(str(e))}") from e
     for info in infos:
         ip_str = info[4][0]
         try:
