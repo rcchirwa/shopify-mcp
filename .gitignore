@@ -42,13 +42,17 @@ htmlcov/
 coverage.xml
 
 # Virtual environment
-# Glob, not a literal: per-worktree venvs get suffixed names (.venv-wt, .venv-ci,
-# .venv-audit) because a worktree can't share the main checkout's editable install.
-# Those fell outside a bare `.venv/` and showed up as thousands of untracked files
-# — which PR widgets that count working-tree additions fold into the diff (a 178 MB
-# .venv-ci and a +61,949-line PR chip, both traced to this in Aug 2026).
+# `.venv*/` is a glob, not a literal: a worktree can't share the main checkout's
+# editable install, so per-worktree venvs get suffixed names (.venv-wt, .venv-ci,
+# .venv-audit) that a bare `.venv/` left as thousands of untracked files.
+# Deliberately unanchored — those venvs live under .claude/worktrees/*/, so a
+# leading slash would miss the exact case this covers.
+# `venv/` stays a literal on purpose: the three tests/architecture/ sweeps skip
+# the names ".venv"/"venv" and any dot-prefixed dir, so globbing the undotted form
+# would let a `venv311/` be walked by them while being invisible to git status —
+# a diagnosable mess turned into an undiagnosable one.
 .venv*/
-venv*/
+venv/
 ENV/
 
 # macOS
