@@ -45,6 +45,7 @@ from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._product_resolver import identifier_error
 from shopify_mcp.tools._response import extract_user_errors, with_confirm_hint
+from shopify_mcp.tools._untrusted import with_reminder, wrap
 from shopify_mcp.tools._write_tool import write_gate
 from shopify_mcp.validators.naming import format_validation_diff
 from shopify_mcp.validators.seo import SEO_DESCRIPTION_MAX_CHARS, SEO_TITLE_MAX_CHARS
@@ -206,12 +207,21 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         stripped = html_strip_report(new_description, sanitized_description)
         strip_block = format_strip_block(stripped)
 
+        # The old/new halves have different provenance: `old_desc` is stored
+        # store content read back over the wire (fenced), `new_description` is
+        # the caller's own just-submitted input (left raw — labelling it as
+        # shopper-controlled would be false and would dilute the signal on the
+        # half that is). Story 10.63 / SEC-04-descriptions.
+        # The truncation marker stays OUTSIDE the fence: it is our own text, and
+        # fencing it would label our marker as store content.
+        old_shown = wrap(old_desc[:120]) + ("..." if len(old_desc) > 120 else "")
         preview = (
             f"PREVIEW — Product description update\n"
             f"  Product ID   : {product_id}\n"
-            f"  Old (excerpt): {old_desc[:120]}{'...' if len(old_desc) > 120 else ''}\n"
+            f"  Old (excerpt): {old_shown if old_desc else ''}\n"
             f"  New (full)   :\n{new_description}" + warning_block + strip_block
         )
+        preview = with_reminder(preview, bool(old_desc))
 
         return write_gate(
             preview=preview,
@@ -382,12 +392,17 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not p:
             return "No product found."
 
-        return (
+        # Stored bodyHtml is merchant/app/import-authored free text and the
+        # widest such surface in the server — fence it as untrusted (Story
+        # 10.63 / SEC-04-descriptions). Empty stays bare, per SEC-04.
+        body = p.get("bodyHtml") or ""
+        head = (
             f"ID: {from_gid(p['id'])}\n"
             f"Title: {p['title']}\n"
             f"Handle: {p['handle']}\n"
-            f"body_html:\n{p.get('bodyHtml') or ''}"
+            f"body_html:\n{wrap(body) if body else ''}"
         )
+        return with_reminder(head, bool(body))
 
     @server.tool()
     def get_products_with_descriptions(collection_handle: str = "", limit: int = 50) -> str:
@@ -412,15 +427,18 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         blocks = [header]
         for p in products:
+            body = p.get("bodyHtml") or ""
             blocks.append(
                 f"\n---\n"
                 f"ID: {from_gid(p['id'])}\n"
                 f"Title: {p['title']}\n"
                 f"Handle: {p['handle']}\n"
                 f"Status: {p['status']}\n"
-                f"body_html:\n{p.get('bodyHtml') or ''}"
+                f"body_html:\n{wrap(body) if body else ''}"
             )
-        return "\n".join(blocks)
+        # Product presence doesn't imply description presence — gate the
+        # reminder on an actually-wrapped body, mirroring media/_list.py.
+        return with_reminder("\n".join(blocks), any(p.get("bodyHtml") for p in products))
 
     @server.tool()
     def get_product_full(product_id: str = "", handle: str = "") -> str:
@@ -468,6 +486,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         else:
             options_block = "  (none)"
 
+        body = p.get("bodyHtml") or ""
         result = (
             f"ID: {from_gid(p['id'])}\n"
             f"Title: {p['title']}\n"
@@ -483,11 +502,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"Category full name: {cat_full}\n"
             f"Variants:\n{variants}\n"
             f"Options:\n{options_block}\n"
-            f"body_html:\n{p.get('bodyHtml') or ''}"
+            f"body_html:\n{wrap(body) if body else ''}"
         )
         if capped:
             result += "\nWARNING: variant pagination hit the max-pages cap — additional variants (if any) are not shown here."
-        return result
+        # Reminder leads the whole output, cap warning included — it is about
+        # the wrapped body below, not about where the string happens to end.
+        return with_reminder(result, bool(body))
 
     @server.tool()
     def get_product_collections(product_id: str) -> str:

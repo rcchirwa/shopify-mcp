@@ -130,6 +130,25 @@ def _neutralize_close_tag(match: re.Match[str]) -> str:
     return "<\\" + matched[1:]
 
 
+def with_reminder(body: str, has_wrapped_value: bool) -> str:
+    """Prefix ``body`` with :data:`INJECTION_REMINDER` iff it wrapped something.
+
+    SEC-04's conditional rule is that the reminder appears **only** when the
+    emitted output actually contains a ``<UNTRUSTED-DATA>`` value, so it never
+    points at an absent tag. Before Story 10.63 that rule was re-implemented at
+    each call site (``tools/media/_list.py``'s ``any(...)`` gate,
+    ``tools/catalog_hygiene.py``'s ``total_found > 0`` gate); wrapping seven
+    further sites by hand is how a convention drifts, which is precisely what
+    this module exists to prevent.
+
+    The *fallback* for an absent value stays at the call site on purpose — it
+    is genuinely per-surface (``''`` for a raw body_html, ``'(no description)'``
+    for a collection, an omitted line for a title-only collection update) and
+    unifying it here would invent a uniformity that does not exist.
+    """
+    return INJECTION_REMINDER + body if has_wrapped_value else body
+
+
 def wrap(text: object) -> str:
     """Wrap externally-influenced ``text`` in ``<UNTRUSTED-DATA>`` tags.
 

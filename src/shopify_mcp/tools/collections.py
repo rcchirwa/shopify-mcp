@@ -31,6 +31,7 @@ from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._response import format_user_errors, with_confirm_hint
 from shopify_mcp.tools._scrub import cap
+from shopify_mcp.tools._untrusted import with_reminder, wrap
 from shopify_mcp.tools._write_tool import write_gate
 
 # The GraphQL strings now live in shopify.queries.collections. They are
@@ -89,14 +90,19 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         col_type, col = _resolve_collection(client, handle)
         if not col:
             return f"No collection found with handle '{handle}'."
-        desc = col.get("descriptionHtml") or "(no description)"
-        return (
+        # Stored descriptionHtml is merchant/app/import-authored free text —
+        # fence it as untrusted (Story 10.63 / SEC-04-descriptions). The
+        # '(no description)' placeholder is our own text, so it stays bare.
+        raw_desc = col.get("descriptionHtml") or ""
+        desc = wrap(raw_desc) if raw_desc else "(no description)"
+        head = (
             f"Collection: {col['title']}\n"
             f"Handle: {col['handle']}\n"
             f"ID: {from_gid(col['id'])}\n"
             f"Type: {col_type}\n"
             f"Description: {desc}"
         )
+        return with_reminder(head, bool(raw_desc))
 
     @server.tool()
     def update_collection(
@@ -130,9 +136,15 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         ]
         if new_title:
             preview_lines.append(f"  Title  : '{col['title']}' → '{new_title}'")
+        raw_old = ""
         if new_description:
+            # Old half is stored store content (fenced); the new half is the
+            # caller's own input (left raw). The truncation marker stays outside
+            # the fence — it is ours, not the store's. Story 10.63.
             raw_old = col.get("descriptionHtml") or ""
-            old_desc_excerpt = raw_old[:80] + ("..." if len(raw_old) > 80 else "")
+            old_desc_excerpt = (
+                wrap(raw_old[:80]) + ("..." if len(raw_old) > 80 else "") if raw_old else ""
+            )
             danger = html_safety_findings(new_description)
             warning_suffix = format_description_warning_block(danger)
             stripped = html_strip_report(new_description, sanitized_description)
@@ -142,7 +154,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"  New desc (full)   :\n{new_description}" + warning_suffix + strip_suffix
             )
 
-        preview = "\n".join(preview_lines)
+        preview = with_reminder("\n".join(preview_lines), bool(raw_old))
 
         # Mirror the fields the operation will put in the mutation input, only
         # to label the audit-log line — input-building itself lives in the op.
