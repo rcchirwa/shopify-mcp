@@ -5,7 +5,7 @@ from mcp.server.fastmcp import FastMCP
 from shopify_mcp.client import ShopifyClient
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._response import extract_user_errors, with_confirm_hint
-from shopify_mcp.tools._untrusted import INJECTION_REMINDER, wrap
+from shopify_mcp.tools._untrusted import with_reminder, wrap
 from shopify_mcp.tools.media._common import _as_product_gid, _fmt_media_user_errors
 from shopify_mcp.tools.media._constants import _MEDIA_PAGE_CAP
 from shopify_mcp.tools.media._graphql import GET_PRODUCT_MEDIA, PRODUCT_UPDATE_MEDIA
@@ -61,10 +61,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"  Old alt    : {old_alt_display!r}\n"
             f"  New alt    : {alt!r}{no_op_suffix}"
         )
-        reminder = INJECTION_REMINDER if old_alt else ""
 
         if not confirm:
-            return with_confirm_hint(f"{reminder}PREVIEW — Update product media alt\n{body}")
+            return with_confirm_hint(with_reminder(f"PREVIEW — Update product media alt\n{body}"))
 
         result = client.execute(
             PRODUCT_UPDATE_MEDIA,
@@ -81,4 +80,4 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             "update_product_media",
             f"product={product_id} media={media_id} alt_len {len(old_alt)}->{len(alt)}",
         )
-        return f"{reminder}CONFIRMED — Update product media alt\n{body}"
+        return with_reminder(f"CONFIRMED — Update product media alt\n{body}")

@@ -102,7 +102,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"Type: {col_type}\n"
             f"Description: {desc}"
         )
-        return with_reminder(head, bool(raw_desc))
+        return with_reminder(head)
 
     @server.tool()
     def update_collection(
@@ -136,7 +136,6 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         ]
         if new_title:
             preview_lines.append(f"  Title  : '{col['title']}' → '{new_title}'")
-        raw_old = ""
         if new_description:
             # Old half is stored store content (fenced); the new half is the
             # caller's own input (left raw). The truncation marker stays outside
@@ -154,7 +153,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"  New desc (full)   :\n{new_description}" + warning_suffix + strip_suffix
             )
 
-        preview = with_reminder("\n".join(preview_lines), bool(raw_old))
+        preview = with_reminder("\n".join(preview_lines))
 
         # Mirror the fields the operation will put in the mutation input, only
         # to label the audit-log line — input-building itself lives in the op.

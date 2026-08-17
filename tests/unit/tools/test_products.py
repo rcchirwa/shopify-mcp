@@ -2203,7 +2203,7 @@ def test_s1063_update_product_description_confirmed_output_wraps_stored_old_exce
     assert INJECTION_REMINDER in out
 
 
-def test_s1063_no_affected_products_tool_emits_a_fenced_block():
+def test_s1063_description_tools_emit_no_json_tail():
     """AC4 — the head/tail split holds because these tools have no JSON tail.
 
     Asserted rather than assumed: `catalog_hygiene.py` is the only module that
@@ -2241,4 +2241,34 @@ def test_s1063_get_product_description_full_output_is_pinned():
         "Handle: tee\n"
         "body_html:\n"
         "<UNTRUSTED-DATA><p>hi</p></UNTRUSTED-DATA>"
+    )
+
+
+def test_s1063_get_products_with_descriptions_full_output_is_pinned():
+    """AC4 — byte-exact output for the bulk read, including the block separator."""
+    tools, fc = _build([{"products": {"nodes": [_full_product("1", "A", "a", body="<p>x</p>")]}}])
+    out = tools["get_products_with_descriptions"]()
+    assert out == (
+        INJECTION_REMINDER + "Products (1 total):\n"
+        "\n---\n"
+        "ID: 1\n"
+        "Title: A\n"
+        "Handle: a\n"
+        "Status: ACTIVE\n"
+        "body_html:\n"
+        "<UNTRUSTED-DATA><p>x</p></UNTRUSTED-DATA>"
+    )
+
+
+def test_s1063_update_product_description_preview_full_output_is_pinned():
+    """AC4 — byte-exact write preview: fenced old half, raw new half, one reminder."""
+    tools, fc = _build([{"product": _full_product("7", "Tee", "tee", body="<p>old</p>")}])
+    out = tools["update_product_description"](product_id="7", new_description="<p>new</p>")
+    assert out == (
+        INJECTION_REMINDER + "PREVIEW — Product description update\n"
+        "  Product ID   : 7\n"
+        "  Old (excerpt): <UNTRUSTED-DATA><p>old</p></UNTRUSTED-DATA>\n"
+        "  New (full)   :\n"
+        "<p>new</p>"
+        "\n\nTo apply, call again with confirm=True."
     )

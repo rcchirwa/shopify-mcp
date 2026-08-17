@@ -760,9 +760,11 @@ def test_update_media_preview_shows_old_and_new_alt():
         confirm=False,
     )
     # Story 10.63: the stored `Old alt` is now fenced as untrusted and the
-    # reminder leads the output, so the preview no longer starts with "PREVIEW".
-    # This test's subject is unchanged — both halves are still shown.
-    assert "PREVIEW — Update product media alt" in out
+    # reminder leads the output. Pin that the label immediately follows the
+    # reminder rather than merely appearing somewhere — a bare `in` would pass
+    # even if the two drifted apart. This test's subject is unchanged: both
+    # halves are still shown.
+    assert out.startswith(INJECTION_REMINDER + "PREVIEW — Update product media alt")
     assert "<UNTRUSTED-DATA>old alt</UNTRUSTED-DATA>" in out
     assert "'new alt'" in out
     assert len(fc.calls) == 1
@@ -1948,3 +1950,52 @@ def test_s1063_update_media_preview_has_no_fenced_block():
         product_id="123", media_id=MEDIA_A, alt="new", confirm=False
     )
     assert "```" not in out
+
+
+# `reorder_product_media` echoes EVERY node's stored alt, not just one — a wider
+# surface than update_product_media's single `old_alt`, and the last unfenced
+# `alt` read site in src/ after the first cut of this story. Found by the
+# triple-threat security review, not by the card, which inherited 10.41's
+# three-surface list. See docs/tech-debt.md.
+
+
+def test_s1063_reorder_preview_wraps_every_stored_alt():
+    tools, fc = _build(
+        [
+            _product_media_read(
+                [
+                    _media_node(MEDIA_A, alt=_S1063_ALT_PAYLOAD),
+                    _media_node(MEDIA_B, alt="second alt"),
+                ]
+            )
+        ]
+    )
+    out = tools["reorder_product_media"](
+        product_id="123", moves=[{"id": MEDIA_B, "newPosition": 1}], confirm=False
+    )
+    assert f"<UNTRUSTED-DATA>{_S1063_ALT_PAYLOAD}</UNTRUSTED-DATA>" in out
+    assert "<UNTRUSTED-DATA>second alt</UNTRUSTED-DATA>" in out
+    assert out.startswith(INJECTION_REMINDER)
+
+
+def test_s1063_reorder_all_empty_alts_add_no_wrapper_or_reminder():
+    tools, fc = _build(
+        [_product_media_read([_media_node(MEDIA_A, alt=""), _media_node(MEDIA_B, alt="")])]
+    )
+    out = tools["reorder_product_media"](
+        product_id="123", moves=[{"id": MEDIA_B, "newPosition": 1}], confirm=False
+    )
+    assert "UNTRUSTED-DATA" not in out
+    assert INJECTION_REMINDER not in out
+
+
+def test_s1063_reorder_wraps_only_the_nonempty_alt():
+    tools, fc = _build(
+        [_product_media_read([_media_node(MEDIA_A, alt=""), _media_node(MEDIA_B, alt="only one")])]
+    )
+    out = tools["reorder_product_media"](
+        product_id="123", moves=[{"id": MEDIA_B, "newPosition": 1}], confirm=False
+    )
+    assert out.count("</UNTRUSTED-DATA>") == 1
+    assert "<UNTRUSTED-DATA>only one</UNTRUSTED-DATA>" in out
+    assert out.startswith(INJECTION_REMINDER)
