@@ -42,7 +42,16 @@ htmlcov/
 coverage.xml
 
 # Virtual environment
-.venv/
+# `.venv*/` is a glob, not a literal: a worktree can't share the main checkout's
+# editable install, so per-worktree venvs get suffixed names (.venv-wt, .venv-ci,
+# .venv-audit) that a bare `.venv/` left as thousands of untracked files.
+# Deliberately unanchored — those venvs live under .claude/worktrees/*/, so a
+# leading slash would miss the exact case this covers.
+# `venv/` stays a literal on purpose: the three tests/architecture/ sweeps skip
+# the names ".venv"/"venv" and any dot-prefixed dir, so globbing the undotted form
+# would let a `venv311/` be walked by them while being invisible to git status —
+# a diagnosable mess turned into an undiagnosable one.
+.venv*/
 venv/
 ENV/
 
