@@ -42,8 +42,13 @@ htmlcov/
 coverage.xml
 
 # Virtual environment
-.venv/
-venv/
+# Glob, not a literal: per-worktree venvs get suffixed names (.venv-wt, .venv-ci,
+# .venv-audit) because a worktree can't share the main checkout's editable install.
+# Those fell outside a bare `.venv/` and showed up as thousands of untracked files
+# — which PR widgets that count working-tree additions fold into the diff (a 178 MB
+# .venv-ci and a +61,949-line PR chip, both traced to this in Aug 2026).
+.venv*/
+venv*/
 ENV/
 
 # macOS
