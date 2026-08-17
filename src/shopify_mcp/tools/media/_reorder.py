@@ -6,6 +6,7 @@ from shopify_mcp.client import ShopifyClient, poll_job
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._response import with_confirm_hint
+from shopify_mcp.tools._untrusted import with_reminder, wrap
 from shopify_mcp.tools.media._common import (
     _as_product_gid,
     _extract_media_user_errors,
@@ -62,13 +63,17 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if unknown:
             return "Error: these media ids are not attached to the product: " + ", ".join(unknown)
 
-        current_lines = (
-            "\n".join(
-                f"    {i + 1}. {n.get('id')}  alt={(n.get('alt') or '')!r}"
-                for i, n in enumerate(current_nodes)
-            )
-            or "    (none)"
-        )
+        # Every node's stored alt is echoed here, so this is a WIDER untrusted
+        # surface than update_product_media's single `old_alt` — fence each one
+        # (Story 10.63 / SEC-04-descriptions). Empty alts stay bare, mirroring
+        # media/_list.py. Found by review: the card inherited Story 10.41's
+        # three-surface list, which did not name this tool.
+        alt_lines = []
+        for i, n in enumerate(current_nodes):
+            raw_alt = n.get("alt") or ""
+            alt_display = wrap(raw_alt) if raw_alt else ""
+            alt_lines.append(f"    {i + 1}. {n.get('id')}  alt={alt_display!r}")
+        current_lines = "\n".join(alt_lines) or "    (none)"
         moves_lines = "\n".join(
             f"    • {m['id']} → position {m['newPosition']}" for m in parsed_moves
         )
@@ -79,7 +84,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
 
         if not confirm:
-            return with_confirm_hint(f"PREVIEW — Reorder product media\n{body}")
+            return with_confirm_hint(with_reminder(f"PREVIEW — Reorder product media\n{body}"))
 
         # Shopify's MoveInput.newPosition is 0-indexed and serialized as a
         # string. Convert at the boundary so the caller sees 1-indexed ints
@@ -128,4 +133,4 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                     f"{client._settings.job_poll_timeout_s:g}s timeout — verify via "
                     f"list_product_media)"
                 )
-        return f"CONFIRMED — Reorder product media\n{body}{job_line}"
+        return with_reminder(f"CONFIRMED — Reorder product media\n{body}{job_line}")

@@ -51,12 +51,24 @@ The defense has two layers:
    compatibility sequences elsewhere in a string (e.g. ligatures, fractions),
    which would misalign a "match against the normalized copy, substitute into
    the original" strategy. Rather than special-case that, this wrapper
-   operates entirely on the NFKC-normalized copy for the rest of the call —
-   the returned value is built from the normalized text, not the original.
-   This trades exact byte-for-byte preservation of unrelated Unicode
-   compatibility sequences (which NFKC is a no-op for on plain ASCII/typical
-   text, so ordinary values are unaffected) for a substitution that is always
-   positionally correct.
+   operates entirely on the NFKC-normalized copy **whenever a closing tag was
+   actually found** — in that branch the returned value is built from the
+   normalized text, so the substitution is always positionally correct.
+
+   **Narrowed by Story 10.63 (SEC-04-descriptions).** SEC-21 applied that
+   normalized-copy return unconditionally, which also folded values containing
+   no forgery attempt at all. The misalignment risk it was guarding against
+   only exists when there is a substitution to align, so a value with no match
+   is now returned byte-for-byte. This matters because Story 10.63 extended
+   this wrapper from short alt text and metafield values to multi-KB product
+   and collection descriptions, where NFKC's folds are ordinary content rather
+   than curiosities: ``g/m²`` -> ``g/m2``, NBSP -> space, ``℃`` -> ``°C``,
+   the vulgar-fraction and ligature glyphs to their spelled-out forms, and
+   ``№`` -> ``No``. Those read tools exist
+   to feed description rewrites, so a silently folded value can be written back
+   to the store. Detection is unchanged — it still scans the normalized copy —
+   so nothing escapes that did not escape before; only the *return* value for
+   clean input differs, and hostile input still folds.
 
 2. **A single compiled, case-insensitive, whitespace- and separator-tolerant
    regex** (:data:`_CLOSE_TAG_PATTERN`) finds every closing-tag spelling in
@@ -94,6 +106,10 @@ import unicodedata
 # .format() does not re-parse substituted text, so curly braces in values are safe.
 _UNTRUSTED = "<UNTRUSTED-DATA>{}</UNTRUSTED-DATA>"
 
+# The canonical closing delimiter, as emitted by `_UNTRUSTED`. `with_reminder`
+# keys on this to decide whether a rendered body actually fenced anything.
+_CLOSE_TAG_LITERAL = "</UNTRUSTED-DATA>"
+
 # Dash confusables that NFKC does not fold to ASCII '-': hyphen (U+2010),
 # non-breaking hyphen (U+2011), figure dash (U+2012), en-dash (U+2013),
 # em-dash (U+2014), horizontal bar (U+2015), minus sign (U+2212). Fullwidth
@@ -130,6 +146,32 @@ def _neutralize_close_tag(match: re.Match[str]) -> str:
     return "<\\" + matched[1:]
 
 
+def with_reminder(body: str) -> str:
+    """Prefix ``body`` with :data:`INJECTION_REMINDER` iff it wrapped something.
+
+    SEC-04's conditional rule is that the reminder appears **only** when the
+    emitted output actually contains a ``<UNTRUSTED-DATA>`` value, so it never
+    points at an absent tag. Before Story 10.63 that rule was re-implemented at
+    each call site (``tools/media/_list.py``'s ``any(...)`` gate,
+    ``tools/catalog_hygiene.py``'s ``total_found > 0`` gate); wrapping seven
+    further sites by hand is how a convention drifts, which is precisely what
+    this module exists to prevent.
+
+    The condition is **derived from** ``body`` rather than taken as a caller
+    flag, so it cannot go stale: a future edit that wraps a value but forgets to
+    update a boolean would emit a fence with no reminder, and a caller-supplied
+    flag makes that undetectable here. Detection keys on the **closing**
+    delimiter because :data:`INJECTION_REMINDER`'s own prose contains the
+    opening one, so an opening-tag test would match a body that wraps nothing.
+
+    The *fallback* for an absent value stays at the call site on purpose — it
+    is genuinely per-surface (``''`` for a raw body_html, ``'(no description)'``
+    for a collection, an omitted line for a title-only collection update) and
+    unifying it here would invent a uniformity that does not exist.
+    """
+    return INJECTION_REMINDER + body if _CLOSE_TAG_LITERAL in body else body
+
+
 def wrap(text: object) -> str:
     """Wrap externally-influenced ``text`` in ``<UNTRUSTED-DATA>`` tags.
 
@@ -143,7 +185,24 @@ def wrap(text: object) -> str:
     value cannot forge a closing tag and escape the untrusted region. The
     payload is preserved (neutralized, not dropped) so nothing is silently
     lost.
+
+    **Clean values are returned byte-for-byte (Story 10.63 /
+    SEC-04-descriptions).** Detection still runs on the NFKC-normalized copy, so
+    no confusable spelling escapes; but the normalized copy is only *returned*
+    when a closing tag was actually found. SEC-21's stated reason for returning
+    it unconditionally was to avoid positional misalignment when substituting a
+    neutralized tag back into the original — and that reason exists only when
+    there is a substitution to align. With no match there is nothing to align,
+    so folding the value buys no safety and costs fidelity. That cost stopped
+    being theoretical when Story 10.63 extended this wrapper from short alt
+    strings to multi-KB product descriptions: NFKC rewrites ``g/m²`` to
+    ``g/m2``, NBSP to a space, ``℃`` to ``°C`` and ``ﬃ`` to ``ffi``, and these
+    read tools exist to feed description rewrites, so a folded value can be
+    written back to the store. Hostile input — the only branch that still folds
+    — has no fidelity claim worth protecting.
     """
-    normalized = unicodedata.normalize("NFKC", str(text))
-    safe = _CLOSE_TAG_PATTERN.sub(_neutralize_close_tag, normalized)
-    return _UNTRUSTED.format(safe)
+    raw = str(text)
+    normalized = unicodedata.normalize("NFKC", raw)
+    if not _CLOSE_TAG_PATTERN.search(normalized):
+        return _UNTRUSTED.format(raw)
+    return _UNTRUSTED.format(_CLOSE_TAG_PATTERN.sub(_neutralize_close_tag, normalized))
