@@ -576,14 +576,23 @@ def test_s1070_zero_width_forged_closer_cannot_forge_a_neighbouring_product():
     tools, _ = _build([response])
     out = tools["get_products_with_descriptions"](limit=10)
 
-    # Exactly one real closer, and it terminates the output.
-    assert out.count("</UNTRUSTED-DATA>") == 1
-    assert out.endswith("</UNTRUSTED-DATA>")
+    # Assert against the output as a *renderer or model* sees it, with the
+    # invisibles removed -- not against the raw literal. Keying on the literal
+    # `</UNTRUSTED-DATA>` would make every assertion below pass before the fix
+    # too, because the ZWSP-laden forgery never equals that literal however
+    # badly it escapes. Stripping first is what makes this test able to tell
+    # "trapped" from "escaped" at all.
+    visible = out.replace("\u200b", "")
+
+    # Exactly one closer survives as the model would read it, and it
+    # terminates the output.
+    assert visible.count("</UNTRUSTED-DATA>") == 1
+    assert visible.endswith("</UNTRUSTED-DATA>")
     # The forged closer was neutralized in place, not dropped.
-    assert "<\\/UNTRUSTED" in out
+    assert "<\\/UNTRUSTED" in visible
     # The fabricated record stays trapped inside the fenced region, so the
     # model still reads it as untrusted data rather than a sibling product.
-    fenced = out[out.index("<UNTRUSTED-DATA>") : out.rindex("</UNTRUSTED-DATA>")]
+    fenced = visible[visible.index("<UNTRUSTED-DATA>") : visible.rindex("</UNTRUSTED-DATA>")]
     assert "ID: 999" in fenced
     assert "Totally Legitimate Product" in fenced
     assert out.startswith(INJECTION_REMINDER)
