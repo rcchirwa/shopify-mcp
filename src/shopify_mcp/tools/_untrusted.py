@@ -83,17 +83,36 @@ carried over from SEC-18: a forged opener cannot itself terminate a region —
 only a closer can — so there is nothing for an attacker to gain by forging
 one, and neutralizing it would just be noise.
 
-**Known residual gap (out of scope for SEC-21):** zero-width/invisible
-format characters (e.g. ZERO WIDTH SPACE U+200B, ZERO WIDTH NON-JOINER
-U+200C, ZERO WIDTH JOINER U+200D, ZERO WIDTH NO-BREAK SPACE/BOM U+FEFF)
-inserted inside the delimiter are not stripped or matched by ``\\s*`` and can
-still slip a visually-identical closing tag past :data:`_CLOSE_TAG_PATTERN`.
-This was deliberately not closed here: ZWJ/ZWNJ have legitimate uses in
-emoji sequences and in Persian/Indic script rendering, so indiscriminately
-stripping them from shopper-controlled content risks corrupting legitimate
-values, conflicting with this wrapper's "neutralized, not dropped" contract.
-Closing this gap needs a more careful design than blanket stripping and is
-tracked as a follow-up rather than solved under this story's scope.
+Zero-width / invisible characters (Story 10.70 / SEC-21-zerowidth)
+-----------------------------------------------------------------
+SEC-21 left a documented residual gap here: zero-width and invisible format
+characters wedged into the delimiter (``</UNTRUSTED<ZWSP>-DATA>``) are neither
+folded by NFKC nor matched by ``\\s*``, so a visually-identical closing tag
+slipped past :data:`_CLOSE_TAG_PATTERN` un-neutralized. Story 10.63 widened the
+blast radius from short alt text to multi-KB descriptions interpolated
+verbatim, which promoted the residual to its own story.
+
+It is now closed by **widening detection rather than stripping**. The pattern
+admits a run of :data:`_INVISIBLES` everywhere it already admitted whitespace,
+*and* between the letters of ``UNTRUSTED`` and ``DATA`` — the interior
+positions matter, since a ZWNJ inside ``DATA`` is exploitable on its own. A
+zero-width-laden closer therefore still *matches*, and earns the same
+backslash neutralization every other spelling gets.
+
+That choice is what resolves SEC-21's stated objection instead of working
+around it. SEC-21 declined to close this because ZWJ/ZWNJ carry meaning in
+emoji sequences and in Persian/Indic shaping, so stripping them would corrupt
+legitimate shopper content and contradict the "neutralized, not dropped"
+contract. Nothing is stripped here: a legitimate value containing ZWJ/ZWNJ
+does not spell the delimiter, so it does not match, so Story 10.63's
+byte-for-byte return hands it back untouched. Only a forged closer is
+rewritten, and only by the backslash insertion.
+
+A windowed strip (neutralize invisibles just inside a candidate delimiter
+region) was considered and rejected: it needs offset bookkeeping between the
+raw and normalized copies, which is the exact bug class Story 10.63 removed
+the unconditional normalization to avoid. A global strip remains rejected for
+SEC-21's original reason.
 
 The payload is always preserved (neutralized, not dropped) so nothing is
 silently lost; non-string values are coerced via ``str`` exactly as the
@@ -119,13 +138,86 @@ _CLOSE_TAG_LITERAL = "</UNTRUSTED-DATA>"
 # ambiguous Unicode chars.
 _DASH_CONFUSABLES = "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"
 
+# Invisible/format codepoints that may be wedged into the delimiter to defeat
+# detection while rendering identically (Story 10.70 / SEC-21-zerowidth).
+#
+# Derived, not hand-listed: this is Unicode's Default_Ignorable_Code_Point set
+# -- every category-Cf codepoint (163 of them, none of which NFKC folds away
+# and none of which `\s` matches) plus the non-Cf default-ignorables (COMBINING
+# GRAPHEME JOINER, the Hangul fillers, the Khmer inherent vowels, the Mongolian
+# and standard variation selectors, and the reserved default-ignorable blocks).
+# `tests/unit/tools/test_untrusted.py` re-derives the Cf half from the running
+# Python's `unicodedata` and fails if any member escapes, so a future Unicode
+# update that adds a format character trips a test instead of silently
+# reopening the gap.
+#
+# Consciously left out:
+#   * Category Zs (NBSP, EN QUAD, IDEOGRAPHIC SPACE, ...) -- already covered,
+#     twice over: `\s` matches every one of them, and NFKC folds all but
+#     U+1680 to ASCII space.
+#   * U+3164 HANGUL FILLER and U+FFA0 HALFWIDTH HANGUL FILLER are listed
+#     anyway for legibility, though detection would catch them regardless:
+#     NFKC folds both to U+1160, which is in the class.
+#   * U+2800 BRAILLE PATTERN BLANK and other blank-rendering glyphs -- they are
+#     ordinary visible characters that happen to have empty ink, not
+#     default-ignorables; admitting every such glyph is an unbounded set.
+#   * Combining marks generally -- they render *over* a neighbour rather than
+#     disappearing, so they do not produce a confusable delimiter.
+# Written as escapes rather than literal glyphs, both because the glyphs are
+# invisible in a diff and because ruff's RUF002 flags ambiguous literals.
+_INVISIBLES = (
+    "\u00ad\u034f\u0600-\u0605\u061c\u06dd\u070f\u0890-\u0891"
+    "\u08e2\u115f-\u1160\u17b4-\u17b5\u180b-\u180f\u200b-\u200f"
+    "\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0"
+    "\ufff0-\ufffb\U000110bd\U000110cd\U00013430-\U00013438"
+    "\U0001bca0-\U0001bca3\U0001d173-\U0001d17a"
+    "\U000e0000-\U000e0fff"
+)
+
+# A run of invisibles (allowed between the letters of the literal words), and a
+# run of invisibles-or-whitespace (allowed where `\s*` already sat).
+_INV = f"[{_INVISIBLES}]*"
+_GAP = f"[\\s{_INVISIBLES}]*"
+
+
+def _interleave(word: str) -> str:
+    """Allow an invisible run between every pair of letters in ``word``.
+
+    Whitespace is deliberately *not* allowed here: ``UN TRUSTED`` reads
+    visibly different from the delimiter, so it is not a confusable, whereas a
+    zero-width wedge renders pixel-identical. Widening only the ``\\s*``
+    positions would leave the interior exploitable -- the ZWNJ-inside-``DATA``
+    payload on Story 10.70's card proves it.
+    """
+    return _INV.join(word)
+
+
 # Matches any spelling of the closing delimiter after NFKC normalization:
-# case-insensitive, tolerant of whitespace (including newlines/tabs) around
-# the '/' and around the interior separator, accepting '-' or '_' as the
-# separator plus the Unicode dash confusables above. See the module
-# docstring for the empirical NFKC findings behind this shape.
+# case-insensitive, tolerant of whitespace (including newlines/tabs) and
+# invisible/format characters around the '/' and around the interior
+# separator, tolerant of invisible characters between the letters of
+# UNTRUSTED and DATA, and accepting '-' or '_' as the separator plus the
+# Unicode dash confusables above. See the module docstring for the empirical
+# NFKC findings behind this shape.
+#
+# No catastrophic-backtracking risk: every quantified run is a single
+# character class, and each is separated from the next by a mandatory literal
+# (a letter, the '/', the separator, or the '>'). The separator class is
+# disjoint from `_GAP`, so no position can be consumed by two alternatives.
 _CLOSE_TAG_PATTERN = re.compile(
-    r"<\s*/\s*UNTRUSTED\s*[-_" + _DASH_CONFUSABLES + r"]\s*DATA\s*>",
+    "<"
+    + _GAP
+    + "/"
+    + _GAP
+    + _interleave("UNTRUSTED")
+    + _GAP
+    + "[-_"
+    + _DASH_CONFUSABLES
+    + "]"
+    + _GAP
+    + _interleave("DATA")
+    + _GAP
+    + ">",
     re.IGNORECASE,
 )
 
