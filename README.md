@@ -11,14 +11,14 @@ Enables Claude to read products, check inventory, manage collections, handle dis
 ### Products
 | Tool | Description |
 |------|-------------|
-| `get_products` | List products with id, title, handle, status, variants — cursor-paginated (up to 2500), optional `status` filter (ACTIVE / DRAFT / ARCHIVED) and `limit`; appends an explicit WARNING when the page cap truncates the list |
+| `get_products` | List products with id, title, handle, status, variants — cursor-paginated (up to 2500), optional `status` filter (ACTIVE / DRAFT / ARCHIVED / UNLISTED) and `limit`; appends an explicit WARNING when the page cap truncates the list |
 | `get_product` | Fetch a single product by id or handle (one identifier only — see the note below the table) |
 | `get_product_description` | Fetch the raw `body_html` for a single product by id or handle (one identifier only — see the note below the table) |
 | `get_product_full` | Fetch a full product record — body_html, tags, type, vendor, seo, category, variants, options — by id or handle (one identifier only — see the note below the table) |
 | `update_product_title` | Update a product title (preview + confirm pattern) |
 | `update_product_description` | Update a product's HTML description |
 | `update_product_tags` | Update product tags — replace / append / remove modes (preview + confirm) |
-| `update_product_status` | Transition product status — ACTIVE / DRAFT / ARCHIVED (preview + confirm) |
+| `update_product_status` | Transition product status — ACTIVE / DRAFT / ARCHIVED / UNLISTED (preview + confirm) |
 | `update_variant_inventory_policy` | Set variant inventoryPolicy — DENY / CONTINUE (preview + confirm; defaults to all variants) |
 | `update_product_pricing` | Bulk update variant `price` / `compareAtPrice` via `productVariantsBulkUpdate`; resolves variant IDs from numeric / GID / SKU (preview + confirm) |
 | `get_products_by_collection` | List all products in a collection by handle |

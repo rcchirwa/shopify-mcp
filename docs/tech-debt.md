@@ -8,6 +8,66 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-09-05 — Story 10.74 (T-10.72-unlisted-status — carry UNLISTED in the product-status vocabulary)
+
+A defect, not an enhancement: the vocabulary this server validated against did not match the enum of the API it wraps. `PRODUCT_STATUS_VALUES` carried three values; Shopify's `ProductStatus` carries four. Surfaced by Story 10.72 while probing the new status filter against the live store. Trello: https://trello.com/c/Nqo9gPwi (Story 10.74, Epic 10).
+
+**Not a case of Shopify moving under us.** Schema introspection of `ProductStatus` on 2026-09-05 returned `ACTIVE, ARCHIVED, DRAFT, UNLISTED`, none deprecated, on **2024-01, 2025-10 and 2026-01** — the last being the version this project targets (`settings.shopify_api_version` defaults to `"2026-01"`; `.env.example` and README agree). The version matters: Shopify's own description of UNLISTED says the status "is only visible from 2025-10 and up, is translated to active in older versions and can't be changed from unlisted in older versions." 2026-01 is above that line, so the caveat does not apply to this project's configuration. The tuple was written incomplete from the start and nothing ever compared it to the enum — the same class of gap 10.72's sync test was added to catch, one layer up.
+
+**The store had a product in the missing state the whole time.** `dripping-fall-v-graphic-tee` (`gid://shopify/Product/8559387410585`) reads **`status: "UNLISTED"`** on all three versions probed. The arithmetic is what makes it easy to miss — counted live per version, identical on each:
+
+| | ACTIVE | DRAFT | ARCHIVED | UNLISTED | sum | store total |
+|---|---|---|---|---|---|---|
+| before (3 filters) | 40 | 6 | 1 | — | **47** | 48 |
+| after (4 filters) | 40 | 6 | 1 | 1 | **48** | 48 |
+
+Filtering three ways summed to something that looked complete.
+
+### The semantics decision (card step 2) — approach 1, widen both vocabularies
+
+The card asked whether the server should be able to transition a product *into* UNLISTED, or only read and filter it. Settled as **both**:
+
+1. **Shopify models one enum for reads and writes.** Introspection confirms `ProductInput.status` is typed `ProductStatus` — the same four-value enum on 2026-01, not a narrower writable variant. Refusing on write what the API accepts would invent a distinction the schema does not make.
+2. **The write path is already gated.** `update_product_status` previews, requires `confirm=True`, and surfaces Shopify `userErrors` verbatim. Allowing UNLISTED is the same guarded flow that already allows ARCHIVED, the more destructive transition of the two.
+3. **The one-way door was the sharper half of the defect.** A product could be moved out of UNLISTED but never back. Splitting the vocabularies would have left that permanent.
+
+**A wrong argument, removed rather than quietly dropped.** The first draft of this entry also argued that splitting read and write vocabularies would force 10.72's equality guard down to a subset assertion. That was false, and the review caught it: the guard compares `PRODUCT_STATUS_VALUES` to `PRODUCT_STATUS_QUERY` (read vocabulary against fragment table), so adding a separate writable tuple would have left it byte-identical. The decision above stands on reasons 1–3; it never needed that one.
+
+**Still unverified, precisely scoped:** whether Shopify's *business logic* accepts `status: UNLISTED` on `productUpdate` for this store's plan (Basic, per `shop.plan.displayName`). Settling it means firing a real mutation at the live store, which this story did not license. What *is* verified is the type layer on the configured version: the enum carries the value and `ProductInput.status` accepts it.
+
+The two failure modes differ, and the first draft of this entry conflated them:
+- **Business-logic rejection** (valid enum, disallowed transition) returns `userErrors`, which `write_gate` formats into an `Error:` string. Contained, and pinned by `test_status_user_errors_surfaced`.
+- **A value absent from the schema** is a GraphQL *validation* error: `TransportQueryError` → `ShopifyError` raised at `client.py`, never reaching `format_user_errors`. That path cannot fire here, because introspection confirms the value is in the enum on 2026-01 — but the earlier claim that "the operator sees a `userError`" would have been wrong for it.
+
+### Closed
+- **T-10.72-unlisted-status** — `UNLISTED` added to `PRODUCT_STATUS_VALUES` (`tools/products.py`) and to `PRODUCT_STATUS_QUERY` (`shopify/operations/products.py`), satisfying 10.72's sync test by widening both rather than relaxing it. Both tool docstrings and both README rows updated. The fixed-fragment lookup is unchanged, so the status still reaches Shopify only as a bound `$query` variable — widening the allowlist introduced no interpolation.
+- **The confirm gate now discloses what UNLISTED does.** It is not a hide-this-product state: Shopify keeps the product active and purchasable by direct link, dropping it only from search, collections and recommendations. The preview says so, so an operator reaching for "hide this" is not handed the weaker guarantee by a status whose name implies otherwise.
+
+### What the review changed (triple-threat: code quality + security + deep, in parallel, plus a separate adversarial verifier)
+
+The code came through clean — no Critical, no High against the implementation, and no reviewer could construct a mutation that weakens a guard and survives. The High findings were all against the **evidence**, which was wrong in four checkable ways:
+
+- **The comments named the wrong API version.** Both source comments claimed introspection covered "2024-01, the version this server is configured for". `settings.py` defaults to **2026-01**, and 2026-01 was never probed — only the author's untracked local `.env` says 2024-01. Since Shopify gates UNLISTED at 2025-10, the unprobed version was the one that actually decided the question. Re-probed on 2024-01, 2025-10 and 2026-01; all three carry the value, and the comments now name the version the project ships.
+- **The corroborating datum did not corroborate.** The entry recorded `publishedAt: null` for the affected product — a publication attribute orthogonal to status, true of every DRAFT product too — when the actual `status: "UNLISTED"` read was in hand. Replaced with the status value and a per-version count table.
+- **The strongest stated argument was false.** See the removed-argument note above.
+- **The `userError` fallback would not have fired for the case it hedged.** An invalid enum is a validation error that raises, not a `userError`. Both modes are now stated separately.
+
+Two test gaps also closed, each demonstrated by a surviving mutation rather than asserted:
+- **All four prose sites could be reverted to the three-value wording with the whole suite green.** The docstrings are what the calling model reads, so stale prose means a model that never offers a status the code accepts. Now pinned for both docstrings and both README rows.
+- **The offline suite makes no contact with Shopify's schema** (`fetch_schema_from_transport=False`, canned fake-client dicts), which is exactly why a three-valued tuple survived against a four-value enum for the module's whole life. Added `tests/live/test_product_status_parity.py` — read-only, not run by CI — which fails when Shopify's enum and ours diverge.
+
+Security findings resolved: the injection guard was traced end to end by three reviewers and confirmed intact (no interpolation, bound `$query`/`$input` variables, refusals still pre-network, no caller input echoed). Case-sensitivity was assessed and **kept strict** — `"unlisted"` is refused like `"active"` is, because the same tuple gates the write path where the value is a case-sensitive GraphQL enum, and adding `.upper()` would put normalization in front of a security allowlist. The one substantive security finding, that the confirm gate did not disclose what UNLISTED does, is fixed above.
+
+### Deliberately out of scope
+- **Every other hardcoded enum in the repo.** `INVENTORY_POLICY_VALUES`, `TAG_MODES` and friends were not audited against their Shopify counterparts. This story was the product-status vocabulary only; a general enum-parity audit is its own story if anyone wants it.
+- **Automatic parity with the live schema.** Deriving the vocabulary from introspection at startup was the card's approach 3 and stays rejected: it adds a network dependency to server startup for a four-value list stable across every version probed. The live runner covers the same ground without putting a network call in the startup path.
+- **Two pre-existing unbounded-reflection sites on adjacent lines**, both raised by the security review and both older than this story: `update_product_status`'s `f"No product found with id {product_id}"` echoes caller input without `cap()`/`sanitize_control_chars()`, and `tools/_response.py`'s `format_user_errors` joins upstream `field`/`message` text uncapped. Left alone under CLAUDE.md's surgical-changes rule rather than folded into a vocabulary story; worth a card.
+
+### Corrected in the Story 10.72 entry below
+- Its claim that "a mutant replacing the dict lookup with an interpolating `.get(status, f"status:{status}")` fallback is caught" describes an **equivalent mutant**: the `raise ValueError` above it fires first, so the fallback is unreachable and the mutation is undetectable by any test. The property itself *is* protected — dropping the guard *and* interpolating is caught — so the sentence was measuring the wrong thing, not overstating the safety. Corrected in place.
+
+---
+
 ## 2026-09-05 — Story 10.72 (T-get-products-paging — paginate the outer products connection, add a status filter)
 
 An enhancement, not a defect. `get_products` took no arguments, issued one `products(first: 250)` request and returned the prefix, while its sibling `read_product` on the same module already walked `client.paginate()` and reported a `capped` flag. The `paginate()` helper from Story 10.6 (A3) had been adopted for the **inner** connections it was built for (variants, media) and never carried to the **outer** list connections. Trello: https://trello.com/c/u3gso0Gj (Story 10.72, Epic 10).
@@ -22,7 +82,7 @@ An enhancement, not a defect. `get_products` took no arguments, issued one `prod
 ### Deliberately out of scope, recorded so the boundary reads as a boundary
 - **The two sibling outer-connection reads stay on single-shot `first`.** `read_products_by_collection` (`{"handle": ..., "first": 250}`) and `read_products_with_descriptions` (`{"first": limit}`) have the same shape and the same silent-truncation gap. Left alone deliberately: `read_products_with_descriptions`'s existing `limit` argument would change meaning from "page size" to "total", a contract change on a second tool that deserves its own story and its own argument rather than being absorbed into this one. This is the card's step-2 scope decision, taken as approach 1 of the three the card offered.
 - **The nested `variants(first: 50)` inside `GET_PRODUCTS` is still unpaginated.** A product with more than 50 variants shows a partial variant list from this tool. `client.paginate()` structurally cannot walk a connection nested inside another connection — the same constraint documented above `GET_ORDERS`. Excluded by the card's own scope guard; noted in a comment on the query.
-- **`PRODUCT_STATUS_VALUES` does not cover every status Shopify returns.** The live store holds a product with status `UNLISTED`, which is not in the three-value tuple, so it cannot be selected by the new filter and is reachable only through an unfiltered call. Reusing the existing tuple was an explicit acceptance criterion here, so the tuple was not widened. Whether `UNLISTED` (and any status Shopify adds later) belongs in the shared vocabulary is a separate decision that also affects `update_product_status`. Widening it now fails CI rather than crashing at runtime — see the review fixes below.
+- ~~**`PRODUCT_STATUS_VALUES` does not cover every status Shopify returns.** The live store holds a product with status `UNLISTED`, which is not in the three-value tuple, so it cannot be selected by the new filter and is reachable only through an unfiltered call. Reusing the existing tuple was an explicit acceptance criterion here, so the tuple was not widened. Whether `UNLISTED` (and any status Shopify adds later) belongs in the shared vocabulary is a separate decision that also affects `update_product_status`. Widening it now fails CI rather than crashing at runtime — see the review fixes below.~~ **Closed 2026-09-05 by Story 10.74 (`T-10.72-unlisted-status`) — see the entry at the top of this file.**
 
 ### What the review changed (triple-threat: code quality + security + deep, in parallel, plus a separate adversarial verifier)
 
@@ -32,7 +92,7 @@ An enhancement, not a defect. `get_products` took no arguments, issued one `prod
 - **A capped walk that collected nothing reported a bare "No products found."** `paginate()` can stop with `capped` set and zero nodes (empty pages still reporting `hasNextPage`, or its `endCursor`-is-null abort), so the early return discarded the flag — the exact silent truncation this story exists to remove. The warning is now appended to the empty message too.
 - **A negative `limit` silently meant "unlimited".** Now refused at the tool boundary with the same `Error:` convention `status` uses.
 - **The two status vocabularies had nothing pinning them together.** The layering rule forbids `operations` importing `tools`, so a test is the only enforcement point; `set(PRODUCT_STATUS_VALUES) == set(PRODUCT_STATUS_QUERY)` now fails CI if a future story widens one alone, instead of raising an uncaught `ValueError` out of an MCP tool.
-- **Verified, no change needed.** The status-filter injection path was reviewed end to end by all four: no f-string, `%`, `.format` or concatenation anywhere between the argument and the query text; the fragment travels as a bound `$query` variable; neither rejection message echoes caller input. A mutant replacing the dict lookup with an interpolating `.get(status, f"status:{status}")` fallback is caught.
+- **Verified, no change needed.** The status-filter injection path was reviewed end to end by all four: no f-string, `%`, `.format` or concatenation anywhere between the argument and the query text; the fragment travels as a bound `$query` variable; neither rejection message echoes caller input. ~~A mutant replacing the dict lookup with an interpolating `.get(status, f"status:{status}")` fallback is caught.~~ **Corrected 2026-09-05 (Story 10.74):** that mutant is *equivalent*, not caught — the `raise ValueError` above the lookup fires first, so the fallback is unreachable and no test can distinguish it. The property is genuinely protected; the demonstrating mutation is dropping the guard **and** interpolating, which `test_read_products_refuses_unmapped_status_before_any_call` does catch.
 
 ### Follow-up candidate, recorded not fixed
 - **Unfenced product titles, at higher volume.** `get_products` renders `title` / `handle` without `wrap()`, matching `get_product` and the SEC-04 boundary Story 10.63 settled (that story fenced descriptions, not titles). Not a regression — but this change raises the ceiling on unfenced store-controlled text in one response from 250 titles to 2500, `status="DRAFT"` makes lower-trust unpublished titles directly selectable, and `PRODUCTS_TRUNCATED_WARNING` is appended after a bare newline, so a crafted title could forge a truncation line. Worth weighing when the SEC-04 successor is scoped.

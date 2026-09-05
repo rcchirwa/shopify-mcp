@@ -10,6 +10,8 @@ Usage:
   pytest tests/unit/tools/test_products.py -v
 """
 
+from pathlib import Path
+
 import pytest
 
 from shopify_mcp.shopify.operations import products as ops
@@ -511,10 +513,17 @@ def test_get_products_docstring_no_longer_promises_all_products():
 
 @pytest.mark.parametrize(
     ("status", "fragment"),
-    [("ACTIVE", "status:ACTIVE"), ("DRAFT", "status:DRAFT"), ("ARCHIVED", "status:ARCHIVED")],
+    [
+        ("ACTIVE", "status:ACTIVE"),
+        ("DRAFT", "status:DRAFT"),
+        ("ARCHIVED", "status:ARCHIVED"),
+        ("UNLISTED", "status:UNLISTED"),
+    ],
 )
 def test_get_products_status_filter_narrows_the_query(status, fragment):
-    """AC3: each of the three supported statuses narrows the connection."""
+    """AC3: each supported status narrows the connection. UNLISTED joined the
+    set in Story 10.74 — before that, filtering three ways summed to 47 of the
+    store's 48 products and looked complete."""
     tools, fc = _build([products_page([_product_summary("111", "Tee", "tee", status=status)])])
     out = tools["get_products"](status=status)
     assert f"status: {status}" in out
@@ -531,11 +540,54 @@ def test_status_vocabularies_stay_in_sync_across_the_two_layers():
     assert set(products.PRODUCT_STATUS_VALUES) == set(ops.PRODUCT_STATUS_QUERY)
 
 
+def test_no_status_is_dropped_from_the_vocabulary():
+    """A DROP-GUARD, not parity evidence. This asserts the constant against a
+    literal restatement of itself, so it makes no contact with Shopify and
+    cannot detect a value Shopify adds — only one a future edit removes.
+
+    It earns its place because the sync test above is structurally blind to the
+    case that produced this story: both vocabularies wrong together. Reverting
+    tools and operations at the same time keeps them equal and passes that test;
+    this one catches it. Real Shopify parity is checked by the live runner at
+    tests/live/test_product_status_parity.py, which CI does not run."""
+    assert set(products.PRODUCT_STATUS_VALUES) == {"ACTIVE", "DRAFT", "ARCHIVED", "UNLISTED"}
+
+
+def test_tool_docstrings_enumerate_the_whole_status_vocabulary():
+    """The docstrings ARE the tool descriptions the calling model reads, so
+    stale prose means a model that never offers a status the code accepts — a
+    silent half-fix, and the exact failure this story's AC5 exists to prevent.
+    Nothing pinned them before: all four prose sites could be reverted to the
+    three-value wording with the whole suite green."""
+    tools, _fc = _build([products_page([])])
+    for tool_name in ("get_products", "update_product_status"):
+        doc = tools[tool_name].__doc__ or ""
+        missing = [v for v in products.PRODUCT_STATUS_VALUES if v not in doc]
+        assert not missing, f"{tool_name} docstring omits {missing}"
+
+
+def test_readme_tool_table_enumerates_the_whole_status_vocabulary():
+    """Same guard, for the other half of the public surface. README's tool table
+    is the human-facing contract and drifted stale twice before (Story 10.65,
+    Story 10.72), both times caught only by a reviewer."""
+    readme = (Path(__file__).resolve().parents[3] / "README.md").read_text(encoding="utf-8")
+    rows = [
+        line
+        for line in readme.splitlines()
+        if line.startswith("| `get_products`") or line.startswith("| `update_product_status`")
+    ]
+    assert len(rows) == 2, f"expected both tool rows, found {len(rows)}"
+    for row in rows:
+        missing = [v for v in products.PRODUCT_STATUS_VALUES if v not in row]
+        assert not missing, f"README row omits {missing}: {row}"
+
+
 @pytest.mark.parametrize(
     "bad",
     [
         "active",
-        "UNLISTED",
+        "unlisted",
+        "PAUSED",
         "ACTIVE OR status:DRAFT",
         "*",
         " status:ACTIVE",
@@ -898,16 +950,21 @@ def _status_update_ok(pid="123", status="ACTIVE"):
     }
 
 
-def test_status_valid_transition_mutation_shape():
+@pytest.mark.parametrize("target", ["ARCHIVED", "UNLISTED"])
+def test_status_valid_transition_mutation_shape(target):
+    """UNLISTED joined the write vocabulary in Story 10.74. Before that the
+    transition was a one-way door — a product could be moved OUT of UNLISTED
+    but never back — because the allowlist refused the value Shopify's own
+    ProductStatus enum has carried all along."""
     tools, fc = _build(
         [
             _product_read("123", "T", "t"),
-            _status_update_ok(status="ARCHIVED"),
+            _status_update_ok(status=target),
         ]
     )
     out = tools["update_product_status"](
         product_id="123",
-        new_status="ARCHIVED",
+        new_status=target,
         confirm=True,
     )
     assert out.startswith("CONFIRMED —"), out
@@ -915,7 +972,7 @@ def test_status_valid_transition_mutation_shape():
     assert fc.calls[1][0] == UPDATE_PRODUCT_STATUS
     assert fc.calls[1][1]["input"] == {
         "id": "gid://shopify/Product/123",
-        "status": "ARCHIVED",
+        "status": target,
     }
 
 
@@ -930,11 +987,40 @@ def test_status_invalid_value_rejected_no_shopify_call():
     assert fc.calls == []
 
 
-def test_status_preview_does_not_call_mutation():
+def test_status_unlisted_preview_discloses_that_it_stays_purchasable():
+    """A confirm gate is only informed consent if the preview says what the
+    target status does. UNLISTED reads like "hidden" and is not — Shopify keeps
+    the product active and reachable by direct link. An operator reaching for
+    "hide this product" wants DRAFT, and the preview has to say so before they
+    type confirm=True."""
+    tools, _fc = _build([_product_read("123", "T", "t")])
+    out = tools["update_product_status"](
+        product_id="123",
+        new_status="UNLISTED",
+        confirm=False,
+    )
+    assert out.startswith("PREVIEW —")
+    assert "purchasable by" in out and "direct link" in out
+    assert "DRAFT to unpublish" in out
+
+
+@pytest.mark.parametrize("target", ["ARCHIVED", "DRAFT"])
+def test_status_preview_omits_the_unlisted_note_for_other_statuses(target):
+    """The disclosure is specific to UNLISTED — it must not leak onto the
+    statuses that genuinely do unpublish."""
+    tools, _fc = _build([_product_read("123", "T", "t")])
+    out = tools["update_product_status"](product_id="123", new_status=target, confirm=False)
+    assert "direct link" not in out
+
+
+@pytest.mark.parametrize("target", ["DRAFT", "UNLISTED"])
+def test_status_preview_does_not_call_mutation(target):
+    """Widening the vocabulary must not widen the write gate: UNLISTED goes
+    through the same preview/confirm flow as every other status."""
     tools, fc = _build([_product_read("123", "T", "t")])
     out = tools["update_product_status"](
         product_id="123",
-        new_status="DRAFT",
+        new_status=target,
         confirm=False,
     )
     assert out.startswith("PREVIEW —")

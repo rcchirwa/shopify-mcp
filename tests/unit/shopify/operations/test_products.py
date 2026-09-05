@@ -121,11 +121,17 @@ def test_read_products_capped_when_page_budget_exhausted():
 
 @pytest.mark.parametrize(
     ("status", "fragment"),
-    [("ACTIVE", "status:ACTIVE"), ("DRAFT", "status:DRAFT"), ("ARCHIVED", "status:ARCHIVED")],
+    [
+        ("ACTIVE", "status:ACTIVE"),
+        ("DRAFT", "status:DRAFT"),
+        ("ARCHIVED", "status:ARCHIVED"),
+        ("UNLISTED", "status:UNLISTED"),
+    ],
 )
 def test_read_products_maps_status_to_fixed_fragment(status, fragment):
     """AC3/AC4: each supported status narrows the connection through a fixed
-    fragment looked up by key — the argument is never interpolated."""
+    fragment looked up by key — the argument is never interpolated. UNLISTED
+    joined the table in Story 10.74."""
     fc = FakeClient([products_page([])])
     ops.read_products(fc, status=status)
     assert fc.calls[0][1]["query"] == fragment
