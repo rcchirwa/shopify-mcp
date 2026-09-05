@@ -51,9 +51,26 @@ fragment ProductFullFields on Product {
 }
 """
 
+# Story 10.72: the outer products connection now carries $after + pageInfo so
+# client.paginate() can walk it, and a $query variable for the status filter.
+# $query is bound as a GraphQL *variable*, never string-interpolated — the
+# operations layer maps a validated status constant to a fixed search fragment.
+#
+# The nested variants(first: 50) is a separate, still-unpaginated truncation:
+# a product with more than 50 variants shows a partial variant list here, and
+# shows it SILENTLY. client.paginate() cannot walk a connection nested inside
+# another connection — the same constraint documented above GET_ORDERS.
+#
+# GET_ORDERS answers that constraint by selecting pageInfo { hasNextPage } on
+# the nested connection anyway, so the cap is at least detected and warned
+# about (Story 10.34 / A3). This query deliberately does NOT follow that half
+# of the precedent either: Story 10.72's scope guard put the nested variants
+# connection out of scope, so both the pagination AND the detection are
+# deferred here. Recorded as a residual in docs/tech-debt.md rather than left
+# to read as an oversight.
 GET_PRODUCTS = """
-query GetProducts($first: Int!) {
-  products(first: $first) {
+query GetProducts($first: Int!, $after: String, $query: String) {
+  products(first: $first, after: $after, query: $query) {
     nodes {
       id
       title
@@ -63,6 +80,7 @@ query GetProducts($first: Int!) {
         nodes { id title }
       }
     }
+    pageInfo { hasNextPage endCursor }
   }
 }
 """

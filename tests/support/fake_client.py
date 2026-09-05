@@ -136,3 +136,20 @@ class FakeClient:
             if cursor is None:
                 break
         return first_response, all_nodes, True
+
+
+def products_page(
+    nodes: list[Any], *, has_next: bool = False, cursor: str = "CUR"
+) -> dict[str, Any]:
+    """One page of the outer products connection, in paginate()'s expected shape.
+
+    Shared by the tools-layer and operations-layer product-list suites (Story
+    10.72) so the two cannot drift apart on the fixture shape they both assert
+    pagination against.
+    """
+    return {
+        "products": {
+            "nodes": nodes,
+            "pageInfo": {"hasNextPage": has_next, "endCursor": cursor if has_next else None},
+        }
+    }

@@ -38,6 +38,39 @@ _VARIANTS_PAGE_CAP = 50
 # read is fully paginated via client.paginate() with page_size=VARIANTS_PAGE_CAP.
 VARIANTS_PAGE_CAP = 250
 
+# Story 10.72 — the outer products-connection walk in read_products.
+#
+# 250 is Shopify's per-connection maximum, so it costs the fewest round trips
+# for a given result set, and it keeps a store of under 250 products resolving
+# in exactly one request, as it did before this story.
+#
+# Measured against the live store on 2026-09-04 rather than assumed: this query
+# shape at first=250 reports requestedQueryCost=112 (actualQueryCost=9) against
+# a 2000-point bucket restoring at 100/s. The 10-page worst case is ~1120
+# requested points spread over 10 requests — inside the budget even on a
+# 1000-point standard-plan bucket, and far below the 1000-point per-query
+# maximum that would reject the request outright. Re-measure if the nested
+# variants(first: 50) selection ever grows.
+PRODUCTS_PAGE_SIZE = 250
+
+# Page budget for that walk: 10 x 250 = 2500 products before the read reports
+# capped. Kept explicit rather than leaning on client.paginate()'s default,
+# because the tool's truncation warning describes this budget.
+PRODUCTS_MAX_PAGES = 10
+
+# Fixed Shopify search-syntax fragments for the status filter, keyed by the
+# validated status constant. read_products looks a status up in this table
+# instead of interpolating the caller's string into the query, so a value that
+# is not a key here cannot reach Shopify at all. Keys mirror
+# tools.products.PRODUCT_STATUS_VALUES; the mapping lives here rather than
+# being imported from the tools layer, which the operations layer must not
+# depend on (Story 10.23 / A5).
+PRODUCT_STATUS_QUERY = {
+    "ACTIVE": "status:ACTIVE",
+    "DRAFT": "status:DRAFT",
+    "ARCHIVED": "status:ARCHIVED",
+}
+
 
 # ---------- reads ----------
 
@@ -61,10 +94,61 @@ def _require_discriminator(product_id: str, handle: str) -> None:
         raise ValueError("provide either product_id or handle")
 
 
-def read_products(client: GraphQLClient) -> list[dict[str, Any]]:
-    """List products with id, title, handle, status, and variants."""
-    data = client.execute(GET_PRODUCTS, {"first": 250})
-    return data.get("products", {}).get("nodes", [])
+def read_products(
+    client: GraphQLClient, *, status: str = "", limit: int = 0
+) -> tuple[list[dict[str, Any]], bool]:
+    """List products (id, title, handle, status, variants), paginating the
+    outer products connection.
+
+    Returns ``(product_nodes, capped)`` — the same tuple convention
+    ``read_product`` uses — where ``capped`` is True when the walk stopped with
+    more products still available. Story 10.72 replaced the single
+    ``first: 250`` request this used to issue, which truncated silently.
+
+    ``status`` narrows the connection to one of ``PRODUCT_STATUS_QUERY``'s keys.
+    It is looked up in that table, never interpolated; an unmapped value raises
+    ``ValueError`` before any request is issued. Empty means no filter.
+
+    ``limit`` caps how many products are returned. It can only *narrow* the
+    request budget, never widen it: a small limit costs one small request
+    instead of a full walk, and a limit larger than
+    ``PRODUCTS_PAGE_SIZE * PRODUCTS_MAX_PAGES`` still stops at that ceiling and
+    reports ``capped``. Zero (or negative) means no caller cap.
+    """
+    search: str | None = None
+    if status:
+        if status not in PRODUCT_STATUS_QUERY:
+            raise ValueError(
+                "unsupported product status filter; expected one of "
+                + ", ".join(PRODUCT_STATUS_QUERY)
+            )
+        search = PRODUCT_STATUS_QUERY[status]
+
+    if limit > 0:
+        page_size = min(limit, PRODUCTS_PAGE_SIZE)
+        # min() so limit can only narrow the budget, never widen it. Without
+        # the clamp a caller-supplied limit sets max_pages directly, and since
+        # limit is model-facing an over-large value would authorise thousands
+        # of sequential requests — exactly the unbounded worst case the live
+        # cost probe above exists to rule out.
+        max_pages = min((limit + page_size - 1) // page_size, PRODUCTS_MAX_PAGES)
+    else:
+        page_size = PRODUCTS_PAGE_SIZE
+        max_pages = PRODUCTS_MAX_PAGES
+
+    _, nodes, capped = client.paginate(
+        GET_PRODUCTS,
+        {"query": search},
+        connection_path=["products"],
+        page_size=page_size,
+        max_pages=max_pages,
+    )
+    if limit > 0:
+        # A limit that is not a whole number of pages overshoots; the discarded
+        # remainder is itself proof that more products exist.
+        capped = capped or len(nodes) > limit
+        nodes = nodes[:limit]
+    return nodes, capped
 
 
 def read_product(
