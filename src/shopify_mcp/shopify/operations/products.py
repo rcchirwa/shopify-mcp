@@ -38,6 +38,23 @@ _VARIANTS_PAGE_CAP = 50
 # read is fully paginated via client.paginate() with page_size=VARIANTS_PAGE_CAP.
 VARIANTS_PAGE_CAP = 250
 
+# Story 10.77 — the per-product variant cap in GET_PRODUCTS, and the single
+# source of truth for it. Unlike the two constants above, this is NOT a page
+# size: the connection it caps is nested inside the paginated products
+# connection, so client.paginate() cannot walk it and there is no second page
+# to fetch. It is a hard ceiling on what get_products can show per product.
+#
+# It flows into the query as the $variantsFirst variable AND into the
+# get_products at-cap warning copy, so the two can't drift — the same property
+# GET_ORDERS_LINE_ITEM_CAP holds for the orders precedent this mirrors.
+#
+# The value stays at the 50 the query carried as a literal. Story 10.72
+# measured requestedQueryCost=112 at first: 250 WITH this nested selection at
+# 50; raising it multiplies the nested cost across every product on the page,
+# so it needs a fresh live probe rather than an edit here (recorded as a
+# residual in docs/tech-debt.md).
+GET_PRODUCTS_VARIANT_CAP = 50
+
 # Story 10.72 — the outer products-connection walk in read_products.
 #
 # Story 10.76 widened the consumer list: read_products_by_collection,
@@ -195,14 +212,45 @@ def read_products(
         search = PRODUCT_STATUS_QUERY[status]
 
     page_size, max_pages = _limit_budget(limit)
+    # variantsFirst goes in the base variables dict, not into a per-page patch:
+    # paginate() rebuilds the variables as {**variables, "first":…, "after":…}
+    # for every request, so anything not in here would be dropped after page one.
     _, nodes, capped = client.paginate(
         GET_PRODUCTS,
-        {"query": search},
+        {"query": search, "variantsFirst": GET_PRODUCTS_VARIANT_CAP},
         connection_path=["products"],
         page_size=page_size,
         max_pages=max_pages,
     )
     return _apply_limit(nodes, capped, limit)
+
+
+def capped_variant_product_ids(products: list[dict[str, Any]]) -> list[str]:
+    """Return the gids of products whose variants hit the fixed
+    ``variants(first: $variantsFirst)`` cap in ``GET_PRODUCTS`` — i.e.
+    ``variants.pageInfo.hasNextPage`` is True.
+
+    ``GET_PRODUCTS`` cannot paginate the nested-in-list ``variants`` connection
+    (see the comment above the query in ``shopify.queries.products``), so rather
+    than silently showing a partial variant list the tool layer warns on these
+    ids and points at ``get_product``, which walks a single product's variants.
+    A missing / shape-drifted ``pageInfo`` counts as not-capped (defensive
+    against permissions-trimmed responses). Ids are returned as gids; the tool
+    layer applies ``from_gid`` for display.
+
+    The exact shape and tolerance of ``capped_line_item_order_ids`` in
+    ``operations/orders.py`` — this is that helper's product-side twin.
+    """
+    # product["id"] is a direct subscript (not .get): id is a non-null field on
+    # the GraphQL Product type and is always selected by GET_PRODUCTS, so every
+    # node carries one — unlike variants/pageInfo, which are nullable or absent
+    # in shape-drifted responses and so are guarded. (get_products already
+    # derefs p["id"] in its render loop before this runs.)
+    return [
+        product["id"]
+        for product in products
+        if ((product.get("variants") or {}).get("pageInfo") or {}).get("hasNextPage")
+    ]
 
 
 def read_product(

@@ -408,13 +408,23 @@ def test_title_user_errors_surfaced():
 # ---------- List / collection response-unwrap regressions ----------
 
 
-def _product_summary(pid, title, handle, status="ACTIVE", variants=None):
+def _product_summary(pid, title, handle, status="ACTIVE", variants=None, variants_capped=False):
+    """One node of the GET_PRODUCTS products connection.
+
+    ``variants_capped`` sets the nested variants connection's
+    ``pageInfo.hasNextPage`` (Story 10.77). The key is always present, matching
+    the query's selection; the shape-drift cases where it is absent are covered
+    at the operations layer, which is where the tolerance lives.
+    """
     return {
         "id": f"gid://shopify/Product/{pid}",
         "title": title,
         "handle": handle,
         "status": status,
-        "variants": {"nodes": variants or []},
+        "variants": {
+            "nodes": variants or [],
+            "pageInfo": {"hasNextPage": variants_capped},
+        },
     }
 
 
@@ -509,6 +519,123 @@ def test_get_products_docstring_no_longer_promises_all_products():
     doc = tools["get_products"].__doc__ or ""
     assert "List all products" not in doc
     assert "pagination" in doc.lower()
+
+
+# ---------- Story 10.77: the per-product variant cap is warned, not silent ----------
+
+
+def test_get_products_warns_for_a_product_over_the_variant_cap():
+    """The warning names the product's numeric id, the cap taken from the
+    operations constant, and get_product as the remedy — the three things the
+    GET_ORDERS per-order warning carries, which is the precedent this mirrors."""
+    tools, _fc = _build(
+        [
+            products_page(
+                [
+                    _product_summary(
+                        "111",
+                        "Tee One",
+                        "tee-one",
+                        variants=[_variant("11", "Black")],
+                        variants_capped=True,
+                    )
+                ]
+            )
+        ]
+    )
+    out = tools["get_products"]()
+    cap = ops.GET_PRODUCTS_VARIANT_CAP
+    assert f"WARNING: product 111 has more than {cap} variants" in out
+    assert "get_product" in out.split("WARNING: product 111")[1]
+
+
+def test_get_products_does_not_warn_for_a_product_within_the_variant_cap():
+    tools, _fc = _build(
+        [
+            products_page(
+                [_product_summary("111", "Tee One", "tee-one", variants=[_variant("11", "Black")])]
+            )
+        ]
+    )
+    out = tools["get_products"]()
+    assert "WARNING" not in out
+
+
+def test_get_products_warns_only_for_the_products_that_are_capped():
+    """A mixed page names the over-cap product and stays silent about the other,
+    so the warning count tracks the truncation rather than the page size."""
+    tools, _fc = _build(
+        [
+            products_page(
+                [
+                    _product_summary("111", "Tee One", "tee-one", variants_capped=True),
+                    _product_summary("222", "Tee Two", "tee-two"),
+                ]
+            )
+        ]
+    )
+    out = tools["get_products"]()
+    assert "WARNING: product 111" in out
+    assert "WARNING: product 222" not in out
+    assert out.count("WARNING:") == 1
+
+
+def test_get_products_variant_warning_precedes_the_product_list_warning():
+    """AC5: the two truncations stay distinguishable and ordered. The variant
+    warning is a different fact with a different remedy (get_product), so it must
+    not displace PRODUCTS_TRUNCATED_WARNING as the final text — the property
+    Story 10.72's endswith test pins and this story must not break."""
+    pages = [
+        products_page(
+            [_product_summary(str(i), f"Tee {i}", f"tee-{i}", variants_capped=True)],
+            has_next=True,
+            cursor=f"C{i}",
+        )
+        for i in range(ops.PRODUCTS_MAX_PAGES)
+    ]
+    tools, _fc = _build(pages)
+    out = tools["get_products"]()
+    assert out.endswith(products.PRODUCTS_TRUNCATED_WARNING)
+    assert out.index("WARNING: product 0") < out.index(products.PRODUCTS_TRUNCATED_WARNING)
+
+
+def test_get_products_variant_warning_lands_after_every_store_authored_line():
+    """The warnings are appended after the joined product list, not interleaved
+    into it, so no store-controlled title sits between the last warning and the
+    end of the output. Putting a per-product marker inside a product block was
+    approach 3 and was rejected on exactly this ground."""
+    tools, _fc = _build(
+        [
+            products_page(
+                [
+                    _product_summary("111", "Tee One", "tee-one", variants_capped=True),
+                    _product_summary("222", "Tee Two", "tee-two"),
+                ]
+            )
+        ]
+    )
+    out = tools["get_products"]()
+    assert out.index("Tee Two") < out.index("WARNING: product 111")
+
+
+def test_get_products_variant_warning_uses_the_operations_constant(monkeypatch):
+    """The cap in the copy is READ from GET_PRODUCTS_VARIANT_CAP, not typed as a
+    literal 50 beside it — otherwise the query and the sentence drift the moment
+    the constant moves, which is the whole reason the constant exists.
+
+    Asserting the shipped value would prove nothing, since a hardcoded 50 renders
+    identically. Move the constant instead: the copy must follow it. The tool
+    reads the attribute off the operations module at call time, so patching the
+    module attribute reaches both the copy and the query variable."""
+    monkeypatch.setattr(ops, "GET_PRODUCTS_VARIANT_CAP", 7)
+    tools, fc = _build(
+        [products_page([_product_summary("111", "Tee One", "tee-one", variants_capped=True)])]
+    )
+    out = tools["get_products"]()
+    assert "more than 7 variants" in out
+    assert "first 7 are shown" in out
+    assert "50" not in out
+    assert fc.calls[0][1]["variantsFirst"] == 7
 
 
 @pytest.mark.parametrize(

@@ -141,6 +141,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         output ends with an explicit truncation WARNING, so a partial list is
         never presented as the complete catalogue.
 
+        Each product's variant list is capped per product and cannot be
+        paginated from here. A product past that cap gets its own WARNING line
+        naming the cap; use get_product for that product's full variant list.
+
         status: optional filter — one of ACTIVE, DRAFT, ARCHIVED, UNLISTED.
                 Anything else is rejected before any request is made. Empty
                 means no filter.
@@ -171,6 +175,24 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"  Variants: {variants}"
             )
         result = "\n\n".join(lines)
+        # Story 10.77 — GET_PRODUCTS caps each product's variants at a fixed
+        # first: N and cannot paginate that nested-in-list connection, so warn
+        # (don't silently show a prefix) for every truncated product, exactly as
+        # get_orders does for per-order line items (Story 10.34 / A3).
+        #
+        # Appended after the joined list rather than rendered inside a product
+        # block: warnings then sit together, past every store-authored title,
+        # instead of widening the unfenced-title surface SEC-04's successor
+        # flagged. It precedes PRODUCTS_TRUNCATED_WARNING, which is a different
+        # truncation with a different remedy and must stay the final text.
+        cap = ops.GET_PRODUCTS_VARIANT_CAP
+        for gid in ops.capped_variant_product_ids(products):
+            pid = from_gid(gid)
+            result += (
+                f"\nWARNING: product {pid} has more than {cap} variants — only the first "
+                f"{cap} are shown here; get_products cannot paginate per-product variants. "
+                "Use get_product to retrieve the full variant list."
+            )
         if capped:
             result += PRODUCTS_TRUNCATED_WARNING
         return result

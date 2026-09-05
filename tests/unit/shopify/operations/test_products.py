@@ -64,8 +64,17 @@ def test_read_products_returns_nodes():
     assert nodes == [{"id": "gid://shopify/Product/1"}]
     assert capped is False
     assert fc.calls[0][0] == q.GET_PRODUCTS
-    # query=None (no status filter) plus the cursor pair paginate() supplies.
-    assert fc.calls[0][1] == {"query": None, "first": ops.PRODUCTS_PAGE_SIZE, "after": None}
+    # query=None (no status filter), the nested variant cap read from the single
+    # operations-layer constant (Story 10.77), plus the cursor pair paginate()
+    # supplies. Asserted as an exact dict so a variable that stops being bound —
+    # and would then fall to whatever default the query declares, or fail live —
+    # cannot slip through.
+    assert fc.calls[0][1] == {
+        "query": None,
+        "variantsFirst": ops.GET_PRODUCTS_VARIANT_CAP,
+        "first": ops.PRODUCTS_PAGE_SIZE,
+        "after": None,
+    }
 
 
 def test_read_products_empty():
@@ -92,6 +101,94 @@ def test_get_products_query_has_the_shape_paginate_requires():
     assert "endCursor" in q.GET_PRODUCTS
 
 
+# ---------- Story 10.77: the nested variants connection is detectable ----------
+
+
+def test_get_products_nested_variants_connection_selects_page_info():
+    """The nested variants connection must select pageInfo { hasNextPage }: it is
+    the only thing in the response that can say a product's variant list was cut
+    short, and without it the truncation is structurally undetectable — the state
+    this story exists to end.
+
+    Parsed rather than substring-matched, for the reason Story 10.76 recorded and
+    Story 10.83 repeated: a substring check passes as long as the tokens appear
+    SOMEWHERE, so hoisting pageInfo out of the nested connection up onto the
+    product node keeps every asserted token present while restoring the silence.
+    """
+    variants = _selection_at(q.GET_PRODUCTS, ["products", "nodes", "variants"])
+    fields = {sel.name.value for sel in variants.selections if isinstance(sel, graphql.FieldNode)}
+    assert "pageInfo" in fields, f"pageInfo is not on the nested variants connection: {fields}"
+
+    page_info = _selection_at(q.GET_PRODUCTS, ["products", "nodes", "variants", "pageInfo"])
+    page_info_fields = {
+        sel.name.value for sel in page_info.selections if isinstance(sel, graphql.FieldNode)
+    }
+    assert "hasNextPage" in page_info_fields, page_info_fields
+
+
+def test_get_products_nested_variant_cap_is_a_bound_variable_not_a_literal():
+    """The cap must reach the query as $variantsFirst, sourced from
+    GET_PRODUCTS_VARIANT_CAP, so the number in the query and the number in the
+    warning copy cannot drift — the single-source-of-truth property the
+    GET_ORDERS_LINE_ITEM_CAP precedent names explicitly."""
+    nodes_selection = _selection_at(q.GET_PRODUCTS, ["products", "nodes"])
+    variants_field = next(
+        sel
+        for sel in nodes_selection.selections
+        if isinstance(sel, graphql.FieldNode) and sel.name.value == "variants"
+    )
+    args = {a.name.value: a.value for a in variants_field.arguments}
+    assert isinstance(args["first"], graphql.VariableNode), (
+        "variants(first:) is still a literal — the query and the warning copy can drift"
+    )
+    assert args["first"].name.value == "variantsFirst"
+
+    declared = {
+        v.variable.name.value
+        for v in graphql.parse(q.GET_PRODUCTS).definitions[0].variable_definitions
+    }
+    assert "variantsFirst" in declared, f"GET_PRODUCTS does not declare $variantsFirst: {declared}"
+
+
+def _node_with_variant_page(pid: str, *, has_next: bool) -> dict[str, Any]:
+    """One product node carrying the nested variants connection's pageInfo."""
+    return {
+        "id": f"gid://shopify/Product/{pid}",
+        "variants": {"nodes": [], "pageInfo": {"hasNextPage": has_next}},
+    }
+
+
+def test_capped_variant_product_ids_flags_products_past_the_cap():
+    """A product whose variants.pageInfo.hasNextPage is True is reported capped,
+    named by its gid (the tool layer applies from_gid for display)."""
+    products = [_node_with_variant_page("111", has_next=True)]
+    assert ops.capped_variant_product_ids(products) == ["gid://shopify/Product/111"]
+
+
+def test_capped_variant_product_ids_empty_when_within_cap():
+    products = [_node_with_variant_page("111", has_next=False)]
+    assert ops.capped_variant_product_ids(products) == []
+
+
+def test_capped_variant_product_ids_treats_missing_shapes_as_not_capped():
+    """Mixed batch: only the over-cap product's id comes back. A product missing
+    pageInfo entirely and one whose variants key is null are both treated as
+    not-capped — the same shape-drift tolerance capped_line_item_order_ids has,
+    defensive against permissions-trimmed responses."""
+    products = [
+        _node_with_variant_page("111", has_next=True),
+        _node_with_variant_page("222", has_next=False),
+        {"id": "gid://shopify/Product/333", "variants": {"nodes": []}},  # no pageInfo
+        {"id": "gid://shopify/Product/444", "variants": None},  # null connection
+        {"id": "gid://shopify/Product/555"},  # variants absent entirely
+    ]
+    assert ops.capped_variant_product_ids(products) == ["gid://shopify/Product/111"]
+
+
+def test_capped_variant_product_ids_empty_for_empty_batch():
+    assert ops.capped_variant_product_ids([]) == []
+
+
 def test_read_products_follows_cursor_across_pages():
     """AC1: a first page reporting hasNextPage=True yields the SECOND page's
     products too, not just the first."""
@@ -106,6 +203,10 @@ def test_read_products_follows_cursor_across_pages():
     assert capped is False
     # The second request carried the first page's endCursor.
     assert fc.calls[1][1]["after"] == "C1"
+    # Story 10.77: and EVERY page carries the variant cap, not just the first —
+    # paginate() rebuilds the variables dict per page, so a cap passed anywhere
+    # other than read_products' own variables would be dropped after page one.
+    assert [c[1]["variantsFirst"] for c in fc.calls] == [ops.GET_PRODUCTS_VARIANT_CAP] * 2
 
 
 def test_read_products_capped_when_page_budget_exhausted():
