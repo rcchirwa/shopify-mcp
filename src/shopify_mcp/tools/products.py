@@ -83,7 +83,18 @@ def slugify_shopify_handle(title: str) -> str:
     return s.strip("-")
 
 
-PRODUCT_STATUS_VALUES = ("ACTIVE", "DRAFT", "ARCHIVED")
+# The full ProductStatus vocabulary, for reads (the get_products filter) and
+# writes (update_product_status) alike — Shopify models one enum for both, and
+# ProductInput.status is typed with it, so this module does not split the two.
+#
+# UNLISTED arrived in Story 10.74, not from Shopify: introspection on
+# 2026-09-05 showed all four values present and undeprecated on API versions
+# 2024-01, 2025-01 and 2025-07, including the version this server runs against.
+# The tuple had been written incomplete since the module existed, which left
+# update_product_status a one-way door — a product could be moved out of
+# UNLISTED but never back — and made the get_products filter silently
+# unable to reach a product the store actually had.
+PRODUCT_STATUS_VALUES = ("ACTIVE", "DRAFT", "ARCHIVED", "UNLISTED")
 INVENTORY_POLICY_VALUES = ("DENY", "CONTINUE")
 TAG_MODES = ("replace", "append", "remove")
 
@@ -110,8 +121,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         output ends with an explicit truncation WARNING, so a partial list is
         never presented as the complete catalogue.
 
-        status: optional filter — one of ACTIVE, DRAFT, ARCHIVED. Anything else
-                is rejected before any request is made. Empty means no filter.
+        status: optional filter — one of ACTIVE, DRAFT, ARCHIVED, UNLISTED.
+                Anything else is rejected before any request is made. Empty
+                means no filter.
         limit:  optional maximum number of products to return. It can only
                 narrow the built-in page budget, never widen it. 0 means no
                 caller cap; a negative value is rejected.
@@ -673,8 +685,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         confirm: bool = False,
     ) -> str:
         """
-        Update a product's status: ACTIVE, DRAFT, or ARCHIVED. Reads current
-        status for the preview. Returns a preview unless confirm=True.
+        Update a product's status: ACTIVE, DRAFT, ARCHIVED, or UNLISTED. Reads
+        current status for the preview. Returns a preview unless confirm=True.
         """
         if new_status not in PRODUCT_STATUS_VALUES:
             return f"Error: new_status must be one of {', '.join(PRODUCT_STATUS_VALUES)}."

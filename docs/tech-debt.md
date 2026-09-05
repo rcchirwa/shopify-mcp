@@ -8,6 +8,33 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-09-05 — Story 10.74 (T-10.72-unlisted-status — carry UNLISTED in the product-status vocabulary)
+
+A defect, not an enhancement: the vocabulary this server validated against did not match the enum of the API it wraps. `PRODUCT_STATUS_VALUES` carried three values; Shopify's `ProductStatus` carries four. Surfaced by Story 10.72 while probing the new status filter against the live store. Trello: https://trello.com/c/Nqo9gPwi (Story 10.74, Epic 10).
+
+**Not a case of Shopify moving under us.** Schema introspection of `ProductStatus` on 2026-09-05, across API versions 2024-01 (the one this server is configured for), 2025-01 and 2025-07, returned `ACTIVE, ARCHIVED, DRAFT, UNLISTED` every time, none deprecated. The tuple was written incomplete from the start and nothing ever compared it to the enum — the same class of gap 10.72's sync test was added to catch, one layer up.
+
+**The store had a product in the missing state the whole time.** `dripping-fall-v-graphic-tee` (`gid://shopify/Product/8559387410585`, `publishedAt: null`). The arithmetic is what makes it easy to miss: ACTIVE 40 + DRAFT 6 + ARCHIVED 1 = 47 against a catalogue of 48. Filtering three ways summed to something that looked complete. With UNLISTED the four counts sum to 48 exactly.
+
+### The semantics decision (card step 2) — approach 1, widen both vocabularies
+
+The card asked whether the server should be able to transition a product *into* UNLISTED, or only read and filter it. Settled as: **both**, for three reasons.
+
+1. **Shopify models one enum for reads and writes.** Introspection confirms `ProductInput.status` is typed `ProductStatus` — the same four-value enum, not a narrower writable variant. Splitting our vocabulary into a wider read set and a narrower write set would invent a distinction the API does not make, and would mean permanently weakening 10.72's equality guard into a subset assertion.
+2. **The write path is already gated.** `update_product_status` previews, requires `confirm=True`, and surfaces Shopify `userErrors` verbatim. Allowing UNLISTED there is the same guarded flow that already allows ARCHIVED, which is the more destructive transition of the two.
+3. **The one-way door was the sharper half of the defect.** A product could be moved out of UNLISTED but never back. Approach 2 would have left that permanent.
+
+**Recorded as unverified:** whether Shopify's *business logic* accepts `status: UNLISTED` on `productUpdate` for a Basic-plan store (this store's plan, per `shop.plan.displayName`). Settling that requires firing a real mutation at the live store, which this story did not license. The type layer accepts it. If the business layer does not, the operator sees Shopify's own `userError` through the existing error path — which is strictly better than the previous behaviour, where our allowlist refused a documented enum value and gave the operator no way to find out why.
+
+### Closed
+- **T-10.72-unlisted-status** — `UNLISTED` added to `PRODUCT_STATUS_VALUES` (`tools/products.py`) and to `PRODUCT_STATUS_QUERY` (`shopify/operations/products.py`), satisfying 10.72's sync test by widening both rather than relaxing it. Both tool docstrings and both README rows updated. The fixed-fragment lookup is unchanged, so the status still reaches Shopify only as a bound `$query` variable — widening the allowlist did not introduce interpolation.
+
+### Deliberately out of scope
+- **Every other hardcoded enum in the repo.** `INVENTORY_POLICY_VALUES`, `TAG_MODES` and friends were not audited against their Shopify counterparts. This story was the product-status vocabulary only; a general enum-parity audit is its own story if anyone wants it.
+- **Automatic parity with the live schema.** Deriving the vocabulary from introspection at startup was the card's approach 3 and stays rejected: it adds a network dependency to server startup for a four-value list whose contents have been stable across three API versions. The new parity test pins the four we know about instead.
+
+---
+
 ## 2026-09-05 — Story 10.72 (T-get-products-paging — paginate the outer products connection, add a status filter)
 
 An enhancement, not a defect. `get_products` took no arguments, issued one `products(first: 250)` request and returned the prefix, while its sibling `read_product` on the same module already walked `client.paginate()` and reported a `capped` flag. The `paginate()` helper from Story 10.6 (A3) had been adopted for the **inner** connections it was built for (variants, media) and never carried to the **outer** list connections. Trello: https://trello.com/c/u3gso0Gj (Story 10.72, Epic 10).

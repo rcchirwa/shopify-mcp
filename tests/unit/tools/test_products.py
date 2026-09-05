@@ -511,10 +511,17 @@ def test_get_products_docstring_no_longer_promises_all_products():
 
 @pytest.mark.parametrize(
     ("status", "fragment"),
-    [("ACTIVE", "status:ACTIVE"), ("DRAFT", "status:DRAFT"), ("ARCHIVED", "status:ARCHIVED")],
+    [
+        ("ACTIVE", "status:ACTIVE"),
+        ("DRAFT", "status:DRAFT"),
+        ("ARCHIVED", "status:ARCHIVED"),
+        ("UNLISTED", "status:UNLISTED"),
+    ],
 )
 def test_get_products_status_filter_narrows_the_query(status, fragment):
-    """AC3: each of the three supported statuses narrows the connection."""
+    """AC3: each supported status narrows the connection. UNLISTED joined the
+    set in Story 10.74 — before that, filtering three ways summed to 47 of the
+    store's 48 products and looked complete."""
     tools, fc = _build([products_page([_product_summary("111", "Tee", "tee", status=status)])])
     out = tools["get_products"](status=status)
     assert f"status: {status}" in out
@@ -531,11 +538,27 @@ def test_status_vocabularies_stay_in_sync_across_the_two_layers():
     assert set(products.PRODUCT_STATUS_VALUES) == set(ops.PRODUCT_STATUS_QUERY)
 
 
+def test_status_vocabulary_matches_shopifys_product_status_enum():
+    """Story 10.74. The whole defect was that this tuple was written incomplete
+    against a four-value API enum and nothing ever compared the two. Schema
+    introspection of `ProductStatus` against the live store on 2026-09-05,
+    across API versions 2024-01, 2025-01 and 2025-07, returned exactly these
+    four, none deprecated — and `ProductInput.status` is typed with the same
+    enum, so this is the vocabulary for reads AND writes alike.
+
+    If Shopify adds a fifth value this test does not fail on its own; re-run the
+    introspection when touching this area. What it does pin is that the four we
+    know about are all present, so a future edit cannot quietly drop one back
+    out the way UNLISTED was missing for the module's whole life."""
+    assert set(products.PRODUCT_STATUS_VALUES) == {"ACTIVE", "DRAFT", "ARCHIVED", "UNLISTED"}
+
+
 @pytest.mark.parametrize(
     "bad",
     [
         "active",
-        "UNLISTED",
+        "unlisted",
+        "PAUSED",
         "ACTIVE OR status:DRAFT",
         "*",
         " status:ACTIVE",
@@ -928,6 +951,44 @@ def test_status_invalid_value_rejected_no_shopify_call():
     )
     assert out.startswith("Error:"), out
     assert fc.calls == []
+
+
+def test_status_accepts_unlisted_and_builds_the_mutation_input():
+    """Story 10.74: UNLISTED is a first-class member of Shopify's ProductStatus
+    enum and ProductInput.status is typed with that same enum, so the write path
+    must not refuse it. Before this story the transition was a one-way door — a
+    product could be moved OUT of UNLISTED but never back."""
+    tools, fc = _build(
+        [
+            _product_read("123", "T", "t"),
+            _status_update_ok(status="UNLISTED"),
+        ]
+    )
+    out = tools["update_product_status"](
+        product_id="123",
+        new_status="UNLISTED",
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED —"), out
+    assert fc.calls[1][0] == UPDATE_PRODUCT_STATUS
+    assert fc.calls[1][1]["input"] == {
+        "id": "gid://shopify/Product/123",
+        "status": "UNLISTED",
+    }
+
+
+def test_status_unlisted_preview_still_requires_confirm():
+    """Widening the vocabulary must not widen the write gate: UNLISTED goes
+    through the same preview/confirm flow as every other status."""
+    tools, fc = _build([_product_read("123", "T", "t")])
+    out = tools["update_product_status"](
+        product_id="123",
+        new_status="UNLISTED",
+        confirm=False,
+    )
+    assert out.startswith("PREVIEW —")
+    assert "confirm=True" in out
+    assert len(fc.calls) == 1, "preview must not reach the mutation"
 
 
 def test_status_preview_does_not_call_mutation():
