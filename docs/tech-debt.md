@@ -8,6 +8,147 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-09-05 — Story 10.84 (T-10.77-alias-guard — the parse-based query-shape guards matched field names, not response keys)
+
+A **defect**, and a **test-only** one — no production code was wrong here and none changed. `_selection_at` in `tests/unit/shopify/operations/test_products.py` documented itself as mirroring what `client.paginate()` does at runtime with `connection_path`. It did not. `paginate()` descends the response by **key**; the helper descended the AST by **name**. Those are the same string only while no field on the walked path carries a GraphQL alias, and nothing checked that. Trello: https://trello.com/c/a5XyT76z (Story 10.84, Epic 10).
+
+The distinction that makes it a defect rather than a missing guard: a guard that *claims* to mirror the runtime and can be defeated by a valid one-token edit while the whole suite stays green is a wrong guard. And unlike the hoisted-`pageInfo` mutation Story 10.76 closed — a schema error live, so the API would have rejected it — an aliased query is **valid GraphQL that Shopify answers happily**. That one ships and returns empty results.
+
+### Root cause
+
+`client.py:425-426`:
+
+```python
+for key in connection_path:
+    connection = (connection or {}).get(key) or {}
+```
+
+The GraphQL spec says a field's response key is its alias when one is present and its name otherwise. An alias therefore splits the two walks: `sel.name.value` stays `"products"` (walker satisfied, every downstream assertion about `pageInfo`, `after: $after` and `$after` still true) while the response carries `"productsX"` and the runtime finds nothing.
+
+Why finding nothing is silent rather than loud: on page 0 the `or {}` collapse is load-bearing by design — Story 10.78 kept it so `collectionByHandle: null` maps to "not found" — and the vanished-connection warning fires only for `page > 0`. So an aliased connection reads as `{}` on the first request, `nodes` is `[]`, `pageInfo` is `{}`, `hasNextPage` is falsy, and `paginate()` returns a *clean* empty result: one request, zero nodes, `capped=False`, no warning and no log line. Indistinguishable from an empty collection.
+
+### Exposure, re-derived on this branch
+
+`grep -rn "connection_path=\[" src/ | wc -l` returns **20** `paginate()` call sites. Exactly **5** carry a parse-based guard, all five walked by name, and **0** of the five asserted the walked path was unaliased — **8 walked key-steps** in total:
+
+| call site | `connection_path` | key-steps | guard |
+|---|---|---|---|
+| `operations/products.py` `GET_PRODUCTS` | `["products"]` | 1 | `_selection_at` (10.77) |
+| `operations/products.py` `GET_PRODUCTS_BY_COLLECTION` | `["collectionByHandle", "products"]` | 2 | `_selection_at` (10.76) |
+| `operations/products.py` `GET_PRODUCTS_WITH_DESCRIPTIONS` | `["products"]` | 1 | `_selection_at` (10.76) |
+| `operations/products.py` `GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS` | `["collectionByHandle", "products"]` | 2 | `_selection_at` (10.76) |
+| `operations/publications.py` `GET_COLLECTION_PUBLICATIONS_BY_HANDLE` | `["collectionByHandle", "resourcePublications"]` | 2 | inline `_field` (10.83) |
+
+The figures above were re-derived by running that grep on this branch, not copied from the story card — Story 10.78 made that the standing rule for counts and Story 10.77 extended it to structural claims. The remaining **15** call sites (5 media, 3 publications, 1 orders, 5 product/variant reads, 1 inventory) have no parse guard at all; that is Story 10.83's recorded residual and is restated below rather than closed here.
+
+**This is only part of the surface, and the first draft of this entry said otherwise.** `paginate()` also reads `nodes` and `pageInfo` out of the connection by literal key, and `hasNextPage` and `endCursor` out of that `pageInfo` the same way. Those are not `connection_path` steps, so counting steps understates the exposure by two keys per call site plus the pageInfo leaves. The review reproduced both: aliasing `nodes` yields zero nodes on every page, and aliasing `hasNextPage` is **worse than the connection case** — the walk stops after page 1 and reports `capped=False`, so a truncation is presented as a complete answer rather than an empty one. Both shipped green against the first draft of this story's fix. Closed here; see the review section below.
+
+**Aliases are not unused in this repo, and the first draft of this entry claimed they were.** `shopify/queries/catalog_hygiene.py:587,602` deliberately emits `e0`, `e1`, … aliases to batch `node(id:)` lookups, and `shopify/operations/catalog_hygiene.py:148` documents the caller parsing the response **per alias** — the repo does not merely tolerate alias-as-response-key, it depends on it as its batching pattern. The decision below is unaffected: `BatchResolveMetafields` is not paginated, appears in no `connection_path=[`, and neither walker is ever pointed at it, so forbidding aliases *on walked paths* still costs nothing. But "no query uses an alias" was false, and "none has a reason to" was contradicted by a good reason in the same package. Caught by the story's adversarial verifier. It is the repo's own standing rule failing again in a story whose whole thesis is that a guard claiming something it does not do is worse than no guard.
+
+### The pre-fix run, quoted verbatim
+
+Before touching either walker, the alias was applied alone to `GET_PRODUCTS_BY_COLLECTION`'s `products` — **row c of the matrix below**, not row a — on this checkout, and the whole suite run. It had to be **green** or the hole was not real here. (The story card labelled this same edit "mutation A" under its own lettering; the matrix below re-letters a–h in `connection_path` order, so a is `GET_PRODUCTS`. An earlier draft of this entry carried the card's letter into the matrix's scheme and paired the before/after against two different queries. Caught in review.)
+
+```
+-    products(first: $first, after: $after) {
++    productsX: products(first: $first, after: $after) {
+1799 passed in 1.98s
+exit code: 0
+```
+
+Restored with `git checkout --`; `git status --short` clean.
+
+### Closed — approach 1, one assertion inside each walker
+
+The card offered three approaches. **Approach 1** was taken: the assertion goes inside each walker's own lookup, immediately after the matching node is selected, so it covers **every step of every path every caller walks** rather than one field at one call site. That is the entry condition Story 10.77 recorded verbatim ("fixing it once in the helper rather than at each call site").
+
+- `_selection_at` (`test_products.py`) asserts `node.alias is None` inside its loop, once per key. Its docstring now states the rule and the reason — response key is alias-or-name — instead of claiming a mirror it did not implement.
+- The publications walker (`test_publications.py`) was a closure inside the one test that used it. It is now a module-level `_field` carrying the same assertion, lifted so its self-test can drive it directly.
+- `_field_names` in each module — added in review — returns a selection set's field names *and* asserts every one is unaliased, closing the leaf half: `nodes`, `pageInfo`, and the `hasNextPage` / `endCursor` inside it, all of which `paginate()` reads by literal key. Every name-set the two modules built by comprehension now goes through it.
+- **Five self-tests**, pinned against **literal** queries rather than production ones so the guards keep their teeth even if every query in `shopify/queries/` is rewritten: an aliased terminal step and an aliased **intermediate** step for `_selection_at`, an aliased field for the publications walker, and an aliased leaf for each `_field_names`. Suite goes 1799 → 1804, baseline plus exactly those five.
+
+**Approach 3 was rejected on contract, not on effort.** Matching the response key — `(sel.alias or sel.name).value == key` — is what `paginate()` actually does, so it is the exact mirror. But it also accepts `products: somethingElse(...)`, a foreign field aliased *to* the expected key, which `paginate()` would walk just as happily; the guard would then say nothing about which field was selected. Since no query here uses an alias and none has a reason to, refusing them outright is the stronger contract, and the assertion message tells the next reader what to do if a legitimate alias ever appears.
+
+### The post-fix matrix, all nine mutations
+
+Each mutation applied alone, full suite run, file restored with `git checkout --`, `git status --short` confirmed clean (the two edited test files aside). Every run exits non-zero and names the parse test for that query. Parametrised ids embed the whole query text; that portion is elided as `[…]`.
+
+```
+#### a  GET_PRODUCTS `products`         →  productsX: products(first: $first, after: $after, query: $query) {
+FAILED test_products.py::test_get_products_nested_variants_connection_selects_page_info
+FAILED test_products.py::test_get_products_nested_variant_cap_is_a_bound_variable_not_a_literal
+2 failed, 1799 passed   exit code: 1
+
+#### b  GET_PRODUCTS_BY_COLLECTION `collectionByHandle`   →  cbh: collectionByHandle(handle: $handle) {
+FAILED test_products.py::test_sibling_read_queries_have_the_shape_paginate_requires[GET_PRODUCTS_BY_COLLECTION-[…]-connection_path0]
+1 failed, 1800 passed   exit code: 1
+
+#### c  GET_PRODUCTS_BY_COLLECTION `products`             →  productsX: products(first: $first, after: $after) {
+FAILED test_products.py::test_sibling_read_queries_have_the_shape_paginate_requires[GET_PRODUCTS_BY_COLLECTION-[…]-connection_path0]
+1 failed, 1800 passed   exit code: 1
+
+#### d  GET_PRODUCTS_WITH_DESCRIPTIONS `products`         →  productsX: products(first: $first, after: $after) {
+FAILED test_products.py::test_sibling_read_queries_have_the_shape_paginate_requires[GET_PRODUCTS_WITH_DESCRIPTIONS-[…]-connection_path1]
+1 failed, 1800 passed   exit code: 1
+
+#### e  GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS `collectionByHandle`  →  cbh: collectionByHandle(handle: $handle) {
+FAILED test_products.py::test_sibling_read_queries_have_the_shape_paginate_requires[GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS-[…]-connection_path2]
+1 failed, 1800 passed   exit code: 1
+
+#### f  GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS `products`           →  productsX: products(first: $first, after: $after) {
+FAILED test_products.py::test_sibling_read_queries_have_the_shape_paginate_requires[GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS-[…]-connection_path2]
+1 failed, 1800 passed   exit code: 1
+
+#### g  GET_COLLECTION_PUBLICATIONS_BY_HANDLE `collectionByHandle`   →  cbh: collectionByHandle(handle: $handle) {
+FAILED test_publications.py::test_collection_publications_query_parses_and_has_the_shape_paginate_walks
+1 failed, 1800 passed   exit code: 1
+
+#### h  GET_COLLECTION_PUBLICATIONS_BY_HANDLE `resourcePublications`  →  rpX: resourcePublications(first: $first, after: $after) {
+FAILED test_publications.py::test_collection_publications_query_parses_and_has_the_shape_paginate_walks
+1 failed, 1800 passed   exit code: 1
+
+#### 10.77 re-check  GET_PRODUCTS nested `variants`  →  variantsX: variants(first: $variantsFirst) {
+FAILED test_products.py::test_get_products_nested_variants_connection_selects_page_info
+FAILED test_products.py::test_get_products_nested_variant_cap_is_a_bound_variable_not_a_literal
+2 failed, 1799 passed   exit code: 1
+```
+
+**Row c** is the one to read against the pre-fix block above: **green at exit 0 before the fix, red at exit 1 after it**, same one-token edit on the same query. The guard is shown to have failed against the pre-fix code rather than merely to pass after it. Story 10.77's own local `variants` guard still fires, unaffected.
+
+### What the substring pins could not do
+
+Story 10.76's lesson generalises again. `test_publications.py` already asserted `"resourcePublications(first: $first, after: $after)" in query` — and an alias is a **prefix**, so the asserted substring survives it intact. The same holds for every `products(first: ...)` pin. A substring assertion cannot see a token added in front of the thing it matches. Three consecutive stories have now found a mutation that a substring pin waves through and a parse walk catches; this one found the mutation the parse walk itself waved through.
+
+### What the review changed (triple-threat: code quality + security + deep, in parallel, plus a separate Opus adversarial verifier)
+
+The shipped assertion was correct and its central evidence reproduced under all four reviewers. **What the review changed was the reach of the guard and two false statements in this entry.** Eight mutations survived the first draft of the fix — every one of them an alias, in a story whose entire subject is aliases.
+
+- **The guard stopped at the `connection_path` steps.** Aliasing `nodes` on any of the three sibling product queries, or on the publications query, shipped green while every page yielded zero nodes. Aliasing `hasNextPage` or `endCursor` inside a walked `pageInfo` also shipped green, and is worse: the walk stops after page 1 and reports `capped=False`. Found independently by the code-quality and deep reviewers. Both walkers now have a leaf twin — `_field_names` — that returns the field names *and* asserts every one is unaliased, and the sibling test walks the `nodes` step explicitly. All seven of those mutations now exit 1.
+- **"Covers every step of every path" was itself untested.** Moving the assertion out of the loop so only the terminal key was checked left the suite green: every step the current callers walk happens also to be the terminal key of *some other* `_selection_at` call, so the property held by coincidence, not by test. One caller with a deeper path would have lost it silently. Found by the code-quality reviewer and the verifier independently. Now pinned by a second self-test walking a two-element path with the alias on the **first** step.
+- **The publications walker could raise `AttributeError` instead of the assertion.** It matched selections with `getattr(sel, "name", None)` rather than an `isinstance` check. `FragmentSpreadNode` carries a `.name` and has no `.alias` at all, so a fragment sharing a walked field's name would have crashed on the new line — and `pytest.raises(AssertionError)` would not have caught it. Pre-existing from Story 10.83, but this story added the line that depends on the node being a `FieldNode`. Now `isinstance(sel, graphql.FieldNode)`, matching its sibling.
+- **Two statements in this entry were false.** Both are corrected in place above rather than quietly dropped: the alias-free claim about `queries/`, and the pre-fix/post-fix mutation pairing that named two different queries. Both were the same failure mode — a claim carried from the story card into the ledger without re-deriving it — which is the standing rule Stories 10.77 and 10.78 wrote for exactly this.
+
+**One security finding, Info, resolved as no-action.** The assertion messages interpolate the alias uncapped and unfenced. Verified against the SEC-04 / SEC-11 / SEC-12 / SEC-21 reflection convention: the text comes from repo-controlled query constants or test literals, never from store- or caller-supplied data, and surfaces only in pytest output — never in an MCP tool response or the audit log. No cap or `wrap()` applies. Entry condition if that changes: a walker ever pointed at a query string built from external input.
+
+**Two findings were rejected.** Shortening the assertion message to name the alias once was declined — the repetition is the message shape the story card specified, and the second mention is what tells the reader what the *response key* becomes, which is the whole point. Deleting Story 10.77's now-redundant local `variants_field.alias is None` assertion was also declined: it is pinned against a different failure mode (`p.get("variants")` in the render loop, not `paginate()`), and defence in depth on a guard this story exists to strengthen is not duplication worth removing.
+
+**Process note, worth recording.** Four reviewers were run in parallel against a single shared worktree, and they mutated each other's files: two independently reported mutation results they had not caused, and one abandoned in-tree testing and re-ran the whole matrix against a `git archive` export. The findings survived because each was re-derived afterwards on a verified-clean tree, but the arrangement produced void runs and cost a re-verification pass. **Parallel reviewers that mutate need one workspace each**, or read-only review and a single mutator.
+
+### Deliberately out of scope
+
+- **The 15 unguarded `paginate()` call sites.** They have identity or substring pins only. Adding parse guards to all of them is Story 10.83's recorded residual and a much larger change.
+- **Any edit under `src/`.** `git diff --stat origin/main -- src/` is empty on this branch. The query files were touched only by the mutation runs and restored byte-for-byte.
+
+### Residuals, recorded not fixed
+
+- **The two walkers are still duplicated, and now so are their leaf twins.** `_selection_at`/`_field_names` in `test_products.py` and `_field`/`_field_names` in `test_publications.py` do the same job with the same rule, and the review doubled the duplication rather than reducing it. The card's approach 2 — consolidating into `tests/support/graphql_shape.py` — was declined here because `pyproject.toml` puts `tests/support` under mypy (`files = ["src/shopify_mcp", "tests/support"]`), so the shared helper needs full annotations, and it turns a defect fix into a refactor across three files. **The entry condition is now closer than it was:** four helpers across two modules rather than two, so the next story to touch either module should consolidate rather than add a fifth.
+- **Only guarded paths are guarded at all.** 15 of the 20 `paginate()` call sites have no parse guard, so for those neither the connection-step nor the leaf hole is closed — the alias is simply one of several shapes nothing checks. Cross-reference Story 10.83's residual ("only the ones someone remembered to pin are checked at all"). Entry condition: unchanged from 10.83.
+- **Duplicate-name shadowing defeats both walkers.** They take the *first* name match. Place an unaliased decoy `products` connection of the right shape ahead of the real one and alias the real one away, and the suite is fully green while `paginate()` walks the decoy. Found by the adversarial verifier. Contrived — it needs a valid duplicate field plus an alias, a two-token edit no refactor produces by accident — so it is recorded rather than fixed. Entry condition: any query legitimately selecting the same field twice.
+- **A field aliased *to* an expected key is still invisible.** `products: somethingElse(...)` satisfies neither walker (both match on name, and `somethingElse` is not `products`), so the walk fails with "no field 'products'" rather than a message about the alias. Correct outcome, misleading message.
+- **A legitimate fragment refactor would red the guards with a misleading message.** Both walkers skip `FragmentSpreadNode` and `InlineFragmentNode`, so moving a walked connection into a fragment fails as "no field 'X' in selection set" — even though `paginate()` would work fine at runtime, since a fragment merges into the response under the same key. Failing loudly is the right direction; the message is wrong. Entry condition: the first query here to use a fragment on a walked path.
+
+---
+
 ## 2026-09-05 — Story 10.77 (T-10.72-variants-detect — the nested variants cap in `GET_PRODUCTS` was undetectable)
 
 A **defect**, not an enhancement. This repo already had a settled rule for a connection nested inside a list connection — you cannot walk it, so you select its `pageInfo` and warn (`GET_ORDERS`, Story 10.34 / A3). `GET_PRODUCTS` sat beside that precedent and followed none of it: its `variants(first: 50)` selected `nodes` only, so a product with more than 50 variants came back from `get_products` with a partial list and **nothing in the response that could say so**. Stories 10.72 and 10.76 both scope-guarded it out, so it had never been in scope for any card. Trello: https://trello.com/c/5ONQ8b1o (Story 10.77, Epic 10).
@@ -76,7 +217,7 @@ Also fixed:
 - **The shipped cap value is not pinned by any test.** Setting `GET_PRODUCTS_VARIANT_CAP` to 250 — the change the residual below says needs a live probe first — or to 1, ships green. Deliberately not pinned: a test asserting a constant equals its own source line is a tautology that fails on every legitimate change and proves nothing about behaviour, and `GET_ORDERS_LINE_ITEM_CAP` is unpinned the same way. The comment on the constant and the residual below are the control. Entry condition: the cap ever changing without the probe.
 - **Raising `GET_PRODUCTS_VARIANT_CAP` toward 250.** It would remove the cap for effectively every real product. Entry condition: a fresh live `extensions.cost` probe of `GET_PRODUCTS` at `first: 250` with the nested selection at the proposed value — 10.72's 112-point figure was measured at 50 and its own comment says re-measure if the nested selection grows.
 - **A product returned on two consecutive pages produces two identical warnings.** `capped_variant_product_ids` does not de-duplicate, so a product edited mid-walk and re-surfaced on the next page is warned about twice. Consistent rather than wrong — the render loop already prints its block twice — and de-duplicating the warning while leaving the duplicate block would be worse. Story 10.78 established mid-walk mutation as a real scenario here. Entry condition: a duplicate observed in a real response.
-- **`_selection_at` in `tests/unit/shopify/operations/test_products.py` matches a field's name, not its response key.** This story's own parse guards now assert the field is unaliased, but the three sibling query tests Story 10.76 wrote against the same helper do not, so an alias on any of those connections would change the response key with the suite green. Entry condition: fixing it once in the helper rather than at each call site.
+- ~~**`_selection_at` in `tests/unit/shopify/operations/test_products.py` matches a field's name, not its response key.** This story's own parse guards now assert the field is unaliased, but the three sibling query tests Story 10.76 wrote against the same helper do not, so an alias on any of those connections would change the response key with the suite green. Entry condition: fixing it once in the helper rather than at each call site.~~ **Closed 2026-09-05 by Story 10.84** — the assertion moved into the helper itself, so it now covers every step of every path any caller walks, and the same line went into the publications walker. See the Story 10.84 entry at the top.
 - **Raising `GET_PRODUCTS_VARIANT_CAP` toward 250.** It would remove the cap for effectively every real product. Entry condition: a fresh live `extensions.cost` probe of `GET_PRODUCTS` at `first: 250` with the nested selection at the proposed value — 10.72's 112-point figure was measured at 50 and its own comment says re-measure if the nested selection grows.
 - **Summarising the per-product warnings** (the card's approach 2). Entry condition: a store where enough products exceed the cap that per-product lines are actually noisy in a real response. Deferred rather than shipped so the collapse threshold is chosen against an observed number instead of an invented one.
 
