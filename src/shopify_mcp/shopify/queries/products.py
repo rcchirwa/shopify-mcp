@@ -51,9 +51,18 @@ fragment ProductFullFields on Product {
 }
 """
 
+# Story 10.72: the outer products connection now carries $after + pageInfo so
+# client.paginate() can walk it, and a $query variable for the status filter.
+# $query is bound as a GraphQL *variable*, never string-interpolated — the
+# operations layer maps a validated status constant to a fixed search fragment.
+#
+# The nested variants(first: 50) is a separate, still-unpaginated truncation:
+# a product with more than 50 variants shows a partial variant list here.
+# Explicitly out of scope for 10.72 and recorded in docs/tech-debt.md —
+# client.paginate() cannot walk a connection nested inside another connection.
 GET_PRODUCTS = """
-query GetProducts($first: Int!) {
-  products(first: $first) {
+query GetProducts($first: Int!, $after: String, $query: String) {
+  products(first: $first, after: $after, query: $query) {
     nodes {
       id
       title
@@ -63,6 +72,7 @@ query GetProducts($first: Int!) {
         nodes { id title }
       }
     }
+    pageInfo { hasNextPage endCursor }
   }
 }
 """

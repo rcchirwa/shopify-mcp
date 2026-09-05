@@ -4,7 +4,25 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-08-18.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-09-05.
+
+---
+
+## 2026-09-05 — Story 10.72 (T-get-products-paging — paginate the outer products connection, add a status filter)
+
+An enhancement, not a defect. `get_products` took no arguments, issued one `products(first: 250)` request and returned the prefix, while its sibling `read_product` on the same module already walked `client.paginate()` and reported a `capped` flag. The `paginate()` helper from Story 10.6 (A3) had been adopted for the **inner** connections it was built for (variants, media) and never carried to the **outer** list connections. Trello: https://trello.com/c/u3gso0Gj (Story 10.72, Epic 10).
+
+**Page size and budget were measured, not assumed.** The card asked for the worst case to be checked against Shopify's cost-based rate limiting. Probed live on 2026-09-04: this query shape reports `requestedQueryCost` 112 at `first: 250` (72 at 50, 92 at 100 — the formula is sub-linear), `actualQueryCost` 9, against a bucket of 2000 restoring at 100/s. The 10-page worst case is ~1120 requested points across 10 requests, inside the budget even on a 1000-point standard-plan bucket and well under the 1000-point per-query maximum. `PRODUCTS_PAGE_SIZE = 250` (Shopify's per-connection maximum — fewest round trips, and a store under 250 products still resolves in a single request exactly as before) with `PRODUCTS_MAX_PAGES = 10`, so 2500 products before `capped`.
+
+**The status filter never interpolates.** Shopify narrows this connection through its search syntax, so a caller's value would otherwise land inside a query string. Two layers instead: `tools/products.py` validates against the existing `PRODUCT_STATUS_VALUES` tuple and returns an error that does not echo the rejected value; `operations/products.py` then looks the validated constant up in a fixed `PRODUCT_STATUS_QUERY` table and raises before any request if it is not a key. The fragment reaches Shopify as a bound GraphQL `$query` variable, never as concatenated text.
+
+### Closed
+- **T-get-products-paging** — `GET_PRODUCTS` gained `$after` + `pageInfo { hasNextPage endCursor }` and a `$query` variable; `read_products` moved from `client.execute` to `client.paginate` and now returns `(nodes, capped)`, matching `read_product`'s existing tuple convention; `get_products` gained optional `status` and `limit`, both defaulting to today's behaviour, and appends `PRODUCTS_TRUNCATED_WARNING` when the walk stops with more products available. Purely additive — a no-argument call is pinned by a regression test.
+
+### Deliberately out of scope, recorded so the boundary reads as a boundary
+- **The two sibling outer-connection reads stay on single-shot `first`.** `read_products_by_collection` (`{"handle": ..., "first": 250}`) and `read_products_with_descriptions` (`{"first": limit}`) have the same shape and the same silent-truncation gap. Left alone deliberately: `read_products_with_descriptions`'s existing `limit` argument would change meaning from "page size" to "total", a contract change on a second tool that deserves its own story and its own argument rather than being absorbed into this one. This is the card's step-2 scope decision, taken as approach 1 of the three the card offered.
+- **The nested `variants(first: 50)` inside `GET_PRODUCTS` is still unpaginated.** A product with more than 50 variants shows a partial variant list from this tool. `client.paginate()` structurally cannot walk a connection nested inside another connection — the same constraint documented above `GET_ORDERS`. Excluded by the card's own scope guard; noted in a comment on the query.
+- **`PRODUCT_STATUS_VALUES` does not cover every status Shopify returns.** The live store holds a product with status `UNLISTED`, which is not in the three-value tuple, so it cannot be selected by the new filter and is reachable only through an unfiltered call. Reusing the existing tuple was an explicit acceptance criterion here, so the tuple was not widened. Whether `UNLISTED` (and any status Shopify adds later) belongs in the shared vocabulary is a separate decision that also affects `update_product_status`.
 
 ---
 

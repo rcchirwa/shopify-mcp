@@ -11,7 +11,7 @@ Enables Claude to read products, check inventory, manage collections, handle dis
 ### Products
 | Tool | Description |
 |------|-------------|
-| `get_products` | List all products with id, title, handle, status, variants |
+| `get_products` | List products with id, title, handle, status, variants — cursor-paginated (up to 2500), optional `status` filter (ACTIVE / DRAFT / ARCHIVED) and `limit`; appends an explicit WARNING when the page cap truncates the list |
 | `get_product` | Fetch a single product by id or handle (one identifier only — see the note below the table) |
 | `get_product_description` | Fetch the raw `body_html` for a single product by id or handle (one identifier only — see the note below the table) |
 | `get_product_full` | Fetch a full product record — body_html, tags, type, vendor, seo, category, variants, options — by id or handle (one identifier only — see the note below the table) |

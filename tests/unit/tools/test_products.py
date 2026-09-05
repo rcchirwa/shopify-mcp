@@ -12,6 +12,7 @@ Usage:
 
 import pytest
 
+from shopify_mcp.shopify.operations import products as ops
 from shopify_mcp.tools import products
 from shopify_mcp.tools._untrusted import INJECTION_REMINDER
 from shopify_mcp.tools.products import (
@@ -429,28 +430,135 @@ def _product_with_body(pid, title, handle, body, status="ACTIVE"):
     }
 
 
-def test_get_products_unwraps_nodes_list():
-    response = {
+def _products_page(nodes, *, has_next=False, cursor="CUR"):
+    """One page of the outer products connection, in paginate()'s expected shape."""
+    return {
         "products": {
-            "nodes": [
-                _product_summary("111", "Tee One", "tee-one", variants=[_variant("11", "Black")]),
-                _product_summary("222", "Tee Two", "tee-two", variants=[_variant("22", "White")]),
-            ]
+            "nodes": nodes,
+            "pageInfo": {"hasNextPage": has_next, "endCursor": cursor if has_next else None},
         }
     }
+
+
+def test_get_products_unwraps_nodes_list():
+    response = _products_page(
+        [
+            _product_summary("111", "Tee One", "tee-one", variants=[_variant("11", "Black")]),
+            _product_summary("222", "Tee Two", "tee-two", variants=[_variant("22", "White")]),
+        ]
+    )
     tools, fc = _build([response])
     out = tools["get_products"]()
     assert "[111] Tee One" in out and "handle: tee-one" in out and "status: ACTIVE" in out
     assert "[222] Tee Two" in out
     assert "Black (id:11)" in out and "White (id:22)" in out
     assert fc.calls[0][0] == GET_PRODUCTS
-    assert fc.calls[0][1] == {"first": 250}
 
 
 def test_get_products_empty_returns_message():
-    tools, fc = _build([{"products": {"nodes": []}}])
+    tools, fc = _build([_products_page([])])
     out = tools["get_products"]()
     assert out == "No products found."
+
+
+# ---------- Story 10.72: pagination, truncation warning, status filter ----------
+
+
+def test_get_products_no_arguments_is_a_single_unwarned_page():
+    """AC5: the additive contract — a no-argument call still renders exactly
+    what it renders today for a store that fits in one page, with no warning."""
+    single = _products_page(
+        [_product_summary("111", "Tee One", "tee-one", variants=[_variant("11", "Black")])]
+    )
+    tools, fc = _build([single])
+    out = tools["get_products"]()
+    assert out == "[111] Tee One | handle: tee-one | status: ACTIVE\n  Variants: Black (id:11)"
+    assert "WARNING" not in out
+    assert len(fc.calls) == 1
+    assert fc.calls[0][1]["query"] is None
+
+
+def test_get_products_renders_products_from_a_later_page():
+    """AC1: a first page reporting hasNextPage=True is followed, and the
+    rendered output covers a product that only exists on the second page."""
+    tools, fc = _build(
+        [
+            _products_page([_product_summary("111", "Tee One", "tee-one")], has_next=True),
+            _products_page([_product_summary("222", "Tee Two", "tee-two")]),
+        ]
+    )
+    out = tools["get_products"]()
+    assert "[111] Tee One" in out
+    assert "[222] Tee Two" in out
+    assert "WARNING" not in out
+    assert len(fc.calls) == 2
+
+
+def test_get_products_warns_when_the_page_budget_is_exhausted():
+    """AC2: truncation is never silent — the same WARNING convention
+    get_product uses for capped variants."""
+    pages = [
+        _products_page(
+            [_product_summary(str(i), f"Tee {i}", f"tee-{i}")], has_next=True, cursor=f"C{i}"
+        )
+        for i in range(ops.PRODUCTS_MAX_PAGES)
+    ]
+    tools, _fc = _build(pages)
+    out = tools["get_products"]()
+    assert out.endswith(products.PRODUCTS_TRUNCATED_WARNING)
+    assert "WARNING:" in products.PRODUCTS_TRUNCATED_WARNING
+
+
+def test_get_products_docstring_no_longer_promises_all_products():
+    """AC2: the tool docstring is the other half of the honesty fix — it is the
+    description the MCP client shows, so it must not claim an unconditional
+    'all products' the page budget cannot guarantee."""
+    tools, _fc = _build([_products_page([])])
+    doc = tools["get_products"].__doc__ or ""
+    assert "List all products" not in doc
+    assert "pagination" in doc.lower()
+
+
+@pytest.mark.parametrize(
+    ("status", "fragment"),
+    [("ACTIVE", "status:ACTIVE"), ("DRAFT", "status:DRAFT"), ("ARCHIVED", "status:ARCHIVED")],
+)
+def test_get_products_status_filter_narrows_the_query(status, fragment):
+    """AC3: each of the three supported statuses narrows the connection."""
+    tools, fc = _build([_products_page([_product_summary("111", "Tee", "tee", status=status)])])
+    out = tools["get_products"](status=status)
+    assert f"status: {status}" in out
+    assert fc.calls[0][1]["query"] == fragment
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["active", "UNLISTED", "ACTIVE OR status:DRAFT", "*", """ status:ACTIVE"""],
+)
+def test_get_products_rejects_unknown_status_before_any_network_call(bad):
+    """AC3/AC4: refused before the transport fires — asserted on the call log,
+    not merely on the returned string."""
+    tools, fc = _build([_products_page([])])
+    out = tools["get_products"](status=bad)
+    assert out.startswith("Error: status must be one of ")
+    assert fc.calls == [], "validation must precede any GraphQL request"
+    assert bad not in out, "the rejected value must not be echoed back"
+
+
+def test_get_products_limit_bounds_the_output_and_warns():
+    """A caller limit trims the rendered list and still admits the truncation."""
+    tools, fc = _build(
+        [
+            _products_page(
+                [_product_summary(str(i), f"Tee {i}", f"tee-{i}") for i in range(3)],
+                has_next=True,
+            )
+        ]
+    )
+    out = tools["get_products"](limit=3)
+    assert "[0] Tee 0" in out and "[2] Tee 2" in out
+    assert out.endswith(products.PRODUCTS_TRUNCATED_WARNING)
+    assert fc.calls[0][1]["first"] == 3
 
 
 def test_get_products_by_collection_unwraps_nested_nodes():

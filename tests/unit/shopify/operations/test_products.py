@@ -55,17 +55,120 @@ def test_read_ops_require_a_discriminator(op):
 # ---------- read operations ----------
 
 
+def _products_page(nodes, *, has_next=False, cursor="CUR"):
+    """One page of the outer products connection, in paginate()'s expected shape."""
+    return {
+        "products": {
+            "nodes": nodes,
+            "pageInfo": {"hasNextPage": has_next, "endCursor": cursor if has_next else None},
+        }
+    }
+
+
 def test_read_products_returns_nodes():
-    fc = FakeClient([{"products": {"nodes": [{"id": "gid://shopify/Product/1"}]}}])
-    nodes = ops.read_products(fc)
+    fc = FakeClient([_products_page([{"id": "gid://shopify/Product/1"}])])
+    nodes, capped = ops.read_products(fc)
     assert nodes == [{"id": "gid://shopify/Product/1"}]
+    assert capped is False
     assert fc.calls[0][0] == q.GET_PRODUCTS
-    assert fc.calls[0][1] == {"first": 250}
+    # query=None (no status filter) plus the cursor pair paginate() supplies.
+    assert fc.calls[0][1] == {"query": None, "first": ops.PRODUCTS_PAGE_SIZE, "after": None}
 
 
 def test_read_products_empty():
     fc = FakeClient([{}])
-    assert ops.read_products(fc) == []
+    assert ops.read_products(fc) == ([], False)
+
+
+# ---------- Story 10.72: outer-connection pagination, status filter, limit ----------
+
+
+def test_read_products_follows_cursor_across_pages():
+    """AC1: a first page reporting hasNextPage=True yields the SECOND page's
+    products too, not just the first."""
+    fc = FakeClient(
+        [
+            _products_page([{"id": "gid://shopify/Product/1"}], has_next=True, cursor="C1"),
+            _products_page([{"id": "gid://shopify/Product/2"}]),
+        ]
+    )
+    nodes, capped = ops.read_products(fc)
+    assert [n["id"] for n in nodes] == ["gid://shopify/Product/1", "gid://shopify/Product/2"]
+    assert capped is False
+    # The second request carried the first page's endCursor.
+    assert fc.calls[1][1]["after"] == "C1"
+
+
+def test_read_products_capped_when_page_budget_exhausted():
+    """AC2: exhausting the page budget sets capped rather than silently
+    returning a prefix."""
+    pages = [
+        _products_page([{"id": f"gid://shopify/Product/{i}"}], has_next=True, cursor=f"C{i}")
+        for i in range(ops.PRODUCTS_MAX_PAGES)
+    ]
+    fc = FakeClient(pages)
+    nodes, capped = ops.read_products(fc)
+    assert capped is True
+    assert len(nodes) == ops.PRODUCTS_MAX_PAGES
+    assert len(fc.calls) == ops.PRODUCTS_MAX_PAGES
+
+
+@pytest.mark.parametrize(
+    ("status", "fragment"),
+    [("ACTIVE", "status:ACTIVE"), ("DRAFT", "status:DRAFT"), ("ARCHIVED", "status:ARCHIVED")],
+)
+def test_read_products_maps_status_to_fixed_fragment(status, fragment):
+    """AC3/AC4: each supported status narrows the connection through a fixed
+    fragment looked up by key — the argument is never interpolated."""
+    fc = FakeClient([_products_page([])])
+    ops.read_products(fc, status=status)
+    assert fc.calls[0][1]["query"] == fragment
+
+
+def test_read_products_refuses_unmapped_status_before_any_call():
+    """AC3: an unrecognized status is refused before the transport fires, and
+    the rejection does not echo the caller's value back."""
+    fc = FakeClient([_products_page([])])
+    with pytest.raises(ValueError) as exc:
+        ops.read_products(fc, status="ACTIVE OR status:DRAFT")
+    assert fc.calls == []
+    assert "ACTIVE OR" not in str(exc.value)
+
+
+def test_read_products_limit_caps_results_and_request_budget():
+    """A caller limit bounds both the returned list and the number of pages
+    requested, and reports capped when more products exist beyond it."""
+    fc = FakeClient(
+        [
+            _products_page(
+                [{"id": f"gid://shopify/Product/{i}"} for i in range(3)],
+                has_next=True,
+                cursor="C1",
+            )
+        ]
+    )
+    nodes, capped = ops.read_products(fc, limit=3)
+    assert len(nodes) == 3
+    assert capped is True
+    assert len(fc.calls) == 1
+    assert fc.calls[0][1]["first"] == 3
+
+
+def test_read_products_limit_above_page_size_trims_the_overshoot():
+    """A limit that is not a whole number of pages still returns exactly the
+    limit, and reports capped because the trimmed overshoot proves more exist."""
+    page = _products_page(
+        [{"id": f"gid://shopify/Product/{i}"} for i in range(ops.PRODUCTS_PAGE_SIZE)],
+        has_next=True,
+        cursor="C1",
+    )
+    tail = _products_page([{"id": "gid://shopify/Product/tail"}] * 2)
+    fc = FakeClient([page, tail])
+    limit = ops.PRODUCTS_PAGE_SIZE + 1
+    nodes, capped = ops.read_products(fc, limit=limit)
+    assert len(nodes) == limit
+    assert capped is True
+    assert len(fc.calls) == 2
 
 
 def test_read_product_by_id_coerces_gid_and_paginates():
