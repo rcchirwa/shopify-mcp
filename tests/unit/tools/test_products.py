@@ -1525,7 +1525,7 @@ def test_policy_at_cap_warning_surfaces_when_capped():
         new_policy="DENY",
         confirm=False,
     )
-    assert "WARNING" in out and "max-pages cap" in out, out
+    assert "WARNING" in out and "variant pagination stopped short" in out, out
 
 
 # ---------- get_product_collections ----------
@@ -2259,7 +2259,7 @@ def test_get_product_warns_when_variants_capped():
     page = _product_page("123", "Tee", "tee", [v], has_next=True, end_cursor="cur")
     tools, fc = _build([page] * 10)
     out = tools["get_product"](product_id="123")
-    assert "WARNING" in out and "max-pages cap" in out
+    assert "WARNING" in out and "variant pagination stopped short" in out
 
 
 def _product_full_page(pid, title, handle, variants, has_next=False, end_cursor=None):
@@ -2306,7 +2306,7 @@ def test_get_product_full_warns_when_variants_capped():
     page = _product_full_page("123", "Tee", "tee", [v], has_next=True, end_cursor="cur")
     tools, fc = _build([page] * 10)
     out = tools["get_product_full"](product_id="123")
-    assert "WARNING" in out and "max-pages cap" in out
+    assert "WARNING" in out and "variant pagination stopped short" in out
 
 
 def _policy_page(pid, variants, has_next=False, end_cursor=None, title="T"):
@@ -2359,7 +2359,7 @@ def test_update_variant_inventory_policy_warns_when_capped():
         new_policy="DENY",
         confirm=False,
     )
-    assert "WARNING" in out and "max-pages cap" in out
+    assert "WARNING" in out and "variant pagination stopped short" in out
 
 
 # ---------- Story 10.68 (T-10.65-refuse-both-fanout) ----------

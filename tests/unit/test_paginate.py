@@ -12,10 +12,19 @@ Usage:
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from shopify_mcp.client import ShopifyClient
+from tests.support import FakeClient
 
 QUERY = "query Q($first: Int!, $after: String) { data { nodes { id } pageInfo { hasNextPage endCursor } } }"
 PATH = ["data"]
+
+# Story 10.78 (T-10.6-paginate-vanish): the nested shape the collection reads
+# walk, kept alongside the flat PATH so the vanished-connection guard is proven
+# at both depths — a guard that fired only on a one-key path would miss every
+# caller in shopify/operations/products.py.
+NESTED_PATH = ["collectionByHandle", "products"]
 
 
 def _page(nodes, has_next, cursor=None):
@@ -101,3 +110,182 @@ def test_null_cursor_with_has_next_page_returns_capped_without_refetch():
     # Two warnings fire: the null-cursor guard + the generic cap warning.
     assert mock_log.warning.call_count == 2
     assert any("endCursor=null" in str(call) for call in mock_log.warning.call_args_list)
+
+
+# ---------- Story 10.78: a connection that vanishes mid-walk is a truncation ----------
+#
+# paginate() used to return capped=False whenever hasNextPage was falsy — and a
+# connection that disappeared on page 2+ collapses to {} under the path walk's
+# `or {}`, so its absent pageInfo read as "no more pages". Page 1 had already
+# said hasNextPage=True, so the walk knew more existed and reported the partial
+# result as complete. These four combinations pin both vanish SHAPES (parent
+# gone null, key absent) at both path DEPTHS (nested, top-level).
+
+
+def _nested_page(nodes, has_next, cursor=None):
+    """One page of a products connection nested inside collectionByHandle."""
+    return {
+        "collectionByHandle": {
+            "id": "gid://shopify/Collection/999",
+            "products": {
+                "nodes": nodes,
+                "pageInfo": {"hasNextPage": has_next, "endCursor": cursor},
+            },
+        }
+    }
+
+
+# (path, page-0 builder, page-1 payload that makes the connection vanish)
+_VANISH_CASES = [
+    pytest.param(NESTED_PATH, _nested_page, {"collectionByHandle": None}, id="nested-null-parent"),
+    pytest.param(
+        NESTED_PATH, _nested_page, {"collectionByHandle": {"id": "x"}}, id="nested-missing-key"
+    ),
+    pytest.param(PATH, _page, {"data": None}, id="flat-null-connection"),
+    pytest.param(PATH, _page, {}, id="flat-missing-key"),
+]
+
+
+@pytest.mark.parametrize(("path", "build_page", "vanished"), _VANISH_CASES)
+def test_connection_vanishing_on_page_two_is_capped(path, build_page, vanished):
+    """A connection that resolves to nothing on page 1+ is a TRUNCATION, so the
+    walk must report capped=True rather than the complete result it used to."""
+    page_zero = build_page([{"id": "a"}], has_next=True, cursor="cur1")
+    m = _mock_client([page_zero, vanished])
+    first, nodes, capped = ShopifyClient.paginate(m, QUERY, {}, connection_path=path)
+    assert capped is True
+    # AC2: a truncated walk hands back what it got, exactly as the max_pages
+    # and endCursor-is-null paths do. Discarding the partial result would be a
+    # different bug, not a fix.
+    assert nodes == [{"id": "a"}]
+    # The first-page response is what callers read non-paginated fields from
+    # (a collection's own id/title/handle, say), so a vanish on a later page
+    # must not disturb it — the page that vanished is not the page they read.
+    assert first == page_zero
+    assert m.execute.call_count == 2
+
+
+def test_vanished_connection_logs_warning_naming_path_and_page():
+    """The abnormal stop is logged like the endCursor-is-null branch beside it,
+    naming connection_path and the page index so an operator can tell a
+    vanished connection from an exhausted page budget."""
+    # Three pages, and the node count (3) is deliberately different from the
+    # vanishing page's index (2) and from max_pages (10). An earlier version of
+    # this test substring-matched the rendered call for "1" against a two-page
+    # fixture where the index and the node count were both 1 — so substituting
+    # len(all_nodes), or page + 10, for the page index left it green. Assert the
+    # logged arguments themselves; a substring of a repr proves nothing.
+    m = _mock_client(
+        [
+            _nested_page([{"id": "a"}, {"id": "b"}], has_next=True, cursor="cur1"),
+            _nested_page([{"id": "c"}], has_next=True, cursor="cur2"),
+            {"collectionByHandle": None},
+        ]
+    )
+    with patch("shopify_mcp.client.logger") as mock_log:
+        _, nodes, capped = ShopifyClient.paginate(m, QUERY, {}, connection_path=NESTED_PATH)
+    assert capped is True
+    assert len(nodes) == 3
+    # The vanish warning plus the shared stopped-short warning the break falls
+    # through to.
+    assert mock_log.warning.call_count == 2
+    vanish_calls = [c for c in mock_log.warning.call_args_list if "vanished" in str(c)]
+    assert len(vanish_calls) == 1
+    assert vanish_calls[0].args[-2] == NESTED_PATH
+    assert vanish_calls[0].args[-1] == 2
+
+
+def test_vanished_connection_on_a_later_page_keeps_every_earlier_page():
+    """Three pages deep: the two pages that arrived are returned whole, and the
+    third page's disappearance is what sets the flag."""
+    m = _mock_client(
+        [
+            _page([{"id": "a"}], has_next=True, cursor="c0"),
+            _page([{"id": "b"}], has_next=True, cursor="c1"),
+            {},
+        ]
+    )
+    _, nodes, capped = ShopifyClient.paginate(m, QUERY, {}, connection_path=PATH)
+    assert nodes == [{"id": "a"}, {"id": "b"}]
+    assert capped is True
+
+
+@pytest.mark.parametrize(("path", "build_page", "vanished"), _VANISH_CASES)
+def test_fake_client_paginate_also_caps_on_a_vanished_connection(path, build_page, vanished):
+    """Every operations-layer test in the repo walks pages through FakeClient,
+    so what that class does IS what the offline suite tests. It now borrows
+    ShopifyClient.paginate outright rather than copying it — this proves the
+    borrowed method really does drive FakeClient.execute, which is the one
+    thing sharing the method could plausibly break."""
+    fc = FakeClient([build_page([{"id": "a"}], has_next=True, cursor="cur1"), vanished])
+    _, nodes, capped = fc.paginate(QUERY, {}, connection_path=path)
+    assert capped is True
+    assert nodes == [{"id": "a"}]
+
+
+# ---------- Story 10.78: the negative half — the guard must not over-fire ----------
+#
+# Every test below PASSES BOTH BEFORE AND AFTER the guard lands. They are not
+# the RED tests; they are what stops the fix from turning "empty" into
+# "truncated" and breaking Story 10.76's not-found path. "The connection
+# resolved to nothing at all" is the condition — never "it had no nodes".
+
+
+def test_legitimately_empty_final_page_stays_uncapped():
+    """PASSES BOTH BEFORE AND AFTER. A present connection returning zero nodes
+    with hasNextPage=false on page 2 is a COMPLETE walk that happened to end on
+    an empty page — not a vanished one."""
+    m = _mock_client(
+        [_page([{"id": "a"}], has_next=True, cursor="cur1"), _page([], has_next=False)]
+    )
+    _, nodes, capped = ShopifyClient.paginate(m, QUERY, {}, connection_path=PATH)
+    assert capped is False
+    assert nodes == [{"id": "a"}]
+
+
+def test_nested_legitimately_empty_final_page_stays_uncapped():
+    """PASSES BOTH BEFORE AND AFTER. The same claim one level down, where the
+    parent object is still present and only its products list is empty."""
+    m = _mock_client(
+        [
+            _nested_page([{"id": "a"}], has_next=True, cursor="cur1"),
+            _nested_page([], has_next=False),
+        ]
+    )
+    _, nodes, capped = ShopifyClient.paginate(m, QUERY, {}, connection_path=NESTED_PATH)
+    assert capped is False
+    assert nodes == [{"id": "a"}]
+
+
+def test_page_zero_null_parent_stays_uncapped_with_first_page_intact():
+    """PASSES BOTH BEFORE AND AFTER, and is the one Story 10.76 depends on: a
+    page-0 `collectionByHandle: null` means "no such collection", not a
+    truncation, so it must still resolve to capped=False in ONE request with
+    the first-page dict returned unchanged. read_products_by_collection and
+    read_collection_with_descriptions map a missing handle to None from exactly
+    this shape — a guard that fired on page 0 would break both."""
+    absent = {"collectionByHandle": None}
+    m = _mock_client([absent])
+    first, nodes, capped = ShopifyClient.paginate(m, QUERY, {}, connection_path=NESTED_PATH)
+    assert capped is False
+    assert nodes == []
+    assert first == absent
+    assert m.execute.call_count == 1
+
+
+def test_page_zero_missing_key_stays_uncapped():
+    """PASSES BOTH BEFORE AND AFTER. The absent-key shape of the same page-0
+    tolerance: nothing was ever there to walk, so nothing was truncated."""
+    m = _mock_client([{}])
+    _, nodes, capped = ShopifyClient.paginate(m, QUERY, {}, connection_path=PATH)
+    assert capped is False
+    assert nodes == []
+    assert m.execute.call_count == 1
+
+
+def test_single_page_nested_walk_is_unaffected():
+    """PASSES BOTH BEFORE AND AFTER. A one-page walk never reaches the guard."""
+    m = _mock_client([_nested_page([{"id": "a"}], has_next=False)])
+    _, nodes, capped = ShopifyClient.paginate(m, QUERY, {}, connection_path=NESTED_PATH)
+    assert capped is False
+    assert nodes == [{"id": "a"}]

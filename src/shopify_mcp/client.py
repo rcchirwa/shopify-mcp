@@ -400,9 +400,18 @@ class ShopifyClient:
         The query must accept $first: Int! and $after: String variables and
         select pageInfo { hasNextPage endCursor } on the paginated connection.
 
-        Returns (first_page_response, all_nodes, capped) where capped=True
-        when max_pages was exhausted before hasNextPage turned False. Callers
-        can extract non-paginated fields (e.g. product.title) from first_page_response.
+        Returns (first_page_response, all_nodes, capped). Callers can extract
+        non-paginated fields (e.g. product.title) from first_page_response.
+
+        capped=True means the walk stopped SHORT of the end of the connection,
+        for any of three reasons (Story 10.78 — it used to name only the first):
+          - max_pages was exhausted before hasNextPage turned False;
+          - Shopify returned hasNextPage=True with endCursor=null, leaving
+            nowhere to continue from;
+          - the connection vanished mid-walk — the parent went null, or the
+            key went missing, on page 1 or later.
+        In every case the nodes collected so far are still returned. capped is
+        never True for a walk that reached the end of the connection.
         """
         all_nodes: list[dict[str, Any]] = []
         first_response: dict[str, Any] = {}
@@ -415,6 +424,27 @@ class ShopifyClient:
             connection: Any = result
             for key in connection_path:
                 connection = (connection or {}).get(key) or {}
+            # Story 10.78: on page 0 the `or {}` collapse above means "nothing
+            # to read" and is load-bearing — Story 10.76's not-found path maps a
+            # page-0 `collectionByHandle: null` to None from exactly this shape.
+            # On page 1+ the same collapse means something else entirely: the
+            # thing being walked went away between requests, and the previous
+            # page's hasNextPage=True proves more of it existed. Without this
+            # branch the absent pageInfo reads as hasNextPage=False and the
+            # partial result is handed back as complete.
+            #
+            # The test is `not connection`, i.e. "resolved to nothing at all" —
+            # NOT "has no nodes". A connection legitimately returning
+            # {"nodes": [], "pageInfo": {...}} is a populated dict, so it stays
+            # truthy and this branch leaves it alone.
+            if page > 0 and not connection:
+                logger.warning(
+                    "paginate: connection=%s vanished on page=%d "
+                    "(previous page reported hasNextPage=True); aborting",
+                    connection_path,
+                    page,
+                )
+                break
             all_nodes.extend(list(connection.get("nodes") or []))
             page_info: dict[str, Any] = connection.get("pageInfo") or {}
             if not page_info.get("hasNextPage"):
@@ -426,8 +456,13 @@ class ShopifyClient:
                     connection_path,
                 )
                 break
+        # Reached by all three stop-short paths, so it does not name a cause —
+        # the two abnormal ones log their own line above with the specifics.
+        # It used to read "paginate capped … max_pages=%d", which described the
+        # budget path and misdescribed the other two (Story 10.78). max_pages is
+        # still reported because it is the budget the walk ran under either way.
         logger.warning(
-            "paginate capped connection=%s max_pages=%d nodes=%d",
+            "paginate stopped short connection=%s max_pages=%d nodes=%d",
             connection_path,
             max_pages,
             len(all_nodes),

@@ -119,7 +119,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
         if capped:
             lines.append(
-                "  WARNING: variant pagination hit the max-pages cap — "
+                "  WARNING: variant pagination stopped short — "
                 "additional variants (if any) are not shown here."
             )
         return "\n".join(lines)
@@ -239,7 +239,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
 
         cap_block = (
-            "\n  WARNING: variant pagination hit the max-pages cap — "
+            "\n  WARNING: variant pagination stopped short — "
             "additional variants may not be covered."
             if capped
             else ""
@@ -343,7 +343,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return f"No product found with id {product_id}."
         title = product.get("title", "")
         at_cap_warning = (
-            "  WARNING: variant pagination hit the max-pages cap — "
+            "  WARNING: variant pagination stopped short — "
             "additional variants (if any) are not covered by this call."
             if capped
             else ""
