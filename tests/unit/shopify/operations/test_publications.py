@@ -197,3 +197,55 @@ def test_unpublish_builds_publication_input_and_executes():
         "id": "gid://shopify/Product/123",
         "input": [{"publicationId": "gid://shopify/Publication/1"}],
     }
+
+
+# ---------- collection publications read (Story 10.83) ----------
+
+
+def test_read_collection_publications_without_a_handle_reads_nothing():
+    """Backstop for non-MCP callers. The tools guard the handle themselves, so
+    this branch is unreachable through them — it exists for a CLI or script
+    calling the operations layer directly, mirroring the neither-supplied
+    behaviour of read_product_publications."""
+    fc = FakeClient([])
+    col, rps, capped = ops.read_collection_publications(fc, "")
+    assert (col, rps, capped) == (None, [], False)
+    assert fc.calls == []
+
+
+def test_read_collection_publications_returns_the_same_triple_as_its_product_sibling():
+    resp = {
+        "collectionByHandle": {
+            "id": "gid://shopify/Collection/900",
+            "title": "All (BACKUP)",
+            "handle": "all-copy",
+            "ruleSet": None,
+            "resourcePublications": {
+                "nodes": [
+                    {
+                        "publication": {
+                            "id": "gid://shopify/Publication/1",
+                            "name": "Online Store",
+                        },
+                        "publishDate": "2026-04-20T10:00:00Z",
+                        "isPublished": True,
+                    }
+                ],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            },
+        }
+    }
+    fc = FakeClient([resp])
+    col, rps, capped = ops.read_collection_publications(fc, "all-copy")
+    assert col["handle"] == "all-copy"
+    assert len(rps) == 1
+    assert capped is False
+    assert fc.calls[0][0] == q.GET_COLLECTION_PUBLICATIONS_BY_HANDLE
+    assert fc.calls[0][1]["handle"] == "all-copy"
+
+
+def test_read_collection_publications_missing_returns_none():
+    fc = FakeClient([{"collectionByHandle": None}])
+    col, rps, capped = ops.read_collection_publications(fc, "nope")
+    assert col is None
+    assert rps == []

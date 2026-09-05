@@ -84,8 +84,15 @@ Requires `write_files` and `write_products` scopes. Local-file source paths are 
 | `publish_product_to_channels` | Publish a product to one or more channels (idempotent, preview + confirm) |
 | `unpublish_product_from_channels` | Unpublish from one or more channels (idempotent, preview + confirm) |
 | `set_product_publications` | Declarative — diff current vs. desired channels, apply minimal publish/unpublish (preview + confirm) |
+| `get_collection_publications` | Show which channels a collection is published to, and which it is not (handle only) |
+| `publish_collection_to_channels` | Publish a collection to one or more channels (idempotent, preview + confirm; handle only) |
+| `unpublish_collection_from_channels` | Unpublish a collection from one or more channels (idempotent, preview + confirm; handle only) |
 
-**One identifier, not both.** All four tools above take `product_id` **or** `handle`. Supplying both is refused before the product is read and before any mutation — a **breaking change in Story 10.68**, replacing the previous `product_id`-wins precedence that silently discarded the handle. Three of these four are *writes*, so under the old precedence an ambiguous pair could publish, unpublish, or rewrite the channel set of the **wrong product**; the refusal is a plain, immediately-diagnosable error in its place, returned before any network call.
+**Collections are named by handle only** (Story 10.83). They are separate tools rather than a widening of the product tools, because `handle` on those means a *product* handle and a store can have a collection and a product sharing one handle — overloading it would create the wrong-resource hazard Story 10.68 exists to prevent. With a single identifier there is no pair to refuse, so the both-supplied rule below does not apply to the three collection tools. There is deliberately no `set_collection_publications`; adjust with publish/unpublish.
+
+Publishing a collection to **Online Store** is what makes its storefront page reachable — a newly created collection is on no channel at all, so `create_collection` followed by `publish_collection_to_channels` is the two-step that gets a visible collection. **The storefront is eventually consistent:** an unpublish that the Admin API already reports as complete kept serving the page for roughly 30 seconds in live testing on 2026-09-05, so do not treat an immediate fetch as proof either way.
+
+**One identifier, not both.** All four *product* tools above take `product_id` **or** `handle`. Supplying both is refused before the product is read and before any mutation — a **breaking change in Story 10.68**, replacing the previous `product_id`-wins precedence that silently discarded the handle. Three of these four are *writes*, so under the old precedence an ambiguous pair could publish, unpublish, or rewrite the channel set of the **wrong product**; the refusal is a plain, immediately-diagnosable error in its place, returned before any network call.
 
 Requires `read_publications` and `write_publications` scopes. If the app was installed before these were added, reinstall it on the store.
 

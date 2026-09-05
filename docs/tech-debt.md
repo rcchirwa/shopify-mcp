@@ -8,6 +8,53 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-09-05 — Story 10.83 (T-collection-publish — the publications surface could only reach products)
+
+`tools/publications.py` registered five tools and every one that resolved a target was product-scoped. The mutations were never the gap: `publishablePublish` / `publishableUnpublish` are generic over Shopify's `Publishable` interface, and `ops.publish` / `ops.unpublish` already took a plain GID — only the parameter was *named* `product_gid`. The capability was half-present and the wrapper was narrow. A collection could be created but not made visible, so 10.82 alone produced a collection nobody could reach.
+
+### The live probe that preceded the design (card step 2, read-only)
+
+Run against API version 2026-01, the version `settings.py` targets, verified from the client's own startup line rather than assumed.
+
+1. **A Collection exposes the same publication node shape a Product does** — `publication { id name }`, `publishDate`, `isPublished`, same `pageInfo`. The existing `ProductPublicationsFields` selection transferred unchanged.
+2. **`isPublished` is populated**, not just the date.
+3. **`resourcePublications` lists only the channels the resource IS on.** The store roster had 7 publications; `frontpage` returned 7, the smart `digital-albums` returned 6, and an unpublished collection returned 0. It defaults to `onlyPublished: true`, so a channel the resource is not on is *absent* rather than present with `isPublished: false`. The not-published set must therefore be derived as roster-minus-listed — which is what the shipped tools already do, so that logic transferred unchanged.
+4. **Smart and manual do not differ** on the read side. `ruleSet` distinguishes the type and drives no branch.
+
+### The four decisions (card steps 3–5)
+
+1. **Add collection-scoped tools; do not generalize the three shipped write tools.** The decisive argument is not duplication but ambiguity: `handle` on those tools means a *product* handle, and this store has a collection with handle `vanish`. Overloading it would create exactly the wrong-resource hazard Story 10.68 was written to close. Generalizing would also widen the identifier pair into a triple, weakening the shared both-supplied predicate that 10.68 strengthened.
+2. **Handle-only.** No by-id collection query exists and none was added. With one identifier there is no pair to refuse, so these tools have no `identifier_error` twin and **the 10.68 decoy test does not apply** — that is the decision's honest consequence, not an omission. Entry condition for an id channel: the refusal must fire as the tool's first statement using the shared supplied-predicate.
+3. **The declarative full-replace shape is deferred.** See the residual below.
+4. **Smart and manual are not special-cased.** No branch on `ruleSet` exists.
+
+### Closed
+
+`T-collection-publish` — `GET_COLLECTION_PUBLICATIONS_BY_HANDLE` plus a Collection inline fragment on both mutations in `shopify/queries/publications.py`; `read_collection_publications` in `shopify/operations/publications.py`; and `get_collection_publications`, `publish_collection_to_channels`, `unpublish_collection_from_channels` in `tools/publications.py`.
+
+The duplication the card warned about was headed off by factoring the publish/unpublish body into one resource-agnostic `_channel_write` driven by a direction table, the same shape `tools/collections.py::_MEMBERSHIP_OPS` uses. The two product tools were already near-identical copies; adding two collection tools naively would have made four. Their output is byte-identical to before, pinned by their unmodified tests. No shipped signature changed, so there is no break note to write.
+
+`ops.publish` / `ops.unpublish` took `product_gid`, renamed to `resource_gid`. The parameter never had anything product-specific about it and the old name would now be actively misleading. Both mutations' GraphQL *operation* names dropped `Product` for the same reason; those are strings, not a Python contract.
+
+### What the live verification found (card step 8)
+
+Publish, read back, fetch the storefront, unpublish, fetch again, assert the store was restored — all eight legs green against a real collection.
+
+**Two things a naive storefront check gets wrong, both found the hard way.** The `.myshopify.com` host 301-redirects to the store's primary domain, so a non-following request reports 301 whether the collection is published or not and proves nothing. And **the storefront is eventually consistent with the Admin API**: after an unpublish that `resourcePublications` already reported as complete, the page kept serving 200 for roughly 30 seconds. Cache-busting did not fix it, so this is Shopify propagation rather than an edge cache. The runner polls to a deadline instead of asserting one immediate fetch. Anyone scripting publish-then-check needs the same patience — the Admin API going quiet does not mean the page has flipped.
+
+### Deliberately out of scope
+
+- **No collection is created** by this card's code or tests, per its scope guard. The live runner operates on a collection that already exists.
+- **The product tools' contracts** are untouched.
+
+### Residuals, recorded not fixed
+
+- **`set_collection_publications`** — the declarative full-replace twin of `set_product_publications`. The deliverable needed one collection on Online Store; a third write path with its own three-way diff had no caller. Entry condition: a caller needs to declare a collection's exact channel set rather than adjust it.
+- **The smart-collection write leg is not live-verified.** The read-side probe found no smart/manual difference and the mutation is generic over `Publishable`, and a smart collection reaching the mutation is pinned offline — but no smart collection was actually published against the live store, because the operator chose a disposable manual collection as the probe target rather than expose a real one. Entry condition: publish any smart collection to a non-storefront channel and confirm it lands.
+- **`_split_current`'s `not_published` return can never be populated** against the real API, because `resourcePublications` hides unpublished entries. Both product write tools already discard it (`published_ids, _`). Pre-existing and product-side; recorded rather than touched.
+
+---
+
 ## 2026-09-05 — Story 10.82 (T-collection-create — the collections surface could not originate a collection)
 
 `tools/collections.py` registered four tools — `get_collection`, `update_collection`, `add_product_to_collection`, `remove_product_from_collection` — and every one assumed the collection already existed. `grep -rn "collectionCreate" src/` returned nothing. Not a defect: the surface was built read-and-amend on the assumption that a human creates collections in the Shopify admin and the server curates them afterwards. That assumption held until an AI-side workflow was asked to originate one.
