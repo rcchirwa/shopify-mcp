@@ -40,22 +40,33 @@ VARIANTS_PAGE_CAP = 250
 
 # Story 10.72 — the outer products-connection walk in read_products.
 #
+# Story 10.76 widened the consumer list: read_products_by_collection,
+# read_products_with_descriptions and read_collection_with_descriptions now
+# derive their budget from these same two constants, across three further query
+# shapes. Of those, only read_products_by_collection can actually reach all 10
+# pages — the other two are held to a single request by their tool's 250 clamp.
+#
 # 250 is Shopify's per-connection maximum, so it costs the fewest round trips
 # for a given result set, and it keeps a store of under 250 products resolving
 # in exactly one request, as it did before this story.
 #
-# Measured against the live store on 2026-09-04 rather than assumed: this query
-# shape at first=250 reports requestedQueryCost=112 (actualQueryCost=9) against
-# a 2000-point bucket restoring at 100/s. The 10-page worst case is ~1120
-# requested points spread over 10 requests — inside the budget even on a
-# 1000-point standard-plan bucket, and far below the 1000-point per-query
-# maximum that would reject the request outright. Re-measure if the nested
-# variants(first: 50) selection ever grows.
+# Measured against the live store on 2026-09-04 rather than assumed: the
+# GET_PRODUCTS shape at first=250 reports requestedQueryCost=112
+# (actualQueryCost=9) against a 2000-point bucket restoring at 100/s. The
+# 10-page worst case is ~1120 requested points spread over 10 requests — inside
+# the budget even on a 1000-point standard-plan bucket, and far below the
+# 1000-point per-query maximum that would reject the request outright.
+#
+# That figure is GET_PRODUCTS-SPECIFIC and was never re-measured for the three
+# shapes Story 10.76 added. GET_PRODUCTS_BY_COLLECTION nests the same four
+# scalar fields one level deeper and is the one that can issue all 10 pages, so
+# it is the one worth probing first. Re-measure if the nested
+# variants(first: 50) selection ever grows, or before raising either constant.
 PRODUCTS_PAGE_SIZE = 250
 
-# Page budget for that walk: 10 x 250 = 2500 products before the read reports
+# Page budget for those walks: 10 x 250 = 2500 products before a read reports
 # capped. Kept explicit rather than leaning on client.paginate()'s default,
-# because the tool's truncation warning describes this budget.
+# because the tools' truncation warning describes this budget.
 PRODUCTS_MAX_PAGES = 10
 
 # Fixed Shopify search-syntax fragments for the status filter, keyed by the
@@ -102,6 +113,57 @@ def _require_discriminator(product_id: str, handle: str) -> None:
         raise ValueError("provide either product_id or handle")
 
 
+def _limit_budget(limit: int) -> tuple[int, int]:
+    """Translate a caller ``limit`` into ``(page_size, max_pages)`` for paginate().
+
+    Shared by every product read that walks an outer connection (Story 10.76 —
+    ``read_products`` and the two description reads), so the guard below exists
+    once rather than in three copies that can drift apart.
+
+    ``limit`` can only *narrow* the request budget, never widen it: a small
+    limit costs one small request instead of a full walk, and the ``min()`` on
+    ``max_pages`` is what stops an over-large model-facing value authorising
+    thousands of sequential requests — the unbounded worst case that was Story
+    10.72's High review finding. Zero (or negative) means no caller cap.
+    """
+    if limit <= 0:
+        return PRODUCTS_PAGE_SIZE, PRODUCTS_MAX_PAGES
+    page_size = min(limit, PRODUCTS_PAGE_SIZE)
+    return page_size, min((limit + page_size - 1) // page_size, PRODUCTS_MAX_PAGES)
+
+
+def _collection_head(first_page: dict[str, Any]) -> dict[str, Any] | None:
+    """The collection's own fields from paginate()'s first page, WITHOUT its
+    products connection.
+
+    That connection holds page ONE only. Returning it beside the complete node
+    list would leave the pre-10.76 call-site idiom
+    ``col.get("products", {}).get("nodes", [])`` compiling and silently yielding
+    a truncated list — the exact silent truncation this story exists to remove.
+    Stripped rather than merely documented, so the trap cannot be re-entered by
+    the next caller. Builds a new dict rather than popping, so the caller's
+    response object is not mutated.
+    """
+    col = first_page.get("collectionByHandle")
+    if col is None:
+        return None
+    return {k: v for k, v in col.items() if k != "products"}
+
+
+def _apply_limit(
+    nodes: list[dict[str, Any]], capped: bool, limit: int
+) -> tuple[list[dict[str, Any]], bool]:
+    """Trim a walk's nodes to ``limit`` and fold the overshoot into ``capped``.
+
+    A limit that is not a whole number of pages overshoots; the discarded
+    remainder is itself proof that more products exist, so it sets ``capped``
+    even when the walk itself finished cleanly.
+    """
+    if limit > 0:
+        return nodes[:limit], capped or len(nodes) > limit
+    return nodes, capped
+
+
 def read_products(
     client: GraphQLClient, *, status: str = "", limit: int = 0
 ) -> tuple[list[dict[str, Any]], bool]:
@@ -132,18 +194,7 @@ def read_products(
             )
         search = PRODUCT_STATUS_QUERY[status]
 
-    if limit > 0:
-        page_size = min(limit, PRODUCTS_PAGE_SIZE)
-        # min() so limit can only narrow the budget, never widen it. Without
-        # the clamp a caller-supplied limit sets max_pages directly, and since
-        # limit is model-facing an over-large value would authorise thousands
-        # of sequential requests — exactly the unbounded worst case the live
-        # cost probe above exists to rule out.
-        max_pages = min((limit + page_size - 1) // page_size, PRODUCTS_MAX_PAGES)
-    else:
-        page_size = PRODUCTS_PAGE_SIZE
-        max_pages = PRODUCTS_MAX_PAGES
-
+    page_size, max_pages = _limit_budget(limit)
     _, nodes, capped = client.paginate(
         GET_PRODUCTS,
         {"query": search},
@@ -151,12 +202,7 @@ def read_products(
         page_size=page_size,
         max_pages=max_pages,
     )
-    if limit > 0:
-        # A limit that is not a whole number of pages overshoots; the discarded
-        # remainder is itself proof that more products exist.
-        capped = capped or len(nodes) > limit
-        nodes = nodes[:limit]
-    return nodes, capped
+    return _apply_limit(nodes, capped, limit)
 
 
 def read_product(
@@ -238,27 +284,73 @@ def read_product_collections(client: GraphQLClient, product_id: str) -> dict[str
 
 def read_products_by_collection(
     client: GraphQLClient, collection_handle: str
-) -> dict[str, Any] | None:
-    """Read a collection (by handle) with its products. None if not found."""
-    data = client.execute(GET_PRODUCTS_BY_COLLECTION, {"handle": collection_handle, "first": 250})
-    return data.get("collectionByHandle")
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], bool]:
+    """Read a collection (by handle) with its products, paginating the nested
+    products connection.
+
+    Returns ``(collection_or_None, product_nodes, capped)`` — the tuple
+    convention ``read_product`` and ``read_products`` already use — where
+    ``capped`` is True when the walk stopped with more products still
+    available. Story 10.76 replaced the single ``first: 250`` request this used
+    to issue, which truncated silently.
+
+    The collection's own ``id``/``title``/``handle`` are taken from the FIRST
+    page, which is what ``paginate()``'s first return value exists for. A
+    missing handle yields ``None`` for the collection, so "no such collection"
+    stays distinguishable from "collection with no products". The returned dict
+    carries no ``products`` key — see ``_collection_head``.
+    """
+    first_page, nodes, capped = client.paginate(
+        GET_PRODUCTS_BY_COLLECTION,
+        {"handle": collection_handle},
+        connection_path=["collectionByHandle", "products"],
+        page_size=PRODUCTS_PAGE_SIZE,
+        max_pages=PRODUCTS_MAX_PAGES,
+    )
+    return _collection_head(first_page), nodes, capped
 
 
-def read_products_with_descriptions(client: GraphQLClient, *, limit: int) -> list[dict[str, Any]]:
-    """Read products (with body_html) across the store, up to ``limit``."""
-    data = client.execute(GET_PRODUCTS_WITH_DESCRIPTIONS, {"first": limit})
-    return data.get("products", {}).get("nodes", [])
+def read_products_with_descriptions(
+    client: GraphQLClient, *, limit: int
+) -> tuple[list[dict[str, Any]], bool]:
+    """Read products (with body_html) across the store, paginating the outer
+    products connection.
+
+    Returns ``(product_nodes, capped)``. ``limit`` is a **total across pages**,
+    not a page size (Story 10.76) — under the old single-shot request the two
+    were the same number, so nothing observable changed for a caller.
+    """
+    page_size, max_pages = _limit_budget(limit)
+    _, nodes, capped = client.paginate(
+        GET_PRODUCTS_WITH_DESCRIPTIONS,
+        {},
+        connection_path=["products"],
+        page_size=page_size,
+        max_pages=max_pages,
+    )
+    return _apply_limit(nodes, capped, limit)
 
 
 def read_collection_with_descriptions(
     client: GraphQLClient, collection_handle: str, limit: int
-) -> dict[str, Any] | None:
-    """Read a collection (by handle) with its products' body_html. None if not found."""
-    data = client.execute(
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], bool]:
+    """Read a collection (by handle) with its products' body_html, paginating
+    the nested products connection.
+
+    Returns ``(collection_or_None, product_nodes, capped)``, with the same
+    first-page and missing-handle semantics as ``read_products_by_collection``.
+    ``limit`` is a total across pages (Story 10.76).
+    """
+    page_size, max_pages = _limit_budget(limit)
+    first_page, nodes, capped = client.paginate(
         GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS,
-        {"handle": collection_handle, "first": limit},
+        {"handle": collection_handle},
+        connection_path=["collectionByHandle", "products"],
+        page_size=page_size,
+        max_pages=max_pages,
     )
-    return data.get("collectionByHandle")
+    nodes, capped = _apply_limit(nodes, capped, limit)
+    return _collection_head(first_page), nodes, capped
 
 
 def read_product_variants_policy(

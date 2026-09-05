@@ -153,3 +153,34 @@ def products_page(
             "pageInfo": {"hasNextPage": has_next, "endCursor": cursor if has_next else None},
         }
     }
+
+
+def collection_products_page(
+    nodes: list[Any],
+    *,
+    has_next: bool = False,
+    cursor: str = "CUR",
+    collection_id: str = "gid://shopify/Collection/999",
+    title: str = "Vanish",
+    handle: str = "vanish",
+) -> dict[str, Any]:
+    """One page of the products connection nested inside ``collectionByHandle``.
+
+    The sibling of ``products_page`` for the two collection-scoped reads (Story
+    10.76). Their connection lives one level down, at
+    ``connection_path=["collectionByHandle", "products"]``, and the collection's
+    own ``id``/``title``/``handle`` ride alongside it on every page — which is
+    why they are parameters here: a test proving those fields are taken from the
+    FIRST page needs two pages that disagree about them.
+    """
+    return {
+        "collectionByHandle": {
+            "id": collection_id,
+            "title": title,
+            "handle": handle,
+            "products": {
+                "nodes": nodes,
+                "pageInfo": {"hasNextPage": has_next, "endCursor": cursor if has_next else None},
+            },
+        }
+    }

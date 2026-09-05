@@ -11,6 +11,7 @@ Usage:
 import sys
 
 from shopify_mcp.client import ShopifyClient
+from shopify_mcp.shopify.queries.products import GET_PRODUCTS_WITH_DESCRIPTIONS
 from shopify_mcp.tools._gid import from_gid
 
 SHOP_QUERY = """
@@ -86,13 +87,13 @@ query($handle: String!) {
 }
 """
 
-GET_PRODUCTS_WITH_DESC = """
-query($first: Int!) {
-  products(first: $first) {
-    nodes { id title handle status bodyHtml }
-  }
-}
-"""
+# Story 10.76: imported, NOT re-declared. This runner is the only test that
+# validates a query against the live Shopify schema, so a private copy meant it
+# happily proved the PRE-conversion shape was valid while the shipped constant
+# went unchecked — a malformed $after/pageInfo selection would have passed this
+# gate. The offline suite parses the same constant for structure; this one
+# proves the real API accepts it.
+GET_PRODUCTS_WITH_DESC = GET_PRODUCTS_WITH_DESCRIPTIONS
 
 GET_PRODUCT_FULL = """
 query($id: ID!) {
@@ -143,7 +144,7 @@ def test_get_products_with_descriptions():
     print("\nTesting get_products_with_descriptions query...")
     try:
         client = ShopifyClient()
-        data = client.execute(GET_PRODUCTS_WITH_DESC, {"first": 3})
+        data = client.execute(GET_PRODUCTS_WITH_DESC, {"first": 3, "after": None})
         products = data.get("products", {}).get("nodes", [])
         for p in products:
             assert "bodyHtml" in p, f"bodyHtml missing for {p.get('handle')}"
