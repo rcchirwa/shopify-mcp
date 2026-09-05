@@ -15,6 +15,7 @@ Usage:
   pytest tests/unit/shopify/operations/test_publications.py -v
 """
 
+import graphql
 import pytest
 
 from shopify_mcp.shopify.operations import publications as ops
@@ -297,7 +298,7 @@ def test_collection_publications_read_uses_the_shared_page_size():
     assert fc.calls[0][1]["first"] == PUBLICATIONS_PAGE_SIZE
 
 
-def _field(selection_set, name):
+def _field(selection_set: graphql.SelectionSetNode, name: str) -> graphql.FieldNode:
     """Return the field named `name` in `selection_set`, requiring it unaliased.
 
     Module level, not a closure, so test_publications_walker_rejects_an_aliased_field
@@ -308,15 +309,53 @@ def _field(selection_set, name):
     one is present, its name otherwise. Matching on the name alone leaves an
     alias undetected: valid GraphQL, every other assertion here still true, and
     paginate() reading {} for a connection that is really there.
+
+    The isinstance check is load-bearing, not decoration: FragmentSpreadNode
+    also carries a `.name` and has no `.alias` at all, so the pre-10.84 duck-typed
+    predicate would turn the assertion below into an AttributeError the moment a
+    fragment happened to share a walked field's name.
     """
     for sel in selection_set.selections:
-        if getattr(sel, "name", None) is not None and sel.name.value == name:
+        if isinstance(sel, graphql.FieldNode) and sel.name.value == name:
             assert sel.alias is None, (
                 f"{name!r} is aliased to {sel.alias.value!r}; paginate() reads the "
                 f"response key, which would be {sel.alias.value!r}"
             )
             return sel
     raise AssertionError(f"{name!r} not found in selection set")
+
+
+def _field_names(selection_set: graphql.SelectionSetNode, where: str) -> set[str]:
+    """Return the field names in `selection_set`, requiring every one unaliased.
+
+    The leaf twin of _field, and the same rule: paginate() reads `hasNextPage`
+    and `endCursor` out of pageInfo by key, so a name-keyed set built off these
+    selections cannot see an alias on them. Aliasing hasNextPage stops the walk
+    after one page and reports capped=False — a truncation presented as a
+    complete answer. Caught today only by a SUBSTRING pin, which this repo has
+    now learned three times over must not be the control (Stories 10.76, 10.78).
+    """
+    names: set[str] = set()
+    for sel in selection_set.selections:
+        if not isinstance(sel, graphql.FieldNode):
+            continue
+        assert sel.alias is None, (
+            f"{where}: {sel.name.value!r} is aliased to {sel.alias.value!r}; the response "
+            f"key would be {sel.alias.value!r}"
+        )
+        names.add(sel.name.value)
+    return names
+
+
+def test_publications_field_names_rejects_an_aliased_leaf():
+    """The leaf guard has teeth, pinned against a literal query."""
+    doc = graphql.parse("query Q { c { rp { pageInfo { hn: hasNextPage endCursor } } } }")
+    (operation,) = doc.definitions
+    collection = _field(operation.selection_set, "c")
+    connection = _field(collection.selection_set, "rp")
+    page_info = _field(connection.selection_set, "pageInfo")
+    with pytest.raises(AssertionError, match="aliased"):
+        _field_names(page_info.selection_set, "pageInfo")
 
 
 def test_publications_walker_rejects_an_aliased_field():
@@ -327,8 +366,6 @@ def test_publications_walker_rejects_an_aliased_field():
     present, so a name-matching walker cannot claim to mirror paginate().
     Pinned against a literal query so it survives any rewrite of the real ones.
     """
-    from graphql import parse
-
     aliased = """
     query Q($first: Int!, $after: String) {
       x: resourcePublications(first: $first, after: $after) {
@@ -336,7 +373,7 @@ def test_publications_walker_rejects_an_aliased_field():
       }
     }
     """
-    (operation,) = parse(aliased).definitions
+    (operation,) = graphql.parse(aliased).definitions
     with pytest.raises(AssertionError, match="aliased"):
         _field(operation.selection_set, "resourcePublications")
 
@@ -353,9 +390,7 @@ def test_collection_publications_query_parses_and_has_the_shape_paginate_walks()
     `graphql-core` is `gql`'s own dependency and is pinned in both lockfiles, so
     this costs nothing to import.
     """
-    from graphql import parse
-
-    doc = parse(q.GET_COLLECTION_PUBLICATIONS_BY_HANDLE)
+    doc = graphql.parse(q.GET_COLLECTION_PUBLICATIONS_BY_HANDLE)
     (operation,) = doc.definitions
 
     # The exact path shopify_mcp.client.paginate is told to walk.
@@ -363,11 +398,11 @@ def test_collection_publications_query_parses_and_has_the_shape_paginate_walks()
     connection = _field(root.selection_set, "resourcePublications")
 
     page_info = _field(connection.selection_set, "pageInfo")
-    names = {s.name.value for s in page_info.selection_set.selections}
+    names = _field_names(page_info.selection_set, "pageInfo")
     assert {"hasNextPage", "endCursor"} <= names
 
     nodes = _field(connection.selection_set, "nodes")
-    node_names = {s.name.value for s in nodes.selection_set.selections}
+    node_names = _field_names(nodes.selection_set, "nodes")
     assert {"publication", "publishDate", "isPublished"} <= node_names
 
     # The connection must carry the pagination arguments, not hardcode a count.
