@@ -89,12 +89,22 @@ def slugify_shopify_handle(title: str) -> str:
 #
 # UNLISTED arrived in Story 10.74, not from Shopify: introspection on
 # 2026-09-05 showed all four values present and undeprecated on API versions
-# 2024-01, 2025-01 and 2025-07, including the version this server runs against.
-# The tuple had been written incomplete since the module existed, which left
-# update_product_status a one-way door — a product could be moved out of
-# UNLISTED but never back — and made the get_products filter silently
-# unable to reach a product the store actually had.
-PRODUCT_STATUS_VALUES = ("ACTIVE", "DRAFT", "ARCHIVED", "UNLISTED")
+# 2024-01, 2025-10 and 2026-01 — the last being the version this project
+# targets (settings.shopify_api_version defaults to "2026-01"), which matters
+# because Shopify's own description of UNLISTED says the status "is only
+# visible from 2025-10 and up". The tuple had been written incomplete since the
+# module existed, which left update_product_status a one-way door — a product
+# could be moved out of UNLISTED but never back — and made the get_products
+# filter unable to reach a product the store actually had.
+#
+# UNLISTED is NOT a hidden-from-customers state. Shopify: "The product is
+# active but you need a direct link to view it... doesn't show up in search,
+# collections, or product recommendations." It stays purchasable by anyone
+# holding the URL. DRAFT and ARCHIVED are the states that unpublish. The
+# update_product_status preview says so, so an operator reaching for "hide
+# this product" is not silently given the weaker guarantee.
+PRODUCT_STATUS_UNLISTED = "UNLISTED"
+PRODUCT_STATUS_VALUES = ("ACTIVE", "DRAFT", "ARCHIVED", PRODUCT_STATUS_UNLISTED)
 INVENTORY_POLICY_VALUES = ("DENY", "CONTINUE")
 TAG_MODES = ("replace", "append", "remove")
 
@@ -687,6 +697,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         """
         Update a product's status: ACTIVE, DRAFT, ARCHIVED, or UNLISTED. Reads
         current status for the preview. Returns a preview unless confirm=True.
+
+        UNLISTED does NOT hide a product from customers: it stays active and
+        purchasable by direct link, only dropping out of search, collections and
+        recommendations. Use DRAFT to unpublish.
         """
         if new_status not in PRODUCT_STATUS_VALUES:
             return f"Error: new_status must be one of {', '.join(PRODUCT_STATUS_VALUES)}."
@@ -702,6 +716,16 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"  Old status : {old_status}\n"
             f"  New status : {new_status}{no_op_suffix}"
         )
+        # A confirm gate is only informed consent if the preview states what the
+        # target status actually does. UNLISTED reads like "hidden" and is not:
+        # Shopify keeps the product active and purchasable by direct link. An
+        # operator reaching for "hide this product" wants DRAFT.
+        if new_status == PRODUCT_STATUS_UNLISTED:
+            body += (
+                "\n  NOTE       : UNLISTED keeps the product active and purchasable by"
+                "\n               direct link — it only leaves search, collections and"
+                "\n               recommendations. Use DRAFT to unpublish it."
+            )
 
         return write_gate(
             preview=f"PREVIEW — Product status update\n{body}",

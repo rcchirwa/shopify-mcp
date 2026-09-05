@@ -66,11 +66,12 @@ PRODUCTS_MAX_PAGES = 10
 # being imported from the tools layer, which the operations layer must not
 # depend on (Story 10.23 / A5).
 #
-# Story 10.74 added UNLISTED. It is not a value Shopify introduced recently —
-# schema introspection of ProductStatus on 2026-09-05 returned all four, none
-# deprecated, on API versions 2024-01 (the one this server is configured for),
-# 2025-01 and 2025-07. This table was written incomplete from the start, while
-# the store held a product in that state the whole time.
+# Story 10.74 added UNLISTED. Schema introspection of ProductStatus on
+# 2026-09-05 returned all four values, none deprecated, on API versions
+# 2024-01, 2025-10 and 2026-01 — the last being the version this project
+# targets (settings.shopify_api_version defaults to "2026-01"). This table was
+# written incomplete from the start, while the store held a product in that
+# state the whole time.
 PRODUCT_STATUS_QUERY = {
     "ACTIVE": "status:ACTIVE",
     "DRAFT": "status:DRAFT",
