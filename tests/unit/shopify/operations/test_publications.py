@@ -249,3 +249,89 @@ def test_read_collection_publications_missing_returns_none():
     col, rps, capped = ops.read_collection_publications(fc, "nope")
     assert col is None
     assert rps == []
+
+
+# ---------- GraphQL text pins (Story 10.83) ----------
+#
+# Every other assertion in this suite compares a query by OBJECT IDENTITY
+# (`fc.calls[0][0] == q.PUBLISHABLE_PUBLISH`), which cannot notice the query's
+# content changing — the fake client returns the scripted response either way.
+# Deleting the Collection inline fragment, or swapping the new read's root field
+# to productByHandle, left the whole offline suite green. These pin the text the
+# live store actually depends on.
+
+
+def test_publishable_mutations_select_both_product_and_collection():
+    """The Collection inline fragment is the load-bearing new GraphQL of Story
+    10.83: without it a Collection target comes back as an empty
+    `publishable {}`. Nothing else in the suite would notice its removal."""
+    for mutation in (q.PUBLISHABLE_PUBLISH, q.PUBLISHABLE_UNPUBLISH):
+        assert "... on Product { id title }" in mutation
+        assert "... on Collection { id title }" in mutation
+
+
+def test_collection_publications_read_selects_the_fields_the_tools_consume():
+    query = q.GET_COLLECTION_PUBLICATIONS_BY_HANDLE
+    # Root field: swapping this to productByHandle is invisible to the fakes.
+    assert "collectionByHandle(handle: $handle)" in query
+    # `isPublished` drives the published/not-published split; `publishDate` is
+    # rendered; `ruleSet` drives the smart/manual line.
+    assert "isPublished" in query
+    assert "publishDate" in query
+    assert "publication { id name }" in query
+    assert "ruleSet { appliedDisjunctively }" in query
+    # The pagination variables client.paginate() drives must be declared and used.
+    assert "$first: Int!" in query
+    assert "$after: String" in query
+    assert "resourcePublications(first: $first, after: $after)" in query
+    assert "pageInfo { hasNextPage endCursor }" in query
+
+
+def test_collection_publications_read_uses_the_shared_page_size():
+    """Unasserted, the page size can be dropped to 1 with the suite green —
+    every extra round-trip invisible offline and expensive against the API."""
+    from shopify_mcp.shopify.operations.publications import PUBLICATIONS_PAGE_SIZE
+
+    fc = FakeClient([{"collectionByHandle": None}])
+    ops.read_collection_publications(fc, "all-copy")
+    assert fc.calls[0][1]["first"] == PUBLICATIONS_PAGE_SIZE
+
+
+def test_collection_publications_query_parses_and_has_the_shape_paginate_walks():
+    """Parse the query instead of grepping it.
+
+    Story 10.76's lesson: substring assertions catch an UNCONVERTED query but
+    not a MIS-converted one. Hoisting `pageInfo` out of the walked connection up
+    one level keeps every asserted token present, leaves the suite green, and
+    breaks pagination against the real API. So walk the AST down the same
+    `connection_path` the runtime drives and require pageInfo to be there.
+
+    `graphql-core` is `gql`'s own dependency and is pinned in both lockfiles, so
+    this costs nothing to import.
+    """
+    from graphql import parse
+
+    doc = parse(q.GET_COLLECTION_PUBLICATIONS_BY_HANDLE)
+    (operation,) = doc.definitions
+
+    def _field(selection_set, name):
+        for sel in selection_set.selections:
+            if getattr(sel, "name", None) is not None and sel.name.value == name:
+                return sel
+        raise AssertionError(f"{name!r} not found in selection set")
+
+    # The exact path shopify_mcp.client.paginate is told to walk.
+    root = _field(operation.selection_set, "collectionByHandle")
+    connection = _field(root.selection_set, "resourcePublications")
+
+    page_info = _field(connection.selection_set, "pageInfo")
+    names = {s.name.value for s in page_info.selection_set.selections}
+    assert {"hasNextPage", "endCursor"} <= names
+
+    nodes = _field(connection.selection_set, "nodes")
+    node_names = {s.name.value for s in nodes.selection_set.selections}
+    assert {"publication", "publishDate", "isPublished"} <= node_names
+
+    # The connection must carry the pagination arguments, not hardcode a count.
+    args = {a.name.value for a in connection.arguments}
+    assert args == {"first", "after"}

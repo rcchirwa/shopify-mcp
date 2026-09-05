@@ -10,7 +10,7 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ## 2026-09-05 — Story 10.83 (T-collection-publish — the publications surface could only reach products)
 
-`tools/publications.py` registered five tools and every one that resolved a target was product-scoped. The mutations were never the gap: `publishablePublish` / `publishableUnpublish` are generic over Shopify's `Publishable` interface, and `ops.publish` / `ops.unpublish` already took a plain GID — only the parameter was *named* `product_gid`. The capability was half-present and the wrapper was narrow. A collection could be created but not made visible, so 10.82 alone produced a collection nobody could reach.
+`tools/publications.py` registered five tools and every one that resolved a target was product-scoped. The mutations were never the gap: `publishablePublish` / `publishableUnpublish` are generic over Shopify's `Publishable` interface, and `ops.publish` / `ops.unpublish` already took a plain GID — only the parameter was *named* `product_gid`. The capability was half-present and the wrapper was narrow. Nothing in this server could put a collection on a sales channel, so a collection could exist and still be unreachable by any shopper.
 
 ### The live probe that preceded the design (card step 2, read-only)
 
@@ -42,16 +42,41 @@ Publish, read back, fetch the storefront, unpublish, fetch again, assert the sto
 
 **Two things a naive storefront check gets wrong, both found the hard way.** The `.myshopify.com` host 301-redirects to the store's primary domain, so a non-following request reports 301 whether the collection is published or not and proves nothing. And **the storefront is eventually consistent with the Admin API**: after an unpublish that `resourcePublications` already reported as complete, the page kept serving 200 for roughly 30 seconds. Cache-busting did not fix it, so this is Shopify propagation rather than an edge cache. The runner polls to a deadline instead of asserting one immediate fetch. Anyone scripting publish-then-check needs the same patience — the Admin API going quiet does not mean the page has flipped.
 
+### What the review changed (triple-threat: code quality + security + deep, in parallel, plus a separate Opus adversarial verifier)
+
+The verifier drove both product write tools through a 36-scenario differential harness against the pre-refactor commit — output, GraphQL variables and audit-log lines — and found them byte-identical, which is the evidence behind the byte-identical claim above. It applied 80 mutations across the three layers.
+
+**The most valuable finding was that this story's own load-bearing GraphQL was unpinned.** Every assertion in the suite compared a query by *object identity* (`fc.calls[0][0] == PUBLISHABLE_PUBLISH`), which cannot notice the query's text changing. Deleting the `... on Collection` inline fragment — the single thing that makes this story work against the real API — left the entire suite green, as did renaming `collectionByHandle` to `productByHandle` and dropping `isPublished`. All are pinned now, and the new read is checked by **parsing** rather than grepping, walking the same `connection_path` the runtime drives: Story 10.76's lesson is that a substring assertion catches an unconverted query but not a mis-converted one, and hoisting `pageInfo` up one level keeps every token present while breaking pagination. That mutation is now killed.
+
+Also fixed:
+
+- **Nondeterministic output.** Both sections of the publications report were rendered straight from sets, so identical store state printed in a different order from one process to the next. Now sorted by channel name, which fixes the product read too — nothing could have depended on the old order because there was no old order.
+- **A testability regression the refactor introduced.** `_CHANNEL_WRITE_OPS` captured `ops.publish` / `ops.unpublish` as function objects at import, which silently stops `monkeypatch.setattr(ops, "publish", ...)` from intercepting the call. Now resolved late by name, with a test that fails if it regresses.
+- **An uncapped reflection.** The extracted `_render_failed` reflected Shopify `userError` text with no length bound while every other site in the module caps at 300 characters. Capped — and `set_product_publications`, which still had its own inline copy, now routes through the same helper, removing the fifth duplicate of that block.
+- **The live runner's precondition did not guard.** A failing `assert` does not stop pytest, so a collection already on channels would have been published and unpublished anyway, leaving the store changed while the restore check passed against a hardcoded empty set. It now halts the run and asserts restoration against the state actually captured beforehand.
+- **The shared supplied-predicate was bypassed.** The new tools inlined `not handle.strip()` while the operations layer used a bare `if not handle:` — so a whitespace-only handle was absent at one layer and supplied at the other. Both call `is_supplied` now.
+- **An identity comparison against an `Any`-typed bool.** Correct today, because `in` returns the interned singletons, but a future table entry written as `0`/`1` would have inverted the publish/unpublish split on a write path with no type error and no test failure. Now a typed local compared with `==`.
+- **Docs asserting a tool that does not exist.** The README and this entry referenced `create_collection`, which lives in an unmerged branch, not here.
+- **Six further mutation survivors**, each closed and each verified by re-applying the mutation: userError mapping against the submitted list rather than all targets, the done-list staying inside the no-errors branch, the audit log's failure count, the handle trim on both new paths, and the read's page size.
+
 ### Deliberately out of scope
 
 - **No collection is created** by this card's code or tests, per its scope guard. The live runner operates on a collection that already exists.
 - **The product tools' contracts** are untouched.
+- **Fencing store-authored titles.** See the residual below.
+
+### A note on decision 4
+
+`get_collection_publications` renders a `Type: smart|manual` line, classified from `ruleSet` the way `tools/collections.py::_resolve_collection` does. This is **presentational only** and is still within decision 4: nothing branches on it, no behaviour differs, and the write path never consults it. The alternative was to stop selecting `ruleSet` at all, which would have made the smart/manual offline tests theatre — they would have scripted a field the real API was never asked for.
 
 ### Residuals, recorded not fixed
 
 - **`set_collection_publications`** — the declarative full-replace twin of `set_product_publications`. The deliverable needed one collection on Online Store; a third write path with its own three-way diff had no caller. Entry condition: a caller needs to declare a collection's exact channel set rather than adjust it.
 - **The smart-collection write leg is not live-verified.** The read-side probe found no smart/manual difference and the mutation is generic over `Publishable`, and a smart collection reaching the mutation is pinned offline — but no smart collection was actually published against the live store, because the operator chose a disposable manual collection as the probe target rather than expose a real one. Entry condition: publish any smart collection to a non-storefront channel and confirm it lands.
 - **`_split_current`'s `not_published` return can never be populated** against the real API, because `resourcePublications` hides unpublished entries. Both product write tools already discard it (`published_ids, _`). Pre-existing and product-side; recorded rather than touched.
+- **The `capped` flag from the paginated publications read is discarded** by both `_resolve_product_gid_and_meta` and its new collection twin. If a `resourcePublications` walk truncates, the published set is under-reported, and an unpublish would then classify a genuinely-published channel as "Not currently published (unchanged)" and skip it. Pre-existing on the product path and mirrored deliberately rather than diverging. Entry condition: any resource plausibly on more than `PUBLICATIONS_PAGE_SIZE` channels, or a truncation observed in the wild. The fix is one truncation line in the rendered output for both resource types together.
+- **No GraphQL query in this repo is validated against a schema, and only the ones someone remembered to pin are checked at all.** Story 10.83 added a parse-based check for its own new read, and Story 10.76 added one for the products walk; every other query string in `shopify/queries/` is pinned by object identity alone, so its text can change freely with the suite green. Entry condition: any query drifting undetected in the wild, or a cheap way to run `graphql-core` validation against a checked-in schema dump. `graphql-core` is already pinned in both lockfiles as `gql`'s dependency, so the parse half costs nothing today.
+- **Store-authored titles are reflected unfenced** by the new tools. This matches the convention rather than departing from it: `get_product_publications` reflects a product title the same way, and `tools/collections.py::get_collection` fences only the description while emitting the title bare. No site in `src/` fences a title. Recorded because the security review raised it and the answer should not have to be re-derived. Entry condition: if titles are ever to be fenced, it is a convention-wide change across `get_collection`, `get_product_publications` and these three tools together — never here alone.
 
 ---
 

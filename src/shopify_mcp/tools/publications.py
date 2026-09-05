@@ -31,6 +31,7 @@ from mcp.server.fastmcp import FastMCP
 
 from shopify_mcp.client import ShopifyClient
 from shopify_mcp.shopify._cache import CHANNELS
+from shopify_mcp.shopify._identifiers import is_supplied
 from shopify_mcp.shopify.operations import publications as ops
 from shopify_mcp.shopify.queries.publications import (
     GET_COLLECTION_PUBLICATIONS_BY_HANDLE,
@@ -212,17 +213,89 @@ def _split_current(rps: list[dict[str, Any]]) -> tuple[set[str], set[str]]:
 
 def _resolve_collection_gid_and_meta(
     client: ShopifyClient, handle: str
-) -> tuple[str | None, str | None, str | None, list[dict[str, Any]]]:
+) -> tuple[str | None, str | None, str | None, str | None, list[dict[str, Any]]]:
     """Collection twin of :func:`_resolve_product_gid_and_meta`.
 
-    Returns (gid, title, handle, current_published_nodes); the first three are
-    None when no collection resolved, rps is always a list. Handle-only — there
-    is no by-id collection query and Story 10.83 did not add one, so unlike the
-    product funnel there is no identifier pair and nothing to refuse."""
+    Returns (gid, title, handle, kind, current_published_nodes); the first four
+    are None when no collection resolved, rps is always a list. ``kind`` is
+    "smart" or "manual", classified from ``ruleSet`` exactly as
+    ``tools/collections.py::_resolve_collection`` does. It is reported in the
+    read tool's output and drives no behaviour — the 2026-09-05 live probe found
+    no smart/manual difference, so nothing branches on it.
+
+    Handle-only — there is no by-id collection query and Story 10.83 did not add
+    one, so unlike the product funnel there is no identifier pair and nothing to
+    refuse."""
     col, rps, _capped = ops.read_collection_publications(client, handle)
     if not col:
-        return None, None, None, []
-    return col["id"], col["title"], col["handle"], rps
+        return None, None, None, None, []
+    kind = "smart" if col.get("ruleSet") else "manual"
+    return col["id"], col["title"], col["handle"], kind, rps
+
+
+def _render_publications_report(
+    *,
+    resource_label: str,
+    title: str | None,
+    handle: str | None,
+    gid: str,
+    rps: list[dict[str, Any]],
+    cache: dict,
+    extra_meta: tuple[str, ...] = (),
+) -> str:
+    """Render the "published to / not published to" report for a resource.
+
+    Shared by the product and collection read tools. Story 10.83 factored it out
+    for the same reason it factored the write body: the read block was about to
+    become a second verbatim copy, and de-duplicating writes while duplicating
+    reads in one change would be incoherent.
+
+    Product output changes in exactly one way: both sections are now sorted by
+    channel name. They were rendered straight from sets before, so the same
+    store state printed in a different order from one process to the next under
+    hash randomization. Nothing could have depended on the old order because
+    there was no old order. Content is otherwise identical — ``extra_meta`` is
+    empty on the product path.
+
+    The not-published set is a **derived complement**, never read off the
+    response. Shopify's ``resourcePublications`` defaults to
+    ``onlyPublished: true``, so a channel the resource is not on is absent
+    rather than present with ``isPublished: false`` (live-confirmed
+    2026-09-05); reading it off the nodes would report every resource as
+    published everywhere it appears and nowhere it does not."""
+    published_ids, _ = _split_current(rps)
+    by_id = {(rp.get("publication") or {}).get("id"): rp for rp in rps}
+
+    # Both sections are built from sets, so they must be sorted before render or
+    # the same store state prints in a different order on every process. That is
+    # noise for a human and a spurious diff for a model comparing two calls.
+    # Sorting by name here fixes it for the product read too, which had the
+    # same nondeterminism before this helper existed.
+    def _name_of(pid: str) -> str:
+        return ((by_id.get(pid, {}).get("publication") or {}).get("name")) or ""
+
+    published_nodes = []
+    for pid in sorted(published_ids, key=_name_of):
+        rp = by_id.get(pid, {})
+        pub = rp.get("publication") or {}
+        published_nodes.append(
+            {"id": pub.get("id"), "name": pub.get("name"), "publishDate": rp.get("publishDate")}
+        )
+
+    not_published_ids = set(cache["by_id"].keys()) - published_ids
+    not_published_nodes = [
+        {"id": pid, "name": cache["by_id"][pid]["name"]}
+        for pid in sorted(not_published_ids, key=lambda p: cache["by_id"][p]["name"])
+    ]
+
+    meta = [f"{resource_label}: {title}", f"Handle: {handle}", f"ID: {from_gid(gid)}", *extra_meta]
+    return (
+        "\n".join(meta) + "\n\n"
+        f"Published to ({len(published_nodes)}):\n"
+        f"{_render_channel_lines(published_nodes, 'publishDate')}\n\n"
+        f"Not published to ({len(not_published_nodes)}):\n"
+        f"{_render_channel_lines(not_published_nodes)}"
+    )
 
 
 # Direction table for the shared publish/unpublish body below. Single source of
@@ -240,7 +313,7 @@ _CHANNEL_WRITE_OPS: dict[str, dict[str, Any]] = {
         "unchanged_label": "Already published (unchanged)",
         "done_label": "Now published to",
         "log_key": "now_published",
-        "op": ops.publish,
+        "op_name": "publish",
         "result_key": "publishablePublish",
         "acts_on_published": False,
     },
@@ -251,7 +324,7 @@ _CHANNEL_WRITE_OPS: dict[str, dict[str, Any]] = {
         "unchanged_label": "Not currently published (unchanged)",
         "done_label": "Now unpublished from",
         "log_key": "now_unpublished",
-        "op": ops.unpublish,
+        "op_name": "unpublish",
         "result_key": "publishableUnpublish",
         "acts_on_published": True,
     },
@@ -259,7 +332,17 @@ _CHANNEL_WRITE_OPS: dict[str, dict[str, Any]] = {
 
 
 def _render_failed(failed: list[dict[str, Any]]) -> str:
-    return "\n".join(f"  • {f.get('channel_name', '?')}: {f.get('error')}" for f in failed)
+    """Render the failed-channel lines shared by every channel write.
+
+    Both halves are `cap`-bounded. The inline copies this replaced were not,
+    which was survivable while they served two tools and only ever rendered a
+    caller's own channel name or a Shopify `userError.message`; as one helper
+    behind four tools it should match the bound every other reflection site in
+    this module applies. The `error` half is the one that matters — it is
+    Shopify-authored text of unbounded length."""
+    return "\n".join(
+        f"  • {cap(str(f.get('channel_name', '?')))}: {cap(str(f.get('error')))}" for f in failed
+    )
 
 
 def _channel_write(
@@ -270,8 +353,8 @@ def _channel_write(
     meta_line: str,
     gid: str,
     rps: list[dict[str, Any]],
-    targets: list,
-    failed: list,
+    targets: list[dict[str, Any]],
+    failed: list[dict[str, Any]],
     confirm: bool,
     log_name: str,
 ) -> str:
@@ -291,8 +374,15 @@ def _channel_write(
     complement over the resolved targets — never read off the response."""
     spec = _CHANNEL_WRITE_OPS[direction]
     published_ids, _ = _split_current(rps)
-    acting = [t for t in targets if (t["id"] in published_ids) is spec["acts_on_published"]]
-    unchanged = [t for t in targets if (t["id"] in published_ids) is not spec["acts_on_published"]]
+    # Bound to a typed local and compared with ==, not `is`. The table is
+    # dict[str, Any], so mypy cannot check the value's type, and an identity
+    # test against a bool is only correct while every entry is a real interned
+    # `True`/`False` — an entry written as 0/1 would make `is` silently False
+    # for every target and invert the acting/unchanged split on a write path,
+    # with no type error and no test failure.
+    acts_on_published: bool = spec["acts_on_published"]
+    acting = [t for t in targets if (t["id"] in published_ids) == acts_on_published]
+    unchanged = [t for t in targets if (t["id"] in published_ids) != acts_on_published]
 
     heading = f"{spec['verb']} {resource_label} {spec['preposition']} channels"
     preview = (
@@ -307,11 +397,15 @@ def _channel_write(
     if not confirm:
         return with_confirm_hint(preview)
 
-    done: list = []
+    done: list[dict[str, Any]] = []
     apply_failed = list(failed)
     if acting:
         try:
-            result = spec["op"](client, gid, [t["id"] for t in acting])
+            # getattr, not a captured function object: binding ops.publish
+            # into the table at import time would make
+            # monkeypatch.setattr(ops, "publish", ...) stop intercepting the
+            # call, silently un-testing every write path that patches it.
+            result = getattr(ops, spec["op_name"])(client, gid, [t["id"] for t in acting])
         except Exception as e:
             return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
         user_errors = extract_user_errors(result, spec["result_key"])
@@ -402,35 +496,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not gid:
             return "No product found."
 
-        published_ids, _ = _split_current(rps)
-        by_id = {(rp.get("publication") or {}).get("id"): rp for rp in rps}
-
-        published_nodes = []
-        for pid in published_ids:
-            rp = by_id.get(pid, {})
-            pub = rp.get("publication") or {}
-            published_nodes.append(
-                {
-                    "id": pub.get("id"),
-                    "name": pub.get("name"),
-                    "publishDate": rp.get("publishDate"),
-                }
-            )
-
-        all_ids = set(channel_cache["by_id"].keys())
-        not_published_ids = all_ids - published_ids
-        not_published_nodes = [
-            {"id": pid, "name": channel_cache["by_id"][pid]["name"]} for pid in not_published_ids
-        ]
-
-        return (
-            f"Product: {title}\n"
-            f"Handle: {prod_handle}\n"
-            f"ID: {from_gid(gid)}\n\n"
-            f"Published to ({len(published_nodes)}):\n"
-            f"{_render_channel_lines(published_nodes, 'publishDate')}\n\n"
-            f"Not published to ({len(not_published_nodes)}):\n"
-            f"{_render_channel_lines(not_published_nodes)}"
+        return _render_publications_report(
+            resource_label="Product",
+            title=title,
+            handle=prod_handle,
+            gid=gid,
+            rps=rps,
+            cache=channel_cache,
         )
 
     def _resolve_target_nodes(
@@ -575,17 +647,21 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     # twin — the first statement is the empty-handle guard instead, which still
     # lands ahead of the sales-channel read as the placement rule requires.
 
-    def _collection_target(handle: str) -> tuple[str, str | None, str | None, list]:
-        """Resolve a collection for the three tools below.
+    def _collection_target(handle: str) -> tuple[str, str, str, list]:
+        """Resolve a collection for the two collection WRITE tools.
+
+        ``get_collection_publications`` does not come through here — it needs the
+        smart/manual kind for its output and renders a different shape, so it
+        calls ``_resolve_collection_gid_and_meta`` directly.
 
         Returns (error_or_empty, gid, meta_line, rps). A non-empty first element
         is the message to return; the rest are then meaningless."""
         try:
-            gid, title, col_handle, rps = _resolve_collection_gid_and_meta(client, handle)
+            gid, title, col_handle, _kind, rps = _resolve_collection_gid_and_meta(client, handle)
         except Exception as e:
-            return f"Error: {cap(str(e))}\n{SCOPE_HINT}", None, None, []
+            return f"Error: {cap(str(e))}\n{SCOPE_HINT}", "", "", []
         if not gid:
-            return "No collection found.", None, None, []
+            return "No collection found.", "", "", []
         return "", gid, f"Collection: {title} (handle: {col_handle}, id: {from_gid(gid)})", rps
 
     @server.tool()
@@ -594,7 +670,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         Show which sales channels a collection is published to, and which it
         is not. Collections are named by handle only.
         """
-        if not handle.strip():
+        if not is_supplied(handle):
             return "Provide handle."
         try:
             _ensure_channels(client, channel_cache)
@@ -602,43 +678,22 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return f"Error loading sales channels: {cap(str(e))}\n{SCOPE_HINT}"
 
         try:
-            gid, title, col_handle, rps = _resolve_collection_gid_and_meta(client, handle.strip())
+            gid, title, col_handle, kind, rps = _resolve_collection_gid_and_meta(
+                client, handle.strip()
+            )
         except Exception as e:
             return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
         if not gid:
             return "No collection found."
 
-        published_ids, _ = _split_current(rps)
-        by_id = {(rp.get("publication") or {}).get("id"): rp for rp in rps}
-
-        published_nodes = []
-        for pid in published_ids:
-            rp = by_id.get(pid, {})
-            pub = rp.get("publication") or {}
-            published_nodes.append(
-                {
-                    "id": pub.get("id"),
-                    "name": pub.get("name"),
-                    "publishDate": rp.get("publishDate"),
-                }
-            )
-
-        # Derived, not read off the response: resourcePublications omits the
-        # channels the collection is not on (live-confirmed 2026-09-05), so the
-        # complement has to come from the channel roster.
-        not_published_ids = set(channel_cache["by_id"].keys()) - published_ids
-        not_published_nodes = [
-            {"id": pid, "name": channel_cache["by_id"][pid]["name"]} for pid in not_published_ids
-        ]
-
-        return (
-            f"Collection: {title}\n"
-            f"Handle: {col_handle}\n"
-            f"ID: {from_gid(gid)}\n\n"
-            f"Published to ({len(published_nodes)}):\n"
-            f"{_render_channel_lines(published_nodes, 'publishDate')}\n\n"
-            f"Not published to ({len(not_published_nodes)}):\n"
-            f"{_render_channel_lines(not_published_nodes)}"
+        return _render_publications_report(
+            resource_label="Collection",
+            title=title,
+            handle=col_handle,
+            gid=gid,
+            rps=rps,
+            cache=channel_cache,
+            extra_meta=(f"Type: {kind}",),
         )
 
     def _collection_channel_write(
@@ -651,8 +706,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     ) -> str:
         """Shared front half for the two collection write tools: vet the handle,
         resolve channels, resolve the collection, then hand off to the
-        resource-agnostic `_channel_write`."""
-        if not handle.strip():
+        resource-agnostic `_channel_write`.
+
+        The handle vet is the FIRST statement, ahead of the sales-channel read
+        below — Story 10.68's placement rule. It uses the shared `is_supplied`
+        predicate rather than a local truthiness test so "what counts as
+        supplied" cannot drift between this layer and the operations layer; a
+        whitespace-only handle is absent in both."""
+        if not is_supplied(handle):
             return "Provide handle."
 
         try:
@@ -665,7 +726,6 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         err, gid, meta_line, rps = _collection_target(handle.strip())
         if err:
             return err
-        assert gid is not None and meta_line is not None  # narrowed by `err`
 
         return _channel_write(
             client,
@@ -795,9 +855,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"  Unchanged:\n{_render_channel_lines(unchanged_nodes)}"
         )
         if failed:
-            preview += "\n  Failed to resolve:\n" + "\n".join(
-                f"  • {f.get('channel_name', '?')}: {f.get('error')}" for f in failed
-            )
+            preview += "\n  Failed to resolve:\n" + _render_failed(failed)
 
         if not confirm:
             return with_confirm_hint(preview)
@@ -847,7 +905,5 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"  Unchanged:\n{_render_channel_lines(unchanged_nodes)}"
         )
         if apply_failed:
-            body += "\n  Failed:\n" + "\n".join(
-                f"  • {f.get('channel_name', '?')}: {f.get('error')}" for f in apply_failed
-            )
+            body += "\n  Failed:\n" + _render_failed(apply_failed)
         return body

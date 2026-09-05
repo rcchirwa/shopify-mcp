@@ -12,7 +12,7 @@ preview/confirm flow, userError mapping, and string formatting on top.
 from typing import Any
 
 from shopify_mcp.shopify._client import GraphQLClient
-from shopify_mcp.shopify._identifiers import reject_both_identifiers
+from shopify_mcp.shopify._identifiers import is_supplied, reject_both_identifiers
 from shopify_mcp.shopify._ids import to_gid
 from shopify_mcp.shopify.queries.publications import (
     GET_COLLECTION_PUBLICATIONS_BY_HANDLE,
@@ -109,7 +109,11 @@ def read_collection_publications(
     ``isPublished: false`` — confirmed live on 2026-09-05 against a store whose
     publication roster had 7 entries while an unpublished collection returned 0
     nodes. Callers must derive the not-published set as roster-minus-listed."""
-    if not handle:
+    # `is_supplied`, not a bare truthiness test: "what counts as supplied" is a
+    # single shared rule, and a whitespace-only handle must be absent here for
+    # the same reason it is absent at the tool layer. A bare `if not handle`
+    # would treat "  " as supplied and send it to Shopify.
+    if not is_supplied(handle):
         return None, [], False
     data, rps, capped = client.paginate(
         GET_COLLECTION_PUBLICATIONS_BY_HANDLE,

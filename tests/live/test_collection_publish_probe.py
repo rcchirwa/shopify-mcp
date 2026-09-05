@@ -75,12 +75,13 @@ def _storefront_status(client) -> int:
     domain, so `allow_redirects=False` reports 301 whether the collection is
     published or not and proves nothing either way.
 
-    A unique query parameter is appended on every call because the storefront
-    sits behind Cloudflare. Without it, the 200 fetched while the collection was
-    published is served from the edge for some time AFTER the unpublish lands,
-    so the reversal test reads 200 and fails against a page that is already
-    gone at the origin. Verified on 2026-09-05: same URL, cache-busted, 404 on
-    the first attempt."""
+    A unique query parameter is appended on every call so the edge cache is not
+    a variable. It is NOT the whole story and does not on its own make the
+    reversal check reliable: on 2026-09-05 a cache-busted fetch still returned
+    200 for roughly 30 seconds after the unpublish landed. That residue is
+    Shopify propagation, not Cloudflare — see `_await_storefront_status`, which
+    is what actually handles it. Do not remove the polling on the strength of
+    this cache-buster."""
     url = (
         f"https://{client._settings.shopify_store_url}"
         f"/collections/{PROBE_HANDLE}?cb={uuid.uuid4().hex}"
@@ -110,12 +111,25 @@ def _await_storefront_status(client, expected: int, timeout_s: int = 120) -> int
     return status
 
 
-def test_the_probe_collection_starts_on_no_channel(client):
-    """Guard the precondition. If this fails, the handle above is wrong or the
-    previous run did not restore state — stop rather than mutating blind."""
-    assert _published_channel_names(client) == set(), (
-        "probe collection is already published somewhere; pick another handle"
-    )
+@pytest.fixture(scope="module", autouse=True)
+def _require_an_unpublished_probe(client):
+    """Hard precondition, enforced with pytest.exit rather than an assertion.
+
+    A failed test does NOT stop the run — pytest carries on to the next one. So
+    a plain `assert` here would report the problem and then let the publish and
+    unpublish legs execute anyway, leaving the live store CHANGED from how it
+    was found while the final restore check still passed against a hardcoded
+    empty set. For a runner that mutates a real store the guard has to actually
+    halt, and the restore has to be measured against what was really there."""
+    before = _published_channel_names(client)
+    if before:
+        pytest.exit(
+            f"PROBE_HANDLE {PROBE_HANDLE!r} is already published to {sorted(before)}; "
+            "this runner only operates on a collection that is on no channel. "
+            "Pick another handle rather than mutating a live listing.",
+            returncode=1,
+        )
+    return before
 
 
 def test_preview_changes_nothing_on_the_store(tools, client):
@@ -164,6 +178,7 @@ def test_the_storefront_page_is_gone_again(client):
     assert _await_storefront_status(client, 404) == 404
 
 
-def test_the_store_was_left_as_it_was_found(client):
-    """Asserts the restore rather than trusting the unpublish output."""
-    assert _published_channel_names(client) == set()
+def test_the_store_was_left_as_it_was_found(client, _require_an_unpublished_probe):
+    """Asserts the restore against the state actually captured before the run,
+    not against a hardcoded empty set."""
+    assert _published_channel_names(client) == _require_an_unpublished_probe

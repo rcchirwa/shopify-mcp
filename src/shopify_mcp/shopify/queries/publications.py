@@ -83,8 +83,11 @@ query GetProductPublicationsByHandle($handle: String!, $first: Int!, $after: Str
 # collection and both returned `publication { id name }`, `publishDate` and
 # `isPublished` with the same pageInfo.
 #
-# `ruleSet` is selected so a caller can tell smart from manual in the output.
-# It drives no branch — the probe found no read-side difference between them.
+# `ruleSet` is selected because `get_collection_publications` renders a
+# "Type: smart|manual" line from it, classifying the same way
+# `tools/collections.py::_resolve_collection` does. It drives no branch — the
+# probe found no read-side difference between smart and manual, and nothing in
+# the write path consults it.
 GET_COLLECTION_PUBLICATIONS_BY_HANDLE = """
 query GetCollectionPublicationsByHandle($handle: String!, $first: Int!, $after: String) {
   collectionByHandle(handle: $handle) {
