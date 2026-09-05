@@ -881,12 +881,44 @@ def test_create_collection_whitespace_only_title_reads_nothing():
     assert fc.calls == []
 
 
+def test_create_collection_slugifies_a_caller_supplied_handle_before_the_pre_read():
+    """A raw caller handle would make the duplicate guard look up something no
+    collection can have, so an existing 'grey-casualty' would slip past it."""
+    tools, fc = _build([_manual_collection(handle="grey-casualty", title="Grey Casualty")])
+    out = tools["create_collection"](title="Anything", handle="Grey Casualty")
+    assert fc.calls[0][1] == {"handle": "grey-casualty"}
+    assert "already exists" in out
+    assert len(fc.calls) == 1
+
+
+def test_create_collection_sends_the_slugified_caller_handle_not_the_raw_one():
+    tools, fc = _build([_NO_COLLECTION, _create_ok(handle="grey-casualty")])
+    tools["create_collection"](title="Anything", handle="Grey Casualty", confirm=True)
+    assert fc.calls[1][1]["input"]["handle"] == "grey-casualty"
+
+
+def test_create_collection_treats_a_whitespace_handle_as_not_supplied():
+    """The strip is load-bearing: without it, handle="   " is refused outright
+    instead of falling back to deriving one from the title."""
+    tools, fc = _build([_NO_COLLECTION, _create_ok()])
+    out = tools["create_collection"](title="Grey Casualty", handle="   ", confirm=True)
+    assert out.startswith("Done.")
+    assert fc.calls[1][1]["input"]["handle"] == "grey-casualty"
+
+
+def test_create_collection_refuses_a_caller_handle_that_slugifies_to_nothing():
+    tools, fc = _build([])
+    out = tools["create_collection"](title="Grey Casualty", handle="!!!")
+    assert out.startswith("Cannot form a collection handle from '!!!'")
+    assert fc.calls == []
+
+
 def test_create_collection_refuses_a_title_that_derives_no_handle():
     """ "!!!" slugifies to "", which would make the pre-read meaningless and
     silently disable the duplicate guard. Refuse instead of guessing."""
     tools, fc = _build([])
     out = tools["create_collection"](title="!!!")
-    assert "handle" in out
+    assert out.startswith("Cannot form a collection handle from '!!!'")
     assert fc.calls == []
 
 
@@ -900,12 +932,14 @@ def test_create_collection_preview_issues_no_create_mutation():
     assert fc.calls[0][0] == GET_COLLECTION_BY_HANDLE
 
 
-def test_create_collection_preview_shows_shopify_derived_handle():
-    """Decision 2: an omitted handle is shown as the expected derivation."""
+def test_create_collection_preview_shows_the_handle_derived_from_the_title():
+    """Decision 2: an omitted handle is derived here and labelled as such."""
     tools, fc = _build([_NO_COLLECTION])
     out = tools["create_collection"](title="Grey Casualty")
     assert "grey-casualty" in out
-    assert "Shopify-derived" in out
+    assert "derived from the title" in out
+    # The title an operator is about to write must be on the block they confirm.
+    assert "Title  : Grey Casualty" in out
     # The pre-read must target that derived handle, not the raw title.
     assert fc.calls[0][1] == {"handle": "grey-casualty"}
 
@@ -914,7 +948,7 @@ def test_create_collection_preview_shows_caller_supplied_handle_as_such():
     tools, fc = _build([_NO_COLLECTION])
     out = tools["create_collection"](title="Grey Casualty", handle="gc-2026")
     assert "gc-2026" in out
-    assert "Shopify-derived" not in out
+    assert "derived from the title" not in out
     assert fc.calls[0][1] == {"handle": "gc-2026"}
 
 
@@ -926,12 +960,54 @@ def test_create_collection_preview_states_it_will_not_be_published():
 
 
 def test_create_collection_confirm_sends_exactly_one_create_mutation():
+    """The derived handle is SENT, not left for Shopify to re-derive, so the
+    pre-read and the mutation can never claim different handles."""
     tools, fc = _build([_NO_COLLECTION, _create_ok()])
     out = tools["create_collection"](title="Grey Casualty", confirm=True)
     assert out.startswith("Done.")
     assert len(fc.calls) == 2
     assert fc.calls[1][0] == CREATE_COLLECTION
-    assert fc.calls[1][1]["input"] == {"title": "Grey Casualty"}
+    assert fc.calls[1][1]["input"] == {
+        "title": "Grey Casualty",
+        "handle": "grey-casualty",
+    }
+
+
+def test_create_collection_strips_padding_from_the_title_before_writing():
+    tools, fc = _build([_NO_COLLECTION, _create_ok()])
+    tools["create_collection"](title="  Grey Casualty  ", confirm=True)
+    assert fc.calls[1][1]["input"]["title"] == "Grey Casualty"
+
+
+def test_create_collection_done_text_reports_the_collection_id():
+    """With no delete tool, the id is what manual cleanup needs."""
+    tools, fc = _build([_NO_COLLECTION, _create_ok()])
+    out = tools["create_collection"](title="Grey Casualty", confirm=True)
+    assert "ID     : 9" in out
+
+
+def test_create_collection_logs_the_handle_shopify_actually_assigned(monkeypatch):
+    """The audit log is the durable record; a log naming a handle that does not
+    exist cannot find the collection it recorded."""
+    import shopify_mcp.tools._write_tool as wt
+
+    seen = []
+    monkeypatch.setattr(wt, "log_write", lambda name, desc: seen.append((name, desc)))
+    tools, fc = _build([_NO_COLLECTION, _create_ok(handle="grey-casualty-1")])
+    tools["create_collection"](title="Grey Casualty", confirm=True)
+    assert seen == [("create_collection", "handle=grey-casualty-1 | title=Grey Casualty")]
+
+
+def test_create_collection_logs_the_expected_handle_when_none_comes_back(monkeypatch):
+    import shopify_mcp.tools._write_tool as wt
+
+    seen = []
+    monkeypatch.setattr(wt, "log_write", lambda name, desc: seen.append((name, desc)))
+    tools, fc = _build(
+        [_NO_COLLECTION, {"collectionCreate": {"collection": None, "userErrors": []}}]
+    )
+    tools["create_collection"](title="Grey Casualty", confirm=True)
+    assert seen == [("create_collection", "handle=grey-casualty | title=Grey Casualty")]
 
 
 def test_create_collection_confirm_sends_caller_handle():
@@ -1061,7 +1137,8 @@ def test_create_collection_user_errors_surfaced():
 def test_create_collection_done_text_reports_the_handle_shopify_returned():
     tools, fc = _build([_NO_COLLECTION, _create_ok(handle="grey-casualty")])
     out = tools["create_collection"](title="Grey Casualty", confirm=True)
-    assert "grey-casualty" in out
+    assert "Handle : grey-casualty" in out
+    assert "Title  : Grey Casualty" in out
     assert "NOTE" not in out
 
 
@@ -1074,14 +1151,16 @@ def test_create_collection_done_text_flags_a_suffixed_handle():
     assert "NOTE" in out
 
 
-def test_create_collection_done_text_when_response_omits_the_collection():
-    """A userErrors-clean response with no collection node must not crash."""
+def test_create_collection_does_not_claim_success_without_a_collection():
+    """No userErrors AND no collection means the outcome is unknown. Reporting
+    "Done. Created collection." there would be a false success."""
     tools, fc = _build(
         [_NO_COLLECTION, {"collectionCreate": {"collection": None, "userErrors": []}}]
     )
     out = tools["create_collection"](title="Grey Casualty", confirm=True)
-    assert out.startswith("Done.")
-    assert "(not returned by Shopify)" in out
+    assert not out.startswith("Done.")
+    assert "WARNING" in out
+    assert "get_collection(handle='grey-casualty')" in out
 
 
 def test_create_collection_done_text_says_it_is_not_published():

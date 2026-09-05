@@ -61,7 +61,7 @@ Requires `write_files` and `write_products` scopes. Local-file source paths are 
 | Tool | Description |
 |------|-------------|
 | `get_collection` | Get collection details by handle (works for both manual and smart collections) |
-| `create_collection` | Create a new **manual** collection — no rule-based (smart) collections. `handle` is optional; omit it and Shopify derives one from the title, which the preview shows in advance. Refuses if a collection already exists at that handle. The collection is created **unpublished on every sales channel** (preview + confirm) |
+| `create_collection` | Create a new **manual** collection — no rule-based (smart) collections. `handle` is optional and is always slugified; omit it and one is derived from the title, which the preview shows before you confirm. Refuses if a collection already exists at that handle. The collection is created **unpublished on every sales channel** (preview + confirm) |
 | `update_collection` | Update collection title or description (preview + confirm) |
 
 ### Discounts

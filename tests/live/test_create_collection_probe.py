@@ -96,7 +96,9 @@ def test_created_collection_is_on_no_sales_channel(client):
         """,
         {"handle": PROBE_HANDLE},
     )
-    count = data["collectionByHandle"]["resourcePublicationsCount"]["count"]
+    node = data["collectionByHandle"]
+    assert node is not None, "run the whole module in order — the create test makes this"
+    count = node["resourcePublicationsCount"]["count"]
     print(f"\n[probe] resourcePublicationsCount = {count}\n")
     assert count == 0, f"expected an unpublished collection, got {count} publications"
 

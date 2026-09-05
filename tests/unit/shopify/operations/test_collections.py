@@ -24,8 +24,15 @@ from tests.support import FakeClient
 
 
 def test_no_shared_fragment_for_collections():
-    """collections has only a by-handle read (no by-id twin), so no duplicated
-    selection set exists to factor out — no GraphQL fragment is defined."""
+    """No GraphQL fragment is defined in this module.
+
+    Originally (Story 10.26 / A5, AC3) because nothing was duplicated: one
+    by-handle read, no by-id twin. Story 10.82 made that rationale stale —
+    CREATE_COLLECTION and UPDATE_COLLECTION now share a byte-identical
+    selection set — but the conclusion stands on new grounds, recorded in the
+    queries module docstring: four scalars across two mutations is below the
+    threshold where a named fragment repays the indirection.
+    """
     for query in (
         q.GET_COLLECTION_BY_HANDLE,
         q.CREATE_COLLECTION,
@@ -134,6 +141,16 @@ def test_create_collection_sends_handle_when_supplied():
         "title": "Grey Casualty",
         "handle": "grey-casualty",
     }
+
+
+def test_create_collection_sends_an_explicitly_empty_handle():
+    """The None-means-omitted contract, pinned for `handle` the way it already
+    is for `description_html`. Without this, tightening the guard to
+    `if handle:` passes the whole suite while changing the documented contract.
+    """
+    fc = FakeClient([_create_ok()])
+    ops.create_collection(fc, title="Grey Casualty", handle="")
+    assert fc.calls[0][1]["input"]["handle"] == ""
 
 
 def test_create_collection_sends_description_when_supplied():

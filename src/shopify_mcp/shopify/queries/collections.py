@@ -6,10 +6,17 @@ Story 10.25). Pure strings — no imports from ``shopify.operations`` or
 ``tools``.
 
 Unlike the ``products`` and ``catalog_hygiene`` domains, ``collections`` has a
-single by-handle read (``GET_COLLECTION_BY_HANDLE``) and no by-id twin, so there
-is no duplicated selection set to factor into a shared fragment. None is
-extracted — fragment dedup is opportunistic here and does not apply (Story
-10.26 / A5, AC3).
+single by-handle read (``GET_COLLECTION_BY_HANDLE``) and no by-id twin, so no
+read-side selection set was duplicated. No fragment is extracted — fragment
+dedup is opportunistic here (Story 10.26 / A5, AC3).
+
+Story 10.82 changed the premise without changing the conclusion, so read this
+before assuming the original rationale still holds: ``CREATE_COLLECTION`` and
+``UPDATE_COLLECTION`` now carry byte-identical selection sets. A duplicated
+selection set therefore DOES exist in this module. It is still not factored
+out, on different grounds — the set is four scalars across two mutations, and a
+fragment would add a named indirection that costs more to follow than the four
+lines it saves. Revisit at a third identical mutation payload.
 """
 
 GET_COLLECTION_BY_HANDLE = """

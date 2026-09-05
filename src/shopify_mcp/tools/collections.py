@@ -201,14 +201,37 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not title.strip():
             return "Provide a title for the collection."
 
+        # Strip before use, not just for the emptiness check: the unstripped
+        # value would otherwise be stored, previewed and logged with padding
+        # while its handle was slugified without it.
+        title = title.strip()
         caller_handle = handle.strip()
-        # Shopify derives a collection handle from the title with the same
-        # slug rules it uses for products, so the product helper predicts it.
-        expected_handle = caller_handle or slugify_shopify_handle(title)
+
+        # The handle is ALWAYS slugified here and ALWAYS sent, whether the
+        # caller named it or it came from the title. Two consequences, both
+        # deliberate (revised during review; originally an omitted handle was
+        # left for Shopify to derive):
+        #
+        #  - The pre-read below and the mutation can never disagree about which
+        #    handle is being claimed. A raw caller handle like "Grey Casualty"
+        #    would otherwise make the pre-read look up a handle no collection
+        #    can have, sailing past an existing 'grey-casualty'.
+        #  - Nothing depends on reproducing Shopify's own derivation rules. Our
+        #    slug is lossy where Shopify transliterates ("Über" gives "ber",
+        #    not "uber"), so a predicted handle could never be trusted — but a
+        #    handle we send is exact by construction. It also converts the
+        #    silent "-1" suffix Shopify applies to auto-derived collisions into
+        #    the explicit refusal the 2026-09-05 live probe recorded:
+        #    userErrors [{field: [handle], message: "Handle has already been
+        #    taken"}]. A surprise handle is no longer reachable.
+        expected_handle = slugify_shopify_handle(caller_handle or title)
         if not expected_handle:
+            # Names whichever source was actually slugified, so the message is
+            # true both when the caller supplied the unusable value and when it
+            # was derived from the title.
             return (
-                f"Cannot derive a collection handle from title '{title}' — "
-                f"supply an explicit handle."
+                f"Cannot form a collection handle from '{caller_handle or title}' — "
+                f"handles may contain only letters, digits, hyphens and underscores."
             )
 
         # Decision 3: refuse a taken handle rather than let Shopify silently
@@ -230,7 +253,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             "PREVIEW — Collection create",
             f"  Title  : {title}",
             f"  Handle : {expected_handle}"
-            + ("" if caller_handle else " (Shopify-derived from the title)"),
+            + ("" if caller_handle else " (derived from the title)"),
         ]
         if description:
             # The description is the caller's own input, not stored store
@@ -254,26 +277,50 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             result = ops.create_collection(
                 client,
                 title=title,
-                handle=caller_handle or None,
+                handle=expected_handle,
                 description_html=sanitized_description,
             )
             created.update(result)
             return result
 
+        def _created_node() -> dict[str, Any]:
+            return (created.get("collectionCreate") or {}).get("collection") or {}
+
         def _done() -> str:
-            node = (created.get("collectionCreate") or {}).get("collection") or {}
-            # Shopify constrains handles to [a-z0-9-], so the value it returns
-            # carries no markup and is echoed unfenced.
-            actual_handle = str(node.get("handle") or "")
+            node = _created_node()
+            if not node:
+                # No userErrors and no collection either. Whether the write
+                # landed is genuinely unknown, so this must not report success
+                # — but it is still logged above, because a create that DID
+                # happen and went unrecorded is the worse failure in a server
+                # with no delete tool.
+                return (
+                    "WARNING: the create reported no errors but returned no "
+                    "collection, so it is unknown whether one was created. "
+                    f"Check with get_collection(handle='{expected_handle}'). "
+                    "The attempt is in the write log."
+                )
+            # Echoed unfenced because the handle is caller-derived — either the
+            # caller's own slugified handle or one built from the caller's
+            # title — never store-authored text. SEC-04's fencing rule is about
+            # merchant/import-authored content, which this is not.
+            actual_handle = node["handle"]
             lines = [
                 "Done. Created collection.",
                 f"  Title  : {title}",
-                f"  Handle : {actual_handle or '(not returned by Shopify)'}",
+                f"  Handle : {actual_handle}",
+                # The id is the only durable way to find this collection again
+                # — there is no delete tool, so manual cleanup in the admin
+                # needs it. Every other output in this module reports one.
+                f"  ID     : {from_gid(node['id'])}",
             ]
-            if actual_handle and actual_handle != expected_handle:
-                # The pre-read above is not atomic with the create; Shopify can
-                # still suffix a handle taken in between. Say so by name rather
-                # than reporting success at a handle the caller never asked for.
+            if actual_handle != expected_handle:
+                # Defence in depth, not an expected path. Because the handle is
+                # always sent explicitly, the 2026-09-05 live probe showed a
+                # collision is REFUSED with a userErrors entry rather than
+                # silently suffixed — so reaching here means Shopify changed
+                # its behaviour. Better to name the divergence than to report
+                # success at a handle the caller never asked for.
                 lines.append(
                     f"  NOTE: Shopify assigned '{actual_handle}', not the "
                     f"expected '{expected_handle}'."
@@ -287,7 +334,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             execute=_execute,
             mutation_key="collectionCreate",
             log_name="create_collection",
-            log_description=f"handle={expected_handle} | title={title}",
+            # Callable, not an f-string: write_gate resolves this AFTER
+            # execute(), so the audit line can name the handle Shopify actually
+            # assigned. With no delete tool, a log naming a handle that does
+            # not exist is a log that cannot find the collection it recorded.
+            log_description=lambda: (
+                f"handle={_created_node().get('handle') or expected_handle} | title={title}"
+            ),
             done_text=_done,
         )
 

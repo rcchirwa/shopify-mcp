@@ -55,8 +55,14 @@ def create_collection(
     — not an empty string — to mean "not provided", matching the convention
     ``update_collection`` documents: an explicitly emptied description (e.g. a
     body the Story 10.35 sanitizer reduced to "") must still reach the input
-    rather than being mistaken for a no-op. Omitting ``handle`` leaves Shopify
-    to derive one from the title.
+    rather than being mistaken for a no-op.
+
+    Omitting ``handle`` leaves Shopify to derive one from the title — but note
+    that the ``create_collection`` TOOL never does this. It always slugifies
+    and always sends a handle, because Shopify's auto-derivation silently
+    suffixes a collision ("-1") where an explicit handle is refused outright
+    with a ``userErrors`` entry. A caller reaching this operation directly and
+    passing ``handle=None`` re-opens that silent-suffix path deliberately.
 
     Manual only. No ``ruleSet`` field is accepted or sent, so the result is
     never a smart collection — the membership tools in ``tools/collections.py``
