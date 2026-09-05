@@ -19,6 +19,7 @@ from shopify_mcp.shopify._client import GraphQLClient
 from shopify_mcp.shopify._ids import to_gid
 from shopify_mcp.shopify.queries.collections import (
     ADD_PRODUCTS_TO_COLLECTION,
+    CREATE_COLLECTION,
     GET_COLLECTION_BY_HANDLE,
     REMOVE_PRODUCTS_FROM_COLLECTION,
     UPDATE_COLLECTION,
@@ -39,6 +40,42 @@ def read_collection_by_handle(client: GraphQLClient, handle: str) -> dict[str, A
 
 
 # ---------- writes (return the raw mutation result) ----------
+
+
+def create_collection(
+    client: GraphQLClient,
+    *,
+    title: str,
+    handle: str | None = None,
+    description_html: str | None = None,
+) -> dict[str, Any]:
+    """Execute a ``collectionCreate`` for a new manual collection.
+
+    ``title`` is always sent. ``handle`` and ``description_html`` use ``None``
+    — not an empty string — to mean "not provided", matching the convention
+    ``update_collection`` documents: an explicitly emptied description (e.g. a
+    body the Story 10.35 sanitizer reduced to "") must still reach the input
+    rather than being mistaken for a no-op.
+
+    Omitting ``handle`` leaves Shopify to derive one from the title — but note
+    that the ``create_collection`` TOOL never does this. It always slugifies
+    and always sends a handle, because Shopify's auto-derivation silently
+    suffixes a collision ("-1") where an explicit handle is refused outright
+    with a ``userErrors`` entry. A caller reaching this operation directly and
+    passing ``handle=None`` re-opens that silent-suffix path deliberately.
+
+    Manual only. No ``ruleSet`` field is accepted or sent, so the result is
+    never a smart collection — the membership tools in ``tools/collections.py``
+    refuse those, and a collection they cannot touch is not worth creating
+    here. No ``publications`` either: the collection is created unpublished on
+    every sales channel (Story 10.82; publishing belongs to Story 10.83).
+    """
+    inp: dict[str, Any] = {"title": title}
+    if handle is not None:
+        inp["handle"] = handle
+    if description_html is not None:
+        inp["descriptionHtml"] = description_html
+    return client.execute(CREATE_COLLECTION, {"input": inp})
 
 
 def update_collection(

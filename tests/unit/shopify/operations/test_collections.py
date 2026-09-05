@@ -24,10 +24,18 @@ from tests.support import FakeClient
 
 
 def test_no_shared_fragment_for_collections():
-    """collections has only a by-handle read (no by-id twin), so no duplicated
-    selection set exists to factor out — no GraphQL fragment is defined."""
+    """No GraphQL fragment is defined in this module.
+
+    Originally (Story 10.26 / A5, AC3) because nothing was duplicated: one
+    by-handle read, no by-id twin. Story 10.82 made that rationale stale —
+    CREATE_COLLECTION and UPDATE_COLLECTION now share a byte-identical
+    selection set — but the conclusion stands on new grounds, recorded in the
+    queries module docstring: four scalars across two mutations is below the
+    threshold where a named fragment repays the indirection.
+    """
     for query in (
         q.GET_COLLECTION_BY_HANDLE,
+        q.CREATE_COLLECTION,
         q.UPDATE_COLLECTION,
         q.ADD_PRODUCTS_TO_COLLECTION,
         q.REMOVE_PRODUCTS_FROM_COLLECTION,
@@ -96,6 +104,91 @@ def test_update_collection_no_fields_sends_id_only():
     fc = FakeClient([{"collectionUpdate": {"userErrors": []}}])
     ops.update_collection(fc, "gid://shopify/Collection/1")
     assert fc.calls[0][1]["input"] == {"id": "gid://shopify/Collection/1"}
+
+
+# ---------- create (Story 10.82 / T-collection-create) ----------
+#
+# Decision 1 (manual-only) and the publishing scope guard are both structural:
+# the input this layer builds must never carry `ruleSet` or `publications`, and
+# there is no parameter through which a caller could supply either.
+
+
+def _create_ok(handle="grey-casualty"):
+    return {
+        "collectionCreate": {
+            "collection": {
+                "id": "gid://shopify/Collection/9",
+                "title": "Grey Casualty",
+                "handle": handle,
+            },
+            "userErrors": [],
+        }
+    }
+
+
+def test_create_collection_title_only_sends_title_field_alone():
+    """Decision 2: an omitted handle is not sent at all, so Shopify derives it."""
+    fc = FakeClient([_create_ok()])
+    ops.create_collection(fc, title="Grey Casualty")
+    assert fc.calls[0][0] == q.CREATE_COLLECTION
+    assert fc.calls[0][1]["input"] == {"title": "Grey Casualty"}
+
+
+def test_create_collection_sends_handle_when_supplied():
+    fc = FakeClient([_create_ok()])
+    ops.create_collection(fc, title="Grey Casualty", handle="grey-casualty")
+    assert fc.calls[0][1]["input"] == {
+        "title": "Grey Casualty",
+        "handle": "grey-casualty",
+    }
+
+
+def test_create_collection_sends_an_explicitly_empty_handle():
+    """The None-means-omitted contract, pinned for `handle` the way it already
+    is for `description_html`. Without this, tightening the guard to
+    `if handle:` passes the whole suite while changing the documented contract.
+    """
+    fc = FakeClient([_create_ok()])
+    ops.create_collection(fc, title="Grey Casualty", handle="")
+    assert fc.calls[0][1]["input"]["handle"] == ""
+
+
+def test_create_collection_sends_description_when_supplied():
+    fc = FakeClient([_create_ok()])
+    ops.create_collection(fc, title="Grey Casualty", description_html="<p>tees</p>")
+    assert fc.calls[0][1]["input"] == {
+        "title": "Grey Casualty",
+        "descriptionHtml": "<p>tees</p>",
+    }
+
+
+def test_create_collection_sends_explicitly_empty_description():
+    """None means "not provided"; "" is a real value and must reach the input.
+
+    Mirrors ops.update_collection's documented convention, so a description
+    the sanitizer reduces to "" is still written rather than silently dropped.
+    """
+    fc = FakeClient([_create_ok()])
+    ops.create_collection(fc, title="Grey Casualty", description_html="")
+    assert fc.calls[0][1]["input"]["descriptionHtml"] == ""
+
+
+def test_create_collection_never_sends_rule_set_or_publications():
+    """Decisions 1 and the publishing scope guard, pinned at the input level."""
+    fc = FakeClient([_create_ok()])
+    ops.create_collection(
+        fc, title="Grey Casualty", handle="grey-casualty", description_html="<p>x</p>"
+    )
+    inp = fc.calls[0][1]["input"]
+    assert "ruleSet" not in inp
+    assert "publications" not in inp
+    assert set(inp) == {"title", "handle", "descriptionHtml"}
+
+
+def test_create_collection_returns_raw_mutation_result():
+    fc = FakeClient([_create_ok()])
+    result = ops.create_collection(fc, title="Grey Casualty")
+    assert result["collectionCreate"]["collection"]["handle"] == "grey-casualty"
 
 
 # ---------- membership writes (GID coercion + direction-correct mutation) ----------

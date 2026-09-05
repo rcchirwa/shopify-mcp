@@ -1,11 +1,12 @@
 """
-Collection tools — read and update Shopify collections, including
+Collection tools — create, read and update Shopify collections, including
 membership writes (add / remove a product from a manual collection).
 
 All write operations require confirm=True.
 
 Smart (rule-based) collections are rejected by the membership tools because
 their contents are driven by rules; direct membership writes have no effect.
+``create_collection`` therefore only makes manual collections (Story 10.82).
 """
 
 from typing import Any
@@ -16,6 +17,7 @@ from shopify_mcp.client import ShopifyClient, poll_job
 from shopify_mcp.shopify.operations import collections as ops
 from shopify_mcp.shopify.queries.collections import (
     ADD_PRODUCTS_TO_COLLECTION,
+    CREATE_COLLECTION,
     GET_COLLECTION_BY_HANDLE,
     REMOVE_PRODUCTS_FROM_COLLECTION,
     UPDATE_COLLECTION,
@@ -33,6 +35,7 @@ from shopify_mcp.tools._response import format_user_errors, with_confirm_hint
 from shopify_mcp.tools._scrub import cap
 from shopify_mcp.tools._untrusted import with_reminder, wrap
 from shopify_mcp.tools._write_tool import write_gate
+from shopify_mcp.tools.products import slugify_shopify_handle
 
 # The GraphQL strings now live in shopify.queries.collections. They are
 # re-exported here so existing callers/tests (`from tools.collections import
@@ -40,6 +43,7 @@ from shopify_mcp.tools._write_tool import write_gate
 # layer executes.
 __all__ = [
     "ADD_PRODUCTS_TO_COLLECTION",
+    "CREATE_COLLECTION",
     "GET_COLLECTION_BY_HANDLE",
     "REMOVE_PRODUCTS_FROM_COLLECTION",
     "UPDATE_COLLECTION",
@@ -175,6 +179,169 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             mutation_key="collectionUpdate",
             log_name="update_collection",
             log_description=f"handle={handle} | changes: {changed_fields}",
+        )
+
+    @server.tool()
+    def create_collection(
+        title: str,
+        handle: str = "",
+        description: str = "",
+        confirm: bool = False,
+    ) -> str:
+        """
+        Create a new manual collection. Returns a preview unless confirm=True.
+
+        Smart (rule-based) collections are not supported — no rules can be
+        supplied and none are sent. Omit handle to let Shopify derive it from
+        the title. Refuses if a collection already exists at that handle.
+
+        The new collection is NOT published to any sales channel; publishing
+        is a separate operation.
+        """
+        if not title.strip():
+            return "Provide a title for the collection."
+
+        # Strip before use, not just for the emptiness check: the unstripped
+        # value would otherwise be stored, previewed and logged with padding
+        # while its handle was slugified without it.
+        title = title.strip()
+        caller_handle = handle.strip()
+
+        # The handle is ALWAYS slugified here and ALWAYS sent, whether the
+        # caller named it or it came from the title. Two consequences, both
+        # deliberate (revised during review; originally an omitted handle was
+        # left for Shopify to derive):
+        #
+        #  - The pre-read below and the mutation can never disagree about which
+        #    handle is being claimed. A raw caller handle like "Grey Casualty"
+        #    would otherwise make the pre-read look up a handle no collection
+        #    can have, sailing past an existing 'grey-casualty'.
+        #  - Nothing depends on reproducing Shopify's own derivation rules. Our
+        #    slug is lossy where Shopify transliterates ("Über" gives "ber",
+        #    not "uber"), so a predicted handle could never be trusted — but a
+        #    handle we send is exact by construction. It also converts the
+        #    silent "-1" suffix Shopify applies to auto-derived collisions into
+        #    the explicit refusal the 2026-09-05 live probe recorded:
+        #    userErrors [{field: [handle], message: "Handle has already been
+        #    taken"}]. A surprise handle is no longer reachable.
+        expected_handle = slugify_shopify_handle(caller_handle or title)
+        if not expected_handle:
+            # Names whichever source was actually slugified, so the message is
+            # true both when the caller supplied the unusable value and when it
+            # was derived from the title.
+            return (
+                f"Cannot form a collection handle from '{caller_handle or title}' — "
+                f"handles may contain only letters, digits, hyphens and underscores."
+            )
+
+        # Decision 3: refuse a taken handle rather than let Shopify silently
+        # suffix it and hand back a collection at a handle nobody expects.
+        # Runs on the preview path too, so the collision is visible before
+        # confirming. The refusal deliberately names only the handle — the
+        # stored collection's title is merchant/import-authored text this tool
+        # has no other reason to reflect (SEC-04).
+        if ops.read_collection_by_handle(client, expected_handle):
+            return (
+                f"A collection already exists with handle '{expected_handle}'. "
+                f"Choose a different handle, or use update_collection to edit it."
+            )
+
+        # None (not "") means "not provided" — see ops.create_collection.
+        sanitized_description = sanitize_html(description) if description else None
+
+        preview_lines = [
+            "PREVIEW — Collection create",
+            f"  Title  : {title}",
+            f"  Handle : {expected_handle}"
+            + ("" if caller_handle else " (derived from the title)"),
+        ]
+        if description:
+            # The description is the caller's own input, not stored store
+            # content, so it is rendered raw — fencing it would falsely label
+            # the operator's own text as shopper-controlled (Story 10.63).
+            preview_lines.append(
+                f"  Description (full):\n{description}"
+                + format_description_warning_block(html_safety_findings(description))
+                + format_strip_block(html_strip_report(description, sanitized_description))
+            )
+        preview_lines.append(
+            "  Publishing: the collection will not be published to any sales channel."
+        )
+        preview = "\n".join(preview_lines)
+
+        # write_gate's done_text needs the mutation result, so the execute
+        # callable captures it in the closure (per write_gate's docstring).
+        created: dict[str, Any] = {}
+
+        def _execute() -> dict[str, Any]:
+            result = ops.create_collection(
+                client,
+                title=title,
+                handle=expected_handle,
+                description_html=sanitized_description,
+            )
+            created.update(result)
+            return result
+
+        def _created_node() -> dict[str, Any]:
+            return (created.get("collectionCreate") or {}).get("collection") or {}
+
+        def _done() -> str:
+            node = _created_node()
+            if not node:
+                # No userErrors and no collection either. Whether the write
+                # landed is genuinely unknown, so this must not report success
+                # — but it is still logged above, because a create that DID
+                # happen and went unrecorded is the worse failure in a server
+                # with no delete tool.
+                return (
+                    "WARNING: the create reported no errors but returned no "
+                    "collection, so it is unknown whether one was created. "
+                    f"Check with get_collection(handle='{expected_handle}'). "
+                    "The attempt is in the write log."
+                )
+            # Echoed unfenced because the handle is caller-derived — either the
+            # caller's own slugified handle or one built from the caller's
+            # title — never store-authored text. SEC-04's fencing rule is about
+            # merchant/import-authored content, which this is not.
+            actual_handle = node["handle"]
+            lines = [
+                "Done. Created collection.",
+                f"  Title  : {title}",
+                f"  Handle : {actual_handle}",
+                # The id is the only durable way to find this collection again
+                # — there is no delete tool, so manual cleanup in the admin
+                # needs it. Every other output in this module reports one.
+                f"  ID     : {from_gid(node['id'])}",
+            ]
+            if actual_handle != expected_handle:
+                # Defence in depth, not an expected path. Because the handle is
+                # always sent explicitly, the 2026-09-05 live probe showed a
+                # collision is REFUSED with a userErrors entry rather than
+                # silently suffixed — so reaching here means Shopify changed
+                # its behaviour. Better to name the divergence than to report
+                # success at a handle the caller never asked for.
+                lines.append(
+                    f"  NOTE: Shopify assigned '{actual_handle}', not the "
+                    f"expected '{expected_handle}'."
+                )
+            lines.append("  Publishing: not published to any sales channel.")
+            return "\n".join(lines)
+
+        return write_gate(
+            preview=preview,
+            confirm=confirm,
+            execute=_execute,
+            mutation_key="collectionCreate",
+            log_name="create_collection",
+            # Callable, not an f-string: write_gate resolves this AFTER
+            # execute(), so the audit line can name the handle Shopify actually
+            # assigned. With no delete tool, a log naming a handle that does
+            # not exist is a log that cannot find the collection it recorded.
+            log_description=lambda: (
+                f"handle={_created_node().get('handle') or expected_handle} | title={title}"
+            ),
+            done_text=_done,
         )
 
     def _membership_mutation(direction: str, handle: str, product_id: str, confirm: bool) -> str:
