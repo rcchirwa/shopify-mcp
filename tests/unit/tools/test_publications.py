@@ -18,6 +18,7 @@ from shopify_mcp.shopify._cache import ShopifyMetadataCache
 from shopify_mcp.tools import publications
 from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
 from shopify_mcp.tools.publications import (
+    GET_COLLECTION_PUBLICATIONS_BY_HANDLE,
     GET_PRODUCT_PUBLICATIONS_BY_HANDLE,
     LIST_PUBLICATIONS,
     PUBLISHABLE_PUBLISH,
@@ -1560,3 +1561,629 @@ def test_s1068_blank_handle_alongside_product_id_is_not_ambiguous(blank):
     out = tools["get_product_publications"](product_id=_S1068_DECOY_ID, handle=blank)
     assert "not both" not in out
     assert fc.calls[1][1]["id"] == _S1068_DECOY_GID
+
+
+# ---------- collection publications (Story 10.83 / T-collection-publish) ----------
+#
+# Shape note from the step-2 live probe, 2026-09-05: a Collection's
+# resourcePublications carries the SAME node shape as a product's
+# (publication { id name }, publishDate, isPublished) — so this fixture mirrors
+# _product_pubs exactly, keyed on collectionByHandle instead of product.
+#
+# The probe also found the connection defaults to onlyPublished:true, so a
+# channel the collection is NOT on is simply absent rather than present with
+# isPublished:false. `not_published_ids` is kept anyway: it is what a future
+# onlyPublished:false read would return, and the tools must ignore it either
+# way rather than treating it as "published".
+
+
+def _collection_pubs(
+    cid="900",
+    title="All (BACKUP)",
+    handle="all-copy",
+    published_ids=None,
+    not_published_ids=None,
+    rule_set=None,
+    has_next=False,
+    end_cursor=None,
+):
+    published_ids = published_ids or []
+    not_published_ids = not_published_ids or []
+    nodes = []
+    for i in published_ids:
+        nodes.append(
+            {
+                "publication": {"id": f"gid://shopify/Publication/{i}", "name": _name_for(i)},
+                "publishDate": "2026-04-20T10:00:00Z",
+                "isPublished": True,
+            }
+        )
+    for i in not_published_ids:
+        nodes.append(
+            {
+                "publication": {"id": f"gid://shopify/Publication/{i}", "name": _name_for(i)},
+                "publishDate": None,
+                "isPublished": False,
+            }
+        )
+    return {
+        "collectionByHandle": {
+            "id": f"gid://shopify/Collection/{cid}",
+            "title": title,
+            "handle": handle,
+            "ruleSet": rule_set,
+            "resourcePublications": {
+                "nodes": nodes,
+                "pageInfo": {"hasNextPage": has_next, "endCursor": end_cursor},
+            },
+        }
+    }
+
+
+_SMART_RULESET = {"appliedDisjunctively": False}
+
+
+def _collection_publish_ok():
+    return {
+        "publishablePublish": {
+            "publishable": {"id": "gid://shopify/Collection/900", "title": "All (BACKUP)"},
+            "userErrors": [],
+        }
+    }
+
+
+def _collection_unpublish_ok():
+    return {
+        "publishableUnpublish": {
+            "publishable": {"id": "gid://shopify/Collection/900", "title": "All (BACKUP)"},
+            "userErrors": [],
+        }
+    }
+
+
+# --- get_collection_publications ---
+
+
+def test_get_collection_publications_lists_published_channels():
+    tools, fc = _build([_channels_response(), _collection_pubs(published_ids=[1, 3])])
+    out = tools["get_collection_publications"](handle="all-copy")
+    assert "All (BACKUP)" in out
+    assert "Online Store" in out
+    assert "Shop" in out
+    assert fc.calls[1][0] == GET_COLLECTION_PUBLICATIONS_BY_HANDLE
+    assert fc.calls[1][1]["handle"] == "all-copy"
+
+
+def test_get_collection_publications_reports_not_published_channels():
+    """Derived as roster-minus-listed, because the live connection omits them."""
+    tools, fc = _build([_channels_response(), _collection_pubs(published_ids=[1])])
+    out = tools["get_collection_publications"](handle="all-copy")
+    not_section = out[out.index("Not published") :]
+    assert "Shop" in not_section
+    assert "Google & YouTube" in not_section
+    # The complement is the story's central live-probe finding: without this,
+    # rendering the WHOLE roster as not-published passes.
+    assert "Online Store" not in not_section
+
+
+def test_get_collection_publications_requires_a_handle_before_any_call():
+    tools, fc = _build([])
+    out = tools["get_collection_publications"](handle="")
+    assert out == "Provide handle."
+    assert fc.calls == []
+
+
+def test_get_collection_publications_not_found():
+    tools, fc = _build([_channels_response(), {"collectionByHandle": None}])
+    out = tools["get_collection_publications"](handle="nope")
+    assert out == "No collection found."
+
+
+# --- publish_collection_to_channels ---
+
+
+def test_publish_collection_preview_splits_and_issues_no_mutation():
+    tools, fc = _build(
+        [_channels_response(), _collection_pubs(published_ids=[1], not_published_ids=[2, 3])]
+    )
+    out = tools["publish_collection_to_channels"](
+        handle="all-copy", channel_names=["Online Store", "Shop"], confirm=False
+    )
+    assert "PREVIEW — Publish collection to channels" in out
+    would = out[out.index("Would publish to") : out.index("Already published")]
+    unchanged = out[out.index("Already published") :]
+    assert "Shop" in would
+    assert "Online Store" in unchanged
+    assert len(fc.calls) == 2
+
+
+def test_publish_collection_preview_writes_no_audit_log(monkeypatch):
+    seen = []
+    monkeypatch.setattr(publications, "log_write", lambda *a: seen.append(a))
+    tools, fc = _build([_channels_response(), _collection_pubs(not_published_ids=[1])])
+    tools["publish_collection_to_channels"](
+        handle="all-copy", channel_names=["Online Store"], confirm=False
+    )
+    assert seen == []
+
+
+def test_publish_collection_confirmed_mutates_only_missing_channels():
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _collection_pubs(published_ids=[1], not_published_ids=[2, 3]),
+            _collection_publish_ok(),
+        ]
+    )
+    out = tools["publish_collection_to_channels"](
+        handle="all-copy", channel_names=["Online Store", "Shop"], confirm=True
+    )
+    assert out.startswith("CONFIRMED — Publish collection to channels")
+    query, vars_ = fc.calls[2]
+    assert query == PUBLISHABLE_PUBLISH
+    assert vars_["id"] == "gid://shopify/Collection/900"
+    assert vars_["input"] == [{"publicationId": SHOP["id"]}]
+
+
+def test_publish_collection_confirmed_writes_the_audit_log_line(monkeypatch):
+    seen = []
+    monkeypatch.setattr(publications, "log_write", lambda *a: seen.append(a))
+    tools, fc = _build(
+        [_channels_response(), _collection_pubs(not_published_ids=[1]), _collection_publish_ok()]
+    )
+    tools["publish_collection_to_channels"](
+        handle="all-copy", channel_names=["Online Store"], confirm=True
+    )
+    assert len(seen) == 1
+    name, desc = seen[0]
+    assert name == "publish_collection_to_channels"
+    assert "id=900" in desc
+    # Assert the KEY, not just the channel name — its unpublish twin does, and
+    # without it the log key can be renamed to anything with the suite green.
+    assert "now_published=['Online Store']" in desc
+
+
+def test_publish_collection_already_published_is_idempotent_and_skips_the_mutation():
+    tools, fc = _build([_channels_response(), _collection_pubs(published_ids=[1])])
+    out = tools["publish_collection_to_channels"](
+        handle="all-copy", channel_names=["Online Store"], confirm=True
+    )
+    assert out.startswith("CONFIRMED")
+    assert "Online Store" in out[out.index("Unchanged") :]
+    assert len(fc.calls) == 2
+
+
+def test_publish_collection_unknown_channel_fails_without_blocking_the_others():
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _channels_response(),
+            _collection_pubs(not_published_ids=[1]),
+            _collection_publish_ok(),
+        ]
+    )
+    out = tools["publish_collection_to_channels"](
+        handle="all-copy", channel_names=["Online Store", "Nope Channel"], confirm=True
+    )
+    assert "Nope Channel" in out[out.index("Failed") :]
+    assert "Online Store" in out[out.index("Now published to") : out.index("Failed")]
+    assert fc.calls[-1][0] == PUBLISHABLE_PUBLISH
+
+
+def test_publish_collection_user_error_maps_back_to_the_channel_name():
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _collection_pubs(not_published_ids=[1]),
+            {
+                "publishablePublish": {
+                    "publishable": None,
+                    "userErrors": [{"field": ["input", "0", "publicationId"], "message": "Nope"}],
+                }
+            },
+        ]
+    )
+    out = tools["publish_collection_to_channels"](
+        handle="all-copy", channel_names=["Online Store"], confirm=True
+    )
+    assert "Online Store: Nope" in out
+
+
+def test_publish_collection_not_found_reports_cleanly_without_mutating():
+    tools, fc = _build([_channels_response(), {"collectionByHandle": None}])
+    out = tools["publish_collection_to_channels"](
+        handle="nope", channel_names=["Online Store"], confirm=True
+    )
+    assert out == "No collection found."
+    assert len(fc.calls) == 2
+
+
+def test_publish_collection_requires_a_handle_as_the_first_statement():
+    """Ahead of the sales-channel read, per the Story 10.68 placement rule."""
+    tools, fc = _build([])
+    out = tools["publish_collection_to_channels"](
+        handle="", channel_names=["Online Store"], confirm=True
+    )
+    assert out == "Provide handle."
+    assert fc.calls == []
+
+
+def test_publish_collection_whitespace_handle_is_absent_not_present():
+    tools, fc = _build([])
+    out = tools["publish_collection_to_channels"](
+        handle="   ", channel_names=["Online Store"], confirm=True
+    )
+    assert out == "Provide handle."
+    assert fc.calls == []
+
+
+def test_publish_smart_collection_reaches_the_mutation_like_a_manual_one():
+    """Decision 4: the step-2 probe found no read-side difference, so no branch
+    on ruleSet exists. This pins that a smart collection is not special-cased."""
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _collection_pubs(not_published_ids=[1], rule_set=_SMART_RULESET),
+            _collection_publish_ok(),
+        ]
+    )
+    out = tools["publish_collection_to_channels"](
+        handle="all-copy", channel_names=["Online Store"], confirm=True
+    )
+    assert out.startswith("CONFIRMED")
+    assert fc.calls[2][0] == PUBLISHABLE_PUBLISH
+
+
+def test_publish_manual_collection_reaches_the_mutation():
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _collection_pubs(not_published_ids=[1], rule_set=None),
+            _collection_publish_ok(),
+        ]
+    )
+    out = tools["publish_collection_to_channels"](
+        handle="vanish", channel_names=["Online Store"], confirm=True
+    )
+    assert out.startswith("CONFIRMED")
+    assert fc.calls[2][0] == PUBLISHABLE_PUBLISH
+
+
+# --- unpublish_collection_from_channels ---
+
+
+def test_unpublish_collection_preview_splits_and_issues_no_mutation():
+    tools, fc = _build([_channels_response(), _collection_pubs(published_ids=[1])])
+    out = tools["unpublish_collection_from_channels"](
+        handle="all-copy", channel_names=["Online Store", "Shop"], confirm=False
+    )
+    assert "PREVIEW — Unpublish collection from channels" in out
+    would = out[out.index("Would unpublish from") : out.index("Not currently published")]
+    assert "Online Store" in would
+    assert "Shop" in out[out.index("Not currently published") :]
+    assert len(fc.calls) == 2
+
+
+def test_unpublish_collection_confirmed_mutates_only_published_channels():
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _collection_pubs(published_ids=[1]),
+            _collection_unpublish_ok(),
+        ]
+    )
+    out = tools["unpublish_collection_from_channels"](
+        handle="all-copy", channel_names=["Online Store", "Shop"], confirm=True
+    )
+    assert out.startswith("CONFIRMED — Unpublish collection from channels")
+    query, vars_ = fc.calls[2]
+    assert query == PUBLISHABLE_UNPUBLISH
+    assert vars_["id"] == "gid://shopify/Collection/900"
+    assert vars_["input"] == [{"publicationId": ONLINE["id"]}]
+
+
+def test_unpublish_collection_already_absent_is_idempotent():
+    tools, fc = _build([_channels_response(), _collection_pubs(published_ids=[])])
+    out = tools["unpublish_collection_from_channels"](
+        handle="all-copy", channel_names=["Online Store"], confirm=True
+    )
+    assert out.startswith("CONFIRMED")
+    assert len(fc.calls) == 2
+
+
+def test_unpublish_collection_requires_a_handle_as_the_first_statement():
+    tools, fc = _build([])
+    out = tools["unpublish_collection_from_channels"](
+        handle="", channel_names=["Online Store"], confirm=True
+    )
+    assert out == "Provide handle."
+    assert fc.calls == []
+
+
+def test_unpublish_collection_writes_the_audit_log_line(monkeypatch):
+    seen = []
+    monkeypatch.setattr(publications, "log_write", lambda *a: seen.append(a))
+    tools, fc = _build(
+        [_channels_response(), _collection_pubs(published_ids=[1]), _collection_unpublish_ok()]
+    )
+    tools["unpublish_collection_from_channels"](
+        handle="all-copy", channel_names=["Online Store"], confirm=True
+    )
+    assert len(seen) == 1
+    name, desc = seen[0]
+    assert name == "unpublish_collection_from_channels"
+    assert "now_unpublished=['Online Store']" in desc
+
+
+def test_collection_publish_read_exception_surfaces_the_scope_hint():
+    tools, fc = _build([_channels_response(), RuntimeError("403 Forbidden")])
+    out = tools["publish_collection_to_channels"](
+        handle="all-copy", channel_names=["Online Store"], confirm=True
+    )
+    assert out.startswith("Error:")
+    assert "403 Forbidden" in out
+    assert "read_publications" in out
+
+
+def test_collection_publish_mutation_exception_surfaces_the_scope_hint():
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _collection_pubs(not_published_ids=[1]),
+            RuntimeError("502 Bad Gateway"),
+        ]
+    )
+    out = tools["publish_collection_to_channels"](
+        handle="all-copy", channel_names=["Online Store"], confirm=True
+    )
+    assert out.startswith("Error:")
+    assert "502 Bad Gateway" in out
+
+
+def test_collection_publish_requires_a_channel_selector():
+    tools, fc = _build([_channels_response()])
+    out = tools["publish_collection_to_channels"](handle="all-copy", confirm=True)
+    assert "provide channel_names or publication_ids" in out
+
+
+def test_get_collection_publications_channel_load_failure_surfaces_the_hint():
+    tools, fc = _build([RuntimeError("403 Forbidden")])
+    out = tools["get_collection_publications"](handle="all-copy")
+    assert out.startswith("Error loading sales channels:")
+    assert "403 Forbidden" in out
+    assert "read_publications" in out
+
+
+def test_get_collection_publications_read_failure_surfaces_the_hint():
+    tools, fc = _build([_channels_response(), RuntimeError("500 Internal")])
+    out = tools["get_collection_publications"](handle="all-copy")
+    assert out.startswith("Error:")
+    assert "500 Internal" in out
+
+
+def test_collection_publish_channel_resolution_failure_surfaces_the_hint():
+    tools, fc = _build([RuntimeError("429 Throttled")])
+    out = tools["publish_collection_to_channels"](
+        handle="all-copy", channel_names=["Online Store"], confirm=True
+    )
+    assert out.startswith("Error resolving channels:")
+    assert "429 Throttled" in out
+
+
+def test_failed_channel_lines_cap_an_oversized_shopify_user_error():
+    """`_render_failed` serves four tools, so the Shopify-authored message it
+    reflects gets the same bound every other reflection site in this module
+    applies. Without the cap a multi-KB userError floods model context."""
+    huge = "Z" * (REFLECT_MAX_LEN + 5000)
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _collection_pubs(not_published_ids=[1]),
+            {
+                "publishablePublish": {
+                    "publishable": None,
+                    "userErrors": [{"field": ["input", "0", "publicationId"], "message": huge}],
+                }
+            },
+        ]
+    )
+    out = tools["publish_collection_to_channels"](
+        handle="all-copy", channel_names=["Online Store"], confirm=True
+    )
+    assert "Z" * REFLECT_MAX_LEN in out
+    assert "Z" * (REFLECT_MAX_LEN + 1) not in out
+
+
+def test_failed_channel_lines_cap_an_oversized_caller_channel_name():
+    """The unresolved-name half is caller-authored but equally unbounded."""
+    huge = "Q" * (REFLECT_MAX_LEN + 5000)
+    # Three reads: the channel load, the forced refresh an unresolved name
+    # triggers, then the collection itself.
+    tools, fc = _build([_channels_response(), _channels_response(), _collection_pubs()])
+    out = tools["publish_collection_to_channels"](
+        handle="all-copy", channel_names=[huge], confirm=False
+    )
+    assert "Q" * REFLECT_MAX_LEN in out
+    assert "Q" * (REFLECT_MAX_LEN + 1) not in out
+
+
+def test_get_collection_publications_reports_the_manual_type():
+    tools, fc = _build([_channels_response(), _collection_pubs(published_ids=[1])])
+    out = tools["get_collection_publications"](handle="all-copy")
+    assert "Type: manual" in out
+
+
+def test_get_collection_publications_reports_the_smart_type():
+    """Pins that the selected ruleSet is actually rendered. Without this the
+    field would be selected and silently unused."""
+    tools, fc = _build(
+        [_channels_response(), _collection_pubs(published_ids=[1], rule_set=_SMART_RULESET)]
+    )
+    out = tools["get_collection_publications"](handle="all-copy")
+    assert "Type: smart" in out
+
+
+def test_get_collection_publications_whitespace_handle_is_absent():
+    """Uses the shared is_supplied predicate, so "   " is absent, not supplied."""
+    tools, fc = _build([])
+    assert tools["get_collection_publications"](handle="   ") == "Provide handle."
+    assert fc.calls == []
+
+
+def test_collection_previews_carry_the_confirm_hint():
+    """The refactor collapsed four tools onto one `with_confirm_hint` call, so a
+    single missing assertion would un-cover every preview path at once."""
+    for tool in ("publish_collection_to_channels", "unpublish_collection_from_channels"):
+        tools, fc = _build([_channels_response(), _collection_pubs(published_ids=[1])])
+        out = tools[tool](handle="all-copy", channel_names=["Shop"], confirm=False)
+        assert "confirm=True" in out
+
+
+def test_collection_write_preview_names_the_collection_in_full():
+    tools, fc = _build([_channels_response(), _collection_pubs(not_published_ids=[1])])
+    out = tools["publish_collection_to_channels"](
+        handle="all-copy", channel_names=["Online Store"], confirm=False
+    )
+    assert "Collection: All (BACKUP) (handle: all-copy, id: 900)" in out
+
+
+def test_collection_write_confirmed_names_the_collection_in_full():
+    tools, fc = _build(
+        [_channels_response(), _collection_pubs(not_published_ids=[1]), _collection_publish_ok()]
+    )
+    out = tools["publish_collection_to_channels"](
+        handle="all-copy", channel_names=["Online Store"], confirm=True
+    )
+    assert "Collection: All (BACKUP) (handle: all-copy, id: 900)" in out
+
+
+def test_get_collection_publications_renders_the_publish_date():
+    tools, fc = _build([_channels_response(), _collection_pubs(published_ids=[1])])
+    out = tools["get_collection_publications"](handle="all-copy")
+    assert "publishDate: 2026-04-20T10:00:00Z" in out
+
+
+def test_collection_publications_sections_are_ordered_deterministically():
+    """Both sections are built from sets. Unsorted, the same store state prints
+    in a different order on every process."""
+    tools, fc = _build([_channels_response(), _collection_pubs(published_ids=[1, 3])])
+    out = tools["get_collection_publications"](handle="all-copy")
+    pub = out[out.index("Published to") : out.index("Not published to")]
+    assert pub.index("Online Store") < pub.index("Shop")
+    not_pub = out[out.index("Not published to") :]
+    assert not_pub.index("Google & YouTube") < not_pub.index("Point of Sale")
+
+
+def test_collection_write_ops_are_looked_up_late_not_captured_at_import():
+    """`_CHANNEL_WRITE_OPS` must not hold the function object: capturing
+    ops.publish at import silently stops monkeypatch.setattr(ops, "publish", ...)
+    from intercepting the call, un-testing every write path that patches it."""
+    from shopify_mcp.shopify.operations import publications as real_ops
+
+    calls = []
+
+    def _fake_publish(client, gid, pub_ids):
+        calls.append((gid, pub_ids))
+        return {"publishablePublish": {"publishable": None, "userErrors": []}}
+
+    tools, fc = _build([_channels_response(), _collection_pubs(not_published_ids=[1])])
+    original = real_ops.publish
+    real_ops.publish = _fake_publish
+    try:
+        tools["publish_collection_to_channels"](
+            handle="all-copy", channel_names=["Online Store"], confirm=True
+        )
+    finally:
+        real_ops.publish = original
+    assert calls == [("gid://shopify/Collection/900", [ONLINE["id"]])]
+
+
+def test_user_error_maps_against_the_channels_actually_SENT_not_all_targets():
+    """Shopify's `input.<n>` index refers to the list actually submitted, which
+    is `acting` — the targets minus the ones already published. Every other
+    userError test happens to use a case where those two lists are equal, so
+    mapping against `targets` instead survives them all. Here Online Store is
+    already published, so index 0 of the submitted list is Shop, not Online
+    Store, and mapping against `targets` would name the wrong channel."""
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _collection_pubs(published_ids=[1], not_published_ids=[3, 4]),
+            {
+                "publishablePublish": {
+                    "publishable": None,
+                    "userErrors": [{"field": ["input", "0", "publicationId"], "message": "Boom"}],
+                }
+            },
+        ]
+    )
+    out = tools["publish_collection_to_channels"](
+        handle="all-copy",
+        channel_names=["Online Store", "Shop", "Google & YouTube"],
+        confirm=True,
+    )
+    failed_section = out[out.index("Failed") :]
+    assert "Shop: Boom" in failed_section
+    assert "Online Store" not in failed_section
+
+
+def test_a_user_error_means_nothing_is_reported_as_done():
+    """`done = acting` must stay inside the else. Hoisting it out reports the
+    same channel under both "Now published to" and "Failed" at once."""
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _collection_pubs(not_published_ids=[1]),
+            {
+                "publishablePublish": {
+                    "publishable": None,
+                    "userErrors": [{"field": ["input", "0", "publicationId"], "message": "Boom"}],
+                }
+            },
+        ]
+    )
+    out = tools["publish_collection_to_channels"](
+        handle="all-copy", channel_names=["Online Store"], confirm=True
+    )
+    done_section = out[out.index("Now published to") : out.index("Unchanged")]
+    assert "Online Store" not in done_section
+    assert "(none)" in done_section
+
+
+def test_the_audit_log_failure_count_includes_user_errors(monkeypatch):
+    """`len(apply_failed)`, not `len(failed)` — the userError path adds to the
+    former only, so the substitution is invisible without a userError present."""
+    seen = []
+    monkeypatch.setattr(publications, "log_write", lambda *a: seen.append(a))
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _collection_pubs(not_published_ids=[1]),
+            {
+                "publishablePublish": {
+                    "publishable": None,
+                    "userErrors": [{"field": ["input", "0", "publicationId"], "message": "Boom"}],
+                }
+            },
+        ]
+    )
+    tools["publish_collection_to_channels"](
+        handle="all-copy", channel_names=["Online Store"], confirm=True
+    )
+    assert "failed=1" in seen[0][1]
+
+
+def test_a_padded_collection_handle_is_trimmed_before_the_read():
+    """The .strip() on the way to the read is load-bearing: Shopify would not
+    match a handle with surrounding whitespace."""
+    tools, fc = _build([_channels_response(), _collection_pubs(not_published_ids=[1])])
+    tools["publish_collection_to_channels"](
+        handle="  all-copy  ", channel_names=["Online Store"], confirm=False
+    )
+    assert fc.calls[1][1]["handle"] == "all-copy"
+
+
+def test_a_padded_handle_is_trimmed_for_the_read_tool_too():
+    tools, fc = _build([_channels_response(), _collection_pubs(published_ids=[1])])
+    tools["get_collection_publications"](handle="  all-copy  ")
+    assert fc.calls[1][1]["handle"] == "all-copy"

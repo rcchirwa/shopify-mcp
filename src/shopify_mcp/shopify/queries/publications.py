@@ -72,19 +72,67 @@ query GetProductPublicationsByHandle($handle: String!, $first: Int!, $after: Str
 """
 )
 
+# Story 10.83 (T-collection-publish). Collections has only a by-handle read —
+# `_resolve_collection` in tools/collections.py is handle-only and no by-id
+# collection query exists anywhere in the tree — so unlike the product pair
+# there is no by-id twin to share a fragment with. The selection is inlined
+# rather than factored, matching the reasoning in queries/collections.py.
+#
+# The selection is byte-identical in shape to ProductPublicationsFields, which
+# is not an assumption: the 2026-09-05 live probe read a manual and a smart
+# collection and both returned `publication { id name }`, `publishDate` and
+# `isPublished` with the same pageInfo.
+#
+# `ruleSet` is selected because `get_collection_publications` renders a
+# "Type: smart|manual" line from it, classifying the same way
+# `tools/collections.py::_resolve_collection` does. It drives no branch — the
+# probe found no read-side difference between smart and manual, and nothing in
+# the write path consults it.
+GET_COLLECTION_PUBLICATIONS_BY_HANDLE = """
+query GetCollectionPublicationsByHandle($handle: String!, $first: Int!, $after: String) {
+  collectionByHandle(handle: $handle) {
+    id
+    title
+    handle
+    ruleSet { appliedDisjunctively }
+    resourcePublications(first: $first, after: $after) {
+      nodes {
+        publication { id name }
+        publishDate
+        isPublished
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+
+# `publishablePublish` / `publishableUnpublish` are generic over Shopify's
+# `Publishable` interface, so the same two mutations serve products and
+# collections. Story 10.83 added the Collection inline fragment beside the
+# Product one — without it a Collection target came back as an empty
+# `publishable {}` — and dropped `Product` from the operation names, which
+# stopped being accurate once a Collection could be the target. Those are
+# GraphQL operation names inside a string, not part of any Python contract.
 PUBLISHABLE_PUBLISH = """
-mutation PublishableProductPublish($id: ID!, $input: [PublicationInput!]!) {
+mutation PublishablePublish($id: ID!, $input: [PublicationInput!]!) {
   publishablePublish(id: $id, input: $input) {
-    publishable { ... on Product { id title } }
+    publishable {
+      ... on Product { id title }
+      ... on Collection { id title }
+    }
     userErrors { field message }
   }
 }
 """
 
 PUBLISHABLE_UNPUBLISH = """
-mutation PublishableProductUnpublish($id: ID!, $input: [PublicationInput!]!) {
+mutation PublishableUnpublish($id: ID!, $input: [PublicationInput!]!) {
   publishableUnpublish(id: $id, input: $input) {
-    publishable { ... on Product { id title } }
+    publishable {
+      ... on Product { id title }
+      ... on Collection { id title }
+    }
     userErrors { field message }
   }
 }

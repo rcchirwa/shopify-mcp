@@ -12,9 +12,10 @@ preview/confirm flow, userError mapping, and string formatting on top.
 from typing import Any
 
 from shopify_mcp.shopify._client import GraphQLClient
-from shopify_mcp.shopify._identifiers import reject_both_identifiers
+from shopify_mcp.shopify._identifiers import is_supplied, reject_both_identifiers
 from shopify_mcp.shopify._ids import to_gid
 from shopify_mcp.shopify.queries.publications import (
+    GET_COLLECTION_PUBLICATIONS_BY_HANDLE,
     GET_PRODUCT_PUBLICATIONS_BY_HANDLE,
     GET_PRODUCT_PUBLICATIONS_BY_ID,
     LIST_PUBLICATIONS,
@@ -87,25 +88,67 @@ def read_product_publications(
     return None, [], False
 
 
+def read_collection_publications(
+    client: GraphQLClient, handle: str
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], bool]:
+    """Read a collection and all its resourcePublications, paginated.
+
+    Handle-only, mirroring every other collection read in this tree: there is no
+    by-id collection query, and Story 10.83 deliberately did not add one. With a
+    single identifier there is no both-supplied ambiguity, so unlike
+    :func:`read_product_publications` this function needs no
+    ``reject_both_identifiers`` guard — there is no pair to refuse.
+
+    Returns ``(collection_or_None, resource_publication_nodes, capped)``, the
+    same triple its product sibling returns. ``collection_or_None`` is None when
+    no handle is supplied or Shopify returns a null collection.
+
+    **The node list contains only the publications the collection IS on.**
+    Shopify's ``resourcePublications`` defaults to ``onlyPublished: true``, so a
+    channel the collection is not on is absent rather than present with
+    ``isPublished: false`` — confirmed live on 2026-09-05 against a store whose
+    publication roster had 7 entries while an unpublished collection returned 0
+    nodes. Callers must derive the not-published set as roster-minus-listed."""
+    # `is_supplied`, not a bare truthiness test: "what counts as supplied" is a
+    # single shared rule, and a whitespace-only handle must be absent here for
+    # the same reason it is absent at the tool layer. A bare `if not handle`
+    # would treat "  " as supplied and send it to Shopify.
+    if not is_supplied(handle):
+        return None, [], False
+    data, rps, capped = client.paginate(
+        GET_COLLECTION_PUBLICATIONS_BY_HANDLE,
+        {"handle": handle},
+        connection_path=["collectionByHandle", "resourcePublications"],
+        page_size=PUBLICATIONS_PAGE_SIZE,
+    )
+    return data.get("collectionByHandle"), rps, capped
+
+
 # ---------- writes (return the raw mutation result) ----------
+#
+# Both mutations are generic over Shopify's ``Publishable`` interface, so they
+# serve products and collections alike. ``resource_gid`` was named
+# ``product_gid`` until Story 10.83 — the parameter never had anything
+# product-specific about it, and the old name would now be actively misleading.
 
 
-def publish(client: GraphQLClient, product_gid: str, publication_ids: list[str]) -> dict[str, Any]:
-    """Execute ``publishablePublish`` for a product against the given publications.
+def publish(client: GraphQLClient, resource_gid: str, publication_ids: list[str]) -> dict[str, Any]:
+    """Execute ``publishablePublish`` for a publishable resource against the given publications.
 
     Builds the ``[{"publicationId": ...}]`` PublicationInput list from
     ``publication_ids`` (full publication GIDs taken from a publication node's
-    ``id``). ``product_gid`` is the product's full GID."""
+    ``id``). ``resource_gid`` is the target's full GID — a Product or a
+    Collection."""
     inputs = [{"publicationId": pid} for pid in publication_ids]
-    return client.execute(PUBLISHABLE_PUBLISH, {"id": product_gid, "input": inputs})
+    return client.execute(PUBLISHABLE_PUBLISH, {"id": resource_gid, "input": inputs})
 
 
 def unpublish(
-    client: GraphQLClient, product_gid: str, publication_ids: list[str]
+    client: GraphQLClient, resource_gid: str, publication_ids: list[str]
 ) -> dict[str, Any]:
-    """Execute ``publishableUnpublish`` for a product against the given publications.
+    """Execute ``publishableUnpublish`` for a publishable resource against the given publications.
 
     Mirror of :func:`publish` — builds the same ``[{"publicationId": ...}]`` input
     from ``publication_ids`` and executes the unpublish mutation."""
     inputs = [{"publicationId": pid} for pid in publication_ids]
-    return client.execute(PUBLISHABLE_UNPUBLISH, {"id": product_gid, "input": inputs})
+    return client.execute(PUBLISHABLE_UNPUBLISH, {"id": resource_gid, "input": inputs})
