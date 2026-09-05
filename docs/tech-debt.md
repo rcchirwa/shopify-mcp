@@ -8,6 +8,42 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-09-05 — Story 10.78 (T-10.6-paginate-vanish — `paginate()` reports a complete walk when a connection vanishes mid-walk)
+
+A defect, not an enhancement, and the broadest of the four residuals Story 10.76 recorded: it lives in `client.paginate()` itself, so every caller inherits it — the product reads, the variant/media/line-item inner walks, and `resourcePublications`. Trello: https://trello.com/c/8SQcc0hB (Story 10.78, Epic 10).
+
+`paginate()` returned `capped=True` only when it exhausted `max_pages`. If the connection it was walking disappeared on page two or later — parent object null, or the connection key missing — the path collapsed to `{}`, `pageInfo` read `{}`, `hasNextPage` was falsy and the walk returned `capped=False`. A truncation reported as a complete result. Page one had already said `hasNextPage: True`, so the walk knew more existed; it just had nowhere to record that it never got it.
+
+**`capped` was wrong only in the unsafe direction.** It could under-report truncation but never over-report it, which is exactly why no caller was defending against it — every consumer treats `capped=False` as "this list is whole" and none re-derives that from the node count. A flag that is trustworthy in one direction only is worse than no flag, because callers cannot tell which direction they are in.
+
+### The empty-vs-absent decision (card step 2) — approach 1, `page > 0 and not connection`
+
+The whole story turns on one distinction: a connection that legitimately returns `{"nodes": [], "pageInfo": {"hasNextPage": false}}` on page two is **complete** and must stay `capped=False`; one whose parent went null, or whose key is missing entirely, is **truncated**. Getting that wrong in either direction is a worse bug than the one being fixed.
+
+**Approach 1 was taken** because the existing `or {}` collapse already expresses the distinction: after it, a vanished connection is exactly `{}` — falsy — while a legitimately empty final page is a populated dict carrying `nodes` and `pageInfo`, and so truthy. The guard is therefore `page > 0 and not connection`, testing "the connection resolved to nothing at all", not "it had no nodes". No presence tracking is needed to say it.
+
+Rejected, and why:
+
+- **Approach 2 (walk `connection_path` without the `or {}` collapse, tracking key presence).** It diverges from approach 1 on exactly one input: a connection that is *present but literally* `{}` — a payload carrying no `nodes` and no `pageInfo` at all. There approach 2 says "present, therefore complete" and approach 1 says "capped". Such a payload is malformed against any real schema, and `capped` is the safe answer for it, so the more precise walk is also the less correct one here. It would also have replaced a load-bearing two-line collapse with a helper, for no behavioural gain on any well-formed response.
+- **Approach 3 (a richer return type carrying `stopped_because`).** Changes `paginate()`'s signature at every call site to carry information no caller consumes today — the model-facing truncation WARNING is deliberately cause-neutral. Needs its own card if ever wanted.
+- **Approach 4 (document it, fix nothing).** Rejected pre-emptively by the card and confirmed here: the point of `capped` is that it can be trusted.
+
+**The page-0 tolerance is untouched.** Story 10.76's "no such collection" path depends on a page-0 `collectionByHandle: null` walking to `({"collectionByHandle": None}, [], False)` in exactly one request, so `read_products_by_collection` and `read_collection_with_descriptions` can map a missing handle to `None` rather than inferring absence from an empty node list. The guard is gated on `page > 0` for that reason alone.
+
+### Closed
+- **T-10.6-paginate-vanish** — `client.paginate()` now breaks into its existing capped return when the connection resolves to nothing on page 1 or later, logging a `logger.warning` that names `connection_path` and the page index. The abnormal stop is shaped exactly like the `endCursor is None` branch beside it: warn, `break`, fall through to the shared capped return — two abnormal-stop paths that look alike rather than diverging.
+- **The nodes already collected are still returned.** A truncated walk hands back what it got, matching the `max_pages` and `endCursor is None` paths. Nothing raises and nothing is discarded.
+- **`paginate()`'s docstring no longer says `capped=True` means only that `max_pages` was exhausted.** It now names all three ways a walk stops short.
+- **`FakeClient.paginate` carries the same control flow**, and an architecture test now pins the pair together rather than trusting the "Mirror of ShopifyClient.paginate()" docstring. Every operations-layer test in the repo runs against the fake, so a divergence would silently stop the offline suite testing the real thing — this is the second time the two have had to be brought back into step.
+- **The guard is mutation-verified, not merely covered.** Reverting the new branch alone makes the vanished-connection tests the failures while the negative tests stay green; coverage sits at 100% either way, because the lines execute regardless. Story 10.76 shipped five mutations that survived a fully green suite at 100%.
+
+### Deliberately out of scope
+- **Changing `paginate()`'s return signature** (the card's approach 3) — recorded above as considered and declined.
+- **Re-auditing every caller's rendering of `capped`.** This story fixes the flag; the tools that read it are unchanged. Several call sites discard it entirely (`_delete`, `_reorder`, `_update`, `_upload` in `tools/media/`, and `read_product_publications`' first walk) — they now discard a *correct* flag instead of an incorrect one, which is a separate question from whether they should be discarding it.
+- **The nested-connection limitation** — `paginate()` still cannot walk a connection inside a connection. That is Story 10.77's territory.
+
+---
+
 ## 2026-09-05 — Story 10.76 (T-10.72-sibling-reads — paginate the three sibling outer-connection product reads)
 
 An enhancement, not a defect. The three reads returned exactly the prefix they asked for and nothing crashed; what was missing is the honesty signal (`capped` + WARNING) Story 10.72 gave `get_products`. This finishes the migration 10.72 started. Trello: https://trello.com/c/SwuZTNHt (Story 10.76, Epic 10).
@@ -59,7 +95,7 @@ Security findings resolved: no GraphQL injection is introduced (all three querie
   - **The truncation WARNING is forgeable by a product title.** A product titled with a newline followed by the warning sentence renders a byte-identical line, since titles are unfenced. Structurally unchanged by this story — titles were unfenced identically before it, and `get_products` already emitted the same sentence — but two more tools now emit it legitimately. The harm direction is under-trust only: a forged warning claims products are missing, and it cannot suppress a real one or break out of a fence, because no untrusted region is open at the title's position. The `(N shown)` header is forgeable the same way.
   - **The unfenced-title volume ceiling for `get_products_by_collection` rose from 250 to 2500**, tracking the request growth recorded above. The class of exposure is unchanged; the quantity is not.
   - **When the last returned product's `body_html` is empty**, the WARNING lands where that product's body value would go. It is still outside every fence — empty bodies render bare rather than wrapped — but the adjacency reads like store data, and the store can trigger it by leaving the last description empty.
-- **`client.paginate()` reporting a complete walk when a connection vanishes mid-stream.** If `collectionByHandle` (or the connection itself) is null on page two or later, the path resolves to `{}`, `hasNextPage` is falsy and the walk returns `capped=False` — a truncation the new flag cannot see. Raised by the security review. It lives in `client.py` and affects every `paginate()` caller, not just this story's three, so fixing it here would be both out of scope and under-tested. Worth a card.
+- ~~**`client.paginate()` reporting a complete walk when a connection vanishes mid-stream.** If `collectionByHandle` (or the connection itself) is null on page two or later, the path resolves to `{}`, `hasNextPage` is falsy and the walk returns `capped=False` — a truncation the new flag cannot see. Raised by the security review. It lives in `client.py` and affects every `paginate()` caller, not just this story's three, so fixing it here would be both out of scope and under-tested. Worth a card.~~ **Closed 2026-09-05 by Story 10.78** (`T-10.6-paginate-vanish`) — see the entry above.
 
 ---
 

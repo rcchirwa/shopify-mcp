@@ -116,7 +116,13 @@ class FakeClient:
         max_pages: int = 10,
     ) -> tuple[dict[str, Any], list[Any], bool]:
         """Mirror of ShopifyClient.paginate() — calls self.execute() in a loop
-        so scripted FakeClient responses are consumed in page order."""
+        so scripted FakeClient responses are consumed in page order.
+
+        The control flow is pinned against the real one by
+        tests/architecture/test_paginate_mirror.py: every operations-layer test
+        in the repo runs against this method, so a divergence would silently
+        stop the offline suite exercising the shipped logic. Keep the two in
+        step; the logger.warning calls are the only deliberate difference."""
         all_nodes: list[Any] = []
         first_response: dict[str, Any] = {}
         cursor: str | None = None
@@ -128,6 +134,10 @@ class FakeClient:
             connection: Any = result
             for key in connection_path:
                 connection = (connection or {}).get(key) or {}
+            # Story 10.78: a connection that resolved to nothing on page 1+ is a
+            # truncation, not an empty result. See ShopifyClient.paginate().
+            if page > 0 and not connection:
+                break
             all_nodes.extend(list(connection.get("nodes") or []))
             page_info: dict[str, Any] = connection.get("pageInfo") or {}
             if not page_info.get("hasNextPage"):
