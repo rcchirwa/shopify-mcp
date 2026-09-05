@@ -77,8 +77,10 @@ GET_PRODUCTS_VARIANT_CAP = 50
 # That figure is GET_PRODUCTS-SPECIFIC and was never re-measured for the three
 # shapes Story 10.76 added. GET_PRODUCTS_BY_COLLECTION nests the same four
 # scalar fields one level deeper and is the one that can issue all 10 pages, so
-# it is the one worth probing first. Re-measure if the nested
-# variants(first: 50) selection ever grows, or before raising either constant.
+# it is the one worth probing first. Re-measure if the nested variants
+# selection ever grows — that is now GET_PRODUCTS_VARIANT_CAP above, not the
+# literal variants(first: 50) this comment used to name (Story 10.77) — or
+# before raising any of the three constants.
 PRODUCTS_PAGE_SIZE = 250
 
 # Page budget for those walks: 10 x 250 = 2500 products before a read reports

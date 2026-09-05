@@ -546,7 +546,12 @@ def test_get_products_warns_for_a_product_over_the_variant_cap():
     out = tools["get_products"]()
     cap = ops.GET_PRODUCTS_VARIANT_CAP
     assert f"WARNING: product 111 has more than {cap} variants" in out
-    assert "get_product" in out.split("WARNING: product 111")[1]
+    # The remedy sentence, asserted whole. `"get_product" in ...` looked like it
+    # covered this and did not: "get_product" is a substring of "get_products",
+    # which the preceding clause already contains, so deleting the remedy
+    # entirely — or pointing it at get_products or get_product_full — left the
+    # suite green. Found by the story's adversarial verifier.
+    assert "Use get_product to retrieve the full variant list." in out
 
 
 def test_get_products_does_not_warn_for_a_product_within_the_variant_cap():
@@ -578,6 +583,57 @@ def test_get_products_warns_only_for_the_products_that_are_capped():
     assert "WARNING: product 111" in out
     assert "WARNING: product 222" not in out
     assert out.count("WARNING:") == 1
+
+
+def test_get_products_warns_once_for_every_capped_product_not_just_the_first():
+    """One line per capped product, in page order. With only ever one capped
+    product in a fixture, truncating the loop to its first element — or to three
+    — left all 1796 tests green, so nothing pinned the loop to iterate at all.
+    Found independently by the code-quality reviewer and the verifier.
+
+    Ids are deliberately not ascending, so page order is distinguishable from
+    sorted order."""
+    tools, _fc = _build(
+        [
+            products_page(
+                [
+                    _product_summary("333", "Tee Three", "tee-three", variants_capped=True),
+                    _product_summary("222", "Tee Two", "tee-two"),
+                    _product_summary("111", "Tee One", "tee-one", variants_capped=True),
+                    _product_summary("444", "Tee Four", "tee-four", variants_capped=True),
+                ]
+            )
+        ]
+    )
+    out = tools["get_products"]()
+    assert out.count("WARNING: product ") == 3
+    assert "WARNING: product 222" not in out
+    # Page order, so the warning block can be read against the list above it.
+    assert [
+        line.split()[2] for line in out.splitlines() if line.startswith("WARNING: product ")
+    ] == [
+        "333",
+        "111",
+        "444",
+    ]
+
+
+def test_get_products_renders_a_null_variants_connection_without_crashing():
+    """A null `variants` is a present key holding None, which `.get("variants",
+    {})` does not catch — it raised AttributeError in the render loop while
+    capped_variant_product_ids tolerated the same shape two lines below. The two
+    now agree: no variants rendered, no warning, no exception."""
+    node = {
+        "id": "gid://shopify/Product/111",
+        "title": "Tee One",
+        "handle": "tee-one",
+        "status": "ACTIVE",
+        "variants": None,
+    }
+    tools, _fc = _build([products_page([node])])
+    out = tools["get_products"]()
+    assert out == "[111] Tee One | handle: tee-one | status: ACTIVE\n  Variants: "
+    assert "WARNING" not in out
 
 
 def test_get_products_variant_warning_precedes_the_product_list_warning():
@@ -616,6 +672,9 @@ def test_get_products_variant_warning_lands_after_every_store_authored_line():
     )
     out = tools["get_products"]()
     assert out.index("Tee Two") < out.index("WARNING: product 111")
+    # And separated from it by a blank line: appended flush, the warning read as
+    # belonging to the last product's block while naming a different product.
+    assert "\n\nWARNING: product 111" in out
 
 
 def test_get_products_variant_warning_uses_the_operations_constant(monkeypatch):
@@ -634,7 +693,9 @@ def test_get_products_variant_warning_uses_the_operations_constant(monkeypatch):
     out = tools["get_products"]()
     assert "more than 7 variants" in out
     assert "first 7 are shown" in out
-    assert "50" not in out
+    # Narrowed to the two copy sites rather than the whole output: a bare
+    # `"50" not in out` would fail spuriously on a future fixture id like 1150.
+    assert "more than 50" not in out and "first 50 are shown" not in out
     assert fc.calls[0][1]["variantsFirst"] == 7
 
 

@@ -137,17 +137,33 @@ def test_get_products_nested_variant_cap_is_a_bound_variable_not_a_literal():
         for sel in nodes_selection.selections
         if isinstance(sel, graphql.FieldNode) and sel.name.value == "variants"
     )
+    # An alias would change the RESPONSE key while leaving sel.name.value at
+    # "variants", so every other assertion here passes while p.get("variants")
+    # returns None for every node — detection dead, variant lists blank. Found
+    # by the story's adversarial verifier as a survivor of the parse guard.
+    assert variants_field.alias is None, (
+        f"variants is aliased to {variants_field.alias.value!r}; the response key would not "
+        "be 'variants' and both the render loop and capped_variant_product_ids would miss it"
+    )
+
     args = {a.name.value: a.value for a in variants_field.arguments}
     assert isinstance(args["first"], graphql.VariableNode), (
         "variants(first:) is still a literal — the query and the warning copy can drift"
     )
     assert args["first"].name.value == "variantsFirst"
 
-    declared = {
-        v.variable.name.value
+    definitions = {
+        v.variable.name.value: v
         for v in graphql.parse(q.GET_PRODUCTS).definitions[0].variable_definitions
     }
-    assert "variantsFirst" in declared, f"GET_PRODUCTS does not declare $variantsFirst: {declared}"
+    assert "variantsFirst" in definitions, (
+        f"GET_PRODUCTS does not declare $variantsFirst: {sorted(definitions)}"
+    )
+    # Int!, not Int and not Int = 50. A nullable declaration, or one carrying a
+    # default, gives the query a second place the cap could come from — which is
+    # the exact drift this story exists to close.
+    assert graphql.print_ast(definitions["variantsFirst"].type) == "Int!"
+    assert definitions["variantsFirst"].default_value is None
 
 
 def _node_with_variant_page(pid: str, *, has_next: bool) -> dict[str, Any]:
@@ -171,18 +187,45 @@ def test_capped_variant_product_ids_empty_when_within_cap():
 
 
 def test_capped_variant_product_ids_treats_missing_shapes_as_not_capped():
-    """Mixed batch: only the over-cap product's id comes back. A product missing
-    pageInfo entirely and one whose variants key is null are both treated as
-    not-capped — the same shape-drift tolerance capped_line_item_order_ids has,
-    defensive against permissions-trimmed responses."""
+    """Mixed batch: only the over-cap product's id comes back. Every degenerate
+    shape is treated as not-capped — the same tolerance
+    capped_line_item_order_ids has, defensive against permissions-trimmed
+    responses.
+
+    The null-pageInfo case is the one that pins the SECOND `or {}` in the chain.
+    Without it, weakening that link to `.get("pageInfo", {})` left the whole
+    suite green while raising AttributeError on this exact input."""
     products = [
         _node_with_variant_page("111", has_next=True),
         _node_with_variant_page("222", has_next=False),
         {"id": "gid://shopify/Product/333", "variants": {"nodes": []}},  # no pageInfo
         {"id": "gid://shopify/Product/444", "variants": None},  # null connection
         {"id": "gid://shopify/Product/555"},  # variants absent entirely
+        {"id": "gid://shopify/Product/666", "variants": {"pageInfo": None}},  # null pageInfo
+        {"id": "gid://shopify/Product/777", "variants": {"pageInfo": {"hasNextPage": None}}},
     ]
     assert ops.capped_variant_product_ids(products) == ["gid://shopify/Product/111"]
+
+
+def test_capped_variant_product_ids_returns_every_capped_id_in_order():
+    """One id per capped product, in the order the products arrived — not just
+    the first, not deduplicated into a set, not reordered. Truncating, reversing
+    or sorting the comprehension all left the suite green until this existed.
+
+    The ids are deliberately NOT in ascending order: with an ascending fixture,
+    routing the result through `sorted(set(...))` is indistinguishable from
+    preserving page order, and that mutation survived."""
+    products = [
+        _node_with_variant_page("333", has_next=True),
+        _node_with_variant_page("222", has_next=False),
+        _node_with_variant_page("111", has_next=True),
+        _node_with_variant_page("444", has_next=True),
+    ]
+    assert ops.capped_variant_product_ids(products) == [
+        "gid://shopify/Product/333",
+        "gid://shopify/Product/111",
+        "gid://shopify/Product/444",
+    ]
 
 
 def test_capped_variant_product_ids_empty_for_empty_batch():
