@@ -408,13 +408,23 @@ def test_title_user_errors_surfaced():
 # ---------- List / collection response-unwrap regressions ----------
 
 
-def _product_summary(pid, title, handle, status="ACTIVE", variants=None):
+def _product_summary(pid, title, handle, status="ACTIVE", variants=None, variants_capped=False):
+    """One node of the GET_PRODUCTS products connection.
+
+    ``variants_capped`` sets the nested variants connection's
+    ``pageInfo.hasNextPage`` (Story 10.77). The key is always present, matching
+    the query's selection; the shape-drift cases where it is absent are covered
+    at the operations layer, which is where the tolerance lives.
+    """
     return {
         "id": f"gid://shopify/Product/{pid}",
         "title": title,
         "handle": handle,
         "status": status,
-        "variants": {"nodes": variants or []},
+        "variants": {
+            "nodes": variants or [],
+            "pageInfo": {"hasNextPage": variants_capped},
+        },
     }
 
 
@@ -509,6 +519,184 @@ def test_get_products_docstring_no_longer_promises_all_products():
     doc = tools["get_products"].__doc__ or ""
     assert "List all products" not in doc
     assert "pagination" in doc.lower()
+
+
+# ---------- Story 10.77: the per-product variant cap is warned, not silent ----------
+
+
+def test_get_products_warns_for_a_product_over_the_variant_cap():
+    """The warning names the product's numeric id, the cap taken from the
+    operations constant, and get_product as the remedy — the three things the
+    GET_ORDERS per-order warning carries, which is the precedent this mirrors."""
+    tools, _fc = _build(
+        [
+            products_page(
+                [
+                    _product_summary(
+                        "111",
+                        "Tee One",
+                        "tee-one",
+                        variants=[_variant("11", "Black")],
+                        variants_capped=True,
+                    )
+                ]
+            )
+        ]
+    )
+    out = tools["get_products"]()
+    cap = ops.GET_PRODUCTS_VARIANT_CAP
+    assert f"WARNING: product 111 has more than {cap} variants" in out
+    # The remedy sentence, asserted whole. `"get_product" in ...` looked like it
+    # covered this and did not: "get_product" is a substring of "get_products",
+    # which the preceding clause already contains, so deleting the remedy
+    # entirely — or pointing it at get_products or get_product_full — left the
+    # suite green. Found by the story's adversarial verifier.
+    assert "Use get_product to retrieve the full variant list." in out
+
+
+def test_get_products_does_not_warn_for_a_product_within_the_variant_cap():
+    tools, _fc = _build(
+        [
+            products_page(
+                [_product_summary("111", "Tee One", "tee-one", variants=[_variant("11", "Black")])]
+            )
+        ]
+    )
+    out = tools["get_products"]()
+    assert "WARNING" not in out
+
+
+def test_get_products_warns_only_for_the_products_that_are_capped():
+    """A mixed page names the over-cap product and stays silent about the other,
+    so the warning count tracks the truncation rather than the page size."""
+    tools, _fc = _build(
+        [
+            products_page(
+                [
+                    _product_summary("111", "Tee One", "tee-one", variants_capped=True),
+                    _product_summary("222", "Tee Two", "tee-two"),
+                ]
+            )
+        ]
+    )
+    out = tools["get_products"]()
+    assert "WARNING: product 111" in out
+    assert "WARNING: product 222" not in out
+    assert out.count("WARNING:") == 1
+
+
+def test_get_products_warns_once_for_every_capped_product_not_just_the_first():
+    """One line per capped product, in page order. With only ever one capped
+    product in a fixture, truncating the loop to its first element — or to three
+    — left all 1796 tests green, so nothing pinned the loop to iterate at all.
+    Found independently by the code-quality reviewer and the verifier.
+
+    Ids are deliberately not ascending, so page order is distinguishable from
+    sorted order."""
+    tools, _fc = _build(
+        [
+            products_page(
+                [
+                    _product_summary("333", "Tee Three", "tee-three", variants_capped=True),
+                    _product_summary("222", "Tee Two", "tee-two"),
+                    _product_summary("111", "Tee One", "tee-one", variants_capped=True),
+                    _product_summary("444", "Tee Four", "tee-four", variants_capped=True),
+                ]
+            )
+        ]
+    )
+    out = tools["get_products"]()
+    assert out.count("WARNING: product ") == 3
+    assert "WARNING: product 222" not in out
+    # Page order, so the warning block can be read against the list above it.
+    assert [
+        line.split()[2] for line in out.splitlines() if line.startswith("WARNING: product ")
+    ] == [
+        "333",
+        "111",
+        "444",
+    ]
+
+
+def test_get_products_renders_a_null_variants_connection_without_crashing():
+    """A null `variants` is a present key holding None, which `.get("variants",
+    {})` does not catch — it raised AttributeError in the render loop while
+    capped_variant_product_ids tolerated the same shape two lines below. The two
+    now agree: no variants rendered, no warning, no exception."""
+    node = {
+        "id": "gid://shopify/Product/111",
+        "title": "Tee One",
+        "handle": "tee-one",
+        "status": "ACTIVE",
+        "variants": None,
+    }
+    tools, _fc = _build([products_page([node])])
+    out = tools["get_products"]()
+    assert out == "[111] Tee One | handle: tee-one | status: ACTIVE\n  Variants: "
+    assert "WARNING" not in out
+
+
+def test_get_products_variant_warning_precedes_the_product_list_warning():
+    """AC5: the two truncations stay distinguishable and ordered. The variant
+    warning is a different fact with a different remedy (get_product), so it must
+    not displace PRODUCTS_TRUNCATED_WARNING as the final text — the property
+    Story 10.72's endswith test pins and this story must not break."""
+    pages = [
+        products_page(
+            [_product_summary(str(i), f"Tee {i}", f"tee-{i}", variants_capped=True)],
+            has_next=True,
+            cursor=f"C{i}",
+        )
+        for i in range(ops.PRODUCTS_MAX_PAGES)
+    ]
+    tools, _fc = _build(pages)
+    out = tools["get_products"]()
+    assert out.endswith(products.PRODUCTS_TRUNCATED_WARNING)
+    assert out.index("WARNING: product 0") < out.index(products.PRODUCTS_TRUNCATED_WARNING)
+
+
+def test_get_products_variant_warning_lands_after_every_store_authored_line():
+    """The warnings are appended after the joined product list, not interleaved
+    into it, so no store-controlled title sits between the last warning and the
+    end of the output. Putting a per-product marker inside a product block was
+    approach 3 and was rejected on exactly this ground."""
+    tools, _fc = _build(
+        [
+            products_page(
+                [
+                    _product_summary("111", "Tee One", "tee-one", variants_capped=True),
+                    _product_summary("222", "Tee Two", "tee-two"),
+                ]
+            )
+        ]
+    )
+    out = tools["get_products"]()
+    assert out.index("Tee Two") < out.index("WARNING: product 111")
+    # And separated from it by a blank line: appended flush, the warning read as
+    # belonging to the last product's block while naming a different product.
+    assert "\n\nWARNING: product 111" in out
+
+
+def test_get_products_variant_warning_uses_the_operations_constant(monkeypatch):
+    """The cap in the copy is READ from GET_PRODUCTS_VARIANT_CAP, not typed as a
+    literal 50 beside it — otherwise the query and the sentence drift the moment
+    the constant moves, which is the whole reason the constant exists.
+
+    Asserting the shipped value would prove nothing, since a hardcoded 50 renders
+    identically. Move the constant instead: the copy must follow it. The tool
+    reads the attribute off the operations module at call time, so patching the
+    module attribute reaches both the copy and the query variable."""
+    monkeypatch.setattr(ops, "GET_PRODUCTS_VARIANT_CAP", 7)
+    tools, fc = _build(
+        [products_page([_product_summary("111", "Tee One", "tee-one", variants_capped=True)])]
+    )
+    out = tools["get_products"]()
+    assert "more than 7 variants" in out
+    assert "first 7 are shown" in out
+    # Narrowed to the two copy sites rather than the whole output: a bare
+    # `"50" not in out` would fail spuriously on a future fixture id like 1150.
+    assert "more than 50" not in out and "first 50 are shown" not in out
+    assert fc.calls[0][1]["variantsFirst"] == 7
 
 
 @pytest.mark.parametrize(

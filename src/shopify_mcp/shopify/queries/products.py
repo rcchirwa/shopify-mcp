@@ -56,28 +56,32 @@ fragment ProductFullFields on Product {
 # $query is bound as a GraphQL *variable*, never string-interpolated — the
 # operations layer maps a validated status constant to a fixed search fragment.
 #
-# The nested variants(first: 50) is a separate, still-unpaginated truncation:
-# a product with more than 50 variants shows a partial variant list here, and
-# shows it SILENTLY. client.paginate() cannot walk a connection nested inside
-# another connection — the same constraint documented above GET_ORDERS.
+# The nested variants connection is a separate truncation, and it stays
+# unpaginated: client.paginate() walks a single cursor over a single connection
+# and cannot follow a connection nested inside another one — the same constraint
+# documented above GET_ORDERS. Even a $variantsAfter would not help, because one
+# cursor cannot address "product N's variants" when every product on the page
+# has its own. The remedy for a full variant list is get_product, which walks a
+# single product's variants.
 #
-# GET_ORDERS answers that constraint by selecting pageInfo { hasNextPage } on
-# the nested connection anyway, so the cap is at least detected and warned
-# about (Story 10.34 / A3). This query deliberately does NOT follow that half
-# of the precedent either: Story 10.72's scope guard put the nested variants
-# connection out of scope, so both the pagination AND the detection are
-# deferred here. Recorded as a residual in docs/tech-debt.md rather than left
-# to read as an oversight.
+# Story 10.77 closes the half that WAS achievable, following GET_ORDERS the rest
+# of the way (Story 10.34 / A3): pageInfo { hasNextPage } is selected on the
+# nested connection, so the cap is DETECTED rather than silent, and get_products
+# emits a per-product at-cap WARNING. The cap itself is bound as $variantsFirst
+# from GET_PRODUCTS_VARIANT_CAP in shopify.operations.products rather than
+# written as a literal here, so the number in this query and the number in that
+# warning cannot drift apart.
 GET_PRODUCTS = """
-query GetProducts($first: Int!, $after: String, $query: String) {
+query GetProducts($first: Int!, $after: String, $query: String, $variantsFirst: Int!) {
   products(first: $first, after: $after, query: $query) {
     nodes {
       id
       title
       handle
       status
-      variants(first: 50) {
+      variants(first: $variantsFirst) {
         nodes { id title }
+        pageInfo { hasNextPage }
       }
     }
     pageInfo { hasNextPage endCursor }

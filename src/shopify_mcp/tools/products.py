@@ -141,6 +141,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         output ends with an explicit truncation WARNING, so a partial list is
         never presented as the complete catalogue.
 
+        Each product's variant list is capped per product and cannot be
+        paginated from here. A product past that cap gets its own WARNING line
+        naming the cap; use get_product for that product's full variant list.
+
         status: optional filter — one of ACTIVE, DRAFT, ARCHIVED, UNLISTED.
                 Anything else is rejected before any request is made. Empty
                 means no filter.
@@ -164,13 +168,49 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         for p in products:
             variants = ", ".join(
                 f"{v['title']} (id:{from_gid(v['id'])})"
-                for v in p.get("variants", {}).get("nodes", [])
+                # `or {}`, not `.get("variants", {})`: a null connection is a
+                # present key holding None, which the default form does not
+                # catch — it raised AttributeError here while
+                # capped_variant_product_ids, two lines below, tolerated the
+                # same shape. Found in review; the two now agree.
+                for v in (p.get("variants") or {}).get("nodes", [])
             )
             lines.append(
                 f"[{from_gid(p['id'])}] {p['title']} | handle: {p['handle']} | status: {p['status']}\n"
                 f"  Variants: {variants}"
             )
         result = "\n\n".join(lines)
+        # Story 10.77 — GET_PRODUCTS caps each product's variants at a fixed
+        # first: N and cannot paginate that nested-in-list connection, so warn
+        # (don't silently show a prefix) for every truncated product, exactly as
+        # get_orders does for per-order line items (Story 10.34 / A3).
+        #
+        # Appended after the joined list rather than rendered inside a product
+        # block, which was approach 3: a marker inside the block would sit in
+        # the store-controlled-text region SEC-04's successor flagged, and would
+        # change a `Variants:` line format existing tests pin. It precedes
+        # PRODUCTS_TRUNCATED_WARNING, which is a different truncation with a
+        # different remedy and must stay the final text.
+        #
+        # This placement does NOT put the warnings out of reach of store text —
+        # the last product's title still abuts the block, exactly as it already
+        # abuts PRODUCTS_TRUNCATED_WARNING. Titles are unfenced everywhere in
+        # this repo, so no placement is forgery-proof; see the 10.77 entry in
+        # docs/tech-debt.md for why fencing them is a convention-wide change.
+        #
+        # Collected then joined, rather than concatenated in the loop, matching
+        # the shape get_orders uses. The blank line keeps the first warning from
+        # rendering flush against the last product's `Variants:` line, where it
+        # read as belonging to that product while naming a different one.
+        cap = ops.GET_PRODUCTS_VARIANT_CAP
+        variant_warnings = [
+            f"WARNING: product {from_gid(gid)} has more than {cap} variants — only the first "
+            f"{cap} are shown here; get_products cannot paginate per-product variants. "
+            "Use get_product to retrieve the full variant list."
+            for gid in ops.capped_variant_product_ids(products)
+        ]
+        if variant_warnings:
+            result += "\n\n" + "\n".join(variant_warnings)
         if capped:
             result += PRODUCTS_TRUNCATED_WARNING
         return result
