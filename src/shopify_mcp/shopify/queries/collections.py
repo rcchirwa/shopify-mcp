@@ -24,6 +24,23 @@ query GetCollectionByHandle($handle: String!) {
 }
 """
 
+# Story 10.82 / T-collection-create. Same `CollectionInput` and same selection
+# set as UPDATE_COLLECTION — `handle` is selected because Shopify may derive or
+# suffix it, so the caller has to be told which handle it actually got.
+#
+# Manual collections only (decision 1, recorded on the card 2026-09-05): no
+# `ruleSet` is ever placed in the input, and no `publications` either — a
+# created collection is unpublished on every sales channel, which Story 10.83
+# owns.
+CREATE_COLLECTION = """
+mutation CreateCollection($input: CollectionInput!) {
+  collectionCreate(input: $input) {
+    collection { id title handle }
+    userErrors { field message }
+  }
+}
+"""
+
 UPDATE_COLLECTION = """
 mutation UpdateCollection($input: CollectionInput!) {
   collectionUpdate(input: $input) {

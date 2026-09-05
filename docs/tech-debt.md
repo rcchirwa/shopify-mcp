@@ -8,6 +8,35 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-09-05 — Story 10.82 (T-collection-create — the collections surface could not originate a collection)
+
+`tools/collections.py` registered four tools — `get_collection`, `update_collection`, `add_product_to_collection`, `remove_product_from_collection` — and every one assumed the collection already existed. `grep -rn "collectionCreate" src/` returned nothing. Not a defect: the surface was built read-and-amend on the assumption that a human creates collections in the Shopify admin and the server curates them afterwards. That assumption held until an AI-side workflow was asked to originate one.
+
+### The four design decisions (card step 2) — recorded 2026-09-05, before the RED tests
+
+1. **Manual only.** No `ruleSet` is accepted or sent, so no smart collection can be produced here. Both membership tools already refuse smart collections, so a smart collection created by this tool would be one no other write tool in the module could touch. `ruleSet` is also a nested structured input (rules of column/relation/condition plus `appliedDisjunctively`), a materially larger contract than this story scoped. Smart-collection creation gets its own card if ever wanted.
+2. **Handle is an optional caller parameter.** Omitted means the key is not sent at all and Shopify derives the handle from the title; the preview shows the predicted handle via the existing `tools/products.py::slugify_shopify_handle`, labelled as Shopify-derived. Both halves are load-bearing: the blocking deliverable needs a predictable `grey-casualty`, and decision 3 needs an expected handle to compare against.
+3. **Duplicate handle: pre-read refusal, plus the actual handle always reported back.** `ops.read_collection_by_handle(expected_handle)` runs before any mutation and refuses by name if something is already there — on the preview path too, so the collision is visible before confirming. Independently, the done-text always prints the handle Shopify actually returned and flags a divergence from the expected one, which closes the TOCTOU gap the pre-read alone leaves. `write_gate`'s `post_execute_check` was deliberately not used for that mismatch: the hook suppresses `log_write`, and a collection that really was created must never go unlogged.
+4. **One tool, create only.** Exactly one `collectionCreate`. Populating uses the existing `add_product_to_collection`, which polls an async job — and `write_gate`'s own docstring says job-polling tools must not use it, so folding populate into create would mean abandoning `write_gate` or duplicating the poll logic.
+
+A title that slugifies to the empty string (`"!!!"`) is refused rather than sent: an empty expected handle makes the pre-read meaningless and would silently disable the duplicate guard.
+
+### Closed
+
+`T-collection-create` — `CREATE_COLLECTION` in `shopify/queries/collections.py`, `create_collection()` in `shopify/operations/collections.py`, and the `create_collection` tool in `tools/collections.py`. Descriptions go through the existing `sanitize_html`; the preview reuses `format_description_warning_block` and `format_strip_block`. No new fencing or sanitizing code was introduced.
+
+### Deliberately out of scope
+
+- **Publishing.** No `publications` field is sent, no file under `tools/publications.py` is touched, and no `publishablePublish` call is folded in. Story 10.83 owns it. Both the preview and the done-text say the collection is on no sales channel, so nobody assumes a storefront page exists.
+- **A delete tool.** Still none. The live probe can leave a suffixed collection to be cleaned up by hand in the admin.
+- **Smart collections.** Per decision 1.
+
+### Residual, recorded not fixed
+
+`slugify_shopify_handle` lives in `tools/products.py`, a public tool module, and `tools/collections.py` now imports it from there — the first tool-to-tool import in the tree. Every other shared tool helper lives in an underscore-prefixed module (`_product_resolver`, `_resolvers`, `_filters`). Extracting it to `tools/_handles.py` would match the convention, but that is a refactor of code this story did not otherwise touch. Entry condition: a third caller needs it, or the layering test grows a rule about tool-to-tool imports.
+
+---
+
 ## 2026-09-05 — Story 10.78 (T-10.6-paginate-vanish — `paginate()` reports a complete walk when a connection vanishes mid-walk)
 
 A defect, not an enhancement, and the broadest of the four residuals Story 10.76 recorded: it lives in `client.paginate()` itself, so it is inherited by every walk that can actually reach a second page — the product reads, the variant/media/line-item inner walks, and `resourcePublications`. (Not literally every caller: `get_products_with_descriptions` clamps `limit` to 1..250 and derives `max_pages = 1`, so its walk issues one request and can never reach the guard.) Trello: https://trello.com/c/8SQcc0hB (Story 10.78, Epic 10).
