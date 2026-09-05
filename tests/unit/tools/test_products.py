@@ -825,6 +825,30 @@ def test_get_products_with_descriptions_warns_on_both_branches(scoped):
     )
     assert out.endswith(products.PRODUCTS_TRUNCATED_WARNING)
     assert len(fc.calls) == 1
+    # The header half of the same guarantee. Reverting _count_phrase to an
+    # unconditional "N total" left the whole suite green until this line existed
+    # — the "shown" wording was pinned for get_products_by_collection only.
+    assert "(1 shown)" in out
+    assert "total)" not in out
+
+
+@pytest.mark.parametrize("scoped", [True, False])
+def test_get_products_with_descriptions_warns_when_capped_with_zero_nodes(scoped):
+    """The empty-result branch of the OTHER tool. Deleting its warning suffix
+    left all 1673 tests green — coverage stayed at 100% because the line still
+    executed, which is exactly why coverage is not a substitute for an
+    assertion. Mirrors the get_products_by_collection case beside it.
+
+    One page is enough here: the tool clamps limit into [1, 250], so the budget
+    is a single request, and a page that returns no nodes while still reporting
+    hasNextPage is precisely the capped-with-zero-nodes state."""
+    empty = collection_products_page if scoped else products_page
+    tools, fc = _build([empty([], has_next=True, cursor="C1")])
+    out = tools["get_products_with_descriptions"](
+        collection_handle="vanish" if scoped else "", limit=1
+    )
+    assert out == "No products found." + products.PRODUCTS_TRUNCATED_WARNING
+    assert len(fc.calls) == 1
 
 
 @pytest.mark.parametrize("scoped", [True, False])

@@ -12,6 +12,9 @@ Usage:
   pytest tests/unit/shopify/operations/test_products.py -v
 """
 
+from typing import Any
+
+import graphql
 import pytest
 
 from shopify_mcp.shopify.operations import products as ops
@@ -309,23 +312,78 @@ def test_read_product_collections():
 # parametrised per query so a revert names the query it broke.
 
 
+def _selection_at(query_text: str, path: list[str]) -> graphql.SelectionSetNode:
+    """Walk a parsed query down `path` and return that field's selection set.
+
+    Mirrors what client.paginate() does at runtime with connection_path, so a
+    query whose pageInfo sits at the wrong nesting level fails here the way it
+    would fail against the real API.
+    """
+    node: Any = graphql.parse(query_text).definitions[0]
+    for key in path:
+        matches = [
+            sel
+            for sel in node.selection_set.selections
+            if isinstance(sel, graphql.FieldNode) and sel.name.value == key
+        ]
+        assert matches, f"no field {key!r} in selection set"
+        node = matches[0]
+    return node.selection_set
+
+
 @pytest.mark.parametrize(
-    ("name", "query_text"),
+    ("name", "query_text", "connection_path"),
     [
-        ("GET_PRODUCTS_BY_COLLECTION", q.GET_PRODUCTS_BY_COLLECTION),
-        ("GET_PRODUCTS_WITH_DESCRIPTIONS", q.GET_PRODUCTS_WITH_DESCRIPTIONS),
+        ("GET_PRODUCTS_BY_COLLECTION", q.GET_PRODUCTS_BY_COLLECTION, ["collectionByHandle"]),
+        ("GET_PRODUCTS_WITH_DESCRIPTIONS", q.GET_PRODUCTS_WITH_DESCRIPTIONS, []),
         (
             "GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS",
             q.GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS,
+            ["collectionByHandle"],
         ),
     ],
 )
-def test_sibling_read_queries_have_the_shape_paginate_requires(name, query_text):
+def test_sibling_read_queries_have_the_shape_paginate_requires(name, query_text, connection_path):
     """AC2: each of the three carries what client.paginate() documents as its
-    requirement — $after, after: $after, and pageInfo { hasNextPage endCursor }
-    on the products connection."""
-    for fragment in ("$after: String", "after: $after", "pageInfo", "hasNextPage", "endCursor"):
-        assert fragment in query_text, f"{name} is missing {fragment!r}"
+    requirement — $after, after: $after, and pageInfo { hasNextPage endCursor }.
+
+    Parsed, not substring-matched. A substring check passes as long as the
+    tokens appear SOMEWHERE, so it cannot tell a converted query from a
+    mis-converted one: hoisting pageInfo out of the products connection up onto
+    collectionByHandle keeps every token present, yet paginate() would then read
+    pageInfo as {} and stop after one page — and the query would be a schema
+    error live. The review that found this had the whole suite green under
+    exactly that mutation. graphql-core is pinned in both lockfiles (it is gql's
+    own dependency), so parsing costs no new dependency.
+    """
+    products_selection = _selection_at(query_text, [*connection_path, "products"])
+    fields = {
+        sel.name.value
+        for sel in products_selection.selections
+        if isinstance(sel, graphql.FieldNode)
+    }
+    assert "pageInfo" in fields, f"{name}: pageInfo is not on the walked products connection"
+
+    page_info = _selection_at(query_text, [*connection_path, "products", "pageInfo"])
+    page_info_fields = {
+        sel.name.value for sel in page_info.selections if isinstance(sel, graphql.FieldNode)
+    }
+    assert {"hasNextPage", "endCursor"} <= page_info_fields, f"{name}: {page_info_fields}"
+
+    products_field = next(
+        sel
+        for sel in _selection_at(query_text, connection_path).selections
+        if isinstance(sel, graphql.FieldNode) and sel.name.value == "products"
+    )
+    args = {a.name.value: a.value for a in products_field.arguments}
+    assert "after" in args, f"{name}: products(...) takes no after argument"
+    assert isinstance(args["after"], graphql.VariableNode)
+    assert args["after"].name.value == "after", f"{name}: after is not bound to $after"
+
+    declared = {
+        v.variable.name.value for v in graphql.parse(query_text).definitions[0].variable_definitions
+    }
+    assert "after" in declared, f"{name} does not declare $after"
 
 
 def test_read_products_by_collection():
@@ -451,7 +509,7 @@ def test_read_products_with_descriptions_limit_cannot_widen_the_request_budget()
     limit derives a huge max_pages unless it is clamped."""
     pages = [
         products_page(
-            [{"id": f"p{i}"}] * ops.PRODUCTS_PAGE_SIZE,
+            [{"id": f"p{i}-{j}"} for j in range(ops.PRODUCTS_PAGE_SIZE)],
             has_next=True,
             cursor=f"C{i}",
         )
@@ -483,6 +541,68 @@ def test_read_collection_with_descriptions_missing_handle_yields_none():
     assert len(fc.calls) == 1
 
 
+def test_read_collection_with_descriptions_takes_collection_fields_from_the_first_page():
+    """AC4 for the SECOND collection read. The first-page rule was pinned for
+    read_products_by_collection only, so a last-page-wins mutation here was
+    invisible — the verifier demonstrated it with the whole suite green."""
+    fc = FakeClient(
+        [
+            collection_products_page(
+                [{"id": "p1"}],
+                has_next=True,
+                cursor="C1",
+                collection_id="FIRST",
+                title="First Title",
+                handle="first-handle",
+            ),
+            collection_products_page(
+                [{"id": "p2"}],
+                collection_id="SECOND",
+                title="Second Title",
+                handle="second-handle",
+            ),
+        ]
+    )
+    col, nodes, _capped = ops.read_collection_with_descriptions(fc, "vanish", 0)
+    assert col["id"] == "FIRST"
+    assert col["title"] == "First Title"
+    assert col["handle"] == "first-handle"
+    assert len(nodes) == 2
+
+
+@pytest.mark.parametrize(
+    "op",
+    [
+        lambda fc: ops.read_products_by_collection(fc, "vanish"),
+        lambda fc: ops.read_collection_with_descriptions(fc, "vanish", 0),
+    ],
+)
+def test_collection_reads_do_not_hand_back_a_first_page_only_products_connection(op):
+    """The returned collection dict must NOT carry a `products` key.
+
+    It would hold page ONE only, so the pre-10.76 call-site idiom
+    `col.get("products", {}).get("nodes", [])` would still compile and silently
+    yield a truncated list — the exact silent truncation this story removes.
+    Two reviewers found the trap independently; this pins it shut."""
+    fc = FakeClient(
+        [
+            collection_products_page([{"id": "p1"}], has_next=True, cursor="C1"),
+            collection_products_page([{"id": "p2"}]),
+        ]
+    )
+    col, nodes, _capped = op(fc)
+    assert "products" not in col
+    assert [n["id"] for n in nodes] == ["p1", "p2"]
+
+
+def test_collection_head_does_not_mutate_the_response():
+    """Stripping builds a new dict; the caller's response object is untouched."""
+    page = collection_products_page([{"id": "p1"}])
+    fc = FakeClient([page])
+    ops.read_products_by_collection(fc, "vanish")
+    assert "products" in page["collectionByHandle"]
+
+
 def test_read_collection_with_descriptions_limit_is_a_total():
     fc = FakeClient(
         [collection_products_page([{"id": f"p{i}"} for i in range(3)], has_next=True, cursor="C1")]
@@ -496,7 +616,7 @@ def test_read_collection_with_descriptions_limit_is_a_total():
 def test_read_collection_with_descriptions_limit_cannot_widen_the_request_budget():
     pages = [
         collection_products_page(
-            [{"id": f"p{i}"}] * ops.PRODUCTS_PAGE_SIZE,
+            [{"id": f"p{i}-{j}"} for j in range(ops.PRODUCTS_PAGE_SIZE)],
             has_next=True,
             cursor=f"C{i}",
         )

@@ -40,22 +40,33 @@ VARIANTS_PAGE_CAP = 250
 
 # Story 10.72 — the outer products-connection walk in read_products.
 #
+# Story 10.76 widened the consumer list: read_products_by_collection,
+# read_products_with_descriptions and read_collection_with_descriptions now
+# derive their budget from these same two constants, across three further query
+# shapes. Of those, only read_products_by_collection can actually reach all 10
+# pages — the other two are held to a single request by their tool's 250 clamp.
+#
 # 250 is Shopify's per-connection maximum, so it costs the fewest round trips
 # for a given result set, and it keeps a store of under 250 products resolving
 # in exactly one request, as it did before this story.
 #
-# Measured against the live store on 2026-09-04 rather than assumed: this query
-# shape at first=250 reports requestedQueryCost=112 (actualQueryCost=9) against
-# a 2000-point bucket restoring at 100/s. The 10-page worst case is ~1120
-# requested points spread over 10 requests — inside the budget even on a
-# 1000-point standard-plan bucket, and far below the 1000-point per-query
-# maximum that would reject the request outright. Re-measure if the nested
-# variants(first: 50) selection ever grows.
+# Measured against the live store on 2026-09-04 rather than assumed: the
+# GET_PRODUCTS shape at first=250 reports requestedQueryCost=112
+# (actualQueryCost=9) against a 2000-point bucket restoring at 100/s. The
+# 10-page worst case is ~1120 requested points spread over 10 requests — inside
+# the budget even on a 1000-point standard-plan bucket, and far below the
+# 1000-point per-query maximum that would reject the request outright.
+#
+# That figure is GET_PRODUCTS-SPECIFIC and was never re-measured for the three
+# shapes Story 10.76 added. GET_PRODUCTS_BY_COLLECTION nests the same four
+# scalar fields one level deeper and is the one that can issue all 10 pages, so
+# it is the one worth probing first. Re-measure if the nested
+# variants(first: 50) selection ever grows, or before raising either constant.
 PRODUCTS_PAGE_SIZE = 250
 
-# Page budget for that walk: 10 x 250 = 2500 products before the read reports
+# Page budget for those walks: 10 x 250 = 2500 products before a read reports
 # capped. Kept explicit rather than leaning on client.paginate()'s default,
-# because the tool's truncation warning describes this budget.
+# because the tools' truncation warning describes this budget.
 PRODUCTS_MAX_PAGES = 10
 
 # Fixed Shopify search-syntax fragments for the status filter, keyed by the
@@ -119,6 +130,24 @@ def _limit_budget(limit: int) -> tuple[int, int]:
         return PRODUCTS_PAGE_SIZE, PRODUCTS_MAX_PAGES
     page_size = min(limit, PRODUCTS_PAGE_SIZE)
     return page_size, min((limit + page_size - 1) // page_size, PRODUCTS_MAX_PAGES)
+
+
+def _collection_head(first_page: dict[str, Any]) -> dict[str, Any] | None:
+    """The collection's own fields from paginate()'s first page, WITHOUT its
+    products connection.
+
+    That connection holds page ONE only. Returning it beside the complete node
+    list would leave the pre-10.76 call-site idiom
+    ``col.get("products", {}).get("nodes", [])`` compiling and silently yielding
+    a truncated list — the exact silent truncation this story exists to remove.
+    Stripped rather than merely documented, so the trap cannot be re-entered by
+    the next caller. Builds a new dict rather than popping, so the caller's
+    response object is not mutated.
+    """
+    col = first_page.get("collectionByHandle")
+    if col is None:
+        return None
+    return {k: v for k, v in col.items() if k != "products"}
 
 
 def _apply_limit(
@@ -268,7 +297,8 @@ def read_products_by_collection(
     The collection's own ``id``/``title``/``handle`` are taken from the FIRST
     page, which is what ``paginate()``'s first return value exists for. A
     missing handle yields ``None`` for the collection, so "no such collection"
-    stays distinguishable from "collection with no products".
+    stays distinguishable from "collection with no products". The returned dict
+    carries no ``products`` key — see ``_collection_head``.
     """
     first_page, nodes, capped = client.paginate(
         GET_PRODUCTS_BY_COLLECTION,
@@ -277,7 +307,7 @@ def read_products_by_collection(
         page_size=PRODUCTS_PAGE_SIZE,
         max_pages=PRODUCTS_MAX_PAGES,
     )
-    return first_page.get("collectionByHandle"), nodes, capped
+    return _collection_head(first_page), nodes, capped
 
 
 def read_products_with_descriptions(
@@ -320,7 +350,7 @@ def read_collection_with_descriptions(
         max_pages=max_pages,
     )
     nodes, capped = _apply_limit(nodes, capped, limit)
-    return first_page.get("collectionByHandle"), nodes, capped
+    return _collection_head(first_page), nodes, capped
 
 
 def read_product_variants_policy(

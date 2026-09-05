@@ -120,7 +120,7 @@ TAG_MODES = ("replace", "append", "remove")
 PRODUCTS_TRUNCATED_WARNING = "\nWARNING: additional products exist and are not shown here."
 
 
-def _count_word(nodes: list[Any], capped: bool) -> str:
+def _count_phrase(nodes: list[Any], capped: bool) -> str:
     """Render a list header's count, saying "total" only when it is one.
 
     Story 10.76: "(N total)" is a lie the moment the walk caps — the number is
@@ -444,7 +444,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         never presented as the whole collection.
         """
         col, product_nodes, capped = ops.read_products_by_collection(client, collection_handle)
-        if col is None:
+        if not col:
             return f"No collection found with handle '{collection_handle}'."
 
         if not product_nodes:
@@ -456,7 +456,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 PRODUCTS_TRUNCATED_WARNING if capped else ""
             )
 
-        lines = [f"Products in '{collection_handle}' ({_count_word(product_nodes, capped)}):\n"]
+        lines = [f"Products in '{collection_handle}' ({_count_phrase(product_nodes, capped)}):\n"]
         for p in product_nodes:
             lines.append(
                 f"  [{from_gid(p['id'])}] {p['title']} | handle: {p['handle']} | {p['status']}"
@@ -503,11 +503,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         Bulk read product descriptions. If collection_handle is provided, scopes to that collection.
         Returns id, title, handle, status, and body_html for each product.
 
-        limit is a TOTAL across pages, not a page size (Story 10.76): the read
-        walks cursor pagination and stops once it has that many products. It is
-        clamped to [1, 250]. When more products exist than were returned, the
-        output ends with an explicit truncation WARNING — placed after the
-        fenced content, never inside it.
+        limit is a TOTAL across pages, not a page size (Story 10.76), and is
+        clamped — not rejected — into [1, 250]. Because that ceiling equals the
+        per-request maximum, every reachable limit resolves in exactly ONE
+        request of `first: limit`; the multi-page walk underneath is wired but
+        unreachable until the ceiling rises. When more products exist than were
+        returned, the output ends with an explicit truncation WARNING — placed
+        after the fenced content, never inside it. There is no cursor to
+        continue from: raise limit (up to 250) to see more.
 
         Each body_html is store content, so it is returned inside
         `<UNTRUSTED-DATA>` delimiters and the output carries an
@@ -525,12 +528,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             col, product_nodes, capped = ops.read_collection_with_descriptions(
                 client, collection_handle, limit
             )
-            if col is None:
+            if not col:
                 return f"No collection found with handle '{collection_handle}'."
-            header = f"Products in '{collection_handle}' ({_count_word(product_nodes, capped)}):"
+            header = f"Products in '{collection_handle}' ({_count_phrase(product_nodes, capped)}):"
         else:
             product_nodes, capped = ops.read_products_with_descriptions(client, limit=limit)
-            header = f"Products ({_count_word(product_nodes, capped)}):"
+            header = f"Products ({_count_phrase(product_nodes, capped)}):"
 
         suffix = PRODUCTS_TRUNCATED_WARNING if capped else ""
         if not product_nodes:
@@ -550,10 +553,15 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # Product presence doesn't imply description presence; with_reminder
         # derives that from the rendered body, so no second pass is needed.
         #
-        # The WARNING is concatenated OUTSIDE with_reminder, so it lands after
-        # the last </UNTRUSTED-DATA> rather than inside a fenced body_html —
-        # a truncation notice sitting inside the fence would be indistinguishable
-        # from text the store wrote (SEC-04).
+        # The WARNING is concatenated AFTER the last rendered block, so it lands
+        # past the final </UNTRUSTED-DATA> rather than inside a fenced body_html
+        # — a truncation notice sitting inside the fence would be
+        # indistinguishable from text the store wrote (SEC-04). It is the
+        # concatenation ORDER that does this, not the position relative to
+        # with_reminder(): that helper only prefixes, so moving the suffix
+        # inside its argument would produce identical bytes. The property is
+        # pinned by test_..._warning_lands_outside_the_untrusted_fence, which
+        # asserts the index rather than the call shape.
         return with_reminder("\n".join(blocks)) + suffix
 
     @server.tool()
