@@ -297,6 +297,50 @@ def test_collection_publications_read_uses_the_shared_page_size():
     assert fc.calls[0][1]["first"] == PUBLICATIONS_PAGE_SIZE
 
 
+def _field(selection_set, name):
+    """Return the field named `name` in `selection_set`, requiring it unaliased.
+
+    Module level, not a closure, so test_publications_walker_rejects_an_aliased_field
+    can drive it directly against a literal query (Story 10.84).
+
+    The alias assertion is what makes this a mirror of client.paginate(), which
+    descends the RESPONSE by key — and a field's response key is its alias when
+    one is present, its name otherwise. Matching on the name alone leaves an
+    alias undetected: valid GraphQL, every other assertion here still true, and
+    paginate() reading {} for a connection that is really there.
+    """
+    for sel in selection_set.selections:
+        if getattr(sel, "name", None) is not None and sel.name.value == name:
+            assert sel.alias is None, (
+                f"{name!r} is aliased to {sel.alias.value!r}; paginate() reads the "
+                f"response key, which would be {sel.alias.value!r}"
+            )
+            return sel
+    raise AssertionError(f"{name!r} not found in selection set")
+
+
+def test_publications_walker_rejects_an_aliased_field():
+    """AC4 (Story 10.84): the walker refuses an alias on any step of the path.
+
+    Same defect and same reasoning as test_selection_at_rejects_an_aliased_field
+    in test_products.py — the response key for a field is its alias when one is
+    present, so a name-matching walker cannot claim to mirror paginate().
+    Pinned against a literal query so it survives any rewrite of the real ones.
+    """
+    from graphql import parse
+
+    aliased = """
+    query Q($first: Int!, $after: String) {
+      x: resourcePublications(first: $first, after: $after) {
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+    """
+    (operation,) = parse(aliased).definitions
+    with pytest.raises(AssertionError, match="aliased"):
+        _field(operation.selection_set, "resourcePublications")
+
+
 def test_collection_publications_query_parses_and_has_the_shape_paginate_walks():
     """Parse the query instead of grepping it.
 
@@ -313,12 +357,6 @@ def test_collection_publications_query_parses_and_has_the_shape_paginate_walks()
 
     doc = parse(q.GET_COLLECTION_PUBLICATIONS_BY_HANDLE)
     (operation,) = doc.definitions
-
-    def _field(selection_set, name):
-        for sel in selection_set.selections:
-            if getattr(sel, "name", None) is not None and sel.name.value == name:
-                return sel
-        raise AssertionError(f"{name!r} not found in selection set")
 
     # The exact path shopify_mcp.client.paginate is told to walk.
     root = _field(operation.selection_set, "collectionByHandle")

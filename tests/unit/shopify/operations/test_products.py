@@ -462,6 +462,15 @@ def _selection_at(query_text: str, path: list[str]) -> graphql.SelectionSetNode:
     Mirrors what client.paginate() does at runtime with connection_path, so a
     query whose pageInfo sits at the wrong nesting level fails here the way it
     would fail against the real API.
+
+    Every step of the path must be UNALIASED (Story 10.84). paginate() descends
+    the RESPONSE by key, and the GraphQL response key for a field is its alias
+    when one is present and its name otherwise — so name-matching alone is only
+    a mirror of the runtime while no field on the path carries an alias. Adding
+    one is valid GraphQL that Shopify answers happily: the AST still reports the
+    name, every downstream assertion here still holds, and paginate() reads {}
+    and returns zero nodes with capped=False. Asserting it here covers every
+    step of every path any caller walks, rather than one field at one call site.
     """
     node: Any = graphql.parse(query_text).definitions[0]
     for key in path:
@@ -472,7 +481,32 @@ def _selection_at(query_text: str, path: list[str]) -> graphql.SelectionSetNode:
         ]
         assert matches, f"no field {key!r} in selection set"
         node = matches[0]
+        assert node.alias is None, (
+            f"{key!r} is aliased to {node.alias.value!r}; paginate() reads the "
+            f"response key, which would be {node.alias.value!r}"
+        )
     return node.selection_set
+
+
+def test_selection_at_rejects_an_aliased_field():
+    """AC4 (Story 10.84): the walker refuses an alias on any step of the path.
+
+    Pinned against a literal query rather than a production one, so the guard
+    keeps its teeth even if every query in shopify/queries/ is rewritten. An
+    alias is valid GraphQL that Shopify answers happily, and the response then
+    carries the ALIAS as its key while the AST still reports the name — so a
+    name-matching walker stays satisfied while paginate() reads {} and returns
+    zero nodes with capped=False, indistinguishable from an empty collection.
+    """
+    aliased = """
+    query Q($first: Int!, $after: String) {
+      x: products(first: $first, after: $after) {
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+    """
+    with pytest.raises(AssertionError, match="aliased"):
+        _selection_at(aliased, ["products"])
 
 
 @pytest.mark.parametrize(
