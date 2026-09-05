@@ -28,7 +28,9 @@ an attacker can dodge it with:
   (U+FF1C, U+FF0F, U+FF1E) that render as the ASCII delimiter, and Unicode
   dash characters (hyphen U+2010, non-breaking hyphen U+2011, figure dash
   U+2012, en-dash U+2013, em-dash U+2014, horizontal bar U+2015, minus sign
-  U+2212) that render as the interior ``-``.
+  U+2212) that render as the interior ``-``; since Story 10.71 also the
+  bracket and slash confusables NFKC leaves alone and homoglyph letters in
+  any script — see the visible-glyph section below.
 
 The defense has two layers:
 
@@ -134,6 +136,66 @@ delimiter the way a zero-width character does, so it does not belong in the
 character class -- it attacks the *normalization step* instead, and is
 answered there.
 
+Visible-glyph confusables and homoglyph letters (Story 10.71 /
+SEC-21-confusables)
+--------------------------------------------------------------------
+SEC-21 reasoned about NFKC one position at a time. It verified that the
+fullwidth bracket and slash forms fold to ASCII, concluded those positions
+needed no explicit class, and then enumerated the dash confusables that do not
+fold. What it never enumerated was the set of bracket/slash confusables NFKC
+*also* leaves alone -- U+2215 DIVISION SLASH, U+2044 FRACTION SLASH, U+29F8 BIG
+SOLIDUS, U+2039/U+203A, U+3008/U+3009, U+276E/U+276F -- and it never considered
+homoglyph *letters* (Cyrillic A inside ``DATA``) at all. All eight were
+confirmed passing through un-neutralized against post-Story-10.70 code.
+
+**Why this was worth closing, given the fence was never breached.** None of
+those codepoints *is* the ASCII character it resembles, so unlike the
+zero-width and U+0338 cases the emitted value carried exactly one literal
+``</UNTRUSTED-DATA>`` and the region did not end early. The residual is
+model-interpretation risk, not a string-level breakout, which is the weaker
+claim. It is also *precisely the claim SEC-21 already accepted* when it
+neutralized dash confusables: a closer spelled with an en-dash separator is no
+more a literal breakout than one spelled with a division slash. Leaving the
+bracket, slash and letter positions open was therefore an inconsistency in this
+module's own threat model rather than a scope boundary, and closing it makes
+the boundary uniform instead of extending it.
+
+**Anchors are narrow, the interior is broad.** The delimiter's three
+punctuation positions admit only their own confusables, derived from Unicode
+*names* within the punctuation and symbol categories: a name carrying
+``SOLIDUS``/``SLASH`` but not ``REVERSE``, one carrying ``LESS-THAN`` or a
+left-pointing ``ANGLE``, one carrying ``GREATER-THAN`` or a right-pointing one.
+Every letter position and the interior separator admit the ASCII character *or
+any ink-rendering non-ASCII character at all* -- :data:`_INK`, the complement
+of the invisible and whitespace sets.
+
+That split is the whole design, and it is what keeps the rule keyed on the
+delimiter's *shape* rather than on the presence of a confusable. Legitimate
+shopper copy is full of Cyrillic letters, CJK angle brackets and fraction
+slashes; what it does not contain is a bracket-shaped character, then a
+solidus-shaped one, then nine ink characters, then a separator, then four more,
+then a closing bracket, with nothing but whitespace or invisibles at the gap
+positions. Narrow anchors buy that specificity. A broad interior then buys
+completeness for free: no homoglyph table to curate, no script left uncovered,
+and nothing to go stale when Unicode adds a lookalike -- which is exactly the
+failure mode Story 10.70's review caught in a hand-listed class.
+
+The inverse split was considered and rejected. Admitting any non-ASCII
+character at the *anchor* positions too would match ordinary Cyrillic or CJK
+prose -- seventeen consecutive non-ASCII characters in the right arrangement is
+an unremarkable Russian sentence -- and neutralizing those would corrupt real
+product descriptions on a read-to-rewrite path. The card's approach 2, Unicode
+UTS #39 skeletons, was rejected on cost: it needs a confusables table this repo
+would have to vendor or hash-pin across three lockfiles (SEC-13/SEC-14) to
+reach an answer the anchor/interior split already reaches.
+
+The known residual is the mirror image of that reasoning: a span whose interior
+is *entirely* non-ASCII still matches, though it reads as foreign text in
+brackets rather than as the delimiter. Requiring at least one interior position
+to be its ASCII character would exclude it, at the cost of a counting rule a
+single-pass regex cannot express. Recorded in ``docs/tech-debt.md`` with its
+entry condition rather than fixed here.
+
 The payload is always preserved (neutralized, not dropped) so nothing is
 silently lost; non-string values are coerced via ``str`` exactly as the
 surrounding f-strings would have rendered them.
@@ -189,15 +251,15 @@ _DASH_CONFUSABLES = "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"
 #   * U+2800 BRAILLE PATTERN BLANK and other blank-rendering glyphs -- they are
 #     ordinary visible characters that happen to have empty ink, not
 #     default-ignorables; admitting every such glyph is an unbounded set.
-#   * Visible-glyph confusables of `<`, `/`, and `>` (U+2215 DIVISION SLASH,
-#     U+2044 FRACTION SLASH, U+2039/U+203A, U+3008/U+3009, ...) and homoglyph
-#     letters (Cyrillic A/T inside `DATA`/`UNTRUSTED`). Confirmed by review to
-#     pass through un-neutralized, but they are a *different* class from this
-#     story's: they leave the fence intact (the emitted value contains no
-#     literal `</UNTRUSTED-DATA>`), so they are a rendering ambiguity rather
-#     than a breakout, and covering them properly needs Unicode's confusables
-#     table / skeleton algorithm rather than a character class. Tracked
-#     separately rather than half-solved here.
+#   * Visible-glyph confusables of `<`, `/`, and `>` and homoglyph letters
+#     were left out by Story 10.70 and are **no longer left out**: Story 10.71
+#     closed them, and they belong to the anchor and ink classes below rather
+#     than to this one. An invisible character wedges into the delimiter
+#     without displacing anything, which is why it is admitted *between* the
+#     letters; a visible confusable *replaces* a character, which is why it is
+#     admitted *at* a position instead. Keeping the two mechanisms apart is
+#     what lets the invisible class stay over-broad without widening the
+#     visible one.
 #   * Combining marks are *not* admitted to this class -- but see
 #     :func:`wrap`, which must scan the raw text as well as the normalized
 #     copy precisely because one combining mark (U+0338) can compose the
@@ -225,36 +287,31 @@ _NON_CF_DEFAULT_IGNORABLE = (
 
 _WHITESPACE = re.compile(r"\s")
 
+# General categories that can hold a visible punctuation or symbol glyph. The
+# anchor derivation below inspects Unicode *names*, and `unicodedata.name()`
+# over all 0x110000 codepoints is far more expensive than `category()`, so the
+# name lookup is gated on these categories -- roughly 8,500 codepoints rather
+# than a million, which keeps the derivation inside the existing import budget.
+_ANCHOR_CATEGORIES = frozenset({"Pc", "Pd", "Ps", "Pe", "Pi", "Pf", "Po", "Sm", "Sk", "So"})
 
-def _build_invisible_class() -> str:
-    """Build the invisible-codepoint character class for the running Python.
+# The only general categories in which `\s` ever matches -- verified by sweeping
+# all 0x110000 codepoints (10 in Cc, 17 in Zs, 1 each in Zl and Zp) and pinned
+# by a test, because the derivation below asks the regex nowhere else. Running
+# it on every codepoint instead triples this module's import cost, and the
+# overwhelming majority of that million is unassigned `Cn`.
+_MAY_BE_WHITESPACE = frozenset({"Cc", "Zs", "Zl", "Zp"})
 
-    Derived from ``unicodedata`` at import rather than pinned to a snapshot of
-    one Unicode version. That is not a stylistic preference: ``requires-python``
-    is ``>=3.11``, and a hardcoded class *silently reopens this story's gap* on
-    a newer interpreter. Story 10.70's review caught exactly that -- a class
-    derived against Python 3.11 (Unicode 14.0) misses the seven codepoints
-    U+13439-U+1343F that Unicode 15.1/16.0 added to the Egyptian Hieroglyph
-    format-control block, so on Python 3.13+ those spell an un-neutralized
-    closing delimiter. Deriving costs roughly 60 ms once at import (measured) and makes
-    the class correct on every supported interpreter by construction.
 
-    Members are category ``Cf`` (format), plus category ``Cc`` (control)
-    excluding the ones ``\\s`` already matches, plus the non-Cf
-    default-ignorables above. ``Cc``-minus-whitespace is included on the same
-    premise as the rest: those 55 codepoints render as nothing, so they wedge
-    into the delimiter invisibly, and this repo already treats control
-    characters as an injection vector (SEC-20 / Story 10.54). The whitespace
-    controls are excluded so a tab or newline still cannot appear *between the
-    letters* of ``UNTRUSTED`` -- see :func:`_interleave`.
-    """
-    codepoints = {cp for lo, hi in _NON_CF_DEFAULT_IGNORABLE for cp in range(lo, hi + 1)}
-    for cp in range(0x110000):
-        char = chr(cp)
-        category = unicodedata.category(char)
-        if category == "Cf" or (category == "Cc" and not _WHITESPACE.match(char)):
-            codepoints.add(cp)
+def _ranges_to_class(ranges: list[tuple[int, int]]) -> str:
+    """Render inclusive codepoint ranges as a regex character-class body."""
+    return "".join(
+        re.escape(chr(lo)) if lo == hi else f"{re.escape(chr(lo))}-{re.escape(chr(hi))}"
+        for lo, hi in ranges
+    )
 
+
+def _to_ranges(codepoints: set[int]) -> list[tuple[int, int]]:
+    """Collapse a codepoint set into sorted, inclusive ranges."""
     ranges: list[tuple[int, int]] = []
     ordered = sorted(codepoints)
     start = previous = ordered[0]
@@ -265,14 +322,96 @@ def _build_invisible_class() -> str:
         ranges.append((start, previous))
         start = previous = cp
     ranges.append((start, previous))
+    return ranges
 
-    return "".join(
-        re.escape(chr(lo)) if lo == hi else f"{re.escape(chr(lo))}-{re.escape(chr(hi))}"
-        for lo, hi in ranges
+
+def _to_complement_ranges(excluded: set[int], first: int, last: int) -> list[tuple[int, int]]:
+    """Inclusive ranges covering ``first..last`` minus ``excluded``."""
+    ranges: list[tuple[int, int]] = []
+    start = first
+    for cp in sorted(cp for cp in excluded if first <= cp <= last):
+        if cp > start:
+            ranges.append((start, cp - 1))
+        start = cp + 1
+    if start <= last:
+        ranges.append((start, last))
+    return ranges
+
+
+def _build_character_classes() -> tuple[str, str, str, str, str]:
+    """Build every derived character class in one pass over Unicode.
+
+    Returns, in order: the invisible class, the ink class, and the three anchor
+    classes (open angle, solidus, close angle). All five are derived from
+    ``unicodedata`` at import rather than pinned to a snapshot of one Unicode
+    version. That is not a stylistic preference: ``requires-python`` is
+    ``>=3.11``, and a hardcoded class *silently reopens the gap* on a newer
+    interpreter. Story 10.70's review caught exactly that -- a class derived
+    against Python 3.11 (Unicode 14.0) misses the seven codepoints
+    U+13439-U+1343F that Unicode 15.1/16.0 added to the Egyptian Hieroglyph
+    format-control block, so on Python 3.13+ those spell an un-neutralized
+    closing delimiter. Deriving all five costs roughly 85 ms once at import
+    (measured) and makes every class correct on every supported interpreter by
+    construction.
+
+    **Invisibles** are category ``Cf`` (format), plus category ``Cc`` (control)
+    excluding the ones ``\\s`` already matches, plus the non-Cf
+    default-ignorables above. ``Cc``-minus-whitespace is included on the same
+    premise as the rest: those 55 codepoints render as nothing, so they wedge
+    into the delimiter invisibly, and this repo already treats control
+    characters as an injection vector (SEC-20 / Story 10.54). The whitespace
+    controls are excluded so a tab or newline still cannot appear *between the
+    letters* of ``UNTRUSTED`` -- see :func:`_interleave`.
+
+    **Ink** is the complement: every non-ASCII codepoint that is neither
+    invisible nor whitespace, i.e. everything that puts a mark on the page. It
+    is a complement rather than an enumeration precisely so it has no coverage
+    gap to maintain -- see the module docstring on why the letter positions are
+    permissive.
+
+    **Anchors** are derived from Unicode names inside :data:`_ANCHOR_CATEGORIES`.
+    ASCII is excluded from all three by construction (the scan starts at 0x80):
+    the ASCII forms are already literals in the pattern, and admitting ASCII
+    ``\\`` -- whose Unicode name is ``REVERSE SOLIDUS`` -- would make
+    :func:`_neutralize_close_tag`'s own output match again on the next pass.
+    Reversed forms are excluded for the same reason they are not confusables:
+    they render as ``\\``, not ``/``.
+    """
+    invisible = {cp for lo, hi in _NON_CF_DEFAULT_IGNORABLE for cp in range(lo, hi + 1)}
+    spaces: set[int] = set()
+    open_angles: set[int] = set()
+    solidi: set[int] = set()
+    close_angles: set[int] = set()
+
+    for cp in range(0x110000):
+        char = chr(cp)
+        category = unicodedata.category(char)
+        if category == "Cf":
+            invisible.add(cp)
+        elif category in _MAY_BE_WHITESPACE:
+            if _WHITESPACE.match(char):
+                spaces.add(cp)
+            elif category == "Cc":
+                invisible.add(cp)
+        elif cp >= 0x80 and category in _ANCHOR_CATEGORIES:
+            name = unicodedata.name(char, "")
+            if ("SOLIDUS" in name or "SLASH" in name) and "REVERSE" not in name:
+                solidi.add(cp)
+            if "LESS-THAN" in name or ("ANGLE" in name and "LEFT" in name):
+                open_angles.add(cp)
+            if "GREATER-THAN" in name or ("ANGLE" in name and "RIGHT" in name):
+                close_angles.add(cp)
+
+    return (
+        _ranges_to_class(_to_ranges(invisible)),
+        _ranges_to_class(_to_complement_ranges(invisible | spaces, 0x80, 0x10FFFF)),
+        _ranges_to_class(_to_ranges(open_angles)),
+        _ranges_to_class(_to_ranges(solidi)),
+        _ranges_to_class(_to_ranges(close_angles)),
     )
 
 
-_INVISIBLES = _build_invisible_class()
+_INVISIBLES, _INK, _OPEN_ANGLES, _SOLIDI, _CLOSE_ANGLES = _build_character_classes()
 
 # A run of invisibles (allowed between the letters of the literal words), and a
 # run of invisibles-or-whitespace (allowed where `\s*` already sat).
@@ -293,8 +432,13 @@ def _interleave(word: str) -> str:
     invisible used *as* the separator (``</UNTRUSTED<SHY>DATA>``) renders as
     ``</UNTRUSTEDDATA>``, which is missing the visible hyphen and so is not a
     confusable of the real delimiter.
+
+    Each letter position also admits any ink-rendering non-ASCII character
+    (Story 10.71 / SEC-21-confusables), which is what covers homoglyph letters
+    such as Cyrillic A inside ``DATA``. That breadth is safe here only because
+    the anchors around it are narrow -- see the module docstring.
     """
-    return _INV.join(word)
+    return _INV.join(f"[{letter}{_INK}]" for letter in word)
 
 
 # Matches any spelling of the closing delimiter after NFKC normalization:
@@ -305,24 +449,35 @@ def _interleave(word: str) -> str:
 # Unicode dash confusables above. See the module docstring for the empirical
 # NFKC findings behind this shape.
 #
-# No catastrophic-backtracking risk: every quantified run is a single
-# character class, and each is separated from the next by a mandatory literal
-# (a letter, the '/', the separator, or the '>'). The separator class is
-# disjoint from `_GAP`, so no position can be consumed by two alternatives.
+# Story 10.71 widened three more positions. The '<', '/' and '>' anchors admit
+# their name-derived confusables, and the separator joins the letters in
+# admitting any ink-rendering non-ASCII character. `_DASH_CONFUSABLES` is now a
+# subset of that ink class and is kept in the separator anyway: it is the
+# executable record of SEC-21's empirical NFKC finding, and it keeps this
+# position correct on its own terms if the ink allowance is ever narrowed.
+#
+# No catastrophic-backtracking risk: every quantified run is a single character
+# class, and each is separated from the next by a mandatory single-character
+# class (an anchor, a letter, the separator). `_GAP` and `_INV` are built from
+# whitespace and invisibles, and every mandatory class is disjoint from both --
+# the ink class excludes them by construction and the anchor classes are drawn
+# only from visible punctuation/symbol categories -- so no position can be
+# consumed by two alternatives.
 _CLOSE_TAG_PATTERN = re.compile(
-    "<"
+    f"[<{_OPEN_ANGLES}]"
     + _GAP
-    + "/"
+    + f"[/{_SOLIDI}]"
     + _GAP
     + _interleave("UNTRUSTED")
     + _GAP
     + "[-_"
     + _DASH_CONFUSABLES
+    + _INK
     + "]"
     + _GAP
     + _interleave("DATA")
     + _GAP
-    + ">",
+    + f"[>{_CLOSE_ANGLES}]",
     re.IGNORECASE,
 )
 
@@ -338,9 +493,15 @@ def _neutralize_close_tag(match: re.Match[str]) -> str:
     Inserts a backslash immediately after the leading ``<`` so the result
     stays human-legible while no longer parsing as the literal closing tag
     (and no longer matching :data:`_CLOSE_TAG_PATTERN` itself).
+
+    The opening character is *kept* rather than rewritten to ASCII ``<``: since
+    Story 10.71 it may be a confusable such as U+3008, and this callback's
+    contract is to preserve the matched text -- neutralized, not dropped. For
+    every spelling that matched before Story 10.71 the leading character was
+    already ASCII ``<`` after NFKC, so the emitted text is unchanged for them.
     """
     matched = match.group(0)
-    return "<\\" + matched[1:]
+    return matched[0] + "\\" + matched[1:]
 
 
 def with_reminder(body: str) -> str:
