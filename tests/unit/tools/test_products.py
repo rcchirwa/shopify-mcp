@@ -34,7 +34,7 @@ from shopify_mcp.tools.products import (
     UPDATE_PRODUCT_TAGS,
     UPDATE_PRODUCT_VARIANTS_POLICY,
 )
-from tests.support import CapturingServer, FakeClient, products_page
+from tests.support import CapturingServer, FakeClient, collection_products_page, products_page
 
 
 def _build(responses):
@@ -643,83 +643,164 @@ def test_get_products_warns_when_the_walk_is_capped_but_collected_nothing():
 
 
 def test_get_products_by_collection_unwraps_nested_nodes():
-    response = {
-        "collectionByHandle": {
-            "id": "gid://shopify/Collection/999",
-            "title": "Vanish",
-            "handle": "vanish",
-            "products": {
-                "nodes": [
+    tools, fc = _build(
+        [
+            collection_products_page(
+                [
                     _product_summary("111", "Tee One", "tee-one"),
                     _product_summary("222", "Tee Two", "tee-two"),
                 ]
-            },
-        }
-    }
-    tools, fc = _build([response])
+            )
+        ]
+    )
     out = tools["get_products_by_collection"](collection_handle="vanish")
     assert "Products in 'vanish' (2 total)" in out
     assert "[111] Tee One" in out and "[222] Tee Two" in out
     assert fc.calls[0][0] == GET_PRODUCTS_BY_COLLECTION
-    assert fc.calls[0][1] == {"handle": "vanish", "first": 250}
+    assert fc.calls[0][1] == {"handle": "vanish", "first": 250, "after": None}
+
+
+def test_get_products_by_collection_single_page_renders_byte_identically_to_before():
+    """AC8: the conversion is additive for the only case that exists today (a
+    collection resolving in one page). Pinned against the exact string rather
+    than substrings, so a stray blank line or a reworded header fails here
+    instead of being noticed by a reviewer."""
+    tools, _fc = _build(
+        [
+            collection_products_page(
+                [
+                    _product_summary("111", "Tee One", "tee-one"),
+                    _product_summary("222", "Tee Two", "tee-two"),
+                ]
+            )
+        ]
+    )
+    out = tools["get_products_by_collection"](collection_handle="vanish")
+    assert out == (
+        "Products in 'vanish' (2 total):\n\n"
+        "  [111] Tee One | handle: tee-one | ACTIVE\n"
+        "  [222] Tee Two | handle: tee-two | ACTIVE"
+    )
+
+
+def test_get_products_by_collection_renders_a_product_from_the_second_page():
+    """AC3 at the tool layer: a product reachable only on page two appears in
+    the rendered output."""
+    tools, _fc = _build(
+        [
+            collection_products_page(
+                [_product_summary("111", "Tee One", "tee-one")], has_next=True, cursor="C1"
+            ),
+            collection_products_page([_product_summary("222", "Tee Two", "tee-two")]),
+        ]
+    )
+    out = tools["get_products_by_collection"](collection_handle="vanish")
+    assert "[111] Tee One" in out and "[222] Tee Two" in out
+    assert not out.endswith(products.PRODUCTS_TRUNCATED_WARNING)
+
+
+def test_get_products_by_collection_warns_when_the_walk_caps():
+    """AC7: truncation is never silent. The header also stops saying "total"
+    for a list the walk cut short."""
+    pages = [
+        collection_products_page(
+            [_product_summary(str(i), f"Tee {i}", f"tee-{i}")], has_next=True, cursor=f"C{i}"
+        )
+        for i in range(ops.PRODUCTS_MAX_PAGES)
+    ]
+    tools, fc = _build(pages)
+    out = tools["get_products_by_collection"](collection_handle="vanish")
+    assert out.endswith(products.PRODUCTS_TRUNCATED_WARNING)
+    assert f"({ops.PRODUCTS_MAX_PAGES} shown)" in out
+    assert "total)" not in out
+    assert len(fc.calls) == ops.PRODUCTS_MAX_PAGES
+
+
+def test_get_products_by_collection_warns_when_capped_with_zero_nodes():
+    """AC7's sharp edge, mirroring get_products' empty-result branch: paginate()
+    can stop with capped set and nothing collected (empty pages that still
+    report hasNextPage), and the early return would otherwise discard the flag —
+    the exact silent truncation this story removes."""
+    pages = [
+        collection_products_page([], has_next=True, cursor=f"C{i}")
+        for i in range(ops.PRODUCTS_MAX_PAGES)
+    ]
+    tools, _fc = _build(pages)
+    out = tools["get_products_by_collection"](collection_handle="vanish")
+    assert out == "No products in collection 'vanish'." + products.PRODUCTS_TRUNCATED_WARNING
 
 
 def test_get_products_by_collection_handle_not_found():
     tools, fc = _build([{"collectionByHandle": None}])
     out = tools["get_products_by_collection"](collection_handle="nope")
     assert out == "No collection found with handle 'nope'."
+    assert len(fc.calls) == 1
 
 
 def test_get_products_by_collection_empty_collection():
-    response = {
-        "collectionByHandle": {
-            "id": "gid://shopify/Collection/999",
-            "title": "Empty",
-            "handle": "empty",
-            "products": {"nodes": []},
-        }
-    }
-    tools, fc = _build([response])
+    tools, fc = _build([collection_products_page([], title="Empty", handle="empty")])
     out = tools["get_products_by_collection"](collection_handle="empty")
     assert out == "No products in collection 'empty'."
 
 
-def test_get_products_with_descriptions_scoped_to_collection():
-    response = {
-        "collectionByHandle": {
-            "id": "gid://shopify/Collection/999",
-            "title": "Vanish",
-            "handle": "vanish",
-            "products": {
-                "nodes": [
-                    _product_with_body("111", "Tee One", "tee-one", "<p>body one</p>"),
-                ]
-            },
-        }
+def test_get_products_by_collection_docstring_no_longer_promises_all_products():
+    """AC9: the docstring IS the description the calling model reads. It said
+    "List all products in a collection" — the unconditional claim Story 10.72
+    already tested away from get_products' docstring."""
+    tools, _fc = _build([collection_products_page([])])
+    doc = tools["get_products_by_collection"].__doc__ or ""
+    assert "List all products" not in doc
+    assert "paginat" in doc.lower()
+
+
+def test_readme_documents_both_paginated_description_and_collection_tools():
+    """AC9: README's tool table is the other half of the public surface, and it
+    drifted stale twice before (Story 10.65, Story 10.72). There was no row at
+    all for get_products_with_descriptions before this story."""
+    readme = (Path(__file__).resolve().parents[3] / "README.md").read_text(encoding="utf-8")
+    rows = {
+        line.split("|")[1].strip(): line
+        for line in readme.splitlines()
+        if line.startswith("| `get_products_by_collection`")
+        or line.startswith("| `get_products_with_descriptions`")
     }
-    tools, fc = _build([response])
+    assert set(rows) == {"`get_products_by_collection`", "`get_products_with_descriptions`"}
+    for name, row in rows.items():
+        assert "paginat" in row.lower(), f"README row for {name} does not mention pagination"
+        assert "WARNING" in row, f"README row for {name} does not mention the truncation WARNING"
+
+
+def test_get_products_with_descriptions_scoped_to_collection():
+    tools, fc = _build(
+        [
+            collection_products_page(
+                [_product_with_body("111", "Tee One", "tee-one", "<p>body one</p>")]
+            )
+        ]
+    )
     out = tools["get_products_with_descriptions"](collection_handle="vanish", limit=25)
     assert "Products in 'vanish' (1 total)" in out
     assert "ID: 111" in out and "<p>body one</p>" in out
     assert fc.calls[0][0] == GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS
-    assert fc.calls[0][1] == {"handle": "vanish", "first": 25}
+    assert fc.calls[0][1] == {"handle": "vanish", "first": 25, "after": None}
 
 
 def test_get_products_with_descriptions_unscoped_bulk():
-    response = {
-        "products": {
-            "nodes": [
-                _product_with_body("111", "Tee One", "tee-one", "<p>one</p>"),
-                _product_with_body("222", "Tee Two", "tee-two", "<p>two</p>"),
-            ]
-        }
-    }
-    tools, fc = _build([response])
+    tools, fc = _build(
+        [
+            products_page(
+                [
+                    _product_with_body("111", "Tee One", "tee-one", "<p>one</p>"),
+                    _product_with_body("222", "Tee Two", "tee-two", "<p>two</p>"),
+                ]
+            )
+        ]
+    )
     out = tools["get_products_with_descriptions"](limit=10)
     assert "Products (2 total)" in out
     assert "<p>one</p>" in out and "<p>two</p>" in out
     assert fc.calls[0][0] == GET_PRODUCTS_WITH_DESCRIPTIONS
-    assert fc.calls[0][1] == {"first": 10}
+    assert fc.calls[0][1] == {"first": 10, "after": None}
 
 
 def test_get_products_with_descriptions_collection_not_found():
@@ -728,18 +809,56 @@ def test_get_products_with_descriptions_collection_not_found():
     assert out == "No collection found with handle 'missing'."
 
 
+@pytest.mark.parametrize("scoped", [True, False])
+def test_get_products_with_descriptions_warns_on_both_branches(scoped):
+    """AC7: both dispatch branches append the WARNING when the walk caps. Before
+    this story neither could — the single-shot read had nothing to report."""
+    node = _product_with_body("111", "Tee One", "tee-one", "<p>one</p>")
+    page = (
+        collection_products_page([node], has_next=True, cursor="C1")
+        if scoped
+        else products_page([node], has_next=True, cursor="C1")
+    )
+    tools, fc = _build([page])
+    out = tools["get_products_with_descriptions"](
+        collection_handle="vanish" if scoped else "", limit=1
+    )
+    assert out.endswith(products.PRODUCTS_TRUNCATED_WARNING)
+    assert len(fc.calls) == 1
+
+
+@pytest.mark.parametrize("scoped", [True, False])
+def test_get_products_with_descriptions_warning_lands_outside_the_untrusted_fence(scoped):
+    """AC7, the SEC-04 half: body_html is fenced store content, so a WARNING
+    appended inside the fence would be indistinguishable from text the store
+    wrote. It has to sit after the closing delimiter."""
+    node = _product_with_body("111", "Tee One", "tee-one", "<p>one</p>")
+    page = (
+        collection_products_page([node], has_next=True, cursor="C1")
+        if scoped
+        else products_page([node], has_next=True, cursor="C1")
+    )
+    tools, _fc = _build([page])
+    out = tools["get_products_with_descriptions"](
+        collection_handle="vanish" if scoped else "", limit=1
+    )
+    warning_at = out.index(products.PRODUCTS_TRUNCATED_WARNING)
+    assert warning_at > out.rindex("</UNTRUSTED-DATA>")
+
+
 def test_get_products_with_descriptions_limit_clamped_high():
-    response = {"products": {"nodes": []}}
-    tools, fc = _build([response])
+    """AC5 + the step-2 decision: the 250 ceiling STAYS. A limit above it is
+    clamped, so no reachable input can widen the request budget."""
+    tools, fc = _build([products_page([])])
     tools["get_products_with_descriptions"](limit=9999)
-    assert fc.calls[0][1] == {"first": 250}
+    assert fc.calls[0][1] == {"first": 250, "after": None}
+    assert len(fc.calls) == 1
 
 
 def test_get_products_with_descriptions_limit_clamped_low():
-    response = {"products": {"nodes": []}}
-    tools, fc = _build([response])
+    tools, fc = _build([products_page([])])
     tools["get_products_with_descriptions"](limit=0)
-    assert fc.calls[0][1] == {"first": 1}
+    assert fc.calls[0][1] == {"first": 1, "after": None}
 
 
 def test_s1070_zero_width_forged_closer_cannot_forge_a_neighbouring_product():

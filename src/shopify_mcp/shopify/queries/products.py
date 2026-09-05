@@ -116,22 +116,29 @@ mutation UpdateProduct($input: ProductInput!) {
 }
 """
 
+# Story 10.76: the three queries below feed client.paginate(), which requires
+# $first + $after and a pageInfo { hasNextPage endCursor } selection on the
+# connection it walks. The two collection-scoped ones nest that connection
+# inside collectionByHandle, so their connection_path is
+# ["collectionByHandle", "products"] and the collection's own id/title/handle
+# come off paginate()'s first-page response rather than off the node list.
 GET_PRODUCTS_BY_COLLECTION = """
-query GetProductsByCollection($handle: String!, $first: Int!) {
+query GetProductsByCollection($handle: String!, $first: Int!, $after: String) {
   collectionByHandle(handle: $handle) {
     id
     title
     handle
-    products(first: $first) {
+    products(first: $first, after: $after) {
       nodes { id title handle status }
+      pageInfo { hasNextPage endCursor }
     }
   }
 }
 """
 
 GET_PRODUCTS_WITH_DESCRIPTIONS = """
-query GetProductsWithDescriptions($first: Int!) {
-  products(first: $first) {
+query GetProductsWithDescriptions($first: Int!, $after: String) {
+  products(first: $first, after: $after) {
     nodes {
       id
       title
@@ -139,17 +146,18 @@ query GetProductsWithDescriptions($first: Int!) {
       status
       bodyHtml
     }
+    pageInfo { hasNextPage endCursor }
   }
 }
 """
 
 GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS = """
-query GetProductsByCollectionWithDescriptions($handle: String!, $first: Int!) {
+query GetProductsByCollectionWithDescriptions($handle: String!, $first: Int!, $after: String) {
   collectionByHandle(handle: $handle) {
     id
     title
     handle
-    products(first: $first) {
+    products(first: $first, after: $after) {
       nodes {
         id
         title
@@ -157,6 +165,7 @@ query GetProductsByCollectionWithDescriptions($handle: String!, $first: Int!) {
         status
         bodyHtml
       }
+      pageInfo { hasNextPage endCursor }
     }
   }
 }

@@ -8,6 +8,38 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-09-05 — Story 10.76 (T-10.72-sibling-reads — paginate the three sibling outer-connection product reads)
+
+An enhancement, not a defect. The three reads returned exactly the prefix they asked for and nothing crashed; what was missing is the honesty signal (`capped` + WARNING) Story 10.72 gave `get_products`. This finishes the migration 10.72 started. Trello: https://trello.com/c/SwuZTNHt (Story 10.76, Epic 10).
+
+**There were three sibling reads, not two.** The 10.72 entry below named `read_products_by_collection` and `read_products_with_descriptions` and missed `read_collection_with_descriptions`, which shares both the single-shot shape and the `limit` argument. Its bullet is struck through and corrected below.
+
+### The contract decision (card step 2) — approach 1, `limit` means total, ceiling stays at 250
+
+Both halves of the question the card insisted on separating:
+
+**(a) `limit` on `get_products_with_descriptions` now means "total across pages"**, matching `get_products`. Under a single-shot request "page size" and "total" were the same number, so the distinction was unobservable; it becomes observable only once a walk can issue a second request.
+
+**(b) The tool's `max(1, min(limit, 250))` ceiling stays at 250.** Raising it is the real contract change and it is deferred, not taken. Keeping it makes this story provably zero-blast-radius: with 10.72's arithmetic every `limit <= 250` yields `page_size = min(limit, 250) = limit` and `max_pages = ceil(limit/limit) = 1`, so exactly one request of `first: limit` is issued — the same request as before. The only observable additions are `"after": None` in the variables and a `capped` flag that can now warn.
+
+Approach 1 of the card's four. Approach 3 (raise the ceiling toward `PRODUCTS_PAGE_SIZE * PRODUCTS_MAX_PAGES = 2500`) is recorded as a residual below with the live cost probe as its entry condition — no ceiling is chosen here, so no measurement is owed here.
+
+### Closed
+- **T-10.72-sibling-reads** — all three queries gained `$after: String`, `after: $after` and `pageInfo { hasNextPage endCursor }` on their `products` connection; all three operations moved from `client.execute` to `client.paginate`, with `connection_path=["collectionByHandle", "products"]` for the two nested reads and `["products"]` for the unscoped one. `read_products_by_collection` returns `(collection_or_None, nodes, capped)`, matching the tuple convention `read_product` and `read_products` already use.
+- **"No such collection" stays distinguishable from "empty collection".** `paginate()`'s `(connection or {}).get(key) or {}` tolerance is load-bearing here: a `collectionByHandle: null` response walks to `({"collectionByHandle": None}, [], False)`, so the operations return the first-page dict's `collectionByHandle` rather than inferring absence from an empty node list.
+- **The collection's own `id`/`title`/`handle` come from the first-page response**, which is what `paginate()`'s first return value exists for.
+- **Truncation is no longer silent on any of the three surfaces.** `get_products_by_collection` and both branches of `get_products_with_descriptions` append the existing `PRODUCTS_TRUNCATED_WARNING` when the walk caps, including when it caps having collected zero nodes. The constant is reused, not forked, and in the descriptions tool the warning lands outside every `<UNTRUSTED-DATA>` fence.
+- **`get_products_by_collection`'s header no longer claims "total"** for a list the walk truncated — it reads "shown" when capped. The uncapped rendering is byte-identical to before, pinned by a regression test naming the exact string.
+- **The limit arithmetic exists once.** `read_products` and the two description reads share a private `_limit_budget()` helper instead of three copies of the same four lines.
+
+### Deliberately out of scope
+- **Raising the description ceiling above 250** (the card's approach 3). Entry condition: a live `extensions.cost` probe of `GET_PRODUCTS_WITH_DESCRIPTIONS` at `first: 250`. 10.72 measured `GET_PRODUCTS` at `requestedQueryCost=112`; `bodyHtml` is a scalar so the *cost* should be similar, but the *response bytes* are not — 250 multi-KB descriptions in one MCP response is already large and a 10-page walk is ten times that. The volume question, not the cost question, is the one that needs answering before a number is picked.
+- **The nested `variants(first: 50)` inside `GET_PRODUCTS`** — still open, still unpaginated, and still structurally unwalkable by `client.paginate()`, which cannot follow a connection nested inside another connection. Carded separately as Story 10.77 (`T-10.72-variants-detect`).
+- **`read_product_collections`' `collections(first: 250)`** — a different connection with its own at-cap warning.
+- **Wrapping titles/handles in `wrap()`** — SEC-04 successor territory, not a pagination concern.
+
+---
+
 ## 2026-09-05 — Story 10.74 (T-10.72-unlisted-status — carry UNLISTED in the product-status vocabulary)
 
 A defect, not an enhancement: the vocabulary this server validated against did not match the enum of the API it wraps. `PRODUCT_STATUS_VALUES` carried three values; Shopify's `ProductStatus` carries four. Surfaced by Story 10.72 while probing the new status filter against the live store. Trello: https://trello.com/c/Nqo9gPwi (Story 10.74, Epic 10).
@@ -80,7 +112,7 @@ An enhancement, not a defect. `get_products` took no arguments, issued one `prod
 - **T-get-products-paging** — `GET_PRODUCTS` gained `$after` + `pageInfo { hasNextPage endCursor }` and a `$query` variable; `read_products` moved from `client.execute` to `client.paginate` and now returns `(nodes, capped)`, matching `read_product`'s existing tuple convention; `get_products` gained optional `status` and `limit`, both defaulting to today's behaviour, and appends `PRODUCTS_TRUNCATED_WARNING` when the walk stops with more products available. Purely additive — a no-argument call is pinned by a regression test.
 
 ### Deliberately out of scope, recorded so the boundary reads as a boundary
-- **The two sibling outer-connection reads stay on single-shot `first`.** `read_products_by_collection` (`{"handle": ..., "first": 250}`) and `read_products_with_descriptions` (`{"first": limit}`) have the same shape and the same silent-truncation gap. Left alone deliberately: `read_products_with_descriptions`'s existing `limit` argument would change meaning from "page size" to "total", a contract change on a second tool that deserves its own story and its own argument rather than being absorbed into this one. This is the card's step-2 scope decision, taken as approach 1 of the three the card offered.
+- ~~**The two sibling outer-connection reads stay on single-shot `first`.** `read_products_by_collection` (`{"handle": ..., "first": 250}`) and `read_products_with_descriptions` (`{"first": limit}`) have the same shape and the same silent-truncation gap. Left alone deliberately: `read_products_with_descriptions`'s existing `limit` argument would change meaning from "page size" to "total", a contract change on a second tool that deserves its own story and its own argument rather than being absorbed into this one. This is the card's step-2 scope decision, taken as approach 1 of the three the card offered.~~ **Closed 2026-09-05 by Story 10.76 (`T-10.72-sibling-reads`) — see the entry at the top of this file. Corrected: there were THREE such sibling reads, not two.** This bullet missed `read_collection_with_descriptions`, which shares both the single-shot shape and the `limit` argument and was simply not listed. The `limit` contract change it flagged was settled as "total", with the 250 ceiling kept — which makes it a no-op for every reachable input.
 - **The nested `variants(first: 50)` inside `GET_PRODUCTS` is still unpaginated.** A product with more than 50 variants shows a partial variant list from this tool. `client.paginate()` structurally cannot walk a connection nested inside another connection — the same constraint documented above `GET_ORDERS`. Excluded by the card's own scope guard; noted in a comment on the query.
 - ~~**`PRODUCT_STATUS_VALUES` does not cover every status Shopify returns.** The live store holds a product with status `UNLISTED`, which is not in the three-value tuple, so it cannot be selected by the new filter and is reachable only through an unfiltered call. Reusing the existing tuple was an explicit acceptance criterion here, so the tuple was not widened. Whether `UNLISTED` (and any status Shopify adds later) belongs in the shared vocabulary is a separate decision that also affects `update_product_status`. Widening it now fails CI rather than crashing at runtime — see the review fixes below.~~ **Closed 2026-09-05 by Story 10.74 (`T-10.72-unlisted-status`) — see the entry at the top of this file.**
 

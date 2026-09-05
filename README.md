@@ -21,7 +21,8 @@ Enables Claude to read products, check inventory, manage collections, handle dis
 | `update_product_status` | Transition product status — ACTIVE / DRAFT / ARCHIVED / UNLISTED (preview + confirm) |
 | `update_variant_inventory_policy` | Set variant inventoryPolicy — DENY / CONTINUE (preview + confirm; defaults to all variants) |
 | `update_product_pricing` | Bulk update variant `price` / `compareAtPrice` via `productVariantsBulkUpdate`; resolves variant IDs from numeric / GID / SKU (preview + confirm) |
-| `get_products_by_collection` | List all products in a collection by handle |
+| `get_products_by_collection` | List the products in a collection by handle — cursor-paginated (up to 2500); appends an explicit WARNING and switches the header count to "shown" when the page cap truncates the list |
+| `get_products_with_descriptions` | Bulk read product `body_html`, optionally scoped to a collection handle — cursor-paginated with `limit` as a **total** across pages (clamped to 1–250); appends an explicit WARNING when more products exist than were returned. Each `body_html` is returned inside `<UNTRUSTED-DATA>` delimiters |
 | `get_product_collections` | List every collection a product belongs to (manual + smart, with type label) |
 
 **One identifier, not both.** `get_product`, `get_product_description` and `get_product_full` take `product_id` **or** `handle`. Supplying both is refused before any network call — a **breaking change in Story 10.68**, replacing the previous `product_id`-wins precedence that silently discarded the handle, so a caller naming one product by id and a *different* one by handle got the first with nothing indicating the second was ignored. The same rule governs the four Publications tools below and the six `get_product_metafields`-family tools (Story 10.65); it is now the single rule for this parameter pair across every product-resolving tool in the repo.

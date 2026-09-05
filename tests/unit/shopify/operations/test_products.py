@@ -16,7 +16,7 @@ import pytest
 
 from shopify_mcp.shopify.operations import products as ops
 from shopify_mcp.shopify.queries import products as q
-from tests.support import FakeClient, products_page
+from tests.support import FakeClient, collection_products_page, products_page
 
 # ---------- AC3: shared GraphQL fragment reused across by-id / by-handle ----------
 
@@ -299,25 +299,214 @@ def test_read_product_collections():
     assert fc.calls[0][0] == q.GET_PRODUCT_COLLECTIONS
 
 
+# ---------- Story 10.76: the three sibling outer-connection reads ----------
+#
+# Query-shape pins first. FakeClient never parses the GraphQL and the transport
+# is built with fetch_schema_from_transport=False, so reverting any one of these
+# queries to its pre-10.76 single-shot text would leave every behavioural test
+# below green while the conversion was silently undone. Story 10.72 shipped
+# exactly that gap at the query layer; this is the guard its review added,
+# parametrised per query so a revert names the query it broke.
+
+
+@pytest.mark.parametrize(
+    ("name", "query_text"),
+    [
+        ("GET_PRODUCTS_BY_COLLECTION", q.GET_PRODUCTS_BY_COLLECTION),
+        ("GET_PRODUCTS_WITH_DESCRIPTIONS", q.GET_PRODUCTS_WITH_DESCRIPTIONS),
+        (
+            "GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS",
+            q.GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS,
+        ),
+    ],
+)
+def test_sibling_read_queries_have_the_shape_paginate_requires(name, query_text):
+    """AC2: each of the three carries what client.paginate() documents as its
+    requirement — $after, after: $after, and pageInfo { hasNextPage endCursor }
+    on the products connection."""
+    for fragment in ("$after: String", "after: $after", "pageInfo", "hasNextPage", "endCursor"):
+        assert fragment in query_text, f"{name} is missing {fragment!r}"
+
+
 def test_read_products_by_collection():
-    fc = FakeClient([{"collectionByHandle": {"id": "c", "products": {"nodes": []}}}])
-    assert ops.read_products_by_collection(fc, "vanish")["id"] == "c"
+    fc = FakeClient([collection_products_page([], collection_id="c")])
+    col, nodes, capped = ops.read_products_by_collection(fc, "vanish")
+    assert col["id"] == "c"
+    assert nodes == []
+    assert capped is False
     assert fc.calls[0][0] == q.GET_PRODUCTS_BY_COLLECTION
-    assert fc.calls[0][1] == {"handle": "vanish", "first": 250}
+    assert fc.calls[0][1] == {"handle": "vanish", "first": 250, "after": None}
+
+
+def test_read_products_by_collection_follows_cursor_across_pages():
+    """AC3: a first page reporting hasNextPage=True yields the SECOND page's
+    products too, and the second request carries the first page's endCursor."""
+    fc = FakeClient(
+        [
+            collection_products_page([{"id": "p1"}], has_next=True, cursor="C1"),
+            collection_products_page([{"id": "p2"}]),
+        ]
+    )
+    _col, nodes, capped = ops.read_products_by_collection(fc, "vanish")
+    assert [n["id"] for n in nodes] == ["p1", "p2"]
+    assert capped is False
+    assert fc.calls[1][1]["after"] == "C1"
+
+
+def test_read_products_by_collection_reports_capped_at_the_page_budget():
+    pages = [
+        collection_products_page([{"id": f"p{i}"}], has_next=True, cursor=f"C{i}")
+        for i in range(ops.PRODUCTS_MAX_PAGES)
+    ]
+    fc = FakeClient(pages)
+    _col, nodes, capped = ops.read_products_by_collection(fc, "vanish")
+    assert capped is True
+    assert len(fc.calls) == ops.PRODUCTS_MAX_PAGES
+    assert len(nodes) == ops.PRODUCTS_MAX_PAGES
+
+
+def test_read_products_by_collection_missing_handle_yields_none_in_one_request():
+    """AC3: a null collectionByHandle must stay distinguishable from an empty
+    collection. paginate() walks it to ({"collectionByHandle": None}, [], False),
+    so the operation has to inspect the first-page dict, not the node list."""
+    fc = FakeClient([{"collectionByHandle": None}])
+    col, nodes, capped = ops.read_products_by_collection(fc, "nope")
+    assert col is None
+    assert nodes == []
+    assert capped is False
+    assert len(fc.calls) == 1
+
+
+def test_read_products_by_collection_takes_collection_fields_from_the_first_page():
+    """AC4: the collection's own id/title/handle come from the FIRST page. The
+    two pages deliberately disagree, so a last-page-wins implementation fails."""
+    fc = FakeClient(
+        [
+            collection_products_page(
+                [{"id": "p1"}],
+                has_next=True,
+                cursor="C1",
+                collection_id="FIRST",
+                title="First Title",
+                handle="first-handle",
+            ),
+            collection_products_page(
+                [{"id": "p2"}],
+                collection_id="SECOND",
+                title="Second Title",
+                handle="second-handle",
+            ),
+        ]
+    )
+    col, nodes, _capped = ops.read_products_by_collection(fc, "vanish")
+    assert col["id"] == "FIRST"
+    assert col["title"] == "First Title"
+    assert col["handle"] == "first-handle"
+    assert len(nodes) == 2
 
 
 def test_read_products_with_descriptions_all():
-    fc = FakeClient([{"products": {"nodes": [{"id": "g"}]}}])
-    assert ops.read_products_with_descriptions(fc, limit=10) == [{"id": "g"}]
+    fc = FakeClient([products_page([{"id": "g"}])])
+    nodes, capped = ops.read_products_with_descriptions(fc, limit=10)
+    assert nodes == [{"id": "g"}]
+    assert capped is False
     assert fc.calls[0][0] == q.GET_PRODUCTS_WITH_DESCRIPTIONS
-    assert fc.calls[0][1] == {"first": 10}
+    assert fc.calls[0][1] == {"first": 10, "after": None}
+
+
+def test_read_products_with_descriptions_limit_is_a_total_not_a_page_size():
+    """AC5: a full page that still reports hasNextPage is capped, in ONE
+    request — `limit` bounds the total, and asking for exactly `limit` items
+    does not buy a second page just to discover there are more."""
+    fc = FakeClient(
+        [products_page([{"id": f"p{i}"} for i in range(3)], has_next=True, cursor="C1")]
+    )
+    nodes, capped = ops.read_products_with_descriptions(fc, limit=3)
+    assert len(nodes) == 3
+    assert capped is True
+    assert len(fc.calls) == 1
+
+
+def test_read_products_with_descriptions_trims_the_overshoot_and_reports_capped():
+    """AC5: a limit that is not a whole number of pages overshoots; the
+    discarded remainder is itself proof that more products exist."""
+    limit = ops.PRODUCTS_PAGE_SIZE + 1
+    fc = FakeClient(
+        [
+            products_page(
+                [{"id": f"a{i}"} for i in range(ops.PRODUCTS_PAGE_SIZE)],
+                has_next=True,
+                cursor="C1",
+            ),
+            products_page([{"id": f"b{i}"} for i in range(ops.PRODUCTS_PAGE_SIZE)]),
+        ]
+    )
+    nodes, capped = ops.read_products_with_descriptions(fc, limit=limit)
+    assert len(nodes) == limit
+    assert capped is True
+
+
+def test_read_products_with_descriptions_limit_cannot_widen_the_request_budget():
+    """AC5: the guard whose absence was Story 10.72's High finding — a huge
+    limit derives a huge max_pages unless it is clamped."""
+    pages = [
+        products_page(
+            [{"id": f"p{i}"}] * ops.PRODUCTS_PAGE_SIZE,
+            has_next=True,
+            cursor=f"C{i}",
+        )
+        for i in range(ops.PRODUCTS_MAX_PAGES)
+    ]
+    fc = FakeClient(pages)
+    nodes, capped = ops.read_products_with_descriptions(fc, limit=10**9)
+    assert len(fc.calls) == ops.PRODUCTS_MAX_PAGES, "limit must not buy extra requests"
+    assert len(nodes) == ops.PRODUCTS_PAGE_SIZE * ops.PRODUCTS_MAX_PAGES
+    assert capped is True
 
 
 def test_read_collection_with_descriptions():
-    fc = FakeClient([{"collectionByHandle": {"id": "c", "products": {"nodes": []}}}])
-    assert ops.read_collection_with_descriptions(fc, "vanish", 25)["id"] == "c"
+    fc = FakeClient([collection_products_page([], collection_id="c")])
+    col, nodes, capped = ops.read_collection_with_descriptions(fc, "vanish", 25)
+    assert col["id"] == "c"
+    assert nodes == []
+    assert capped is False
     assert fc.calls[0][0] == q.GET_PRODUCTS_BY_COLLECTION_WITH_DESCRIPTIONS
-    assert fc.calls[0][1] == {"handle": "vanish", "first": 25}
+    assert fc.calls[0][1] == {"handle": "vanish", "first": 25, "after": None}
+
+
+def test_read_collection_with_descriptions_missing_handle_yields_none():
+    fc = FakeClient([{"collectionByHandle": None}])
+    col, nodes, capped = ops.read_collection_with_descriptions(fc, "nope", 25)
+    assert col is None
+    assert nodes == []
+    assert capped is False
+    assert len(fc.calls) == 1
+
+
+def test_read_collection_with_descriptions_limit_is_a_total():
+    fc = FakeClient(
+        [collection_products_page([{"id": f"p{i}"} for i in range(3)], has_next=True, cursor="C1")]
+    )
+    _col, nodes, capped = ops.read_collection_with_descriptions(fc, "vanish", 3)
+    assert len(nodes) == 3
+    assert capped is True
+    assert len(fc.calls) == 1
+
+
+def test_read_collection_with_descriptions_limit_cannot_widen_the_request_budget():
+    pages = [
+        collection_products_page(
+            [{"id": f"p{i}"}] * ops.PRODUCTS_PAGE_SIZE,
+            has_next=True,
+            cursor=f"C{i}",
+        )
+        for i in range(ops.PRODUCTS_MAX_PAGES)
+    ]
+    fc = FakeClient(pages)
+    _col, nodes, capped = ops.read_collection_with_descriptions(fc, "vanish", 10**9)
+    assert len(fc.calls) == ops.PRODUCTS_MAX_PAGES, "limit must not buy extra requests"
+    assert len(nodes) == ops.PRODUCTS_PAGE_SIZE * ops.PRODUCTS_MAX_PAGES
+    assert capped is True
 
 
 def test_read_product_variants_policy():
