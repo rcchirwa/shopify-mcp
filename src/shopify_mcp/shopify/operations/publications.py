@@ -65,7 +65,8 @@ def read_product_publications(
     when neither identifier is supplied or Shopify returns a null product
     (deleted / wrong id / unknown handle) — the neither-supplied case keeps
     returning rather than raising, deliberately unchanged by 10.68. ``capped``
-    is True when pagination hit the max-pages cap."""
+    is True when the walk stopped short of the end — see
+    ``ShopifyClient.paginate`` for the three ways that can happen."""
     reject_both_identifiers(product_id, handle)
     if product_id:
         data, rps, capped = client.paginate(

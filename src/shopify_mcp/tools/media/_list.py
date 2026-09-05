@@ -40,7 +40,7 @@ def _render_media_list(
         )
     if capped:
         lines.append(
-            f"  WARNING: pagination cap reached ({len(nodes)} media shown) — "
+            f"  WARNING: media pagination stopped short ({len(nodes)} media shown) — "
             f"additional media exist but are not listed here."
         )
     body = "\n".join(lines)

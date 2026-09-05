@@ -19,6 +19,7 @@ from typing import Any
 
 from pydantic import SecretStr
 
+from shopify_mcp.client import ShopifyClient
 from shopify_mcp.settings import Settings
 from shopify_mcp.shopify._cache import ShopifyMetadataCache
 
@@ -106,46 +107,20 @@ class FakeClient:
             raise item
         return item
 
-    def paginate(
-        self,
-        query_str: str,
-        variables: dict[str, Any],
-        *,
-        connection_path: list[str],
-        page_size: int = 50,
-        max_pages: int = 10,
-    ) -> tuple[dict[str, Any], list[Any], bool]:
-        """Mirror of ShopifyClient.paginate() — calls self.execute() in a loop
-        so scripted FakeClient responses are consumed in page order.
-
-        The control flow is pinned against the real one by
-        tests/architecture/test_paginate_mirror.py: every operations-layer test
-        in the repo runs against this method, so a divergence would silently
-        stop the offline suite exercising the shipped logic. Keep the two in
-        step; the logger.warning calls are the only deliberate difference."""
-        all_nodes: list[Any] = []
-        first_response: dict[str, Any] = {}
-        cursor: str | None = None
-        for page in range(max_pages):
-            page_vars: dict[str, Any] = {**variables, "first": page_size, "after": cursor}
-            result = self.execute(query_str, page_vars)
-            if page == 0:
-                first_response = result
-            connection: Any = result
-            for key in connection_path:
-                connection = (connection or {}).get(key) or {}
-            # Story 10.78: a connection that resolved to nothing on page 1+ is a
-            # truncation, not an empty result. See ShopifyClient.paginate().
-            if page > 0 and not connection:
-                break
-            all_nodes.extend(list(connection.get("nodes") or []))
-            page_info: dict[str, Any] = connection.get("pageInfo") or {}
-            if not page_info.get("hasNextPage"):
-                return first_response, all_nodes, False
-            cursor = page_info.get("endCursor")
-            if cursor is None:
-                break
-        return first_response, all_nodes, True
+    # THE REAL METHOD, not a copy of it (Story 10.78). paginate() touches
+    # nothing on `self` but `execute()`, which FakeClient provides, so the
+    # scripted responses are consumed in page order exactly as before — and
+    # every operations-layer test in the repo now walks pages through the code
+    # that actually ships.
+    #
+    # This replaces a hand-maintained duplicate that had to be brought back
+    # into step by hand twice. A copy can only ever be *checked* for drift, and
+    # checking it is unreliable in both directions: a structural guard misses a
+    # `break` quietly becoming a `return ..., False` (the two abnormal stops
+    # differ by a bool, not by a branch), while tripping on a rename or a
+    # reformat that changes nothing. Sharing the method makes drift impossible
+    # instead of detectable, which is the only version of this that stays true.
+    paginate = ShopifyClient.paginate
 
 
 def products_page(

@@ -185,7 +185,7 @@ def test_list_product_media_warns_at_page_cap():
     ]
     tools, fc = _build(responses)
     out = tools["list_product_media"](product_id="123")
-    assert "WARNING" in out and "pagination cap reached" in out
+    assert "WARNING" in out and "media pagination stopped short" in out
     assert len(fc.calls) == 10
 
 

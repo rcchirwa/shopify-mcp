@@ -34,7 +34,8 @@ def read_product_inventory(
     """Read a product and all its variants' inventory levels, paginated.
 
     Returns ``(product_or_None, variant_nodes, capped)``. ``capped`` is True when
-    variant pagination hit the max-pages cap.
+    the variant walk stopped short of the end — see ``ShopifyClient.paginate``
+    for the three ways that can happen.
     """
     data, variants, capped = client.paginate(
         GET_PRODUCT_INVENTORY,

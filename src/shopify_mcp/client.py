@@ -456,8 +456,13 @@ class ShopifyClient:
                     connection_path,
                 )
                 break
+        # Reached by all three stop-short paths, so it does not name a cause —
+        # the two abnormal ones log their own line above with the specifics.
+        # It used to read "paginate capped … max_pages=%d", which described the
+        # budget path and misdescribed the other two (Story 10.78). max_pages is
+        # still reported because it is the budget the walk ran under either way.
         logger.warning(
-            "paginate capped connection=%s max_pages=%d nodes=%d",
+            "paginate stopped short connection=%s max_pages=%d nodes=%d",
             connection_path,
             max_pages,
             len(all_nodes),

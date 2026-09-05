@@ -98,5 +98,5 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"Line items:\n{items}"
         )
         if capped:
-            result += "\nWARNING: line-item pagination hit the max-pages cap — additional line items (if any) are not shown here."
+            result += "\nWARNING: line-item pagination stopped short — additional line items (if any) are not shown here."
         return result

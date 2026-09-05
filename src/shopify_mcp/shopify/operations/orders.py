@@ -70,7 +70,8 @@ def read_order(
 
     Returns ``(order_or_None, line_item_nodes, capped)``. ``order_or_None`` is
     None when Shopify returns ``{"order": null}`` (deleted / wrong id); ``capped``
-    is True when line-item pagination hit the max-pages cap."""
+    is True when the line-item walk stopped short of the end — see
+    ``ShopifyClient.paginate`` for the three ways that can happen."""
     data, line_items, capped = client.paginate(
         GET_ORDER_BY_ID,
         {"id": to_gid("Order", order_id)},

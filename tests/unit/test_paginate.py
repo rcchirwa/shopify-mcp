@@ -150,13 +150,18 @@ _VANISH_CASES = [
 def test_connection_vanishing_on_page_two_is_capped(path, build_page, vanished):
     """A connection that resolves to nothing on page 1+ is a TRUNCATION, so the
     walk must report capped=True rather than the complete result it used to."""
-    m = _mock_client([build_page([{"id": "a"}], has_next=True, cursor="cur1"), vanished])
-    _, nodes, capped = ShopifyClient.paginate(m, QUERY, {}, connection_path=path)
+    page_zero = build_page([{"id": "a"}], has_next=True, cursor="cur1")
+    m = _mock_client([page_zero, vanished])
+    first, nodes, capped = ShopifyClient.paginate(m, QUERY, {}, connection_path=path)
     assert capped is True
     # AC2: a truncated walk hands back what it got, exactly as the max_pages
     # and endCursor-is-null paths do. Discarding the partial result would be a
     # different bug, not a fix.
     assert nodes == [{"id": "a"}]
+    # The first-page response is what callers read non-paginated fields from
+    # (a collection's own id/title/handle, say), so a vanish on a later page
+    # must not disturb it — the page that vanished is not the page they read.
+    assert first == page_zero
     assert m.execute.call_count == 2
 
 
@@ -164,20 +169,30 @@ def test_vanished_connection_logs_warning_naming_path_and_page():
     """The abnormal stop is logged like the endCursor-is-null branch beside it,
     naming connection_path and the page index so an operator can tell a
     vanished connection from an exhausted page budget."""
+    # Three pages, and the node count (3) is deliberately different from the
+    # vanishing page's index (2) and from max_pages (10). An earlier version of
+    # this test substring-matched the rendered call for "1" against a two-page
+    # fixture where the index and the node count were both 1 — so substituting
+    # len(all_nodes), or page + 10, for the page index left it green. Assert the
+    # logged arguments themselves; a substring of a repr proves nothing.
     m = _mock_client(
-        [_nested_page([{"id": "a"}], has_next=True, cursor="cur1"), {"collectionByHandle": None}]
+        [
+            _nested_page([{"id": "a"}, {"id": "b"}], has_next=True, cursor="cur1"),
+            _nested_page([{"id": "c"}], has_next=True, cursor="cur2"),
+            {"collectionByHandle": None},
+        ]
     )
     with patch("shopify_mcp.client.logger") as mock_log:
-        _, _, capped = ShopifyClient.paginate(m, QUERY, {}, connection_path=NESTED_PATH)
+        _, nodes, capped = ShopifyClient.paginate(m, QUERY, {}, connection_path=NESTED_PATH)
     assert capped is True
-    # The vanish warning plus the shared cap warning the break falls through to.
+    assert len(nodes) == 3
+    # The vanish warning plus the shared stopped-short warning the break falls
+    # through to.
     assert mock_log.warning.call_count == 2
     vanish_calls = [c for c in mock_log.warning.call_args_list if "vanished" in str(c)]
     assert len(vanish_calls) == 1
-    rendered = str(vanish_calls[0])
-    assert "collectionByHandle" in rendered
-    # page=1 — the second request, the one that came back empty.
-    assert "1" in rendered
+    assert vanish_calls[0].args[-2] == NESTED_PATH
+    assert vanish_calls[0].args[-1] == 2
 
 
 def test_vanished_connection_on_a_later_page_keeps_every_earlier_page():
@@ -195,14 +210,15 @@ def test_vanished_connection_on_a_later_page_keeps_every_earlier_page():
     assert capped is True
 
 
-def test_fake_client_paginate_also_caps_on_a_vanished_connection():
-    """FakeClient.paginate calls itself a mirror of the real one, and every
-    operations-layer test in the repo runs against it — so the guard has to
-    exist in both or the offline suite stops testing the real control flow."""
-    fc = FakeClient(
-        [_nested_page([{"id": "a"}], has_next=True, cursor="cur1"), {"collectionByHandle": None}]
-    )
-    _, nodes, capped = fc.paginate(QUERY, {}, connection_path=NESTED_PATH)
+@pytest.mark.parametrize(("path", "build_page", "vanished"), _VANISH_CASES)
+def test_fake_client_paginate_also_caps_on_a_vanished_connection(path, build_page, vanished):
+    """Every operations-layer test in the repo walks pages through FakeClient,
+    so what that class does IS what the offline suite tests. It now borrows
+    ShopifyClient.paginate outright rather than copying it — this proves the
+    borrowed method really does drive FakeClient.execute, which is the one
+    thing sharing the method could plausibly break."""
+    fc = FakeClient([build_page([{"id": "a"}], has_next=True, cursor="cur1"), vanished])
+    _, nodes, capped = fc.paginate(QUERY, {}, connection_path=path)
     assert capped is True
     assert nodes == [{"id": "a"}]
 

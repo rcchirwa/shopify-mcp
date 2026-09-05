@@ -439,4 +439,4 @@ def test_get_order_warns_when_lineitems_capped():
     ]
     tools, fc = _build(pages)
     out = tools["get_order"](order_id="1001")
-    assert "WARNING" in out and "max-pages cap" in out
+    assert "WARNING" in out and "line-item pagination stopped short" in out

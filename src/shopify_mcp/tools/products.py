@@ -203,7 +203,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"Variants:\n{variants}"
         )
         if capped:
-            result += "\nWARNING: variant pagination hit the max-pages cap — additional variants (if any) are not shown here."
+            result += "\nWARNING: variant pagination stopped short — additional variants (if any) are not shown here."
         return result
 
     @server.tool()
@@ -629,7 +629,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"body_html:\n{wrap(body) if body else ''}"
         )
         if capped:
-            result += "\nWARNING: variant pagination hit the max-pages cap — additional variants (if any) are not shown here."
+            result += "\nWARNING: variant pagination stopped short — additional variants (if any) are not shown here."
         # Reminder leads the whole output, cap warning included — it is about
         # the wrapped body below, not about where the string happens to end.
         return with_reminder(result)
@@ -807,7 +807,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         title = product.get("title", "")
         at_cap_warning = (
-            "  WARNING: variant pagination hit the max-pages cap — additional variants (if any) are not covered by this call."
+            "  WARNING: variant pagination stopped short — additional variants (if any) are not covered by this call."
             if capped
             else ""
         )
