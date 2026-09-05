@@ -16,7 +16,7 @@ import pytest
 
 from shopify_mcp.shopify.operations import products as ops
 from shopify_mcp.shopify.queries import products as q
-from tests.support import FakeClient
+from tests.support import FakeClient, products_page
 
 # ---------- AC3: shared GraphQL fragment reused across by-id / by-handle ----------
 
@@ -55,18 +55,8 @@ def test_read_ops_require_a_discriminator(op):
 # ---------- read operations ----------
 
 
-def _products_page(nodes, *, has_next=False, cursor="CUR"):
-    """One page of the outer products connection, in paginate()'s expected shape."""
-    return {
-        "products": {
-            "nodes": nodes,
-            "pageInfo": {"hasNextPage": has_next, "endCursor": cursor if has_next else None},
-        }
-    }
-
-
 def test_read_products_returns_nodes():
-    fc = FakeClient([_products_page([{"id": "gid://shopify/Product/1"}])])
+    fc = FakeClient([products_page([{"id": "gid://shopify/Product/1"}])])
     nodes, capped = ops.read_products(fc)
     assert nodes == [{"id": "gid://shopify/Product/1"}]
     assert capped is False
@@ -83,13 +73,29 @@ def test_read_products_empty():
 # ---------- Story 10.72: outer-connection pagination, status filter, limit ----------
 
 
+def test_get_products_query_has_the_shape_paginate_requires():
+    """The query text is the one artifact FakeClient cannot validate — it never
+    parses the GraphQL and the transport is built with
+    fetch_schema_from_transport=False, so reverting GET_PRODUCTS to its
+    pre-10.72 single-shot form would leave every behavioural test green while
+    the feature was silently un-implemented. Pin the shape directly, the way
+    Story 10.34 pins GET_ORDERS' nested pageInfo."""
+    assert "$after: String" in q.GET_PRODUCTS
+    assert "after: $after" in q.GET_PRODUCTS
+    assert "$query: String" in q.GET_PRODUCTS
+    assert "query: $query" in q.GET_PRODUCTS
+    assert "pageInfo" in q.GET_PRODUCTS
+    assert "hasNextPage" in q.GET_PRODUCTS
+    assert "endCursor" in q.GET_PRODUCTS
+
+
 def test_read_products_follows_cursor_across_pages():
     """AC1: a first page reporting hasNextPage=True yields the SECOND page's
     products too, not just the first."""
     fc = FakeClient(
         [
-            _products_page([{"id": "gid://shopify/Product/1"}], has_next=True, cursor="C1"),
-            _products_page([{"id": "gid://shopify/Product/2"}]),
+            products_page([{"id": "gid://shopify/Product/1"}], has_next=True, cursor="C1"),
+            products_page([{"id": "gid://shopify/Product/2"}]),
         ]
     )
     nodes, capped = ops.read_products(fc)
@@ -103,7 +109,7 @@ def test_read_products_capped_when_page_budget_exhausted():
     """AC2: exhausting the page budget sets capped rather than silently
     returning a prefix."""
     pages = [
-        _products_page([{"id": f"gid://shopify/Product/{i}"}], has_next=True, cursor=f"C{i}")
+        products_page([{"id": f"gid://shopify/Product/{i}"}], has_next=True, cursor=f"C{i}")
         for i in range(ops.PRODUCTS_MAX_PAGES)
     ]
     fc = FakeClient(pages)
@@ -120,7 +126,7 @@ def test_read_products_capped_when_page_budget_exhausted():
 def test_read_products_maps_status_to_fixed_fragment(status, fragment):
     """AC3/AC4: each supported status narrows the connection through a fixed
     fragment looked up by key — the argument is never interpolated."""
-    fc = FakeClient([_products_page([])])
+    fc = FakeClient([products_page([])])
     ops.read_products(fc, status=status)
     assert fc.calls[0][1]["query"] == fragment
 
@@ -128,7 +134,7 @@ def test_read_products_maps_status_to_fixed_fragment(status, fragment):
 def test_read_products_refuses_unmapped_status_before_any_call():
     """AC3: an unrecognized status is refused before the transport fires, and
     the rejection does not echo the caller's value back."""
-    fc = FakeClient([_products_page([])])
+    fc = FakeClient([products_page([])])
     with pytest.raises(ValueError) as exc:
         ops.read_products(fc, status="ACTIVE OR status:DRAFT")
     assert fc.calls == []
@@ -140,7 +146,7 @@ def test_read_products_limit_caps_results_and_request_budget():
     requested, and reports capped when more products exist beyond it."""
     fc = FakeClient(
         [
-            _products_page(
+            products_page(
                 [{"id": f"gid://shopify/Product/{i}"} for i in range(3)],
                 has_next=True,
                 cursor="C1",
@@ -157,18 +163,56 @@ def test_read_products_limit_caps_results_and_request_budget():
 def test_read_products_limit_above_page_size_trims_the_overshoot():
     """A limit that is not a whole number of pages still returns exactly the
     limit, and reports capped because the trimmed overshoot proves more exist."""
-    page = _products_page(
+    page = products_page(
         [{"id": f"gid://shopify/Product/{i}"} for i in range(ops.PRODUCTS_PAGE_SIZE)],
         has_next=True,
         cursor="C1",
     )
-    tail = _products_page([{"id": "gid://shopify/Product/tail"}] * 2)
+    tail = products_page([{"id": "gid://shopify/Product/tail"}] * 2)
     fc = FakeClient([page, tail])
     limit = ops.PRODUCTS_PAGE_SIZE + 1
     nodes, capped = ops.read_products(fc, limit=limit)
     assert len(nodes) == limit
     assert capped is True
     assert len(fc.calls) == 2
+
+
+def test_read_products_limit_cannot_widen_the_request_budget():
+    """limit narrows the page budget but must never widen it. Without the
+    min() clamp a model-supplied limit sets max_pages directly, so limit=10**9
+    would authorise four million sequential requests."""
+    pages = [
+        products_page(
+            [{"id": f"gid://shopify/Product/{i}"}] * ops.PRODUCTS_PAGE_SIZE,
+            has_next=True,
+            cursor=f"C{i}",
+        )
+        for i in range(ops.PRODUCTS_MAX_PAGES)
+    ]
+    fc = FakeClient(pages)
+    nodes, capped = ops.read_products(fc, limit=10**9)
+    assert len(fc.calls) == ops.PRODUCTS_MAX_PAGES, "limit must not buy extra requests"
+    assert len(nodes) == ops.PRODUCTS_PAGE_SIZE * ops.PRODUCTS_MAX_PAGES
+    assert capped is True
+
+
+def test_read_products_combines_status_filter_with_limit():
+    """The two new arguments compose: the filter narrows the connection while
+    the limit bounds the walk."""
+    fc = FakeClient(
+        [
+            products_page(
+                [{"id": f"gid://shopify/Product/{i}", "status": "DRAFT"} for i in range(2)],
+                has_next=True,
+                cursor="C1",
+            )
+        ]
+    )
+    nodes, capped = ops.read_products(fc, status="DRAFT", limit=2)
+    assert len(nodes) == 2
+    assert capped is True
+    assert fc.calls[0][1]["query"] == "status:DRAFT"
+    assert fc.calls[0][1]["first"] == 2
 
 
 def test_read_product_by_id_coerces_gid_and_paginates():

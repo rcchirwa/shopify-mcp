@@ -109,9 +109,11 @@ def read_products(
     It is looked up in that table, never interpolated; an unmapped value raises
     ``ValueError`` before any request is issued. Empty means no filter.
 
-    ``limit`` caps how many products are returned; it also bounds the request
-    budget, so a small limit costs one small request rather than a full walk.
-    Zero (or negative) means no caller cap.
+    ``limit`` caps how many products are returned. It can only *narrow* the
+    request budget, never widen it: a small limit costs one small request
+    instead of a full walk, and a limit larger than
+    ``PRODUCTS_PAGE_SIZE * PRODUCTS_MAX_PAGES`` still stops at that ceiling and
+    reports ``capped``. Zero (or negative) means no caller cap.
     """
     search: str | None = None
     if status:
@@ -124,7 +126,12 @@ def read_products(
 
     if limit > 0:
         page_size = min(limit, PRODUCTS_PAGE_SIZE)
-        max_pages = (limit + page_size - 1) // page_size
+        # min() so limit can only narrow the budget, never widen it. Without
+        # the clamp a caller-supplied limit sets max_pages directly, and since
+        # limit is model-facing an over-large value would authorise thousands
+        # of sequential requests — exactly the unbounded worst case the live
+        # cost probe above exists to rule out.
+        max_pages = min((limit + page_size - 1) // page_size, PRODUCTS_MAX_PAGES)
     else:
         page_size = PRODUCTS_PAGE_SIZE
         max_pages = PRODUCTS_MAX_PAGES

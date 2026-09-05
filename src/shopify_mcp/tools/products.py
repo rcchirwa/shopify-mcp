@@ -91,10 +91,12 @@ TAG_MODES = ("replace", "append", "remove")
 # convention get_product already uses for capped variants. Appended whenever
 # the products walk stopped with more products still available, so a partial
 # list is never handed back as if it were the whole catalogue.
-PRODUCTS_TRUNCATED_WARNING = (
-    "\nWARNING: product pagination hit the page cap — additional products "
-    "(if any) are not shown here."
-)
+#
+# Worded without naming a cause on purpose: the walk can stop because the page
+# budget was exhausted OR because the caller's own limit cut it short, and a
+# line blaming "the page cap" for the second case would tell the calling model
+# the server failed when in fact it got exactly what it asked for.
+PRODUCTS_TRUNCATED_WARNING = "\nWARNING: additional products exist and are not shown here."
 
 
 def register(server: FastMCP, client: ShopifyClient) -> None:
@@ -110,14 +112,22 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         status: optional filter — one of ACTIVE, DRAFT, ARCHIVED. Anything else
                 is rejected before any request is made. Empty means no filter.
-        limit:  optional maximum number of products to return; it also bounds
-                how many requests are issued. 0 means no caller cap.
+        limit:  optional maximum number of products to return. It can only
+                narrow the built-in page budget, never widen it. 0 means no
+                caller cap; a negative value is rejected.
         """
         if status and status not in PRODUCT_STATUS_VALUES:
             return f"Error: status must be one of {', '.join(PRODUCT_STATUS_VALUES)}."
+        if limit < 0:
+            return "Error: limit must be zero or greater."
         products, capped = ops.read_products(client, status=status, limit=limit)
         if not products:
-            return "No products found."
+            # The warning still belongs here: paginate() can stop with capped
+            # set and no nodes collected (empty pages that keep reporting
+            # hasNextPage, or its endCursor-is-null abort). Reporting a bare
+            # "none found" there would be the silent truncation this story
+            # exists to remove.
+            return "No products found." + (PRODUCTS_TRUNCATED_WARNING if capped else "")
         lines = []
         for p in products:
             variants = ", ".join(
