@@ -239,10 +239,37 @@ above, never a string-level breakout:
   marks (invisible, and admitted by :data:`_INVISIBLES`) and the eight that
   NFKC-compose with the preceding ``S`` into a precomposed letter, which the
   ink class then catches on the normalized copy.
-* *Separator homoglyphs outside both lists.* U+30FC KATAKANA-HIRAGANA
-  PROLONGED SOUND MARK renders as a dash and is a letter (``Lm``) whose name
-  says nothing of the kind, so neither SEC-21's list nor the name rule reaches
-  it.
+* *Separator homoglyphs outside both lists: the horizontal-bar family.* The
+  named case is U+30FC KATAKANA-HIRAGANA PROLONGED SOUND MARK -- a dash to the
+  eye, a letter (``Lm``) to Unicode, with a name that says nothing of a dash --
+  and U+FF70, its halfwidth form, which NFKC folds onto it. The family around
+  them escapes for two distinct reasons: U+4E00 CJK UNIFIED IDEOGRAPH-4E00,
+  U+3127 BOPOMOFO LETTER I and U+1173/U+3161 HANGUL EU are letters outside
+  :data:`_ANCHOR_CATEGORIES`, so their names are never read, while U+31D0 CJK
+  STROKE H, U+2500/U+2501 BOX DRAWINGS HORIZONTAL and U+23AF HORIZONTAL LINE
+  EXTENSION are *inside* those categories and escape only because their names
+  carry no keyword. The two sharpest cases are U+05BE HEBREW PUNCTUATION MAQAF
+  and U+10EAD YEZIDI HYPHENATION MARK: they are the only members of Unicode's
+  own dash category (``Pd``) the separator does not admit, U+10EAD purely
+  because the name rule is word-bounded and ``HYPHENATION`` is not ``HYPHEN``.
+  Every codepoint named here is pinned as escaping by test.
+
+  **Story 10.87 examined admitting U+30FC behind Story 10.86's counting rule
+  and declined.** The rule spares a title in pure katakana and kanji, which
+  holds none of the thirteen letters -- but Japanese apparel copy is not pure
+  katakana. ``半袖Tシャツレディース夏新作`` in guillemets puts the Latin ``T`` of
+  ``Tシャツ`` at letter position three, where the delimiter's own ``T`` stands,
+  and the long-vowel mark ending ``レディース`` at position ten; the span counts
+  one letter, clears the predicate, and an ordinary product title is rewritten
+  and NFKC-folded. Admitting the separator character therefore buys a
+  fence-intact, model-interpretation-only residual at the cost of a false
+  positive on real content, which is the trade Story 10.63 settled the other
+  way. Note the cost is not that those other titles are rewritten -- the
+  counting rule still spares them -- but that an admission moves ordinary
+  Japanese copy from "never a candidate" to "a candidate the predicate
+  clears", leaving one coincidental Latin letter between it and a rewrite.
+  The titles are pinned as clean and each is verified to become
+  delimiter-shaped under an admission, so a future attempt fails loudly.
 The fourth residual this story recorded -- a Cyrillic slug with an ASCII hyphen
 at the separator, rewritten though it forges nothing -- is closed below.
 
