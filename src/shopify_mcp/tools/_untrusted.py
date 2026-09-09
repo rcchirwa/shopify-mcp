@@ -239,10 +239,23 @@ above, never a string-level breakout:
   marks (invisible, and admitted by :data:`_INVISIBLES`) and the eight that
   NFKC-compose with the preceding ``S`` into a precomposed letter, which the
   ink class then catches on the normalized copy.
-* *Separator homoglyphs outside both lists.* U+30FC KATAKANA-HIRAGANA
-  PROLONGED SOUND MARK renders as a dash and is a letter (``Lm``) whose name
-  says nothing of the kind, so neither SEC-21's list nor the name rule reaches
-  it.
+* *Separator homoglyphs outside both lists: the horizontal-bar family.* The
+  named case was U+30FC KATAKANA-HIRAGANA PROLONGED SOUND MARK -- a dash to the
+  eye, a letter (``Lm``) to Unicode, with a name that says nothing of a dash --
+  and it is **closed** by Story 10.87, which admits it via
+  :data:`_DASH_SHAPED_LETTERS` behind the counting rule. The family around it is
+  not closed and stays recorded here: U+4E00 CJK UNIFIED IDEOGRAPH-4E00,
+  U+3127 BOPOMOFO LETTER I, U+1173/U+3161 HANGUL EU, U+31D0 CJK STROKE H and
+  U+2500/U+2501 BOX DRAWINGS HORIZONTAL all render as a horizontal bar at the
+  separator and come back byte-for-byte. Two failure modes, not one: the
+  letters (``Lo``) are outside :data:`_ANCHOR_CATEGORIES` so the name is never
+  read, while U+31D0, U+2500 and U+23AF are *inside* those categories and
+  escape only because their names carry no ``HYPHEN``/``DASH``/``MINUS``.
+  U+4E00 is excluded **by choice rather than by oversight**: it is the numeral
+  one and the most common character in written Chinese, so admitting it would
+  put ordinary Chinese titles one Latin letter from a rewrite. Naive admission
+  of U+30FC -- without the counting rule -- rewrote 4 of 18 realistic Japanese
+  titles; with it, 0 of 18.
 The fourth residual this story recorded -- a Cyrillic slug with an ASCII hyphen
 at the separator, rewritten though it forges nothing -- is closed below.
 
@@ -341,6 +354,40 @@ _CLOSE_TAG_LITERAL = "</UNTRUSTED-DATA>"
 # redundancy with it.) A test pins U+2015 as caught *and* absent from the
 # derived class, so removing this list fails loudly.
 _DASH_CONFUSABLES = "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"
+
+# Dash-*shaped* codepoints that are letters rather than punctuation, admitted at
+# the separator by Story 10.87 (SEC-21-separator). Kept apart from
+# `_DASH_CONFUSABLES` because they are not dashes in any sense Unicode records:
+# U+30FC KATAKANA-HIRAGANA PROLONGED SOUND MARK is category `Lm`, its name says
+# nothing of a dash, and it is a member of `_INK`. Neither the hand list above
+# nor the name-derived `_DASHES` can reach it, and it renders as a dash to
+# anything that draws it, so `</UNTRUSTED<U+30FC>DATA>` read as the real
+# delimiter and came back byte-for-byte.
+#
+# **This admission is safe only because of Story 10.86's counting rule**, and
+# the two must not be separated. U+30FC is one of the most frequent characters
+# in Japanese: it marks a long vowel, so it ends a large share of katakana
+# words, and a katakana word ending at position ten of the letter run is
+# ordinary product copy rather than a forgery. Admitting it with no predicate
+# rewrites real listings -- measured at 4 of 18 realistic Japanese titles, all
+# of which are returned NFKC-folded, the damage Story 10.63 exists to prevent.
+# Under `_is_forged` all 18 are returned byte-for-byte, because a title in
+# katakana and kanji holds none of the thirteen Latin letters, while the
+# forgery holds all thirteen. `docs/tech-debt.md` carries the measurement.
+#
+# U+FF70 HALFWIDTH KATAKANA-HIRAGANA PROLONGED SOUND MARK is *not* listed: NFKC
+# folds it onto U+30FC and `wrap` scans the normalized copy, so it is answered
+# by this entry. It is pinned by its own test rather than by a second escape.
+#
+# **U+4E00 and the rest of the horizontal-bar family stay out.** U+4E00 CJK
+# UNIFIED IDEOGRAPH-4E00 renders identically and the same argument reaches it,
+# but it is the numeral one and the most common character in written Chinese,
+# so admitting it would put every Chinese title with it at position ten one
+# Latin letter away from a rewrite -- against a residual whose severity is
+# model interpretation with the fence intact. The same holds for U+3127
+# BOPOMOFO LETTER I, U+1173/U+3161 HANGUL EU, U+31D0 CJK STROKE H and
+# U+2500/U+2501 BOX DRAWINGS HORIZONTAL, which remain recorded as residuals.
+_DASH_SHAPED_LETTERS = "\u30fc"
 
 # Invisible/format codepoints that may be wedged into the delimiter to defeat
 # detection while rendering identically (Story 10.70 / SEC-21-zerowidth).
@@ -767,8 +814,19 @@ def _interleave(word: str, *, capture_letters: bool) -> str:
 # class (an anchor, a letter, the separator). `_GAP` and `_INV` are built from
 # whitespace and invisibles, and every mandatory class is disjoint from both --
 # the ink class excludes them by construction and the anchor, dash and
-# separator classes are drawn only from visible punctuation/symbol categories
-# -- so no position can be consumed by two alternatives.
+# separator classes are drawn only from visible codepoints -- so no *quantified*
+# run can consume a position a mandatory class needs.
+#
+# The separator and the letter positions are **no longer disjoint from each
+# other**, and that is deliberate (Story 10.87): `_DASH_SHAPED_LETTERS` puts
+# U+30FC in the separator class, and U+30FC is also in `_INK`, which every
+# letter position admits. The overlap costs nothing here because both are
+# *mandatory single-character* positions rather than quantified runs -- the
+# engine has one way to fill each, not a choice it must backtrack over. Only an
+# overlap between a quantified run and its neighbour would reopen the risk, and
+# `_GAP`/`_INV` remain disjoint from every mandatory class. Measured after the
+# widening: 0.2 ms on a 40,000-character run of U+30FC, 4.2 ms on three
+# anchored 20,000-character runs.
 def _build_close_tag_pattern(*, capture_letters: bool) -> re.Pattern[str]:
     """Compile the closing-delimiter pattern, with or without letter groups.
 
@@ -789,6 +847,7 @@ def _build_close_tag_pattern(*, capture_letters: bool) -> re.Pattern[str]:
         + "[-_"
         + _DASH_CONFUSABLES
         + _DASHES
+        + _DASH_SHAPED_LETTERS
         + "]"
         + _GAP
         + _interleave("DATA", capture_letters=capture_letters)
