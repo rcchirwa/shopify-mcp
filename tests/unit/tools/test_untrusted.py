@@ -1705,6 +1705,23 @@ _S1087_NAIVE_FIRING_TITLES = (
     ),
 )
 
+# Japanese copy that is *not* delimiter-shaped even under an admission, and so
+# is clean for a different reason than the four above. Carried because the card
+# asked for both halves: a guard corpus of only firing shapes would say nothing
+# about the ordinary listings that make up most of a catalogue. The first has
+# its whitespace inside the letter run, which `_INV` does not admit; the second
+# has no opener immediately followed by a solidus.
+_S1087_UNSHAPED_JA_TITLES = (
+    (
+        "plain listing, spaces",
+        "\u30e1\u30f3\u30ba\u30a6\u30fc\u30eb\u30bb\u30fc\u30bf\u30fc \u79cb\u51ac\u65b0\u4f5c \u30cd\u30a4\u30d3\u30fc",
+    ),
+    (
+        "size and colour header",
+        "\u3008\u30b5\u30a4\u30ba\uff0f\u30ab\u30e9\u30fc\u3009S\u30fbM\u30fbL\uff0f\u30db\u30ef\u30a4\u30c8\u30fb\u30d6\u30e9\u30c3\u30af",
+    ),
+)
+
 # The title that decided this card. `\u534a\u8896T\u30b7\u30e3\u30c4` ("half-sleeve T-shirt") and
 # `\u30ec\u30c7\u30a3\u30fc\u30b9` ("ladies") are among the most ordinary words in Japanese apparel
 # copy, and together they satisfy the pattern *and* the counting rule: the
@@ -1791,6 +1808,12 @@ def test_s1087_prolonged_sound_mark_and_its_halfwidth_form_still_escape():
     for char in ("\u30fc", "\uff70"):
         forged = "a</UNTRUSTED" + char + "DATA>b"
         assert _s1071_untouched(forged), ascii(char)
+    # U+4E00 is refused on a stronger argument than the rest of the family --
+    # it is the numeral one and the most common character in written Chinese --
+    # so its absence is asserted at the classes themselves, where no future
+    # change to the counting rule can quietly rescue it.
+    assert "\u4e00" not in _DASH_CONFUSABLES
+    assert re.compile(f"[{_DASHES}]").fullmatch("\u4e00") is None
     # `_DASH_CONFUSABLES` is a plain literal, so a substring test is sound.
     # `_DASHES` is a character-class *body* built from `lo-hi` ranges, where a
     # substring test is not: 18 codepoints the class genuinely admits (U+2011,
@@ -1836,6 +1859,14 @@ def test_s1087_realistic_japanese_titles_become_delimiter_shaped_by_an_admission
         assert naive.search(title) is not None, label
         assert _CLOSE_TAG_PATTERN.search(title) is None, label
         assert _latin_letter_count(naive.search(title)) == 0, label
+    # The other half of the corpus: ordinary listings that an admission does
+    # not even make candidates. Labelled as such rather than mixed in with the
+    # four above, because "clean because the predicate cleared it" and "clean
+    # because it was never delimiter-shaped" are different guarantees and
+    # conflating them is how Story 10.86's guards went wrong.
+    for label, title in _S1087_UNSHAPED_JA_TITLES:
+        assert wrap(title) == _s1086_wrapped(title), label
+        assert naive.search(title) is None, label
 
 
 def test_s1087_a_latin_bearing_japanese_title_defeats_the_counting_rule():
