@@ -246,8 +246,13 @@ above, never a string-level breakout:
   them escapes for two distinct reasons: U+4E00 CJK UNIFIED IDEOGRAPH-4E00,
   U+3127 BOPOMOFO LETTER I and U+1173/U+3161 HANGUL EU are letters outside
   :data:`_ANCHOR_CATEGORIES`, so their names are never read, while U+31D0 CJK
-  STROKE H, U+2500/U+2501 BOX DRAWINGS HORIZONTAL and U+23AF are *inside* those
-  categories and escape only because their names carry no keyword.
+  STROKE H, U+2500/U+2501 BOX DRAWINGS HORIZONTAL and U+23AF HORIZONTAL LINE
+  EXTENSION are *inside* those categories and escape only because their names
+  carry no keyword. The two sharpest cases are U+05BE HEBREW PUNCTUATION MAQAF
+  and U+10EAD YEZIDI HYPHENATION MARK: they are the only members of Unicode's
+  own dash category (``Pd``) the separator does not admit, U+10EAD purely
+  because the name rule is word-bounded and ``HYPHENATION`` is not ``HYPHEN``.
+  Every codepoint named here is pinned as escaping by test.
 
   **Story 10.87 examined admitting U+30FC behind Story 10.86's counting rule
   and declined.** The rule spares a title in pure katakana and kanji, which
@@ -259,8 +264,12 @@ above, never a string-level breakout:
   and NFKC-folded. Admitting the separator character therefore buys a
   fence-intact, model-interpretation-only residual at the cost of a false
   positive on real content, which is the trade Story 10.63 settled the other
-  way. The titles are pinned as clean and verified to fire under a naive
-  admission, so a future attempt fails loudly rather than silently.
+  way. Note the cost is not that those other titles are rewritten -- the
+  counting rule still spares them -- but that an admission moves ordinary
+  Japanese copy from "never a candidate" to "a candidate the predicate
+  clears", leaving one coincidental Latin letter between it and a rewrite.
+  The titles are pinned as clean and each is verified to become
+  delimiter-shaped under an admission, so a future attempt fails loudly.
 The fourth residual this story recorded -- a Cyrillic slug with an ASCII hyphen
 at the separator, rewritten though it forges nothing -- is closed below.
 
