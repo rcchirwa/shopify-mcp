@@ -193,9 +193,13 @@ an unremarkable Russian sentence -- and neutralizing those would corrupt real
 product descriptions on a read-to-rewrite path. The card's approach 2, Unicode
 UTS #39 skeletons, was rejected on cost: it needs a confusables table this repo
 would have to vendor or hash-pin across three lockfiles (SEC-13/SEC-14). The
-name rule reaches most of what that table reaches, but not all of it -- see
-the residuals below -- so the cost was weighed against a partial answer, not a
-complete one.
+name rule reaches most of what that table reaches, but not all of it, so the
+cost was weighed against a partial answer, not a complete one. **Story 10.88
+narrowed that objection rather than overturning it**: the lockfile cost is the
+price of *vendoring* the table as a dependency, and an *extract in source* --
+the rows targeting the three anchor characters, some two dozen of them --
+touches no lockfile at all. That is what closed the first residual below; see
+the Story 10.88 section.
 
 **What the review round found and this revision fixed.** Three defects in the
 first cut of this design, each a false positive rather than an escape:
@@ -304,21 +308,39 @@ module's own "closing it makes the boundary uniform" argument was false for
 that pair. Admitting U+4E3F fixes both spellings at once, and the same
 mechanism catches U+FF89 and U+32E8, which fold onto U+30CE.
 
-**What it costs, and why the answer is "nothing measurable".** ``\u30ce``
-opens real Japanese brand names and ``\u4e3f`` is an ordinary ideograph, so
-admitting them at the solidus is exactly the kind of move that rewrites live
-product copy. Two things stop it. The span still has to be delimiter-shaped
-across all seventeen positions, which realistic copy is not -- a corpus by
-script (Japanese, Chinese, Inuktitut, Runic, Baybayin, and a mathematical
-ordering line) returns byte-for-byte and is pinned as never having been a
-candidate. And where a firing shape *can* be constructed, Story 10.86's
-counting rule clears it: ``\u300a`` + ``\u30ce`` + nine katakana + a hyphen +
-four kanji + ``\u300b`` is the delimiter's shape to the character and holds
-zero of the thirteen letters, so it is not a forgery and every byte survives.
-That is why this story was scheduled after the counting rule rather than
-before it. The joint shape with Story 10.87 -- the same title with U+30FC at
-the separator -- is likewise clean, and is pinned so that a future admission at
-the separator is measured against it rather than surprised by it.
+**What it costs, and what the first cut of this story got wrong about that.**
+``\u30ce`` opens real Japanese brand names and ``\u4e3f`` is an ordinary
+ideograph, so admitting them at the solidus is exactly the kind of move that
+rewrites live product copy. The first cut argued that two things stopped it:
+the span must still be delimiter-shaped across all seventeen positions, which
+realistic copy is not, and where a firing shape *can* be constructed Story
+10.86's counting rule clears it, since a title in pure katakana and kanji holds
+none of the thirteen letters.
+
+The second half of that was false, and all three reviewers found it
+independently. Japanese apparel copy is not pure katakana:
+``\u300a\u30ce\u534a\u8896T\u30b7\u30e3\u30c4\u5927\u4eba\u6c17-\u65b0\u4f5c\u79cb\u51ac\u300b``
+puts the Latin ``T`` of ``T\u30b7\u30e3\u30c4`` at letter position three, where the
+delimiter's own ``T`` stands. The span counted one letter, cleared
+:data:`_MIN_LATIN_LETTERS`, and an ordinary product title was rewritten and
+NFKC-folded on a read-to-rewrite path -- character for character the false
+positive Story 10.87 had reverted its own admission for three days earlier. The
+probe then showed the shape is a property of *every* listed lookalike, not of
+U+30CE: the Canadian syllabics in Inuktitut copy and U+1735 in Baybayin have it
+too.
+
+:data:`_MIN_LATIN_LETTERS_LOOKALIKE_ANCHOR` is the answer, and it is stated
+there in full: a span whose *anchor* comes from the hand list must hold a
+majority of the thirteen letters, not one. `_MIN_LATIN_LETTERS` is untouched,
+so nothing Story 10.86 decided moves, and the two populations are eleven apart
+so the bar is a statable rule rather than a fitted number. With it, the corpus
+by script (Japanese, Chinese, Inuktitut, Runic, Baybayin, and a mathematical
+ordering line) returns byte-for-byte, and so does every Latin-bearing title
+above -- each pinned as *delimiter-shaped* rather than merely clean, because a
+corpus that does not vary what the predicate reads measures nothing. The joint
+shape with Story 10.87 -- the same title with U+30FC at the separator -- is
+likewise clean, and is pinned so that a future admission at the separator is
+measured against it rather than surprised by it.
 
 Shape is not enough: the counting rule (Story 10.86 / SEC-21-slugfp)
 --------------------------------------------------------------------
@@ -944,9 +966,10 @@ def _interleave(word: str, *, capture_letters: bool) -> str:
 # class, and each is separated from the next by a mandatory single-character
 # class (an anchor, a letter, the separator). `_GAP` and `_INV` are built from
 # whitespace and invisibles, and every mandatory class is disjoint from both --
-# the ink class excludes them by construction and the anchor, dash and
-# separator classes are drawn only from visible punctuation/symbol categories
-# -- so no position can be consumed by two alternatives.
+# the ink class excludes them by construction, and the anchor, dash and
+# separator classes are drawn only from visible glyphs: the punctuation and
+# symbol categories, plus the enumerated letter lookalikes Story 10.88 added
+# at the three anchors -- so no position can be consumed by two alternatives.
 def _build_close_tag_pattern(*, capture_letters: bool) -> re.Pattern[str]:
     """Compile the closing-delimiter pattern, with or without letter groups.
 
@@ -990,6 +1013,60 @@ def _build_close_tag_pattern(*, capture_letters: bool) -> re.Pattern[str]:
 # now escapes -- a deliberate trade, argued in `docs/tech-debt.md` and pinned by
 # test.
 _MIN_LATIN_LETTERS = 1
+
+# The same count, required of a span whose **anchor is a hand-listed glyph
+# lookalike** rather than ASCII or a derived-class member (Story 10.88 review
+# round).
+#
+# `k = 1` is the right bar for an anchor the *rule* admits, and the wrong one
+# for an anchor a *list* admits. Review measured why, and the payload is
+# ordinary Japanese apparel copy: with U+30CE admitted at the solidus,
+# `\u300a\u30ce\u534a\u8896T\u30b7\u30e3\u30c4\u5927\u4eba\u6c17-\u65b0\u4f5c\u79cb\u51ac\u300b` is
+# the delimiter's shape to the character -- and the Latin `T` of `T\u30b7\u30e3\u30c4`
+# lands at letter position three, where the delimiter's own `T` stands. One
+# incidental Latin letter therefore cleared `_MIN_LATIN_LETTERS` and a real
+# product title was rewritten and NFKC-folded on a read-to-rewrite path. That
+# is the identical false positive Story 10.87 measured and **reverted** its
+# admission for, and every one of the eighteen listed lookalikes carries the
+# same shape, not U+30CE alone.
+#
+# The alternative was to drop the katakana and ideograph entries, which the
+# card offered ("narrow the admission of \u30ce"). It is rejected because the
+# probe shows the false positive is a property of *any* listed anchor -- the
+# Canadian syllabics in Inuktitut copy and U+1735 in Baybayin have it too --
+# so dropping the Japanese entries would leave the class open while pretending
+# it was closed.
+#
+# **This is not a tuned threshold, and the measurement is what makes that
+# claim checkable.** The two populations are eleven apart: realistic copy
+# scores 0 or 1 at these positions, while a forged closer resting on a
+# lookalike anchor scores 12 (one homoglyph letter) or 13 (none), for ASCII
+# and Latin-small-capital spellings alike. Any value in 2..12 separates them.
+# A majority of the thirteen is a statable rule rather than a fitted number,
+# and it sits with margin on both sides. `_MIN_LATIN_LETTERS` itself is
+# untouched, so nothing Story 10.86 decided moves.
+#
+# What it costs: a forgery that spells **both** a listed lookalike at an anchor
+# **and** seven or more of the thirteen letters in non-Latin homoglyphs is no
+# longer neutralized. That is strictly harder than the all-thirteen-homoglyph
+# closer Story 10.86 already surrendered, since it needs the lookalike anchor
+# on top of it, and the fence stays intact either way -- see the residual in
+# `docs/tech-debt.md`.
+_MIN_LATIN_LETTERS_LOOKALIKE_ANCHOR = 7
+
+# The listed lookalikes as sets, per anchor position, for the predicate above.
+# Keyed the same way as `_GLYPH_LOOKALIKES` so an entry cannot be consulted for
+# a position it was not listed under.
+_LOOKALIKES_AT = {role: frozenset(chars) for role, chars in _GLYPH_LOOKALIKES.items()}
+
+# One character of the gap class, used to find the solidus inside a matched
+# span. The pattern puts a `_GAP` run between the opener and the solidus, and
+# every other class in the pattern is disjoint from it, so the first character
+# after the opener that this does *not* match is the solidus -- which is why
+# the anchors can be read off the matched text rather than captured. Capturing
+# them would add groups to `match.groups()`, which `_latin_letter_count` zips
+# strictly against the thirteen letters, and the mismatch would be silent.
+_GAP_CHAR = re.compile(_GAP.removesuffix("*"))
 
 _CLOSE_TAG_PATTERN = _build_close_tag_pattern(capture_letters=True)
 
@@ -1036,16 +1113,51 @@ def _latin_letter_count(match: re.Match[str]) -> int:
     )
 
 
+def _rests_on_a_listed_lookalike(match: re.Match[str]) -> bool:
+    """Whether one of the span's three anchors is a hand-listed lookalike.
+
+    The anchors are read off the matched text rather than captured: the opener
+    is its first character, the closer its last, and the solidus is the first
+    character after the opener that is not in the gap class -- the pattern puts
+    a `_GAP` run there and every other class is disjoint from it. Capture
+    groups would have been the obvious alternative and are deliberately not
+    used, because :func:`_latin_letter_count` zips ``match.groups()`` strictly
+    against the thirteen letters and three more groups would break that
+    correspondence silently.
+
+    A lookalike standing at a *letter* position deliberately does not count.
+    It is admitted there by the broad ink class, not by the hand list, so it
+    carries none of the weakness the raised bar exists to answer -- and
+    counting it would relax the predicate for a span whose anchors are all
+    ASCII, which is the one direction this must never move.
+    """
+    span = match.group(0)
+    solidus = next(char for char in span[1:] if not _GAP_CHAR.match(char))
+    return (
+        span[0] in _LOOKALIKES_AT["<"]
+        or solidus in _LOOKALIKES_AT["/"]
+        or span[-1] in _LOOKALIKES_AT[">"]
+    )
+
+
 def _is_forged(match: re.Match[str]) -> bool:
     """Whether a delimiter-shaped span is a forgery rather than ordinary copy.
 
-    See :data:`_MIN_LATIN_LETTERS` for why the bar is one letter. This
-    predicate must gate **every** point that acts on a match -- both of
-    :func:`wrap`'s scans and the substitution callback -- or a clean value comes
-    back NFKC-folded with no backslash, which is worse than the false positive
-    it was meant to fix because nothing marks the rewrite.
+    See :data:`_MIN_LATIN_LETTERS` for why the bar is one letter when the
+    anchors are ASCII or come from a derived class, and
+    :data:`_MIN_LATIN_LETTERS_LOOKALIKE_ANCHOR` for why a span resting on a
+    hand-listed lookalike has to hold a majority of the delimiter's own letters
+    instead. This predicate must gate **every** point that acts on a match --
+    both of :func:`wrap`'s scans and the substitution callback -- or a clean
+    value comes back NFKC-folded with no backslash, which is worse than the
+    false positive it was meant to fix because nothing marks the rewrite.
     """
-    return _latin_letter_count(match) >= _MIN_LATIN_LETTERS
+    required = (
+        _MIN_LATIN_LETTERS_LOOKALIKE_ANCHOR
+        if _rests_on_a_listed_lookalike(match)
+        else _MIN_LATIN_LETTERS
+    )
+    return _latin_letter_count(match) >= required
 
 
 def _has_forged_match(text: str) -> bool:
