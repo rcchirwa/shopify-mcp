@@ -330,10 +330,11 @@ U+30CE: the Canadian syllabics in Inuktitut copy and U+1735 in Baybayin have it
 too.
 
 :data:`_MIN_LATIN_LETTERS_LOOKALIKE_ANCHOR` is the answer, and it is stated
-there in full: a span whose *anchor* comes from the hand list must hold a
-majority of the thirteen letters, not one. `_MIN_LATIN_LETTERS` is untouched,
-so nothing Story 10.86 decided moves, and the two populations are eleven apart
-so the bar is a statable rule rather than a fitted number. With it, the corpus
+there in full: a span whose *anchor* comes from the hand list must hold three
+of the thirteen letters, not one -- one more than the highest count realistic
+copy reaches. `_MIN_LATIN_LETTERS` is untouched, so nothing Story 10.86 decided
+moves, and the bar is set by that rule rather than chosen for comfort, because
+every increment above the ceiling hands an attacker a free substitution. With it, the corpus
 by script (Japanese, Chinese, Inuktitut, Runic, Baybayin, and a mathematical
 ordering line) returns byte-for-byte, and so does every Latin-bearing title
 above -- each pinned as *delimiter-shaped* rather than merely clean, because a
@@ -1037,29 +1038,45 @@ _MIN_LATIN_LETTERS = 1
 # so dropping the Japanese entries would leave the class open while pretending
 # it was closed.
 #
-# **This is not a tuned threshold, and there is a structural reason as well as
-# a measured one.** Each letter position spells `[Xx` + the *non-ASCII* ink
-# class`]`, so an ASCII character standing at one must be that position's own
-# letter -- every other ASCII letter makes the span not match at all, which a
-# sweep of all 325 wrong-letter substitutions confirms. A shaped span's Latin
-# count is therefore the number of incidental Latin characters that
-# *coincidentally* equal the delimiter's own letter where they stand, and
-# reaching a majority takes seven coincidences rather than seven letters. It
-# is also why Latin-script copy cannot defeat the bar: an ordinary Latin slug
-# is not delimiter-shaped at all unless it substantially spells the delimiter.
-# Measured to match: 50,000 synthetic katakana-and-kanji titles carrying up to
-# four incidental Latin letters gave 10,547 shaped spans whose highest score
-# was 2, while a forged closer on a lookalike anchor scores 12 or 13. Any
-# value in 2..12 separates them. `_MIN_LATIN_LETTERS` itself is untouched, so
+# **The value is the smallest one that clears the measured ceiling, and that
+# rule is what picks it.** Every increment above the ceiling hands an attacker
+# a free substitution, so the bar is set at *one more than the highest score
+# realistic copy reaches* rather than at a comfortable-looking number. A first
+# cut of this fix used a majority of the thirteen and the adversarial verifier
+# broke the reasoning behind it: at seven, a forged closer needs only seven
+# homoglyph letters plus the anchor -- eight substitutions against the thirteen
+# Story 10.86 already surrendered -- so the raised bar made forgery *cheaper*
+# than the case the project had accepted, in a more legible spelling. At three
+# it costs twelve against thirteen, a discount of one.
+#
+# **Why three is the ceiling plus one.** Each letter position spells `[Xx` +
+# the *non-ASCII* ink class`]`, so an ASCII character standing at one must be
+# that position's own letter -- every other ASCII letter makes the span not
+# match at all, which a sweep of all 325 wrong-letter substitutions confirms.
+# A shaped span's Latin count is therefore the number of incidental Latin
+# characters that *coincidentally* equal the delimiter's own letter where they
+# stand, and a second incidental Latin letter that does *not* coincide breaks
+# the match outright. That is also why Latin-script copy cannot defeat the
+# bar: an ordinary Latin slug is not delimiter-shaped at all unless it
+# substantially spells the delimiter. Measured to match: 50,000 synthetic
+# katakana-and-kanji titles carrying up to four incidental Latin letters gave
+# 10,547 shaped spans whose highest score was 2, and the sharpest real witness
+# -- Japanese apparel copy carrying both the `T` of `T\u30b7\u30e3\u30c4` at position
+# three and a colour suffix `A` at position thirteen -- also scores 2. The
+# corpus pins that ceiling and a test pins this constant to it plus one, so
+# neither can drift alone. `_MIN_LATIN_LETTERS` itself is untouched, so
 # nothing Story 10.86 decided moves.
 #
-# What it costs: a forgery that spells **both** a listed lookalike at an anchor
-# **and** seven or more of the thirteen letters in non-Latin homoglyphs is no
-# longer neutralized. That is strictly harder than the all-thirteen-homoglyph
-# closer Story 10.86 already surrendered, since it needs the lookalike anchor
-# on top of it, and the fence stays intact either way -- see the residual in
-# `docs/tech-debt.md`.
-_MIN_LATIN_LETTERS_LOOKALIKE_ANCHOR = 7
+# What it costs, stated as the attacker's bill rather than as a comparison
+# that flattered it: a forgery spelling a listed lookalike at an anchor **and**
+# eleven or more of the thirteen letters in non-Latin homoglyphs is no longer
+# neutralized -- twelve substitutions, against the thirteen Story 10.86
+# already surrendered. It is **not** "strictly harder" than that case, as a
+# first draft of this comment claimed; the lookalike anchor is spent *instead
+# of* two homoglyph letters, not on top of thirteen. One substitution of
+# discount is the whole price of closing the anchor class, and the fence stays
+# intact either way -- see the residual in `docs/tech-debt.md`.
+_MIN_LATIN_LETTERS_LOOKALIKE_ANCHOR = 3
 
 # The listed lookalikes as sets, per anchor position, for the predicate above.
 # Keyed the same way as `_GLYPH_LOOKALIKES` so an entry cannot be consulted for
@@ -1153,8 +1170,8 @@ def _is_forged(match: re.Match[str]) -> bool:
     See :data:`_MIN_LATIN_LETTERS` for why the bar is one letter when the
     anchors are ASCII or come from a derived class, and
     :data:`_MIN_LATIN_LETTERS_LOOKALIKE_ANCHOR` for why a span resting on a
-    hand-listed lookalike has to hold a majority of the delimiter's own letters
-    instead. This predicate must gate **every** point that acts on a match --
+    hand-listed lookalike has to clear a higher bar -- one more than the highest
+    count realistic copy reaches -- instead. This predicate must gate **every** point that acts on a match --
     both of :func:`wrap`'s scans and the substitution callback -- or a clean
     value comes back NFKC-folded with no backslash, which is worse than the
     false positive it was meant to fix because nothing marks the rewrite.
