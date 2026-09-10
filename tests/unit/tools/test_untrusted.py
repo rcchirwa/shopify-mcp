@@ -11,6 +11,7 @@ whole codebase stays consistent.
 import ast
 import pathlib
 import re
+import string
 import time
 import unicodedata
 from unittest import mock
@@ -2431,3 +2432,36 @@ def test_s1088_the_rejected_candidates_are_pinned_as_escaping():
     assert len(strokes & listed) == 3
     for char in sorted(strokes - listed):
         assert _s1071_untouched(_s1088_payload(char, "/")), f"U+{ord(char):04X}"
+
+
+def test_s1088_an_ascii_letter_in_a_shaped_span_is_that_positions_own_letter():
+    """Why a majority bar is safe, asserted as the property rather than argued.
+
+    Each letter position spells `[Xx` + the **non-ASCII** ink class`]`, so an
+    ASCII character standing at one must be that position's own letter in
+    either case -- any other ASCII letter makes the span not match at all.
+    That is what bounds the score of realistic copy: a delimiter-shaped span's
+    Latin count is the number of incidental Latin characters that
+    *coincidentally* equal the delimiter's own letter where they stand, so
+    reaching a majority takes seven coincidences rather than seven letters.
+
+    The sweep is every wrong ASCII letter at every one of the thirteen
+    positions -- 325 substitutions, none of which stays delimiter-shaped.
+    """
+    tried = 0
+    for index, letter in enumerate(_CLOSE_TAG_LETTERS):
+        for other in string.ascii_uppercase:
+            if other in (letter, letter.lower()):
+                continue
+            body = list(_CLOSE_TAG_LETTERS)
+            body[index] = other
+            value = "\u300a\u30ce" + "".join(body[:9]) + "-" + "".join(body[9:]) + "\u300b"
+            tried += 1
+            assert _CLOSE_TAG_PATTERN.search(value) is None, f"{other} at position {index}"
+    assert tried == 325
+    # Control: the unsubstituted span IS shaped and scores all thirteen, so the
+    # sweep above is measuring the substitution rather than a broken template.
+    intact = "\u300a\u30ce" + _CLOSE_TAG_LETTERS[:9] + "-" + _CLOSE_TAG_LETTERS[9:] + "\u300b"
+    match = _CLOSE_TAG_PATTERN.search(intact)
+    assert match is not None
+    assert _latin_letter_count(match) == len(_CLOSE_TAG_LETTERS)

@@ -1037,14 +1037,21 @@ _MIN_LATIN_LETTERS = 1
 # so dropping the Japanese entries would leave the class open while pretending
 # it was closed.
 #
-# **This is not a tuned threshold, and the measurement is what makes that
-# claim checkable.** The two populations are eleven apart: realistic copy
-# scores 0 or 1 at these positions, while a forged closer resting on a
-# lookalike anchor scores 12 (one homoglyph letter) or 13 (none), for ASCII
-# and Latin-small-capital spellings alike. Any value in 2..12 separates them.
-# A majority of the thirteen is a statable rule rather than a fitted number,
-# and it sits with margin on both sides. `_MIN_LATIN_LETTERS` itself is
-# untouched, so nothing Story 10.86 decided moves.
+# **This is not a tuned threshold, and there is a structural reason as well as
+# a measured one.** Each letter position spells `[Xx` + the *non-ASCII* ink
+# class`]`, so an ASCII character standing at one must be that position's own
+# letter -- every other ASCII letter makes the span not match at all, which a
+# sweep of all 325 wrong-letter substitutions confirms. A shaped span's Latin
+# count is therefore the number of incidental Latin characters that
+# *coincidentally* equal the delimiter's own letter where they stand, and
+# reaching a majority takes seven coincidences rather than seven letters. It
+# is also why Latin-script copy cannot defeat the bar: an ordinary Latin slug
+# is not delimiter-shaped at all unless it substantially spells the delimiter.
+# Measured to match: 50,000 synthetic katakana-and-kanji titles carrying up to
+# four incidental Latin letters gave 10,547 shaped spans whose highest score
+# was 2, while a forged closer on a lookalike anchor scores 12 or 13. Any
+# value in 2..12 separates them. `_MIN_LATIN_LETTERS` itself is untouched, so
+# nothing Story 10.86 decided moves.
 #
 # What it costs: a forgery that spells **both** a listed lookalike at an anchor
 # **and** seven or more of the thirteen letters in non-Latin homoglyphs is no
