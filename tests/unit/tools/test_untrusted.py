@@ -818,11 +818,13 @@ _S1071_PINNED_COVERED = {
     "\u27cb": ("/", "U+27CB MATHEMATICAL RISING DIAGONAL"),
     "\u02d7": ("-", "U+02D7 MODIFIER LETTER MINUS SIGN"),
 }
+# Story 10.88 (SEC-21-nameproxy) closed the anchor half of this dict: U+1438,
+# U+1433, U+31D3 and U+4E3F moved into `_GLYPH_LOOKALIKES` and are now pinned as
+# *caught* by `test_s1088_the_named_glyph_lookalikes_are_neutralized`. What
+# remains is the separator family alone, which Story 10.87 examined and
+# declined -- so the dict no longer mixes two reasons at the anchor positions,
+# and `_S1071_ALL_POSITIONS` is consulted for one role rather than four.
 _S1071_PINNED_RESIDUAL = {
-    "\u1438": ("<", "U+1438 CANADIAN SYLLABICS PA (category Lo)"),
-    "\u1433": (">", "U+1433 CANADIAN SYLLABICS PO (category Lo)"),
-    "\u31d3": ("/", "U+31D3 CJK STROKE SP (name says nothing of a slash)"),
-    "\u4e3f": ("/", "U+4E3F CJK UNIFIED IDEOGRAPH-4E3F (what U+2F03 folds to)"),
     # The separator entry, widened by Story 10.87 (SEC-21-separator) from
     # U+30FC alone to the horizontal-bar family it belongs to. Story 10.87
     # examined admitting U+30FC and declined; see the ledger for the evidence.
@@ -865,14 +867,14 @@ def test_s1071_documented_residuals_still_escape():
 
     Every value here renders as a closing delimiter and comes back
     byte-for-byte, and there are **two distinct reasons**, which the module
-    docstring's residual bullets separate and this dict deliberately mixes:
+    docstring's residual bullets separate and this dict deliberately mixes.
+    Since Story 10.88 both reasons are read at the **separator** only: the
+    anchor half -- the Canadian syllabics, U+31D3 and U+4E3F -- is caught, and
+    its pins live with the Story 10.88 tests below.
 
-    * *Outside the gate.* The letters (``Lo``, ``Lm``) -- the Canadian
-      syllabics, U+4E3F, U+30FC and the CJK/Hangul/Bopomofo bars -- are not in
-      :data:`_ANCHOR_CATEGORIES`, so the name rule never reads their names at
-      all. U+4E3F is the sharp case: it is exactly what U+2F03 KANGXI RADICAL
-      SLASH NFKC-folds to, so the folded spelling is answered while the
-      identical-rendering source form is not.
+    * *Outside the gate.* The letters (``Lo``, ``Lm``) -- U+30FC and the
+      CJK/Hangul/Bopomofo bars -- are not in :data:`_ANCHOR_CATEGORIES`, so the
+      name rule never reads their names at all.
     * *Inside the gate, but the name says nothing.* U+31D0, U+2500, U+2501 and
       U+23AF are ``So``/``Sm`` and so *are* in the anchor categories; they
       escape only because their names carry no ``HYPHEN``/``DASH``/``MINUS``.
@@ -1928,3 +1930,307 @@ def test_s1087_the_horizontal_bar_family_escapes_at_the_separator():
         assert _CLOSE_TAG_PATTERN.search(title) is None, label
         assert wrap(title) == _s1086_wrapped(title), label
         assert _CLOSE_TAG_PATTERN.search(title.replace(char, "\u2010")) is not None, label
+
+
+# --- Story 10.88 / SEC-21-nameproxy ------------------------------------------
+#
+# Story 10.71's first residual: glyph lookalikes of `<`, `/` and `>` that the
+# Unicode-*name* rule cannot see, either because their category is outside
+# `_ANCHOR_CATEGORIES` (the letters) or because their name carries none of the
+# keywords (the CJK strokes, PHILIPPINE SINGLE PUNCTUATION, PRECEDES/SUCCEEDS).
+# Closed by `_GLYPH_LOOKALIKES`, an enumerated list derived from UTS #39 rather
+# than by widening the rule -- see the module docstring for why no rule can
+# reach this class.
+
+# The nine payloads the card re-derived live, each at the anchor position the
+# character resembles. Every one came back byte-for-byte before this story.
+_S1088_NAMED_PAYLOADS = (
+    ("\u1438", "<", "U+1438 CANADIAN SYLLABICS PA"),
+    ("\u1433", ">", "U+1433 CANADIAN SYLLABICS PO"),
+    ("\u4e3f", "/", "U+4E3F CJK UNIFIED IDEOGRAPH-4E3F"),
+    ("\u30ce", "/", "U+30CE KATAKANA LETTER NO"),
+    ("\u16b2", "<", "U+16B2 RUNIC LETTER KAUNA"),
+    ("\u31d3", "/", "U+31D3 CJK STROKE SP"),
+    ("\u1735", "/", "U+1735 PHILIPPINE SINGLE PUNCTUATION"),
+    ("\u227a", "<", "U+227A PRECEDES"),
+    ("\u227b", ">", "U+227B SUCCEEDS"),
+)
+
+# Codepoints NFKC folds *onto* an admitted lookalike. They are caught without
+# being listed, because detection runs on the normalized copy -- which is also
+# why removing the fold target from the list must fail these.
+_S1088_FOLD_ONTO_LOOKALIKE = (
+    ("\u2f03", "\u4e3f", "/", "U+2F03 KANGXI RADICAL SLASH folds to U+4E3F"),
+    ("\uff89", "\u30ce", "/", "U+FF89 HALFWIDTH KATAKANA LETTER NO folds to U+30CE"),
+    ("\u32e8", "\u30ce", "/", "U+32E8 CIRCLED KATAKANA NO folds to U+30CE"),
+)
+
+# The measured membership of the four derived classes on Unicode 14.0, pinned
+# so the hand list cannot be mistaken for a widening of the *rule*. If a future
+# interpreter moves these, the numbers move with the docstring, not silently.
+_S1088_DERIVED_SIZES = {"_OPEN_ANGLES": 80, "_SOLIDI": 24, "_CLOSE_ANGLES": 87, "_DASHES": 74}
+
+# Realistic multilingual copy that holds an admitted lookalike and must come
+# back byte-for-byte. Split by *why* it is clean, because "never delimiter-
+# shaped" and "shaped but cleared by the counting rule" are different
+# guarantees -- conflating them is the Story 10.86 mistake Story 10.87 recorded.
+_S1088_UNSHAPED_COPY = (
+    (
+        "ja, brand name opening with U+30CE",
+        "\u3008\u30ce\u30fc\u30b9\u30d5\u30a7\u30a4\u30b9\u3009\u30cc\u30d7\u30b7\u30b8\u30e3\u30b1\u30c3\u30c8 \u30d6\u30e9\u30c3\u30af",
+    ),
+    (
+        "ja, fullwidth brackets around a novelty note",
+        "\uff1c\u30ce\u30d9\u30eb\u30c6\u30a3\u4ed8\u304d\uff1e\u30ec\u30c7\u30a3\u30fc\u30b9\u30b3\u30fc\u30c8",
+    ),
+    (
+        "ja, corner brackets",
+        "\u300c\u30ce\u30fc\u30c8\u30d1\u30bd\u30b3\u30f3\u30b1\u30fc\u30b9\u300d13\u30a4\u30f3\u30c1",
+    ),
+    (
+        "zh, U+4E3F in calligraphy copy",
+        "\u300a\u4e3f\u5b57\u5f62\u8bbe\u8ba1\u8fde\u8863\u88d9\u300b",
+    ),
+    (
+        "iu, Inuktitut syllabics",
+        "\u1438\u1441\u146b \u140a\u14aa\u1405\u1450 \u140a\u1595\u1483\u1585 \u158f\u146f\u1585\u1455\u1585",
+    ),
+    (
+        "non, Runic jewellery copy",
+        "\u16b1\u16a2\u16be\u16a8 \u16b2\u16d6\u16cf\u16cf\u16a6\u16a2 \u16ca\u16c1\u16da\u16c1\u16b1",
+    ),
+    (
+        "tl, Baybayin with U+1735",
+        "\u170a\u1707\u1714\u170a\u1707\u1713\u1708\u1714 \u1735 \u170e\u1713\u1712\u1714\u1707\u1713",
+    ),
+    ("math, an ordering line", "a \u227a b \u227a c"),
+)
+
+# The two shapes the card constructed. Both ARE the delimiter's shape once the
+# lookalikes are admitted; both hold zero of the thirteen letters, so Story
+# 10.86's counting rule clears them and `wrap` still returns every byte. The
+# second is the joint shape with Story 10.87 -- ordinary Japanese product copy
+# that fires only if both cards admit their character. Story 10.87 declined
+# U+30FC, so it is not even shaped today; it is carried so that a future
+# admission at the separator fails here rather than in production.
+_S1088_CLEARED_BY_THE_COUNTING_RULE = (
+    (
+        "ja, ASCII hyphen at the separator (A-only firing shape)",
+        "\u300a\u30ce\u30fc\u30b9\u30d5\u30a7\u30a4\u30b9\u30cc\u30d7\u30b7-\u65b0\u4f5c\u79cb\u51ac\u300b",
+        True,
+    ),
+    (
+        "ja, U+30FC at the separator (the A+B joint shape)",
+        "\u300a\u30ce\u30fc\u30b9\u30d5\u30a7\u30a4\u30b9\u30cc\u30d7\u30b7\u30fc\u65b0\u4f5c\u79cb\u51ac\u300b",
+        False,
+    ),
+)
+
+
+def _s1088_payload(char: str, role: str) -> str:
+    """The card's synthetic payload for ``char`` standing at ``role``."""
+    return _S1071_ANCHOR_TEMPLATES[role].format(c=char)
+
+
+def test_s1088_the_named_glyph_lookalikes_are_neutralized():
+    """AC 1: each of the nine gains a backslash, and the fence still ends once.
+
+    Asserted on the *interior* -- the value as a model reads it -- rather than
+    on the whole wrapped string, so a backslash landing outside the fenced
+    region could not pass this.
+    """
+    for char, role, label in _S1088_NAMED_PAYLOADS:
+        forged = _s1088_payload(char, role)
+        out = wrap(forged)
+        interior = _s1071_interior(out)
+        assert "\\" in interior, label
+        assert interior.replace("\\", "", 1) == unicodedata.normalize("NFKC", forged), label
+        assert out.count(_S1071_LITERAL) == 1, label
+
+
+# The full membership of `_GLYPH_LOOKALIKES`, spelled here independently of the
+# module. This is the difference between a mutation test that means something
+# and one that does not: a loop over `_GLYPH_LOOKALIKES` itself cannot notice a
+# *shorter* list, so deleting any entry the nine named payloads do not cover
+# survives it. Story 10.71 shipped with five surviving mutations for exactly
+# that reason. Each row carries its origin -- `UTS39` for the mechanical
+# extract, `probe` for the four codepoints this story added from its own live
+# check -- and its Unicode name, so a codepoint cannot be swapped for a
+# neighbour without saying so.
+_S1088_EXPECTED_LOOKALIKES = (
+    (0x1438, "<", "UTS39", "CANADIAN SYLLABICS PA"),
+    (0x16B2, "<", "UTS39", "RUNIC LETTER KAUNA"),
+    (0x227A, "<", "probe", "PRECEDES"),
+    (0x1D236, "<", "UTS39", "GREEK INSTRUMENTAL NOTATION SYMBOL-40"),
+    (0x1735, "/", "UTS39", "PHILIPPINE SINGLE PUNCTUATION"),
+    (0x2041, "/", "UTS39", "CARET INSERTION POINT"),
+    (0x2CC6, "/", "UTS39", "COPTIC CAPITAL LETTER OLD COPTIC ESH"),
+    (0x3033, "/", "UTS39", "VERTICAL KANA REPEAT MARK UPPER HALF"),
+    (0x30CE, "/", "UTS39", "KATAKANA LETTER NO"),
+    (0x31C0, "/", "probe", "CJK STROKE T"),
+    (0x31D2, "/", "probe", "CJK STROKE P"),
+    (0x31D3, "/", "UTS39", "CJK STROKE SP"),
+    (0x4E3F, "/", "UTS39", "CJK UNIFIED IDEOGRAPH-4E3F"),
+    (0x1D23A, "/", "UTS39", "GREEK INSTRUMENTAL NOTATION SYMBOL-47"),
+    (0x1433, ">", "UTS39", "CANADIAN SYLLABICS PO"),
+    (0x16F3F, ">", "UTS39", "MIAO LETTER ARCHAIC ZZA"),
+    (0x227B, ">", "probe", "SUCCEEDS"),
+    (0x1D237, ">", "UTS39", "GREEK INSTRUMENTAL NOTATION SYMBOL-42"),
+)
+
+
+def test_s1088_every_listed_lookalike_is_neutralized_at_its_own_position():
+    """The whole list, not only the nine the card named.
+
+    Two failure modes, and the fixed table above is what separates them from
+    each other. An entry that is *present but unreachable* -- unioned into the
+    wrong class body, or into none -- is caught by driving every codepoint
+    through `wrap` at the position it is listed for. An entry that is simply
+    *gone* is caught by the set equality, which a loop over the module's own
+    dict could never see.
+    """
+    expected = {(cp, role) for cp, role, _, _ in _S1088_EXPECTED_LOOKALIKES}
+    listed = {
+        (ord(char), role)
+        for role, chars in _untrusted_module._GLYPH_LOOKALIKES.items()
+        for char in chars
+    }
+    assert listed == expected
+    for cp, role, origin, name in _S1088_EXPECTED_LOOKALIKES:
+        label = f"U+{cp:04X} {name} at {role!r} ({origin})"
+        assert unicodedata.name(chr(cp)) == name, label
+        assert "\\" in _s1071_interior(wrap(_s1088_payload(chr(cp), role))), label
+    # The extract is the spine and the probe additions are the exception, so
+    # the balance is pinned: a future refresh that quietly reclassifies rows
+    # has to say so here.
+    origins = [origin for _, _, origin, _ in _S1088_EXPECTED_LOOKALIKES]
+    assert (origins.count("UTS39"), origins.count("probe")) == (14, 4)
+
+
+def test_s1088_kangxi_radical_slash_no_longer_renders_as_the_ideograph_payload():
+    """AC 2: the sharp case, stated as the equality it used to satisfy.
+
+    U+2F03 was already in the derived solidus class, so Story 10.71 called it
+    answered -- but NFKC folds it to U+4E3F, which was not, and `wrap` returns
+    the *normalized* copy whenever it substitutes. The emitted string was
+    therefore byte-identical to the un-neutralized U+4E3F payload: neutralized
+    in name only. Admitting U+4E3F fixes the fold target, which is what makes
+    the two outputs differ.
+    """
+    kangxi = _s1088_payload("\u2f03", "/")
+    ideograph = _s1088_payload("\u4e3f", "/")
+    assert "\\" in _s1071_interior(wrap(kangxi))
+    assert wrap(kangxi) != _s1086_wrapped(ideograph)
+
+
+def test_s1088_codepoints_that_fold_onto_a_lookalike_are_caught():
+    """AC 3: caught through normalization, not through a second listing.
+
+    None of these three is in `_GLYPH_LOOKALIKES`; each is caught because
+    detection runs on the NFKC-normalized copy and the fold target is. Pinning
+    the fold explicitly is what stops a future edit from dropping the target
+    and leaving three silent escapes behind.
+    """
+    for source, target, role, label in _S1088_FOLD_ONTO_LOOKALIKE:
+        assert unicodedata.normalize("NFKC", source) == target, label
+        assert source not in _untrusted_module._GLYPH_LOOKALIKES[role], label
+        assert "\\" in _s1071_interior(wrap(_s1088_payload(source, role))), label
+
+
+def test_s1088_the_derived_classes_are_unchanged_by_the_hand_list():
+    """AC 5: the rule stayed a rule; the list sits beside it.
+
+    The four sizes are the ones Story 10.71 measured and the module docstring
+    quotes. Asserting them here is what distinguishes this story's fix from a
+    widening of `_ANCHOR_CATEGORIES` -- which the card's sweep showed would
+    reach none of these codepoints anyway.
+    """
+    for name, expected in _S1088_DERIVED_SIZES.items():
+        assert len(_s1071_members(_S1071_DERIVED_CLASSES[name])) == expected, name
+    # And the list adds to them rather than restating them: no entry is already
+    # derived, or the "12 the rule cannot see" claim would be overstated.
+    for role, body in (("<", _OPEN_ANGLES), ("/", _SOLIDI), (">", _CLOSE_ANGLES)):
+        for char in _untrusted_module._GLYPH_LOOKALIKES[role]:
+            assert re.match(f"[{body}]", char) is None, f"U+{ord(char):04X} in {role!r}"
+
+
+def test_s1088_no_lookalike_is_invisible_whitespace_or_ascii():
+    """AC 6: asserted against the list itself, not through `wrap`.
+
+    A visible confusable *replaces* a character; an invisible one *wedges*
+    between characters, and the module keeps those two mechanisms apart on
+    purpose. An invisible or space codepoint appearing here would blur that
+    line, and an ASCII one would put a literal `<`, `/` or `>` into an anchor
+    class that is excluded from ASCII by construction.
+    """
+    forbidden = {"Cf", "Cc", "Zs", "Zl", "Zp"}
+    for role, chars in _untrusted_module._GLYPH_LOOKALIKES.items():
+        assert len(set(chars)) == len(chars), f"duplicate entry in {role!r}"
+        for char in chars:
+            label = f"U+{ord(char):04X} at {role!r}"
+            assert ord(char) >= 0x80, label
+            assert unicodedata.category(char) not in forbidden, label
+    listed = [c for chars in _untrusted_module._GLYPH_LOOKALIKES.values() for c in chars]
+    assert len(set(listed)) == len(listed), "a codepoint is listed at two positions"
+
+
+def test_s1088_every_entry_is_a_named_escape_in_the_source():
+    """AC 4: provenance is per-entry, and the source is where it lives.
+
+    A hand list is only defensible if a reader can tell, for each entry, what
+    it renders as and why no rule reaches it. This asserts the mechanical half
+    of that -- the entry is spelled as an escape (so `ruff`'s RUF001/RUF002
+    never see an ambiguous literal) and its Unicode name appears in the module
+    text -- which is the half that rots silently when someone adds a codepoint
+    in a hurry.
+    """
+    source = pathlib.Path(_untrusted_module.__file__).read_text(encoding="utf-8")
+    for chars in _untrusted_module._GLYPH_LOOKALIKES.values():
+        for char in chars:
+            cp = ord(char)
+            prefix, digits = ("\\u", f"{cp:04x}") if cp <= 0xFFFF else ("\\U", f"{cp:08x}")
+            # Both hex cases, but not both prefixes: `\\u` and `\\U` mean
+            # different escape widths, so case-folding the whole escape would
+            # let a malformed one pass.
+            assert any(prefix + d in source for d in (digits, digits.upper())), prefix + digits
+            assert unicodedata.name(char) in source, f"U+{cp:04X} name absent"
+            assert char not in source, f"U+{cp:04X} appears as a literal glyph"
+
+
+def test_s1088_realistic_multilingual_copy_survives_byte_for_byte():
+    """AC 7: the false-positive corpus, by script.
+
+    Every string here holds an admitted lookalike in its natural role -- \u30ce
+    opening a brand name, \u4e3f as an ideograph, the Canadian syllabics as
+    Inuktitut, U+1735 as Baybayin punctuation, U+227A in a math line. None is
+    delimiter-shaped, and the second assertion says so rather than leaving it
+    implied: a corpus that passed because nothing in it was ever a candidate
+    would be measuring nothing.
+    """
+    for label, value in _S1088_UNSHAPED_COPY:
+        assert wrap(value) == _s1086_wrapped(value), label
+        assert _CLOSE_TAG_PATTERN.search(value) is None, label
+
+
+def test_s1088_the_constructed_firing_shapes_are_cleared_by_the_counting_rule():
+    """The compounding case the card built, and why it costs nothing.
+
+    Both strings are ordinary Japanese product copy and both are *shaped* like
+    the delimiter once \u30ce is admitted at the solidus. Neither is rewritten,
+    because all thirteen letter positions hold katakana and kanji: the count is
+    zero, below `_MIN_LATIN_LETTERS`. That is Story 10.86's predicate doing the
+    work this card would otherwise have had to do by narrowing the admission,
+    and it is why the card was scheduled last.
+
+    The second string is the joint shape with Story 10.87. It is not shaped
+    today because Story 10.87 declined U+30FC at the separator, and the third
+    element of each row records which. Carried either way so that a future
+    admission there is measured against this string rather than surprised by
+    it.
+    """
+    for label, value, shaped in _S1088_CLEARED_BY_THE_COUNTING_RULE:
+        assert wrap(value) == _s1086_wrapped(value), label
+        match = _CLOSE_TAG_PATTERN.search(value)
+        assert (match is not None) is shaped, label
+        if match is not None:
+            assert _latin_letter_count(match) == 0, label
