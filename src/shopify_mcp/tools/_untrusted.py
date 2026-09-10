@@ -193,9 +193,13 @@ an unremarkable Russian sentence -- and neutralizing those would corrupt real
 product descriptions on a read-to-rewrite path. The card's approach 2, Unicode
 UTS #39 skeletons, was rejected on cost: it needs a confusables table this repo
 would have to vendor or hash-pin across three lockfiles (SEC-13/SEC-14). The
-name rule reaches most of what that table reaches, but not all of it -- see
-the residuals below -- so the cost was weighed against a partial answer, not a
-complete one.
+name rule reaches most of what that table reaches, but not all of it, so the
+cost was weighed against a partial answer, not a complete one. **Story 10.88
+narrowed that objection rather than overturning it**: the lockfile cost is the
+price of *vendoring* the table as a dependency, and an *extract in source* --
+the rows targeting the three anchor characters, some two dozen of them --
+touches no lockfile at all. That is what closed the first residual below; see
+the Story 10.88 section.
 
 **What the review round found and this revision fixed.** Three defects in the
 first cut of this design, each a false positive rather than an escape:
@@ -217,17 +221,11 @@ first cut of this design, each a false positive rather than an escape:
   :func:`_interleave`.
 
 **Known residuals, recorded in ``docs/tech-debt.md`` with entry conditions
-rather than fixed here.** All three are model-interpretation risk in the sense
-above, never a string-level breakout:
+rather than fixed here.** Each is model-interpretation risk in the sense above,
+never a string-level breakout. The first of them -- glyph lookalikes of the
+three anchors that the name rule cannot see -- is **closed by Story 10.88**;
+see the enumerated-list section below. What remains:
 
-* *Glyph confusables the name rule cannot see.* Letter-category lookalikes
-  such as U+1438/U+1433 CANADIAN SYLLABICS PA/PO (which render as ``<``/``>``)
-  are outside :data:`_ANCHOR_CATEGORIES`, and CJK strokes such as U+31D3 CJK
-  STROKE SP and U+4E3F CJK UNIFIED IDEOGRAPH-4E3F render as ``/`` under names
-  that say nothing of the kind. U+4E3F is the sharp case: it is the very
-  codepoint U+2F03 KANGXI RADICAL SLASH NFKC-folds *to*, so the folded form is
-  answered while the identically-rendering source form is not. Only a
-  confusables table closes these, which is the cost rejected above.
 * *Combining marks between letters.* A mark placed *between* two letters of
   ``UNTRUSTED`` or before ``>`` -- rather than in place of a letter, where
   ``_INK`` catches it -- renders as a diacritic on the preceding letter and is
@@ -272,6 +270,78 @@ above, never a string-level breakout:
   delimiter-shaped under an admission, so a future attempt fails loudly.
 The fourth residual this story recorded -- a Cyrillic slug with an ASCII hyphen
 at the separator, rewritten though it forges nothing -- is closed below.
+
+What a name cannot say: the enumerated list (Story 10.88 / SEC-21-nameproxy)
+---------------------------------------------------------------------------
+The first residual above was that a Unicode *name* is a proxy for glyph shape
+and a leaky one. It leaks two ways at once. Letter-category lookalikes --
+U+1438/U+1433 CANADIAN SYLLABICS PA/PO rendering as ``<``/``>``, U+30CE
+KATAKANA LETTER NO and U+4E3F rendering as ``/`` -- are outside
+:data:`_ANCHOR_CATEGORIES`, so their names are never read. And inside those
+categories, U+31D3 CJK STROKE SP, U+1735 PHILIPPINE SINGLE PUNCTUATION and
+U+227A/U+227B PRECEDES/SUCCEEDS carry no keyword the rule looks for; the whole
+CJK Strokes block has zero keyword hits.
+
+**Widening the gate reaches none of it, which is what forces a list.** A sweep
+of all of Unicode 14.0 finds exactly two letter-category codepoints whose name
+carries an anchor keyword -- U+A718 MODIFIER LETTER DOT SLASH and U+A71A
+MODIFIER LETTER LOWER RIGHT CORNER ANGLE -- and neither renders as a
+delimiter. So widening :data:`_ANCHOR_CATEGORIES` to the letters admits two
+non-lookalikes and zero lookalikes. The gate is not too narrow; the name is
+simply not shape, and no rule expressible over ``unicodedata`` says shape.
+
+:data:`_GLYPH_LOOKALIKES` is therefore an enumerated list, mostly extracted
+from Unicode's own confusables table (UTS #39), unioned into the three anchor
+class bodies at pattern assembly. The derived classes stay derived and stay
+measured at 80 / 24 / 87 / 74 members, so this is a list *beside* a rule rather
+than a list *replacing* one -- which is the distinction Story 10.70's review
+drew when it rejected a hand-listed class, and the same arrangement
+:data:`_DASH_CONFUSABLES` has had at the separator since SEC-21. The extract's
+version, hash and refresh procedure are recorded at the constant.
+
+**The sharp case it closes.** U+2F03 KANGXI RADICAL SLASH was already in the
+derived solidus class, so Story 10.71 counted it answered. But NFKC folds
+U+2F03 to U+4E3F, and :func:`wrap` returns the *normalized* copy whenever it
+substitutes -- so the emitted value for the U+2F03 payload was byte-identical
+to the un-neutralized U+4E3F payload. The neutralization was nominal, and the
+module's own "closing it makes the boundary uniform" argument was false for
+that pair. Admitting U+4E3F fixes both spellings at once, and the same
+mechanism catches U+FF89 and U+32E8, which fold onto U+30CE.
+
+**What it costs, and what the first cut of this story got wrong about that.**
+``\u30ce`` opens real Japanese brand names and ``\u4e3f`` is an ordinary
+ideograph, so admitting them at the solidus is exactly the kind of move that
+rewrites live product copy. The first cut argued that two things stopped it:
+the span must still be delimiter-shaped across all seventeen positions, which
+realistic copy is not, and where a firing shape *can* be constructed Story
+10.86's counting rule clears it, since a title in pure katakana and kanji holds
+none of the thirteen letters.
+
+The second half of that was false, and all three reviewers found it
+independently. Japanese apparel copy is not pure katakana:
+``\u300a\u30ce\u534a\u8896T\u30b7\u30e3\u30c4\u5927\u4eba\u6c17-\u65b0\u4f5c\u79cb\u51ac\u300b``
+puts the Latin ``T`` of ``T\u30b7\u30e3\u30c4`` at letter position three, where the
+delimiter's own ``T`` stands. The span counted one letter, cleared
+:data:`_MIN_LATIN_LETTERS`, and an ordinary product title was rewritten and
+NFKC-folded on a read-to-rewrite path -- character for character the false
+positive Story 10.87 had reverted its own admission for three days earlier. The
+probe then showed the shape is a property of *every* listed lookalike, not of
+U+30CE: the Canadian syllabics in Inuktitut copy and U+1735 in Baybayin have it
+too.
+
+:data:`_MIN_LATIN_LETTERS_LOOKALIKE_ANCHOR` is the answer, and it is stated
+there in full: a span whose *anchor* comes from the hand list must hold three
+of the thirteen letters, not one -- one more than the highest count realistic
+copy reaches. `_MIN_LATIN_LETTERS` is untouched, so nothing Story 10.86 decided
+moves, and the bar is set by that rule rather than chosen for comfort, because
+every increment above the ceiling hands an attacker a free substitution. With it, the corpus
+by script (Japanese, Chinese, Inuktitut, Runic, Baybayin, and a mathematical
+ordering line) returns byte-for-byte, and so does every Latin-bearing title
+above -- each pinned as *delimiter-shaped* rather than merely clean, because a
+corpus that does not vary what the predicate reads measures nothing. The joint
+shape with Story 10.87 -- the same title with U+30FC at the separator -- is
+likewise clean, and is pinned so that a future admission at the separator is
+measured against it rather than surprised by it.
 
 Shape is not enough: the counting rule (Story 10.86 / SEC-21-slugfp)
 --------------------------------------------------------------------
@@ -368,6 +438,102 @@ _CLOSE_TAG_LITERAL = "</UNTRUSTED-DATA>"
 # redundancy with it.) A test pins U+2015 as caught *and* absent from the
 # derived class, so removing this list fails loudly.
 _DASH_CONFUSABLES = "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"
+
+# Glyph lookalikes of `<`, `/` and `>` that no *rule* over Unicode names can
+# reach (Story 10.88 / SEC-21-nameproxy). Every entry renders as the anchor
+# character it is listed under, and every one passed through `wrap`
+# byte-for-byte before this story.
+#
+# **Why this is a list where everything around it is a rule.** The anchors are
+# derived from Unicode *names*, and a name is a proxy for glyph shape that
+# fails two ways at once. Some lookalikes sit outside `_ANCHOR_CATEGORIES`
+# entirely, so their names are never read -- U+1438 CANADIAN SYLLABICS PA,
+# U+4E3F, U+30CE. Others are inside those categories and escape because their
+# names say nothing of a slash or a bracket -- CJK STROKE SP, PHILIPPINE SINGLE
+# PUNCTUATION, PRECEDES. Widening the category gate reaches **none** of them:
+# in all of Unicode 14.0 only U+A718 MODIFIER LETTER DOT SLASH and U+A71A
+# MODIFIER LETTER LOWER RIGHT CORNER ANGLE carry an anchor keyword in a letter
+# category, and neither renders as a delimiter. The name is the wrong proxy,
+# not the gate too narrow, so no rule expressible here closes this class.
+# `_DASH_CONFUSABLES` above is the same shape and the same argument: a derived
+# class with a hand list beside it, each pinned by test so neither can be
+# deleted quietly. Story 10.70's review rejected a hand-listed *replacement*
+# for a derivable class; this is a hand list for what no derivation reaches,
+# and the derived classes stay derived -- a test pins their four sizes at
+# 80 / 24 / 87 / 74 so a future widening of the rule cannot hide here.
+#
+# **Provenance.** The bulk is a mechanical extract of Unicode's own confusables
+# table -- UTS #39 `confusables.txt` for Unicode 14.0.0, SHA-256
+# `f901938af166c3afa471bd10c224b0979cd024340f290649e16b29f779d48bfe` -- keeping
+# every row whose *source* is a single codepoint and whose *target* is exactly
+# `003C`, `002F` or `003E`, then dropping the rows the derived classes already
+# admit (U+02C2, U+02C3, U+2039, U+203A, U+2044, U+2215, U+2571, U+276E,
+# U+276F, U+27CB, U+29F8, U+2F03). The table is **not** vendored: no lockfile
+# is touched, so the SEC-13/SEC-14 objection the ledger recorded against
+# carrying `confusables.txt` as a dependency does not apply to an extract in
+# source. To refresh, fetch
+# `https://www.unicode.org/Public/security/<version>/confusables.txt`, re-run
+# that filter for the interpreter's `unicodedata.unidata_version`, and
+# re-derive the drop list from the classes rather than reusing the one above.
+#
+# Four entries are **not** from that extract and say so in place. UTS #39 lists
+# neither the bare relation signs U+227A/U+227B nor two of the three CJK
+# strokes; all four were confirmed against this module to render as the anchor
+# and to pass through un-neutralized.
+#
+# **Checked and rejected**, so the boundary is stated rather than implied:
+# U+1434 CANADIAN SYLLABICS POO and U+1439 CANADIAN SYLLABICS PAA (the same
+# chevrons, carrying a dot); U+22B0/U+22B1 PRECEDES/SUCCEEDS UNDER RELATION and
+# U+2AAF/U+2AB0 PRECEDES/SUCCEEDS ABOVE SINGLE-LINE EQUALS SIGN (a second
+# stroke below the chevron); and the other thirty-three members of the CJK
+# Strokes block U+31C0-U+31E3, which render as hooks, verticals and
+# horizontals rather than as a rising stroke. None appears in the UTS #39 rows
+# either, which is the independent half of that judgement.
+#
+# Spelled as escapes so the source carries no ambiguous Unicode character
+# (`ruff`'s RUF001/RUF002), and keyed by the ASCII anchor each set stands for,
+# so an entry cannot be unioned into the wrong class without the key saying so.
+_GLYPH_LOOKALIKES = {
+    # U+1438 CANADIAN SYLLABICS PA --
+    #   category Lo, outside `_ANCHOR_CATEGORIES` so its name is never read.
+    # U+16B2 RUNIC LETTER KAUNA --
+    #   category Lo, outside `_ANCHOR_CATEGORIES` so its name is never read.
+    # U+227A PRECEDES --
+    #   category Sm, inside the gate; the name carries no anchor keyword. Not in UTS #39; from this story's probe.
+    # U+1D236 GREEK INSTRUMENTAL NOTATION SYMBOL-40 --
+    #   category So, inside the gate; the name carries no anchor keyword.
+    "<": "\u1438\u16b2\u227a\U0001d236",
+    # U+1735 PHILIPPINE SINGLE PUNCTUATION --
+    #   category Po, inside the gate; the name carries no anchor keyword.
+    # U+2041 CARET INSERTION POINT --
+    #   category Po, inside the gate; the name carries no anchor keyword.
+    # U+2CC6 COPTIC CAPITAL LETTER OLD COPTIC ESH --
+    #   category Lu, outside `_ANCHOR_CATEGORIES` so its name is never read.
+    # U+3033 VERTICAL KANA REPEAT MARK UPPER HALF --
+    #   category Lm, outside `_ANCHOR_CATEGORIES` so its name is never read.
+    # U+30CE KATAKANA LETTER NO --
+    #   category Lo, outside the gate; U+FF89 and U+32E8 fold onto it.
+    # U+31C0 CJK STROKE T --
+    #   category So, inside the gate; the name carries no anchor keyword. Not in UTS #39; from this story's probe.
+    # U+31D2 CJK STROKE P --
+    #   category So, inside the gate; the name carries no anchor keyword. Not in UTS #39; from this story's probe.
+    # U+31D3 CJK STROKE SP --
+    #   category So, inside the gate; the name carries no anchor keyword.
+    # U+4E3F CJK UNIFIED IDEOGRAPH-4E3F --
+    #   category Lo, outside the gate; U+2F03 KANGXI RADICAL SLASH folds onto it.
+    # U+1D23A GREEK INSTRUMENTAL NOTATION SYMBOL-47 --
+    #   category So, inside the gate; the name carries no anchor keyword.
+    "/": "\u1735\u2041\u2cc6\u3033\u30ce\u31c0\u31d2\u31d3\u4e3f\U0001d23a",
+    # U+1433 CANADIAN SYLLABICS PO --
+    #   category Lo, outside `_ANCHOR_CATEGORIES` so its name is never read.
+    # U+16F3F MIAO LETTER ARCHAIC ZZA --
+    #   category Lo, outside `_ANCHOR_CATEGORIES` so its name is never read.
+    # U+227B SUCCEEDS --
+    #   category Sm, inside the gate; the name carries no anchor keyword. Not in UTS #39; from this story's probe.
+    # U+1D237 GREEK INSTRUMENTAL NOTATION SYMBOL-42 --
+    #   category So, inside the gate; the name carries no anchor keyword.
+    ">": "\u1433\U00016f3f\u227b\U0001d237",
+}
 
 # Invisible/format codepoints that may be wedged into the delimiter to defeat
 # detection while rendering identically (Story 10.70 / SEC-21-zerowidth).
@@ -721,6 +887,14 @@ _CLOSE_ANGLES = _CLASSES.close_angles
 _DASHES = _CLASSES.dashes
 _LATIN_FORMS = _CLASSES.latin_forms
 
+# The hand list above, rendered as character-class bodies. Kept apart from
+# `_OPEN_ANGLES` and its two siblings rather than folded into
+# `_build_character_classes`: the derived membership has to stay assertable on
+# its own, or "the rule did not widen" becomes an unverifiable claim.
+_LOOKALIKE_BODIES = {
+    role: "".join(re.escape(char) for char in chars) for role, chars in _GLYPH_LOOKALIKES.items()
+}
+
 # A run of invisibles (allowed between the letters of the literal words), and a
 # run of invisibles-or-whitespace (allowed where `\s*` already sat).
 _INV = f"[{_INVISIBLES}]*"
@@ -793,9 +967,10 @@ def _interleave(word: str, *, capture_letters: bool) -> str:
 # class, and each is separated from the next by a mandatory single-character
 # class (an anchor, a letter, the separator). `_GAP` and `_INV` are built from
 # whitespace and invisibles, and every mandatory class is disjoint from both --
-# the ink class excludes them by construction and the anchor, dash and
-# separator classes are drawn only from visible punctuation/symbol categories
-# -- so no position can be consumed by two alternatives.
+# the ink class excludes them by construction, and the anchor, dash and
+# separator classes are drawn only from visible glyphs: the punctuation and
+# symbol categories, plus the enumerated letter lookalikes Story 10.88 added
+# at the three anchors -- so no position can be consumed by two alternatives.
 def _build_close_tag_pattern(*, capture_letters: bool) -> re.Pattern[str]:
     """Compile the closing-delimiter pattern, with or without letter groups.
 
@@ -807,9 +982,9 @@ def _build_close_tag_pattern(*, capture_letters: bool) -> re.Pattern[str]:
     spelling is what the tests build to assert the two find identical spans.
     """
     return re.compile(
-        f"[<{_OPEN_ANGLES}]"
+        f"[<{_OPEN_ANGLES}{_LOOKALIKE_BODIES['<']}]"
         + _GAP
-        + f"[/{_SOLIDI}]"
+        + f"[/{_SOLIDI}{_LOOKALIKE_BODIES['/']}]"
         + _GAP
         + _interleave("UNTRUSTED", capture_letters=capture_letters)
         + _GAP
@@ -820,7 +995,7 @@ def _build_close_tag_pattern(*, capture_letters: bool) -> re.Pattern[str]:
         + _GAP
         + _interleave("DATA", capture_letters=capture_letters)
         + _GAP
-        + f"[>{_CLOSE_ANGLES}]"
+        + f"[>{_CLOSE_ANGLES}{_LOOKALIKE_BODIES['>']}]"
     )
 
 
@@ -839,6 +1014,83 @@ def _build_close_tag_pattern(*, capture_letters: bool) -> re.Pattern[str]:
 # now escapes -- a deliberate trade, argued in `docs/tech-debt.md` and pinned by
 # test.
 _MIN_LATIN_LETTERS = 1
+
+# The same count, required of a span whose **anchor is a hand-listed glyph
+# lookalike** rather than ASCII or a derived-class member (Story 10.88 review
+# round).
+#
+# `k = 1` is the right bar for an anchor the *rule* admits, and the wrong one
+# for an anchor a *list* admits. Review measured why, and the payload is
+# ordinary Japanese apparel copy: with U+30CE admitted at the solidus,
+# `\u300a\u30ce\u534a\u8896T\u30b7\u30e3\u30c4\u5927\u4eba\u6c17-\u65b0\u4f5c\u79cb\u51ac\u300b` is
+# the delimiter's shape to the character -- and the Latin `T` of `T\u30b7\u30e3\u30c4`
+# lands at letter position three, where the delimiter's own `T` stands. One
+# incidental Latin letter therefore cleared `_MIN_LATIN_LETTERS` and a real
+# product title was rewritten and NFKC-folded on a read-to-rewrite path. That
+# is the identical false positive Story 10.87 measured and **reverted** its
+# admission for, and every one of the eighteen listed lookalikes carries the
+# same shape, not U+30CE alone.
+#
+# The alternative was to drop the katakana and ideograph entries, which the
+# card offered ("narrow the admission of \u30ce"). It is rejected because the
+# probe shows the false positive is a property of *any* listed anchor -- the
+# Canadian syllabics in Inuktitut copy and U+1735 in Baybayin have it too --
+# so dropping the Japanese entries would leave the class open while pretending
+# it was closed.
+#
+# **The value is the smallest one that clears the measured ceiling, and that
+# rule is what picks it.** Every increment above the ceiling hands an attacker
+# a free substitution, so the bar is set at *one more than the highest score
+# realistic copy reaches* rather than at a comfortable-looking number. A first
+# cut of this fix used a majority of the thirteen and the adversarial verifier
+# broke the reasoning behind it: at seven, a forged closer needs only seven
+# homoglyph letters plus the anchor -- eight substitutions against the thirteen
+# Story 10.86 already surrendered -- so the raised bar made forgery *cheaper*
+# than the case the project had accepted, in a more legible spelling. At three
+# it costs twelve against thirteen, a discount of one.
+#
+# **Why three is the ceiling plus one.** Each letter position spells `[Xx` +
+# the *non-ASCII* ink class`]`, so an ASCII character standing at one must be
+# that position's own letter -- every other ASCII letter makes the span not
+# match at all, which a sweep of all 325 wrong-letter substitutions confirms.
+# A shaped span's Latin count is therefore the number of incidental Latin
+# characters that *coincidentally* equal the delimiter's own letter where they
+# stand, and a second incidental Latin letter that does *not* coincide breaks
+# the match outright. That is also why Latin-script copy cannot defeat the
+# bar: an ordinary Latin slug is not delimiter-shaped at all unless it
+# substantially spells the delimiter. Measured to match: 50,000 synthetic
+# katakana-and-kanji titles carrying up to four incidental Latin letters gave
+# 10,547 shaped spans whose highest score was 2, and the sharpest real witness
+# -- Japanese apparel copy carrying both the `T` of `T\u30b7\u30e3\u30c4` at position
+# three and a colour suffix `A` at position thirteen -- also scores 2. The
+# corpus pins that ceiling and a test pins this constant to it plus one, so
+# neither can drift alone. `_MIN_LATIN_LETTERS` itself is untouched, so
+# nothing Story 10.86 decided moves.
+#
+# What it costs, stated as the attacker's bill rather than as a comparison
+# that flattered it: a forgery spelling a listed lookalike at an anchor **and**
+# eleven or more of the thirteen letters in non-Latin homoglyphs is no longer
+# neutralized -- twelve substitutions, against the thirteen Story 10.86
+# already surrendered. It is **not** "strictly harder" than that case, as a
+# first draft of this comment claimed; the lookalike anchor is spent *instead
+# of* two homoglyph letters, not on top of thirteen. One substitution of
+# discount is the whole price of closing the anchor class, and the fence stays
+# intact either way -- see the residual in `docs/tech-debt.md`.
+_MIN_LATIN_LETTERS_LOOKALIKE_ANCHOR = 3
+
+# The listed lookalikes as sets, per anchor position, for the predicate above.
+# Keyed the same way as `_GLYPH_LOOKALIKES` so an entry cannot be consulted for
+# a position it was not listed under.
+_LOOKALIKES_AT = {role: frozenset(chars) for role, chars in _GLYPH_LOOKALIKES.items()}
+
+# One character of the gap class, used to find the solidus inside a matched
+# span. The pattern puts a `_GAP` run between the opener and the solidus, and
+# every other class in the pattern is disjoint from it, so the first character
+# after the opener that this does *not* match is the solidus -- which is why
+# the anchors can be read off the matched text rather than captured. Capturing
+# them would add groups to `match.groups()`, which `_latin_letter_count` zips
+# strictly against the thirteen letters, and the mismatch would be silent.
+_GAP_CHAR = re.compile(_GAP.removesuffix("*"))
 
 _CLOSE_TAG_PATTERN = _build_close_tag_pattern(capture_letters=True)
 
@@ -885,16 +1137,51 @@ def _latin_letter_count(match: re.Match[str]) -> int:
     )
 
 
+def _rests_on_a_listed_lookalike(match: re.Match[str]) -> bool:
+    """Whether one of the span's three anchors is a hand-listed lookalike.
+
+    The anchors are read off the matched text rather than captured: the opener
+    is its first character, the closer its last, and the solidus is the first
+    character after the opener that is not in the gap class -- the pattern puts
+    a `_GAP` run there and every other class is disjoint from it. Capture
+    groups would have been the obvious alternative and are deliberately not
+    used, because :func:`_latin_letter_count` zips ``match.groups()`` strictly
+    against the thirteen letters and three more groups would break that
+    correspondence silently.
+
+    A lookalike standing at a *letter* position deliberately does not count.
+    It is admitted there by the broad ink class, not by the hand list, so it
+    carries none of the weakness the raised bar exists to answer -- and
+    counting it would relax the predicate for a span whose anchors are all
+    ASCII, which is the one direction this must never move.
+    """
+    span = match.group(0)
+    solidus = next(char for char in span[1:] if not _GAP_CHAR.match(char))
+    return (
+        span[0] in _LOOKALIKES_AT["<"]
+        or solidus in _LOOKALIKES_AT["/"]
+        or span[-1] in _LOOKALIKES_AT[">"]
+    )
+
+
 def _is_forged(match: re.Match[str]) -> bool:
     """Whether a delimiter-shaped span is a forgery rather than ordinary copy.
 
-    See :data:`_MIN_LATIN_LETTERS` for why the bar is one letter. This
-    predicate must gate **every** point that acts on a match -- both of
-    :func:`wrap`'s scans and the substitution callback -- or a clean value comes
-    back NFKC-folded with no backslash, which is worse than the false positive
-    it was meant to fix because nothing marks the rewrite.
+    See :data:`_MIN_LATIN_LETTERS` for why the bar is one letter when the
+    anchors are ASCII or come from a derived class, and
+    :data:`_MIN_LATIN_LETTERS_LOOKALIKE_ANCHOR` for why a span resting on a
+    hand-listed lookalike has to clear a higher bar -- one more than the highest
+    count realistic copy reaches -- instead. This predicate must gate **every** point that acts on a match --
+    both of :func:`wrap`'s scans and the substitution callback -- or a clean
+    value comes back NFKC-folded with no backslash, which is worse than the
+    false positive it was meant to fix because nothing marks the rewrite.
     """
-    return _latin_letter_count(match) >= _MIN_LATIN_LETTERS
+    required = (
+        _MIN_LATIN_LETTERS_LOOKALIKE_ANCHOR
+        if _rests_on_a_listed_lookalike(match)
+        else _MIN_LATIN_LETTERS
+    )
+    return _latin_letter_count(match) >= required
 
 
 def _has_forged_match(text: str) -> bool:
