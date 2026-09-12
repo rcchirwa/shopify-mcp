@@ -33,7 +33,14 @@ def _classify_no_fetch(stripped: str) -> str | None:
         if not stripped[len(_VARIANT_GID_PREFIX) :]:
             raise ValueError(f"Malformed variant GID (empty tail): {stripped!r}")
         return stripped
-    if stripped.isdigit():
+    if stripped.isascii() and stripped.isdigit():
+        # `.isascii()` guard: `str.isdigit()` is Unicode-aware and returns True
+        # for superscript ('²'), fullwidth (U+FF10..U+FF19) and Arabic-Indic
+        # ('٤٢') digits, which would wrap into a malformed
+        # `gid://shopify/ProductVariant/²`. Mirrors the same guard added to
+        # `_resolve_product` by Story 10.64 (T-9.5-numeric-handle). Non-ASCII
+        # digits fall through to the SKU-lookup path below and simply don't
+        # resolve.
         return to_gid("ProductVariant", stripped)
     return None
 

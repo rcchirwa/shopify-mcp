@@ -94,6 +94,34 @@ def test_with_variants_empty_tail_gid_raises():
         )
 
 
+# ---------------------------------------------------------------------------
+# Story 10.66 (T-9.5-unicode-digits) — `_classify_no_fetch`'s bare
+# `stripped.isdigit()` was Unicode-aware, so non-ASCII digits wrapped into a
+# malformed GID (`gid://shopify/ProductVariant/²`) instead of falling through
+# to the SKU-lookup path. Mirrors Story 10.64's fix at
+# `_product_resolver.py::_resolve_product`.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "²",  # superscript two
+        "\uff12\uff10",  # fullwidth 20, escaped to satisfy ruff RUF001
+        "٤٢",  # Arabic-Indic 42
+    ],
+)
+def test_with_variants_non_ascii_digits_do_not_wrap_into_a_gid(value):
+    # Falls through to the SKU-lookup path instead of `to_gid`; since it
+    # isn't a real SKU on the (empty) variants list, that lookup raises with
+    # the raw value in the message rather than silently succeeding on a
+    # malformed GID.
+    with pytest.raises(ValueError) as exc:
+        resolve_variant_ids_with_variants([value], variants=[], product_gid=PRODUCT_GID)
+    assert value in str(exc.value)
+    assert "No variant on product" in str(exc.value)
+
+
 def test_with_variants_mixed_inputs_preserve_order():
     out = resolve_variant_ids_with_variants(
         ["SKU-A", "42", "gid://shopify/ProductVariant/9", "SKU-B"],
