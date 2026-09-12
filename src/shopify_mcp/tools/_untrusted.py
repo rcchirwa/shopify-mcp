@@ -425,57 +425,91 @@ insertion at every one of the seventeen positions emits exactly one literal
 closer, the wrapper's own. Unlike the zero-width and U+0338 cases this is
 model-interpretation risk, never a breakout, which is the weaker claim.
 
-**The definitional answer is no, on this module's own test.**
-:func:`_interleave` draws the line: a zero-width wedge renders
-pixel-identical and is a confusable, whereas ``UN TRUSTED`` reads visibly
-different and is not. A combining mark *adds ink* rather than replacing a
-glyph with one that renders identically, so an acute on the ``S`` falls on the
-``UN TRUSTED`` side of that line. Story 10.71's "SEC-21 already accepted
-model-interpretation risk" argument does not carry across, because everything
-it accepted -- dash confusables, bracket and slash confusables, homoglyph
-letters -- is a *replacement* that renders identically.
+**The definitional question, and why the obvious answer is wrong.** The first
+cut of this story declined on rendering: a zero-width wedge renders
+pixel-identical and is a confusable, ``UN TRUSTED`` reads visibly different and
+is not, so a mark -- which *adds* ink -- falls on the ``UN TRUSTED`` side. All
+three reviewers falsified that, and it is withdrawn rather than softened:
 
-**What the measurements say.**
+* An acute on the ``S`` is **already neutralized**. U+0301 is one of the eight
+  that NFKC-compose at that placement, so ``UNTRUSTED`` with an acute on the
+  ``S`` -- the very example the argument leaned on, and the string Story
+  10.71's entry condition asks about -- is caught today. The example proved the
+  opposite of what it was cited for.
+* The thirteen letter positions do not implement a rendering rule at all.
+  :data:`_INK` is a **complement**, so a snowman, an emoji or a Thai consonant
+  standing in for a letter is neutralized just as readily as a homoglyph. This
+  module keys on the delimiter's *shape*, not on whether a character renders
+  identically -- as Story 10.71's own entry says in as many words.
+* And the consumer is a model reading codepoints, not an eye reading glyphs, so
+  a rendering test is the wrong test to begin with.
+
+**What actually decides it: every admission costs the Story 10.87 trade,
+measured.** Story 10.86's counting rule is what protects non-Latin copy -- a
+slug in one non-Latin script holds none of the thirteen letters and scores
+zero. Story 10.87 found the shape that defeats it and declined for it: ordinary
+Japanese apparel copy carries an incidental Latin letter, which scores one,
+clears :data:`_MIN_LATIN_LETTERS`, and gets the title rewritten and NFKC-folded
+on a read-to-rewrite path.
+
+Marks put every mark-bearing script into that same shape. Devanagari, Thai,
+Arabic and Hebrew product copy is non-ASCII throughout, so the ink class admits
+every character at a letter position, and Latin letters are ordinary in all
+four -- sizes, ``T-shirt``, brand names. Measured under an admission, at all
+thirteen Latin positions in all four scripts: **52 of 52 delimiter-shaped
+titles clear the counting rule and are rewritten**, on the interior-only
+admission and on the gap-inclusive one alike. The control is what makes it
+attributable -- the same title with no Latin letter is equally
+delimiter-shaped and is *not* forged, so the single incidental character is
+doing it.
+
+That is the trade Story 10.63 settled the other way and Story 10.87 declined
+three days earlier, reached here through a different door. The residual it
+would buy never breaches the fence; the cost is real product copy rewritten at
+the containment boundary.
+
+**What the other three approaches cost, measured rather than assumed.**
 
 * *Approach 3 (normalize to NFC first) closes nothing.* The card estimated
   "~271 compose"; the real figure is 8 at the ``S`` placement, 22 at the ``U``
   and 18 at the ``A`` -- and every one of those is **already caught** by the
-  ink class on the normalized copy. NFC buys exactly zero additional coverage,
-  rather than the partial coverage the card assumed.
+  ink class on the normalized copy. NFC buys exactly zero additional coverage.
 
-* *Approaches 1 and 2 are incomplete by construction.* Both admit marks only
-  to the between-letters run, which the card's step 4 requires and which its
-  Evidence block makes look sufficient by sweeping only letter interiors. The
-  three :data:`_GAP` positions -- after ``<``, after ``/`` and after the
-  separator -- leak just as freely, at 2,144, 2,145 and 2,145, and widening
-  ``_GAP`` is what that step forbids. Closing the interior alone moves the
-  forger one character to the left at no cost.
+* *Approaches 1 and 2 leave the gap positions open.* Both admit marks only to
+  the between-letters run, which the card's step 4 requires. The three
+  :data:`_GAP` positions -- after ``<``, after ``/`` and after the separator --
+  leak just as freely, at 2,144, 2,145 and 2,145, so an interior-only
+  admission moves the forger one character to the left at no cost. This is a
+  reason the card's own prescription is incomplete, not a reason against a
+  closure: widening ``_GAP`` too is available, and is what "the gap-inclusive
+  admission" above refers to.
 
-* *Written as the card spells them, they also backtrack catastrophically.*
-  The no-backtracking argument above rests on every quantified run being
-  disjoint from the mandatory classes beside it. **2,145 of the 2,408 marks
-  are in :data:`_INK`** -- that class is a complement, so it admits them by
-  construction -- meaning a mark between two letters can be consumed by the
-  run or by either letter position. Measured on the pattern this module's own
+* *Written with a plain run, they also backtrack catastrophically.* The
+  no-backtracking argument above rests on every quantified run being disjoint
+  from the mandatory classes beside it. **2,145 of the 2,408 marks are in**
+  :data:`_INK` -- that class is a complement, so it admits them by
+  construction -- meaning a mark between two letters can be consumed by the run
+  or by either letter position. Measured on the pattern this module's own
   builder assembles with ``_INV`` widened: a near-miss of N combining acutes
-  after ``</`` costs 0.4 ms at N=16, 17 ms at N=24 and 134 ms at N=30,
-  doubling every two characters, which puts a 60-character run past an hour.
-  The production pattern is unmoved at any length.
+  after ``</`` costs 0.4 ms at N=16, 17 ms at N=24 and 134 ms at N=30, doubling
+  every two characters, which puts a 60-character run past an hour. The
+  production pattern is unmoved at any length.
 
-  **This is a cost of the naive run, not a bar to the approach, and the
-  distinction is recorded rather than glossed.** An *atomic* run --
-  ``(?>[marks]*)``, available since Python 3.11, this package's
-  ``requires-python`` floor -- cannot give characters back, so the ambiguity
-  never yields a second parse. Built and measured: the blowup disappears
-  entirely (0.001 ms at N=60), all three interior placements close for all
-  2,408 marks, and every value in the legitimate mark-bearing corpus stays
-  unmatched. So a working admission *does* exist, and the ledger's entry
-  condition points at it.
+  **An atomic run removes that entirely**, and the distinction is recorded
+  rather than glossed: ``(?>[marks]*)``, available since Python 3.11 (this
+  package's ``requires-python`` floor), cannot give characters back, so the
+  ambiguity never yields a second parse. Built and measured: 0.001 ms at N=60,
+  and all three interior placements close for all 2,408 marks. So the blowup is
+  a property of the spelling, not of the approach.
 
-What decides this card is therefore the definitional call above and not
-feasibility. Admitting a visible diacritic while :func:`_interleave` refuses a
-visible space would leave this module's stated rule contradicting itself, and
-the residual it would buy never breaches the fence. The residual is recorded in
+  The one rescue that does not work, recorded so it is not retried: dropping
+  marks from :data:`_INK` also restores disjointness, but the ink class is
+  exactly what catches a mark *substituted for* a letter, so that placement
+  would go from 263 escaping to all 2,408.
+
+So feasibility was never the constraint -- an atomic run works -- and neither
+is rendering. The constraint is the false positive, and it is the same one the
+two stories either side of this decided on. The residual is recorded in
 ``docs/tech-debt.md`` with its entry condition, and pinned by test at every
 position so a future attempt is measured against these numbers rather than
 surprised by them.
@@ -999,15 +1033,14 @@ def _interleave(word: str, *, capture_letters: bool) -> str:
     **Combining marks are deliberately not admitted here** (Story 10.85 /
     SEC-21-marks). The run holds invisibles only, so a mark wedged between two
     letters is not matched and such a value comes back byte-for-byte -- a known,
-    recorded residual rather than an oversight. The whitespace argument above is
-    the direct precedent: a mark *adds* visible ink instead of replacing a glyph
-    with one that renders identically, which puts it on the ``UN TRUSTED`` side
-    of that line. A naive admission would also cost the pattern its linearity,
-    since 2,145 of the 2,408 marks are in :data:`_INK` and a plain run
-    overlapping the letter positions beside it backtracks combinatorially --
-    though an atomic run removes that, so it is a cost of the spelling rather
-    than a reason. Both halves are measured in the module docstring's
-    combining-mark section.
+    recorded residual rather than an oversight. The reason is *not* the
+    whitespace argument above, which reads on rendering: that framing was tried
+    and withdrawn, because the letter positions below admit any ink character at
+    all and so implement no rendering rule. It is that every admission makes
+    ordinary mark-bearing script copy carrying one incidental Latin letter
+    delimiter-shaped and forged -- 52 of 52 measured across four scripts, the
+    same trade Story 10.87 declined. See the module docstring's combining-mark
+    section.
 
     Each letter position also admits any ink-rendering non-ASCII character
     (Story 10.71 / SEC-21-confusables), which is what covers homoglyph letters
