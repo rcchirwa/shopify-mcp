@@ -130,11 +130,13 @@ allowing the byte-for-byte return. An exhaustive sweep of every
 single-codepoint suffix confirmed U+0338 is the only such character, but the
 guard is written against the general property rather than that one codepoint.
 
-This is also why combining marks are absent from :data:`_INVISIBLES` yet are
-not simply dismissed: a combining mark does not wedge invisibly into the
-delimiter the way a zero-width character does, so it does not belong in the
-character class -- it attacks the *normalization step* instead, and is
-answered there.
+This is also why combining marks are absent from :data:`_INVISIBLES`: a
+combining mark does not wedge invisibly into the delimiter the way a
+zero-width character does, so it does not belong in that class. Story 10.70
+added that a mark therefore attacks the *normalization step* instead and is
+answered there, which was incomplete -- a mark also defeats *detection*, by
+sitting in a position no class admits. Story 10.85 examined closing that and
+declined; see the combining-mark section below.
 
 Visible-glyph confusables and homoglyph letters (Story 10.71 /
 SEC-21-confusables)
@@ -236,7 +238,11 @@ see the enumerated-list section below. What remains:
   story's visible-glyph one. The remainder are the 263 default-ignorable
   marks (invisible, and admitted by :data:`_INVISIBLES`) and the eight that
   NFKC-compose with the preceding ``S`` into a precomposed letter, which the
-  ink class then catches on the normalized copy.
+  ink class then catches on the normalized copy. **Story 10.85 examined
+  closing this and declined**, so it stays open by decision rather than by
+  deferral -- see the combining-mark section above for the three measurements
+  behind that, and note the leak is not confined to the letter interiors the
+  sentence above describes.
 * *Separator homoglyphs outside both lists: the horizontal-bar family.* The
   named case is U+30FC KATAKANA-HIRAGANA PROLONGED SOUND MARK -- a dash to the
   eye, a letter (``Lm``) to Unicode, with a name that says nothing of a dash --
@@ -403,6 +409,76 @@ cheaper spellings. The trade is a fourth residual:
   Only a confusables table can tell it from an ordinary non-Latin slug -- the
   same cost rejected above, and the same mechanism that would close the first
   residual. Pinned by a test whose docstring records which way it was decided.
+
+Combining marks between the letters, declined (Story 10.85 / SEC-21-marks)
+-------------------------------------------------------------------------
+A combining mark placed *between* two letters of ``UNTRUSTED`` or ``DATA``
+renders as a diacritic on the preceding letter, and is admitted by neither
+:data:`_INVISIBLES` (it is not invisible) nor a letter position (already
+occupied by the letter it decorates). Measured over the whole category:
+2,123 of the 2,408 Mn/Mc/Me codepoints come back byte-for-byte after the
+leading ``U``, 2,137 after the ``S``, 2,127 after the ``A`` of ``DATA``.
+
+**The fence is intact, at every position.** A mark is not the ASCII character
+it decorates, so nothing terminates the untrusted region early -- every
+insertion at every one of the seventeen positions emits exactly one literal
+closer, the wrapper's own. Unlike the zero-width and U+0338 cases this is
+model-interpretation risk, never a breakout, which is the weaker claim.
+
+**The definitional answer is no, on this module's own test.**
+:func:`_interleave` draws the line: a zero-width wedge renders
+pixel-identical and is a confusable, whereas ``UN TRUSTED`` reads visibly
+different and is not. A combining mark *adds ink* rather than replacing a
+glyph with one that renders identically, so an acute on the ``S`` falls on the
+``UN TRUSTED`` side of that line. Story 10.71's "SEC-21 already accepted
+model-interpretation risk" argument does not carry across, because everything
+it accepted -- dash confusables, bracket and slash confusables, homoglyph
+letters -- is a *replacement* that renders identically.
+
+**What the measurements say.**
+
+* *Approach 3 (normalize to NFC first) closes nothing.* The card estimated
+  "~271 compose"; the real figure is 8 at the ``S`` placement, 22 at the ``U``
+  and 18 at the ``A`` -- and every one of those is **already caught** by the
+  ink class on the normalized copy. NFC buys exactly zero additional coverage,
+  rather than the partial coverage the card assumed.
+
+* *Approaches 1 and 2 are incomplete by construction.* Both admit marks only
+  to the between-letters run, which the card's step 4 requires and which its
+  Evidence block makes look sufficient by sweeping only letter interiors. The
+  three :data:`_GAP` positions -- after ``<``, after ``/`` and after the
+  separator -- leak just as freely, at 2,144, 2,145 and 2,145, and widening
+  ``_GAP`` is what that step forbids. Closing the interior alone moves the
+  forger one character to the left at no cost.
+
+* *Written as the card spells them, they also backtrack catastrophically.*
+  The no-backtracking argument above rests on every quantified run being
+  disjoint from the mandatory classes beside it. **2,145 of the 2,408 marks
+  are in :data:`_INK`** -- that class is a complement, so it admits them by
+  construction -- meaning a mark between two letters can be consumed by the
+  run or by either letter position. Measured on the pattern this module's own
+  builder assembles with ``_INV`` widened: a near-miss of N combining acutes
+  after ``</`` costs 0.4 ms at N=16, 17 ms at N=24 and 134 ms at N=30,
+  doubling every two characters, which puts a 60-character run past an hour.
+  The production pattern is unmoved at any length.
+
+  **This is a cost of the naive run, not a bar to the approach, and the
+  distinction is recorded rather than glossed.** An *atomic* run --
+  ``(?>[marks]*)``, available since Python 3.11, this package's
+  ``requires-python`` floor -- cannot give characters back, so the ambiguity
+  never yields a second parse. Built and measured: the blowup disappears
+  entirely (0.001 ms at N=60), all three interior placements close for all
+  2,408 marks, and every value in the legitimate mark-bearing corpus stays
+  unmatched. So a working admission *does* exist, and the ledger's entry
+  condition points at it.
+
+What decides this card is therefore the definitional call above and not
+feasibility. Admitting a visible diacritic while :func:`_interleave` refuses a
+visible space would leave this module's stated rule contradicting itself, and
+the residual it would buy never breaches the fence. The residual is recorded in
+``docs/tech-debt.md`` with its entry condition, and pinned by test at every
+position so a future attempt is measured against these numbers rather than
+surprised by them.
 
 The payload is always preserved (neutralized, not dropped) so nothing is
 silently lost; non-string values are coerced via ``str`` exactly as the
@@ -919,6 +995,19 @@ def _interleave(word: str, *, capture_letters: bool) -> str:
     invisible used *as* the separator (``</UNTRUSTED<SHY>DATA>``) renders as
     ``</UNTRUSTEDDATA>``, which is missing the visible hyphen and so is not a
     confusable of the real delimiter.
+
+    **Combining marks are deliberately not admitted here** (Story 10.85 /
+    SEC-21-marks). The run holds invisibles only, so a mark wedged between two
+    letters is not matched and such a value comes back byte-for-byte -- a known,
+    recorded residual rather than an oversight. The whitespace argument above is
+    the direct precedent: a mark *adds* visible ink instead of replacing a glyph
+    with one that renders identically, which puts it on the ``UN TRUSTED`` side
+    of that line. A naive admission would also cost the pattern its linearity,
+    since 2,145 of the 2,408 marks are in :data:`_INK` and a plain run
+    overlapping the letter positions beside it backtracks combinatorially --
+    though an atomic run removes that, so it is a cost of the spelling rather
+    than a reason. Both halves are measured in the module docstring's
+    combining-mark section.
 
     Each letter position also admits any ink-rendering non-ASCII character
     (Story 10.71 / SEC-21-confusables), which is what covers homoglyph letters
