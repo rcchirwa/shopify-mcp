@@ -7160,6 +7160,29 @@ def test_s910_resolve_owner_gid_rejects_numeric_as_ambiguous():
     assert fc.calls == []
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "²",  # superscript two
+        "\uff14\uff12",  # fullwidth 42, escaped to satisfy ruff RUF001
+        "٤٢",  # Arabic-Indic 42
+    ],
+)
+def test_s910_resolve_owner_gid_non_ascii_digits_fall_through_to_handle(value):
+    # Story 10.66 (T-9.5-unicode-digits): a bare `.isdigit()` was
+    # Unicode-aware, so these were rejected as "ambiguous" — wrong, since
+    # they are invalid Shopify identifiers, not ambiguous ones. They now
+    # fall through to the same handle path as any other non-digit string
+    # and get a real not-found error instead of the stale "ambiguous" text.
+    fc = FakeClient([{"productByHandle": None}])
+    gid, ot, err = catalog_hygiene._resolve_owner_gid_for_metafield(fc, value)
+    assert gid is None
+    assert ot is None
+    assert err is not None
+    assert "ambiguous" not in err
+    assert fc.calls[0][1] == {"handle": value}
+
+
 def test_s910_resolve_owner_gid_accepts_product_handle():
     # Product handle → triggers _resolve_product_gid → productByHandle query.
     fc = FakeClient([{"productByHandle": {"id": _S910_PRODUCT_GID, "title": "Test"}}])

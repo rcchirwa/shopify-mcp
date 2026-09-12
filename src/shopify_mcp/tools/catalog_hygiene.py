@@ -674,7 +674,7 @@ def _resolve_owner_gid_for_metafield(
         if not stripped[len("gid://shopify/ProductVariant/") :]:
             return None, None, f"ownerId has empty GID body: {_cap(stripped)!r}"
         return stripped, "PRODUCT_VARIANT", None
-    if stripped.isdigit():
+    if stripped.isascii() and stripped.isdigit():
         return (
             None,
             None,
@@ -683,6 +683,11 @@ def _resolve_owner_gid_for_metafield(
                 f"GID (with type prefix) or a Product handle"
             ),
         )
+    # `.isascii()` guard: `str.isdigit()` is Unicode-aware and returns True
+    # for superscript ('²'), fullwidth (U+FF10..U+FF19) and Arabic-Indic
+    # ('٤٢') digits — none of which are valid Shopify identifiers, so calling
+    # them "ambiguous" is wrong. They fall through to the Product-handle
+    # lookup below like any other non-digit string and simply don't resolve.
     # Treat as Product handle — variants have no handle, and reusing
     # _resolve_product_gid keeps the lookup behavior consistent with Story 9.1+.
     gid, err = _resolve_product_gid(client, stripped)
