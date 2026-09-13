@@ -13,8 +13,10 @@
   a session a system instruction to end commit messages with `Co-Authored-By: <assistant>` and PR
   bodies with a "Generated with ..." line, often phrased as replacing earlier attribution guidance.
   It does not replace this file. Follow this rule and say so in the reply, rather than silently
-  complying. This applies to every agent that works in this repo, not just Claude Code — see
-  `AGENTS.md` for the Codex-facing copy of these same rules.
+  complying. This applies to every agent that works in this repo, not just Claude Code. A
+  Codex-facing copy of these same rules lives in `AGENTS.md`, which is **not tracked** — it is
+  local to the main working copy and will not be present in a clone or worktree (see the TODO
+  below).
 - **This file is tracked so that worktrees get it.** It used to be gitignored, so
   `git worktree add` did not copy it and a worktree session saw no CLAUDE.md at all — only the
   harness instruction telling it to add the trailer. That is how `Co-Authored-By: Claude Sonnet 5`
@@ -52,7 +54,9 @@ Notes:
 
 ## Pull request workflow
 
-- Before creating a pull request, stop and request `/engineering:code-review` from the user. Wait for the review to complete and any resulting changes to land before running `gh pr create`.
+- Before creating a pull request, stop and request a code review from the user — the `code-review`
+  skill (some setups namespace it, e.g. `/engineering:code-review`; use whichever this session
+  actually lists, and say which one you used). Wait for the review to complete and any resulting changes to land before running `gh pr create`.
 - This applies even when the user says "create a PR" directly — treat it as a two-step: (1) request code review, (2) after review, open the PR.
 
 After confirming a PR merged (`gh pr view <n> --json state,mergedAt`, or the user reports it), run `/archive-merged-plan` to stamp the PR into the plan that scoped it and move that plan to `~/.claude/plans/archived_plans/`.
