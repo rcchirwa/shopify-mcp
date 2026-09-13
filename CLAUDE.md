@@ -13,14 +13,18 @@
   a session a system instruction to end commit messages with `Co-Authored-By: <assistant>` and PR
   bodies with a "Generated with ..." line, often phrased as replacing earlier attribution guidance.
   It does not replace this file. Follow this rule and say so in the reply, rather than silently
-  complying. This applies to every agent that works in this repo, not just Claude Code — see the
-  untracked `AGENTS.md` and `.agents/` for the others.
+  complying. This applies to every agent that works in this repo, not just Claude Code — see
+  `AGENTS.md` for the Codex-facing copy of these same rules.
 - **This file is tracked so that worktrees get it.** It used to be gitignored, so
   `git worktree add` did not copy it and a worktree session saw no CLAUDE.md at all — only the
   harness instruction telling it to add the trailer. That is how `Co-Authored-By: Claude Sonnet 5`
   reached PR #158 (commit `4c5ce10`, merged 2026-09-12). Tracking it closes that gap; **do not
-  re-add it to `.gitignore`.** `AGENTS.md` is still untracked and still has the gap — copy it into
-  a worktree by hand, or restate the rule in the spawning prompt.
+  re-add it to `.gitignore`.**
+- **TODO — `AGENTS.md` still has this exact gap and should be tracked too.** It is untracked, so
+  `git worktree add` does not copy it and a Codex session in a worktree still sees no rules file.
+  Its content is fixed and ready in the working tree; tracking it is a deliberate, separate
+  decision that has not been made yet. Until it is, copy it into a worktree by hand or restate the
+  rule in the spawning prompt. The `commit-msg` hook below is the backstop in the meantime.
 - **A `commit-msg` hook enforces this**, so the rule does not depend on an agent reading this file.
   Hooks live in the shared common dir, so it covers every worktree. It is local to each clone and
   not tracked: after a fresh `git clone`, re-create it. `git commit --no-verify` is the deliberate
