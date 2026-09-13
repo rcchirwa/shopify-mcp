@@ -26,11 +26,16 @@
   `git worktree add` does not copy it and a Codex session in a worktree still sees no rules file.
   Its content is fixed and ready in the working tree; tracking it is a deliberate, separate
   decision that has not been made yet. Until it is, copy it into a worktree by hand or restate the
-  rule in the spawning prompt. The `commit-msg` hook below is the backstop in the meantime.
-- **A `commit-msg` hook enforces this**, so the rule does not depend on an agent reading this file.
-  Hooks live in the shared common dir, so it covers every worktree. It is local to each clone and
-  not tracked: after a fresh `git clone`, re-create it. `git commit --no-verify` is the deliberate
-  override.
+  rule in the spawning prompt. The CI gate below covers commits either way.
+- **A `commit-msg` hook and a CI gate enforce this**, so the rule does not depend on an agent
+  reading this file. The check itself is `.githooks/ai-attribution-check` — one copy, called by
+  both, because two copies drift and drift is the defect this rule exists to prevent.
+  - **Hook (convenience):** `.githooks/commit-msg`, tracked. Git never auto-installs hooks, so
+    each clone opts in once: `git config core.hooksPath .githooks`. `git commit --no-verify`
+    skips it.
+  - **CI (the actual gate):** the `commit-messages` job checks every commit a PR adds to `main`.
+    No per-clone setup, and `--no-verify` cannot skip it. Verified against commit `4c5ce10` — the
+    one that leaked a trailer into PR #158 — which this gate rejects.
 - AI collaboration is recorded in this file only, not in git history.
 
 ## Shopify Admin API scopes

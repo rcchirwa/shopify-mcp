@@ -1,0 +1,68 @@
+#!/bin/sh
+#
+# Exits non-zero if the commit message carries AI-assistant attribution.
+# Reads the message from the file named by $1, or from stdin if $1 is absent.
+#
+# This is the ONLY copy of the check. .githooks/commit-msg calls it for fast
+# local feedback; the `commit-messages` CI job calls it for every commit a PR
+# adds. Two copies of a rule drift -- that drift is the bug this whole change
+# set exists to fix -- so do not inline this logic anywhere else.
+#
+# Portability: word boundaries are (^|[^[:alnum:]])...([^[:alnum:]]|$), not
+# BSD's [[:<:]]..[[:>:]], which GNU grep rejects. A rejected pattern would make
+# grep exit non-zero with no output and silently pass everything, so the
+# self-test below fails closed instead.
+
+if [ -n "$1" ]; then
+  [ -r "$1" ] || { echo "ai-attribution-check: cannot read '$1'" >&2; exit 2; }
+  RAW=$(cat "$1")
+else
+  RAW=$(cat)
+fi
+
+B='(^|[^[:alnum:]])'
+E='([^[:alnum:]]|$)'
+
+# Broad list: only ever applied to a `Co-Authored-By:` line, where a bare
+# product word is unambiguously attribution.
+NAMES="${B}(claude|codex|chatgpt|openai|anthropic|copilot|cursor|gemini|bard|devin|windsurf|aider|opus|sonnet|haiku|gpt-[0-9])${E}"
+
+# Narrow list, and the name must directly follow "generated with". Ambiguous
+# words are deliberately absent: this repo's GraphQL pagination code is full of
+# "cursor", so "...generated with cursor from the last edge" is a real commit
+# message that must not be blocked. Trade: a literal "Generated with Cursor"
+# footer is not caught; the trailer check still catches Cursor attribution.
+FOOTER='generated with[[:space:]]*\[?[[:space:]]*(claude|codex|chatgpt|openai|anthropic|copilot|gemini|devin|windsurf|aider)'
+
+if ! printf 'claude\n' | grep -qiE "$NAMES" \
+   || printf 'claudia\n' | grep -qiE "$NAMES" \
+   || ! printf 'Generated with [Claude Code]\n' | grep -qiE "$FOOTER" \
+   || printf 'generated with cursor positions\n' | grep -qiE "$FOOTER"; then
+  echo "ai-attribution-check: self-test FAILED -- this grep does not support the" >&2
+  echo "patterns this check relies on, so it cannot verify the message. Failing" >&2
+  echo "closed rather than passing it unchecked." >&2
+  exit 2
+fi
+
+# Comment lines are discussion, not attribution; git strips them after the hook runs.
+BODY=$(printf '%s\n' "$RAW" | grep -v '^[[:space:]]*#')
+
+# Anchored to the trailer key. users.noreply.github.com is NOT matched -- that
+# is a legitimate human address.
+BAD_TRAILER=$(printf '%s\n' "$BODY" \
+  | grep -iE '^[[:space:]]*co-authored-by:' \
+  | grep -iE "$NAMES|noreply@(anthropic|openai)\.com")
+
+BAD_FOOTER=$(printf '%s\n' "$BODY" | grep -iE "$FOOTER")
+
+if [ -n "$BAD_TRAILER" ] || [ -n "$BAD_FOOTER" ]; then
+  echo "AI attribution is forbidden in this project's git history." >&2
+  echo "Offending line(s):" >&2
+  [ -n "$BAD_TRAILER" ] && printf '  %s\n' "$BAD_TRAILER" >&2
+  [ -n "$BAD_FOOTER" ]  && printf '  %s\n' "$BAD_FOOTER" >&2
+  echo "Rule: CLAUDE.md / AGENTS.md, 'Commit message rules'. It applies to every" >&2
+  echo "assistant, model and version -- a name not listed is covered, not exempt." >&2
+  exit 1
+fi
+
+exit 0
