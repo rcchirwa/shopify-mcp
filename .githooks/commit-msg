@@ -1,0 +1,5 @@
+#!/bin/sh
+# Local fast feedback for the rule in CLAUDE.md / AGENTS.md.
+# The check itself lives in ai-attribution-check, which CI runs too.
+# Deliberate override: git commit --no-verify
+exec "$(dirname "$0")/ai-attribution-check" "$1"
