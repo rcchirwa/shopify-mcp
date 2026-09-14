@@ -19,7 +19,7 @@ from shopify_mcp.shopify.operations import discounts as ops
 from shopify_mcp.shopify.queries.discounts import (
     CREATE_DISCOUNT_CODE,
     CREATE_PRICE_RULE,
-    GET_PRICE_RULES,
+    GET_CODE_DISCOUNTS,
 )
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
@@ -32,12 +32,12 @@ DISCOUNT_PCT_MIN = 0
 DISCOUNT_PCT_MAX = 100
 
 # The GraphQL strings now live in shopify.queries.discounts. They are re-exported
-# here so existing callers/tests (`from tools.discounts import GET_PRICE_RULES`)
+# here so existing callers/tests (`from tools.discounts import GET_CODE_DISCOUNTS`)
 # keep resolving to the same objects the operations layer executes.
 __all__ = [
     "CREATE_DISCOUNT_CODE",
     "CREATE_PRICE_RULE",
-    "GET_PRICE_RULES",
+    "GET_CODE_DISCOUNTS",
     "register",
 ]
 
@@ -46,20 +46,43 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
     @server.tool()
     def get_discount_codes() -> str:
-        """List discount codes (price rules) for the store."""
-        rules = ops.read_price_rules(client)
-        if not rules:
+        """List discount codes for the store."""
+        nodes = ops.read_code_discounts(client)
+        if not nodes:
             return "No discount codes found."
 
-        lines = [f"Discount codes ({len(rules)} price rules found):\n"]
-        for rule in rules:
-            discount_type = rule.get("valueType", "")
-            value = rule.get("value", "")
+        lines = [f"Discount codes ({len(nodes)} found):\n"]
+        for node in nodes:
+            discount = node.get("discount") or {}
+            codes_conn = discount.get("codes") or {}
+            # `or []`, not `.get("nodes", [])`: a permissions-trimmed / shape-
+            # drifted response can return "nodes": null, which the dict-default
+            # form would not catch.
+            codes = [c["code"] for c in (codes_conn.get("nodes") or []) if c.get("code")]
+            codes_str = ", ".join(codes) if codes else "(no code)"
+            # Only note truncation when there's a real (non-empty) list to
+            # truncate — otherwise a shape-drifted "nodes: null, hasNextPage:
+            # true" response would render the self-contradictory
+            # "(no code) (+more not shown)".
+            if codes and (codes_conn.get("pageInfo") or {}).get("hasNextPage"):
+                codes_str += " (+more not shown)"
+            value = (discount.get("customerGets") or {}).get("value") or {}
+            value_type = value.get("__typename")
+            if value_type == "DiscountPercentage":
+                # `.get()`, not a bare subscript: a permissions-trimmed response
+                # could report the union member's __typename without every leaf
+                # field resolving.
+                value_line = f"{(value.get('percentage') or 0) * 100:g}% off"
+            elif value_type == "DiscountAmount":
+                amount = ((value.get("amount") or {}).get("amount")) or "N/A"
+                value_line = f"${amount} off"
+            else:
+                value_line = discount.get("__typename", "")
             lines.append(
-                f"  [{from_gid(rule['id'])}] {rule['title']}\n"
-                f"    Type: {discount_type} | Value: {value} | "
-                f"Usage limit: {rule.get('usageLimit') or 'unlimited'} | "
-                f"Ends: {rule.get('endsAt') or 'no expiry'}"
+                f"  [{from_gid(node['id'])}] {discount.get('title', '')}\n"
+                f"    Codes: {codes_str} | {value_line} | Status: {discount.get('status', '')} | "
+                f"Usage limit: {discount.get('usageLimit') or 'unlimited'} | "
+                f"Ends: {discount.get('endsAt') or 'no expiry'}"
             )
         return "\n".join(lines)
 

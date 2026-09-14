@@ -19,7 +19,7 @@ from shopify_mcp.tools import discounts
 from shopify_mcp.tools.discounts import (
     CREATE_DISCOUNT_CODE,
     CREATE_PRICE_RULE,
-    GET_PRICE_RULES,
+    GET_CODE_DISCOUNTS,
 )
 from tests.support import CapturingServer, FakeClient
 
@@ -40,15 +40,38 @@ def _build(responses):
 # ---- Fixture builders ----
 
 
-def _rule_node(rid, title, value_type="PERCENTAGE", value="-20.0", usage_limit=None, ends_at=None):
-    return {
-        "id": f"gid://shopify/PriceRule/{rid}",
+def _discount_node(
+    gid,
+    title,
+    status="ACTIVE",
+    codes=None,
+    codes_has_next=False,
+    percentage=None,
+    amount=None,
+    usage_limit=None,
+    ends_at=None,
+    typename="DiscountCodeBasic",
+):
+    discount = {
+        "__typename": typename,
         "title": title,
-        "valueType": value_type,
-        "value": value,
-        "usageLimit": usage_limit,
+        "status": status,
         "endsAt": ends_at,
+        "usageLimit": usage_limit,
+        "codes": {
+            "nodes": [{"code": c} for c in (codes if codes is not None else [title])],
+            "pageInfo": {"hasNextPage": codes_has_next},
+        },
     }
+    if percentage is not None:
+        discount["customerGets"] = {
+            "value": {"__typename": "DiscountPercentage", "percentage": percentage}
+        }
+    elif amount is not None:
+        discount["customerGets"] = {
+            "value": {"__typename": "DiscountAmount", "amount": {"amount": amount}}
+        }
+    return {"id": f"gid://shopify/DiscountCodeNode/{gid}", "discount": discount}
 
 
 def _price_rule_create_ok(rid="5001"):
@@ -91,48 +114,50 @@ def _discount_code_create_err(field, message):
 
 
 def test_get_discount_codes_empty_returns_no_codes_found():
-    tools, fc = _build([{"priceRules": {"nodes": []}}])
+    tools, fc = _build([{"discountNodes": {"nodes": []}}])
     out = tools["get_discount_codes"]()
     assert out == "No discount codes found."
-    assert fc.calls[0][0] == GET_PRICE_RULES
-    assert fc.calls[0][1] == {"first": 50}
+    assert fc.calls[0][0] == GET_CODE_DISCOUNTS
+    assert fc.calls[0][1] == {"first": 50, "query": "method:code", "codesFirst": 10}
 
 
-def test_get_discount_codes_renders_each_rule_with_type_value_limit_expiry():
+def test_get_discount_codes_renders_each_discount_with_codes_value_limit_expiry():
     tools, fc = _build(
         [
             {
-                "priceRules": {
+                "discountNodes": {
                     "nodes": [
-                        _rule_node(
+                        _discount_node(
                             "5001",
                             "Spring Sale",
-                            value="-25.0",
+                            codes=["SPRING25"],
+                            percentage=0.25,
                             usage_limit=100,
                             ends_at="2026-06-30T23:59:59Z",
                         ),
-                        _rule_node("5002", "VIP Perk", value="-10.0"),
+                        _discount_node("5002", "VIP Perk", codes=["VIP10"], percentage=0.10),
                     ]
                 }
             }
         ]
     )
     out = tools["get_discount_codes"]()
-    assert "Discount codes (2 price rules found):" in out
+    assert "Discount codes (2 found):" in out
     assert "[5001] Spring Sale" in out
-    assert "Type: PERCENTAGE" in out and "Value: -25.0" in out
+    assert "Codes: SPRING25" in out and "25% off" in out
     assert "Usage limit: 100" in out
     assert "Ends: 2026-06-30T23:59:59Z" in out
     assert "[5002] VIP Perk" in out
+    assert "Codes: VIP10" in out and "10% off" in out
 
 
 def test_get_discount_codes_unlimited_when_usage_limit_is_null():
     tools, fc = _build(
         [
             {
-                "priceRules": {
+                "discountNodes": {
                     "nodes": [
-                        _rule_node("5001", "Evergreen", usage_limit=None),
+                        _discount_node("5001", "Evergreen", usage_limit=None),
                     ]
                 }
             }
@@ -146,9 +171,9 @@ def test_get_discount_codes_no_expiry_when_ends_at_is_null():
     tools, fc = _build(
         [
             {
-                "priceRules": {
+                "discountNodes": {
                     "nodes": [
-                        _rule_node("5001", "Evergreen", ends_at=None),
+                        _discount_node("5001", "Evergreen", ends_at=None),
                     ]
                 }
             }
@@ -156,6 +181,89 @@ def test_get_discount_codes_no_expiry_when_ends_at_is_null():
     )
     out = tools["get_discount_codes"]()
     assert "Ends: no expiry" in out
+
+
+def test_get_discount_codes_joins_multiple_redeem_codes_with_comma():
+    """A bulk-code discount can have more than one redeem code under one title."""
+    tools, fc = _build(
+        [{"discountNodes": {"nodes": [_discount_node("5001", "Bulk", codes=["A", "B", "C"])]}}]
+    )
+    out = tools["get_discount_codes"]()
+    assert "Codes: A, B, C" in out
+
+
+def test_get_discount_codes_non_percentage_discount_shows_kind_instead_of_value():
+    """DiscountCodeApp/Bxgy/FreeShipping have no customerGets.value — the value
+    line falls back to the GraphQL type name rather than crashing."""
+    tools, fc = _build(
+        [
+            {
+                "discountNodes": {
+                    "nodes": [
+                        _discount_node(
+                            "5001", "Free Ship Weekend", typename="DiscountCodeFreeShipping"
+                        )
+                    ]
+                }
+            }
+        ]
+    )
+    out = tools["get_discount_codes"]()
+    assert "DiscountCodeFreeShipping" in out
+
+
+def test_get_discount_codes_fixed_amount_shows_dollar_value():
+    """A DiscountCodeBasic whose customerGets.value is a DiscountAmount (a
+    "$10 off" code, not a percentage) must show the dollar value — not fall
+    through to the generic __typename branch."""
+    tools, fc = _build(
+        [{"discountNodes": {"nodes": [_discount_node("5001", "Ten Off", amount="10.00")]}}]
+    )
+    out = tools["get_discount_codes"]()
+    assert "$10.00 off" in out
+    assert "DiscountCodeBasic" not in out
+
+
+def test_get_discount_codes_notes_when_redeem_codes_are_capped():
+    """A bulk-code discount with more codes than the fixed page fetches gets a
+    visible note rather than silently showing a truncated list as complete."""
+    tools, fc = _build(
+        [
+            {
+                "discountNodes": {
+                    "nodes": [_discount_node("5001", "Bulk", codes=["A", "B"], codes_has_next=True)]
+                }
+            }
+        ]
+    )
+    out = tools["get_discount_codes"]()
+    assert "Codes: A, B (+more not shown)" in out
+
+
+def test_get_discount_codes_handles_null_codes_nodes_defensively():
+    """Defensive: a permissions-trimmed / shape-drifted response can return
+    codes.nodes=null (present but null, not just absent) — must not crash."""
+    tools, fc = _build(
+        [
+            {
+                "discountNodes": {
+                    "nodes": [
+                        {
+                            "id": "gid://shopify/DiscountCodeNode/5001",
+                            "discount": {
+                                "__typename": "DiscountCodeBasic",
+                                "title": "Drifted",
+                                "status": "ACTIVE",
+                                "codes": {"nodes": None},
+                            },
+                        }
+                    ]
+                }
+            }
+        ]
+    )
+    out = tools["get_discount_codes"]()
+    assert "Codes: (no code)" in out
 
 
 # ---- create_discount_code — preview ----

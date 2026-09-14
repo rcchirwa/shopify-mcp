@@ -26,13 +26,37 @@ __all__ = [
     "register",
 ]
 
+# The three UTM tags worth surfacing inline — a full UTMParameters selection
+# also has `content`/`term`, but those two are the ones this tool's GraphQL
+# selection doesn't even fetch (kept minimal to match the story's ask).
+_UTM_KEYS = ("source", "medium", "campaign")
+
+
+def _format_visit(visit: dict[str, Any] | None) -> str:
+    """Render one CustomerVisit touchpoint (customerJourneySummary.firstVisit /
+    .lastVisit) as shopper-facing text — the replacement for the removed
+    referringSite/landingSite fields (Story 9.12). ``source`` and
+    ``referrerUrl`` are shopper-influenced (an attacker can craft a UTM-tagged
+    URL), so every value here goes through ``wrap()``, same as the old
+    traffic-source line."""
+    if not visit:
+        return "direct / unknown"
+    raw_label = visit.get("source") or visit.get("referrerUrl")
+    rendered = wrap(raw_label) if raw_label else "direct"
+    utm = visit.get("utmParameters") or {}
+    utm_bits = [f"{key}={wrap(utm[key])}" for key in _UTM_KEYS if utm.get(key)]
+    if utm_bits:
+        rendered += f" (utm: {' '.join(utm_bits)})"
+    return rendered
+
 
 def register(server: FastMCP, client: ShopifyClient) -> None:
 
     @server.tool()
     def get_orders(limit: int = 20) -> str:
         """
-        List recent orders with id, total price, line items, and traffic source.
+        List recent orders with id, total price, line items, and first/last-touch
+        traffic source (with UTM tags where available).
         limit: number of orders to return (max 250).
         """
         limit = min(limit, 250)
@@ -46,15 +70,17 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"{wrap(li['name'])} x{li['quantity']}"
                 for li in o.get("lineItems", {}).get("nodes", [])
             )
-            raw_traffic = o.get("referringSite") or o.get("landingSite")
-            traffic = wrap(raw_traffic) if raw_traffic else "direct / unknown"
+            journey = o.get("customerJourneySummary") or {}
+            first_touch = _format_visit(journey.get("firstVisit"))
+            last_touch = _format_visit(journey.get("lastVisit"))
             # `or {}` guards against nulls at any level — Shopify can return
             # totalPriceSet=null on orders still in a pending/edited state.
             total = ((o.get("totalPriceSet") or {}).get("shopMoney") or {}).get("amount", "N/A")
             lines.append(
                 f"  [{from_gid(o['id'])}] {o['name']} — ${total} — {o['createdAt'][:10]}\n"
                 f"    Items: {items}\n"
-                f"    Source: {traffic}"
+                f"    First touch: {first_touch}\n"
+                f"    Last touch: {last_touch}"
             )
         # GET_ORDERS caps each order's line items at a fixed first: N and cannot
         # paginate that nested-in-list connection, so warn (don't silently drop)
@@ -87,8 +113,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         items = "\n".join(
             f"  • {wrap(li['name'])} x{li['quantity']} — ${_unit_price(li)}" for li in line_items
         )
-        raw_ref = o.get("referringSite")
-        traffic_line = wrap(raw_ref) if raw_ref else "direct"
+        traffic_line = _format_visit((o.get("customerJourneySummary") or {}).get("lastVisit"))
         result = (
             INJECTION_REMINDER + f"Order: {o['name']} (id: {from_gid(o['id'])})\n"
             f"Date: {o['createdAt']}\n"

@@ -32,6 +32,34 @@ def test_shared_order_core_fragment_is_reused():
         assert q.ORDER_CORE_FIELDS.strip() in query
 
 
+# ---------- Story 9.12: referringSite/landingSite removed from the Admin API --
+
+
+def test_get_orders_no_longer_selects_removed_traffic_fields():
+    """referringSite/landingSite were removed from Order — selecting either
+    fails every live call (Story 9.12)."""
+    assert "referringSite" not in q.GET_ORDERS
+    assert "landingSite" not in q.GET_ORDERS
+
+
+def test_get_order_by_id_no_longer_selects_removed_traffic_fields():
+    assert "referringSite" not in q.GET_ORDER_BY_ID
+
+
+def test_get_orders_selects_first_and_last_visit_from_customer_journey_summary():
+    """Approach 2: surface first/last touch + UTM on the list read (GA4 UTM
+    stitching depends on it)."""
+    assert "customerJourneySummary" in q.GET_ORDERS
+    assert "firstVisit" in q.GET_ORDERS
+    assert "lastVisit" in q.GET_ORDERS
+    assert "utmParameters" in q.GET_ORDERS
+
+
+def test_get_order_by_id_selects_last_visit_from_customer_journey_summary():
+    assert "customerJourneySummary" in q.GET_ORDER_BY_ID
+    assert "lastVisit" in q.GET_ORDER_BY_ID
+
+
 # ---------- read operations (build vars + execute, return structured data) ----
 
 

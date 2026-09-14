@@ -22,34 +22,61 @@ from tests.support import FakeClient
 
 def test_no_shared_fragment_in_discount_queries():
     """discounts has no by-id/by-handle pair and no duplicated selection set, so
-    none of its GraphQL strings declares or spreads a fragment."""
-    for query in (q.GET_PRICE_RULES, q.CREATE_PRICE_RULE, q.CREATE_DISCOUNT_CODE):
+    none of its GraphQL strings declares or spreads a fragment. GET_CODE_DISCOUNTS
+    uses inline fragments (`... on DiscountCodeBasic`) to select type-specific
+    fields off the `Discount` union — those are exempted, unlike a spread
+    (`...FragmentName`) of a *named* fragment declaration."""
+    for query in (q.CREATE_PRICE_RULE, q.CREATE_DISCOUNT_CODE):
         assert "fragment " not in query
         assert "..." not in query
+    assert "fragment " not in q.GET_CODE_DISCOUNTS
 
 
 # ---------- read operations (build vars + execute, return node list) ----------
 
 
-def test_read_price_rules_returns_nodes_and_uses_fixed_page_size():
-    fc = FakeClient([{"priceRules": {"nodes": [{"id": "g", "title": "Spring"}]}}])
-    out = ops.read_price_rules(fc)
-    assert out == [{"id": "g", "title": "Spring"}]
-    assert fc.calls[0][0] == q.GET_PRICE_RULES
-    assert fc.calls[0][1] == {"first": ops.PRICE_RULES_PAGE_SIZE}
-    assert ops.PRICE_RULES_PAGE_SIZE == 50
+def _discount_node(
+    gid, title, status="ACTIVE", codes=None, percentage=None, ends_at=None, usage_limit=None
+):
+    discount = {
+        "__typename": "DiscountCodeBasic",
+        "title": title,
+        "status": status,
+        "endsAt": ends_at,
+        "usageLimit": usage_limit,
+        "codes": {"nodes": [{"code": c} for c in (codes or [title])]},
+    }
+    if percentage is not None:
+        discount["customerGets"] = {
+            "value": {"__typename": "DiscountPercentage", "percentage": percentage}
+        }
+    return {"id": f"gid://shopify/DiscountCodeNode/{gid}", "discount": discount}
 
 
-def test_read_price_rules_empty_returns_empty_list():
-    fc = FakeClient([{"priceRules": {"nodes": []}}])
-    assert ops.read_price_rules(fc) == []
+def test_read_code_discounts_returns_nodes_and_uses_fixed_page_size():
+    fc = FakeClient([{"discountNodes": {"nodes": [_discount_node("1", "Spring", percentage=0.2)]}}])
+    out = ops.read_code_discounts(fc)
+    assert out == [_discount_node("1", "Spring", percentage=0.2)]
+    assert fc.calls[0][0] == q.GET_CODE_DISCOUNTS
+    assert fc.calls[0][1] == {
+        "first": ops.CODE_DISCOUNTS_PAGE_SIZE,
+        "query": "method:code",
+        "codesFirst": ops.DISCOUNT_CODES_PER_DISCOUNT_CAP,
+    }
+    assert ops.CODE_DISCOUNTS_PAGE_SIZE == 50
+    assert ops.DISCOUNT_CODES_PER_DISCOUNT_CAP == 10
 
 
-def test_read_price_rules_missing_connection_returns_empty_list():
+def test_read_code_discounts_empty_returns_empty_list():
+    fc = FakeClient([{"discountNodes": {"nodes": []}}])
+    assert ops.read_code_discounts(fc) == []
+
+
+def test_read_code_discounts_missing_connection_returns_empty_list():
     """Defensive: a permissions-trimmed / shape-drifted response with no
-    priceRules connection yields an empty list rather than raising."""
+    discountNodes connection yields an empty list rather than raising."""
     fc = FakeClient([{}])
-    assert ops.read_price_rules(fc) == []
+    assert ops.read_code_discounts(fc) == []
 
 
 # ---------- write operations (build input + execute, return raw result) -------
