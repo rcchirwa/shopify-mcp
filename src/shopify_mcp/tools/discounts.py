@@ -120,8 +120,6 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"<= {DISCOUNT_PCT_MAX} (got {percentage_off})."
             )
 
-        value = -percentage_off  # Shopify expects negative value for discounts
-
         preview = (
             f"PREVIEW — New discount code\n"
             f"  Title         : {title}\n"
@@ -170,6 +168,6 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # leaving a secret-shaped string in a local file.
         log_write(
             "create_discount_code",
-            f"title={title} code=*** value={value}% usage_limit={usage_limit}",
+            f"title={title} code=*** percentage_off={percentage_off}% usage_limit={usage_limit}",
         )
         return f"Done. Discount id={from_gid(node_id)} created.\n{preview}"
