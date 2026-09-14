@@ -163,6 +163,29 @@ def test_get_orders_falls_back_to_direct_unknown_when_journey_summary_missing():
     assert "Last touch: direct / unknown" in out
 
 
+def test_get_orders_falls_back_to_direct_unknown_when_both_visits_are_null():
+    """customerJourneySummary present but firstVisit/lastVisit both explicitly
+    null — a distinct shape from the summary being absent entirely, and one
+    Shopify can plausibly return (tracking consent declined, etc.)."""
+    tools, fc = _build(
+        [
+            {
+                "orders": {
+                    "nodes": [
+                        {
+                            **_order_node(),
+                            "customerJourneySummary": {"firstVisit": None, "lastVisit": None},
+                        }
+                    ]
+                }
+            }
+        ]
+    )
+    out = tools["get_orders"]()
+    assert "First touch: direct / unknown" in out
+    assert "Last touch: direct / unknown" in out
+
+
 def test_get_orders_handles_missing_total_without_crashing():
     """Defensive: if totalPriceSet.shopMoney.amount is missing, fall back to
     'N/A' rather than crash on a None.get() chain."""

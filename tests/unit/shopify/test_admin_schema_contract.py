@@ -31,8 +31,8 @@ scalar DateTime
 scalar Decimal
 
 type Query {
-  discountNodes(first: Int, after: String, query: String): DiscountNodeConnection!
-  orders(first: Int, after: String): OrderConnection!
+  discountNodes(first: Int, query: String): DiscountNodeConnection!
+  orders(first: Int): OrderConnection!
   order(id: ID!): Order
 }
 
@@ -58,7 +58,7 @@ type DiscountCodeBasic {
   status: DiscountStatus!
   endsAt: DateTime
   usageLimit: Int
-  codes(first: Int, after: String): DiscountRedeemCodeConnection!
+  codes(first: Int): DiscountRedeemCodeConnection!
   customerGets: DiscountCustomerGets!
 }
 
@@ -67,7 +67,7 @@ type DiscountCodeBxgy {
   status: DiscountStatus!
   endsAt: DateTime
   usageLimit: Int
-  codes(first: Int, after: String): DiscountRedeemCodeConnection!
+  codes(first: Int): DiscountRedeemCodeConnection!
 }
 
 type DiscountCodeFreeShipping {
@@ -75,7 +75,7 @@ type DiscountCodeFreeShipping {
   status: DiscountStatus!
   endsAt: DateTime
   usageLimit: Int
-  codes(first: Int, after: String): DiscountRedeemCodeConnection!
+  codes(first: Int): DiscountRedeemCodeConnection!
 }
 
 type DiscountCodeApp {
@@ -83,7 +83,7 @@ type DiscountCodeApp {
   status: DiscountStatus!
   endsAt: DateTime
   usageLimit: Int
-  codes(first: Int, after: String): DiscountRedeemCodeConnection!
+  codes(first: Int): DiscountRedeemCodeConnection!
 }
 
 type DiscountRedeemCodeConnection {
@@ -107,7 +107,6 @@ type DiscountPercentage {
 
 type DiscountAmount {
   amount: MoneyV2!
-  appliesOnEachItem: Boolean
 }
 
 type OrderConnection {

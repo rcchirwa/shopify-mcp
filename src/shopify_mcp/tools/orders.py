@@ -55,7 +55,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def get_orders(limit: int = 20) -> str:
         """
-        List recent orders with id, total price, line items, and traffic source.
+        List recent orders with id, total price, line items, and first/last-touch
+        traffic source (with UTM tags where available).
         limit: number of orders to return (max 250).
         """
         limit = min(limit, 250)

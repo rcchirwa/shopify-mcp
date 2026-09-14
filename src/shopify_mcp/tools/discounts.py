@@ -60,12 +60,19 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             # form would not catch.
             codes = [c["code"] for c in (codes_conn.get("nodes") or []) if c.get("code")]
             codes_str = ", ".join(codes) if codes else "(no code)"
-            if (codes_conn.get("pageInfo") or {}).get("hasNextPage"):
+            # Only note truncation when there's a real (non-empty) list to
+            # truncate — otherwise a shape-drifted "nodes: null, hasNextPage:
+            # true" response would render the self-contradictory
+            # "(no code) (+more not shown)".
+            if codes and (codes_conn.get("pageInfo") or {}).get("hasNextPage"):
                 codes_str += " (+more not shown)"
             value = (discount.get("customerGets") or {}).get("value") or {}
             value_type = value.get("__typename")
             if value_type == "DiscountPercentage":
-                value_line = f"{value['percentage'] * 100:g}% off"
+                # `.get()`, not a bare subscript: a permissions-trimmed response
+                # could report the union member's __typename without every leaf
+                # field resolving.
+                value_line = f"{(value.get('percentage') or 0) * 100:g}% off"
             elif value_type == "DiscountAmount":
                 amount = ((value.get("amount") or {}).get("amount")) or "N/A"
                 value_line = f"${amount} off"
