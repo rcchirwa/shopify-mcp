@@ -9,15 +9,25 @@ inventory migrations). Pure strings — no imports from ``shopify.operations`` o
 ``GET_ORDER_BY_ID`` (single) — select the same order-node core
 (``id name createdAt totalPriceSet { shopMoney { amount } }``) verbatim, so it is
 factored into the ``OrderCoreFields`` fragment both queries spread (Story 10.29 /
-A5, AC3). Each read still adds its own fields inline — the list read adds the
-``referringSite``/``landingSite`` traffic pair and a fixed
+A5, AC3). Each read still adds its own fields inline — the list read adds a fixed
 ``lineItems(first: $lineItemsFirst)`` summary (with ``pageInfo.hasNextPage`` so the
-per-order cap is detected and warned, not silently dropped — Story 10.34 / A3); the
-single read adds the
-financial/fulfillment status, ``referringSite``, and a paginated ``lineItems`` with
-unit prices. Centralizing only the shared core
-(which includes the version-sensitive ``totalPriceSet`` money shape) means the
-next Admin-API money-shape change is a one-line edit instead of two.
+per-order cap is detected and warned, not silently dropped — Story 10.34 / A3);
+the single read adds the financial/fulfillment status and a paginated
+``lineItems`` with unit prices. Centralizing only the shared core (which
+includes the version-sensitive ``totalPriceSet`` money shape) means the next
+Admin-API money-shape change is a one-line edit instead of two.
+
+**Traffic source moved to ``customerJourneySummary`` (Story 9.12).**
+``referringSite``/``landingSite`` were removed from ``Order`` before
+SHOPIFY_API_VERSION's documented default of 2026-01 — every ``get_orders`` /
+``get_order`` call failed with "Field 'referringSite' doesn't exist on type
+'Order'". The replacement lives under ``customerJourneySummary.firstVisit`` /
+``.lastVisit`` (each a ``CustomerVisit``, confirmed live against 2026-01,
+2026-09-14), which also carries ``utmParameters`` — data the old fields never
+had, and that GA4 UTM stitching depends on. The list read selects both
+``firstVisit`` and ``lastVisit`` (approach 2 from the story: first/last touch
++ UTM); the single read selects only ``lastVisit``, the closest analog to the
+old single ``referringSite`` field it replaces.
 """
 
 # Shared core selection on an Order: identity + creation date + total money.
@@ -56,8 +66,10 @@ query GetOrders($first: Int!, $lineItemsFirst: Int!) {
         }
         pageInfo { hasNextPage }
       }
-      referringSite
-      landingSite
+      customerJourneySummary {
+        firstVisit { source referrerUrl utmParameters { source medium campaign } }
+        lastVisit { source referrerUrl utmParameters { source medium campaign } }
+      }
     }
   }
 }
@@ -72,7 +84,9 @@ query GetOrderById($id: ID!, $first: Int!, $after: String) {
     ...OrderCoreFields
     displayFinancialStatus
     displayFulfillmentStatus
-    referringSite
+    customerJourneySummary {
+      lastVisit { source referrerUrl utmParameters { source medium campaign } }
+    }
     lineItems(first: $first, after: $after) {
       nodes {
         name

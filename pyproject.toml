@@ -24,6 +24,17 @@ dependencies = [
     # HTML-safety detector (Story 10.35 / SEC-M2-sanitizer): nh3 (ammonia/Rust)
     # is the parser-based engine behind tools/_filters.html_safety_findings.
     "nh3>=0.2,<0.3",
+    # Story 9.12: already an implicit runtime dependency (`gql` uses it to parse
+    # every GraphQL document `ShopifyClient.execute` sends — `gql()` calls
+    # straight into it), just never declared. Declared directly, not only as a
+    # `dev` extra, because it belongs in requirements.lock either way: the
+    # Admin-API schema contract test (test_admin_schema_contract.py) also
+    # imports it directly for build_schema/validate, but it is not a dev-only
+    # tool — putting it under `dev` instead pins the exact same package into
+    # requirements.lock via gql's transitive chain regardless, which
+    # test_every_dev_dependency_is_pinned_in_dev_lockfile_only correctly flags
+    # as a dev-only declaration leaking into the runtime lockfile.
+    "graphql-core>=3.2,<4",
 ]
 
 [project.optional-dependencies]
