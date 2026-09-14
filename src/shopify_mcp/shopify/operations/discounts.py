@@ -5,21 +5,19 @@ and performs the GraphQL-variable building + query/mutation execution, returning
 the raw Shopify response (writes) or the extracted node list (the code-discounts
 read). No MCP imports and no output formatting, so these are callable from
 non-MCP entry points (CLI, scripts, tests) — Story 10.27 / A5, AC4.
-``tools/discounts.py`` layers param coercion, the PriceRuleInput assembly, the
-preview/confirm flow, and string formatting on top.
+``tools/discounts.py`` layers param coercion, the ``DiscountCodeBasicInput``
+assembly, the preview/confirm flow, and string formatting on top.
 
-GID coercion: discounts has no by-id/by-handle resolution — the price-rule GID
-the second mutation needs flows straight out of the first mutation's response —
-so unlike the products/catalog_hygiene operations these wrappers do no
-``to_gid`` coercion.
+GID coercion: discounts has no by-id/by-handle resolution — ``discountCodeBasicCreate``
+takes no id input at all (Story 9.14) — so unlike the products/catalog_hygiene
+operations these wrappers do no ``to_gid`` coercion.
 """
 
 from typing import Any
 
 from shopify_mcp.shopify._client import GraphQLClient
 from shopify_mcp.shopify.queries.discounts import (
-    CREATE_DISCOUNT_CODE,
-    CREATE_PRICE_RULE,
+    CREATE_DISCOUNT_CODE_BASIC,
     GET_CODE_DISCOUNTS,
 )
 
@@ -63,22 +61,9 @@ def read_code_discounts(client: GraphQLClient) -> list[dict[str, Any]]:
 # ---------- writes (return the raw mutation result) ----------
 
 
-def create_price_rule(client: GraphQLClient, price_rule_input: dict[str, Any]) -> dict[str, Any]:
-    """Execute a priceRuleCreate with the supplied (already-built) PriceRuleInput."""
-    return client.execute(CREATE_PRICE_RULE, {"input": price_rule_input})
-
-
-def create_price_rule_discount_code(
-    client: GraphQLClient, price_rule_id: str, code: str
+def create_discount_code_basic(
+    client: GraphQLClient, discount_input: dict[str, Any]
 ) -> dict[str, Any]:
-    """Execute a priceRuleDiscountCodeCreate attaching ``code`` to ``price_rule_id``.
-
-    Named for the GraphQL mutation (``priceRuleDiscountCodeCreate``) rather than
-    the tool: this is only the second of the tool's two write steps, so it must
-    not be confused with ``tools.discounts.create_discount_code`` (the full
-    price-rule-create → code-attach flow).
-    """
-    return client.execute(
-        CREATE_DISCOUNT_CODE,
-        {"priceRuleId": price_rule_id, "code": code},
-    )
+    """Execute a discountCodeBasicCreate with the supplied (already-built)
+    DiscountCodeBasicInput."""
+    return client.execute(CREATE_DISCOUNT_CODE_BASIC, {"input": discount_input})

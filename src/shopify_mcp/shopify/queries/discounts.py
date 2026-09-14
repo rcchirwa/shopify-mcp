@@ -5,10 +5,10 @@ products pilot in Story 10.23 and catalog_hygiene in Story 10.25). Pure strings 
 no imports from ``shopify.operations`` or ``tools``.
 
 **No shared fragment applies.** discounts has no by-id/by-handle read pair (just a
-code-discounts list read plus the two-step price-rule / discount-code create
-mutations), and the selection sets do not overlap, so there is no duplicated
-selection set to factor out. Fragment dedup is opportunistic (Story 10.27 / A5,
-AC3) and is deliberately not forced here.
+code-discounts list read plus the discount-code create mutation), and the
+selection sets do not overlap, so there is no duplicated selection set to
+factor out. Fragment dedup is opportunistic (Story 10.27 / A5, AC3) and is
+deliberately not forced here.
 
 **GET_CODE_DISCOUNTS replaced GET_PRICE_RULES (Story 9.12).** `priceRules` and
 the whole PriceRule API were removed from the Admin GraphQL API before
@@ -23,11 +23,21 @@ identical across members — plain GraphQL, not a Shopify quirk — hence the fo
 `query: "method:code"` filters the connection to code discounts only (as
 opposed to automatic discounts, which this tool has never listed).
 
-**Deliberately out of scope.** `CREATE_PRICE_RULE`/`CREATE_DISCOUNT_CODE`
-(`priceRuleCreate`/`priceRuleDiscountCodeCreate`) are equally broken on 2026-01
-— confirmed live, neither mutation exists any more — but `create_discount_code`
-was never called live and carries no failing AC in this story; fixing it is
-scoped separately.
+**CREATE_DISCOUNT_CODE_BASIC replaced CREATE_PRICE_RULE + CREATE_DISCOUNT_CODE
+(Story 9.14).** `priceRuleCreate` and `priceRuleDiscountCodeCreate` are gone
+from the Admin API — confirmed live against 2026-01, 2026-09-14, alongside
+`priceRules` (see the note above). The replacement,
+`discountCodeBasicCreate`, folds the old two-step price-rule-then-attach-code
+flow into a single mutation: `DiscountCodeBasicInput` carries the code and the
+percentage directly (`customerGets.value.percentage`, a 0-1 fraction — not the
+whole-number `PriceRuleInput.value` the old shape used), and there is no
+`customerSelection` field at all, because a code-based discount is already
+gated by whoever holds the code, not a customer segment.
+
+`DiscountContextInput` (the `context` field) is schema-nullable but
+**business-logic required** — confirmed live, 2026-09-14: omitting it fails
+with "Context can't be blank", a class of requirement introspection cannot
+show (see `tools.discounts` for the `{all: ALL}` value this tool sends).
 """
 
 GET_CODE_DISCOUNTS = """
@@ -78,20 +88,11 @@ query GetCodeDiscounts($first: Int!, $query: String, $codesFirst: Int!) {
 }
 """
 
-CREATE_PRICE_RULE = """
-mutation CreatePriceRule($input: PriceRuleInput!) {
-  priceRuleCreate(priceRule: $input) {
-    priceRule { id }
-    priceRuleUserErrors { field message }
-  }
-}
-"""
-
-CREATE_DISCOUNT_CODE = """
-mutation CreateDiscountCode($priceRuleId: ID!, $code: String!) {
-  priceRuleDiscountCodeCreate(priceRuleId: $priceRuleId, code: $code) {
-    priceRuleDiscountCode { code }
-    userErrors { field message }
+CREATE_DISCOUNT_CODE_BASIC = """
+mutation CreateDiscountCodeBasic($input: DiscountCodeBasicInput!) {
+  discountCodeBasicCreate(basicCodeDiscount: $input) {
+    codeDiscountNode { id }
+    userErrors { field message code }
   }
 }
 """

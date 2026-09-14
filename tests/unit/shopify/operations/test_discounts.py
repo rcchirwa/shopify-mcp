@@ -26,9 +26,8 @@ def test_no_shared_fragment_in_discount_queries():
     uses inline fragments (`... on DiscountCodeBasic`) to select type-specific
     fields off the `Discount` union — those are exempted, unlike a spread
     (`...FragmentName`) of a *named* fragment declaration."""
-    for query in (q.CREATE_PRICE_RULE, q.CREATE_DISCOUNT_CODE):
-        assert "fragment " not in query
-        assert "..." not in query
+    assert "fragment " not in q.CREATE_DISCOUNT_CODE_BASIC
+    assert "..." not in q.CREATE_DISCOUNT_CODE_BASIC
     assert "fragment " not in q.GET_CODE_DISCOUNTS
 
 
@@ -82,23 +81,20 @@ def test_read_code_discounts_missing_connection_returns_empty_list():
 # ---------- write operations (build input + execute, return raw result) -------
 
 
-def test_create_price_rule_wraps_input_and_returns_raw_result():
-    raw = {"priceRuleCreate": {"priceRule": {"id": "gid://shopify/PriceRule/1"}}}
-    fc = FakeClient([raw])
-    price_rule_input = {"title": "T", "valueType": "PERCENTAGE", "value": "-20"}
-    out = ops.create_price_rule(fc, price_rule_input)
-    assert out is raw
-    assert fc.calls[0][0] == q.CREATE_PRICE_RULE
-    assert fc.calls[0][1] == {"input": price_rule_input}
-
-
-def test_create_price_rule_discount_code_builds_vars_and_returns_raw_result():
-    raw = {"priceRuleDiscountCodeCreate": {"priceRuleDiscountCode": {"code": "LAUNCH20"}}}
-    fc = FakeClient([raw])
-    out = ops.create_price_rule_discount_code(fc, "gid://shopify/PriceRule/1", "LAUNCH20")
-    assert out is raw
-    assert fc.calls[0][0] == q.CREATE_DISCOUNT_CODE
-    assert fc.calls[0][1] == {
-        "priceRuleId": "gid://shopify/PriceRule/1",
-        "code": "LAUNCH20",
+def test_create_discount_code_basic_wraps_input_and_returns_raw_result():
+    raw = {
+        "discountCodeBasicCreate": {
+            "codeDiscountNode": {"id": "gid://shopify/DiscountCodeNode/1"},
+            "userErrors": [],
+        }
     }
+    fc = FakeClient([raw])
+    discount_input = {
+        "title": "T",
+        "code": "LAUNCH20",
+        "customerGets": {"value": {"percentage": 0.2}, "items": {"all": True}},
+    }
+    out = ops.create_discount_code_basic(fc, discount_input)
+    assert out is raw
+    assert fc.calls[0][0] == q.CREATE_DISCOUNT_CODE_BASIC
+    assert fc.calls[0][1] == {"input": discount_input}

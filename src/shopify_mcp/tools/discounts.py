@@ -2,9 +2,10 @@
 Discount tools — read and create discount codes.
 
 Thin MCP-tool surface over ``shopify.operations.discounts``: this module keeps
-param coercion, the PriceRuleInput assembly, the preview/confirm flow, and output
-formatting; the GraphQL strings live in ``shopify.queries.discounts`` and the
-data access in ``shopify.operations.discounts`` (Story 10.27 / A5).
+param coercion, the ``DiscountCodeBasicInput`` assembly, the preview/confirm
+flow, and output formatting; the GraphQL strings live in
+``shopify.queries.discounts`` and the data access in
+``shopify.operations.discounts`` (Story 10.27 / A5).
 
 create_discount_code requires confirm=True.
 """
@@ -17,13 +18,12 @@ from mcp.server.fastmcp import FastMCP
 from shopify_mcp.client import ShopifyClient
 from shopify_mcp.shopify.operations import discounts as ops
 from shopify_mcp.shopify.queries.discounts import (
-    CREATE_DISCOUNT_CODE,
-    CREATE_PRICE_RULE,
+    CREATE_DISCOUNT_CODE_BASIC,
     GET_CODE_DISCOUNTS,
 )
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
-from shopify_mcp.tools._response import format_user_errors, with_confirm_hint
+from shopify_mcp.tools._response import extract_user_errors, with_confirm_hint
 
 # Shopify rejects a 0% or negative discount, and a >100% value would zero out
 # (or overpay) a line item — bound client-side rather than let a nonsensical
@@ -35,11 +35,25 @@ DISCOUNT_PCT_MAX = 100
 # here so existing callers/tests (`from tools.discounts import GET_CODE_DISCOUNTS`)
 # keep resolving to the same objects the operations layer executes.
 __all__ = [
-    "CREATE_DISCOUNT_CODE",
-    "CREATE_PRICE_RULE",
+    "CREATE_DISCOUNT_CODE_BASIC",
     "GET_CODE_DISCOUNTS",
     "register",
 ]
+
+
+def _format_discount_user_errors(errors: list[dict[str, Any]]) -> str:
+    """Join DiscountUserError entries as 'field.path: message; …'.
+
+    ``DiscountUserError.field`` is ``[String!]`` (a path, e.g.
+    ``["basicCodeDiscount", "code"]``), not the plain string
+    ``format_user_errors`` assumes — same dotted-path convention already used
+    for other list-``field`` UserError types in catalog_hygiene.py/products.py.
+    """
+    return "; ".join(
+        f"{'.'.join(str(f) for f in (e.get('field') or [])) or '(no field)'}: "
+        f"{e.get('message', '')}"
+        for e in errors
+    )
 
 
 def register(server: FastMCP, client: ShopifyClient) -> None:
@@ -119,50 +133,43 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not confirm:
             return with_confirm_hint(preview)
 
-        price_rule_input: dict[str, Any] = {
+        discount_input: dict[str, Any] = {
             "title": title,
-            "target": "LINE_ITEM",
-            "allocationMethod": "ACROSS",
-            "valueType": "PERCENTAGE",
-            "value": str(value),
-            "customerSelection": {"forAllCustomers": True},
+            "code": code,
             "startsAt": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            # Nullable in the schema, but confirmed live (2026-09-14) that
+            # discountCodeBasicCreate rejects a missing `context` with "Context
+            # can't be blank" — {all: ALL} is the buyer-selection equivalent of
+            # the old PriceRuleInput.customerSelection.forAllCustomers.
+            "context": {"all": "ALL"},
+            "customerGets": {
+                "value": {"percentage": percentage_off / 100},
+                "items": {"all": True},
+            },
         }
         if usage_limit > 0:
-            price_rule_input["usageLimit"] = usage_limit
+            discount_input["usageLimit"] = usage_limit
 
-        rule_result = ops.create_price_rule(client, price_rule_input)
-        err = format_user_errors(
-            rule_result,
-            "priceRuleCreate",
-            error_key="priceRuleUserErrors",
-            prefix="Error creating price rule",
-        )
-        if err:
-            return err
+        result = ops.create_discount_code_basic(client, discount_input)
+        errors = extract_user_errors(result, "discountCodeBasicCreate")
+        if errors:
+            return f"Error creating discount code: {_format_discount_user_errors(errors)}"
 
-        # priceRule is None when the mutation shape-drifts or userErrors are
-        # empty but the server-side commit still failed — guard with `or {}`
+        # codeDiscountNode is None when the mutation shape-drifts or userErrors
+        # are empty but the server-side commit still failed — guard with `or {}`
         # (same pattern as tools/inventory.py `.get("inventoryItem") or {}`).
-        rule_id = ((rule_result.get("priceRuleCreate") or {}).get("priceRule") or {}).get("id")
-        if not rule_id:
-            return "Error: price rule created but no ID returned."
-
-        code_result = ops.create_price_rule_discount_code(client, rule_id, code)
-        err = format_user_errors(
-            code_result,
-            "priceRuleDiscountCodeCreate",
-            prefix="Error attaching discount code",
+        node_id = ((result.get("discountCodeBasicCreate") or {}).get("codeDiscountNode") or {}).get(
+            "id"
         )
-        if err:
-            return err
+        if not node_id:
+            return "Error: discount code created but no ID returned."
 
         # SEC-12: the discount code is masked in the durable audit log. The
-        # price-rule id below already identifies the discount, and the code is
+        # node id below already identifies the discount, and the code is
         # recoverable from Shopify — so plaintext buys no audit value while
         # leaving a secret-shaped string in a local file.
         log_write(
             "create_discount_code",
             f"title={title} code=*** value={value}% usage_limit={usage_limit}",
         )
-        return f"Done. Price rule id={from_gid(rule_id)} created.\n{preview}"
+        return f"Done. Discount id={from_gid(node_id)} created.\n{preview}"
