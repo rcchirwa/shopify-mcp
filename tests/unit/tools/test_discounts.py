@@ -481,3 +481,130 @@ def test_create_discount_code_handles_missing_node_id_defensively():
     )
     assert "discount code created but no ID returned" in out
     assert len(fc.calls) == 1
+
+
+# ---- ends_at / expiry (Story 9.15) ----
+#
+# A far-future literal is used rather than a now()-relative value so these
+# tests assert the parameter's behaviour, not the clock.
+_FUTURE = "2099-12-31T23:59:59Z"
+
+
+def test_create_discount_code_sends_ends_at_as_iso8601_z():
+    """A supplied ends_at reaches Shopify as endsAt, normalized to ISO-8601 UTC."""
+    tools, fc = _build([_discount_create_ok()])
+    tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at=_FUTURE,
+        confirm=True,
+    )
+    ends_at = fc.calls[0][1]["input"]["endsAt"]
+    assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", ends_at), ends_at
+    assert ends_at == _FUTURE
+
+
+def test_create_discount_code_without_ends_at_sends_no_ends_at_key():
+    """Omitting ends_at must send NO endsAt key at all — not null, not empty —
+    so the pre-9.15 perpetual-code behaviour is byte-for-byte preserved."""
+    tools, fc = _build([_discount_create_ok()])
+    tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        confirm=True,
+    )
+    assert "endsAt" not in fc.calls[0][1]["input"]
+
+
+def test_create_discount_code_accepts_a_date_only_ends_at():
+    """A bare calendar date is the form a human reaches for; treat it as UTC
+    midnight rather than rejecting it."""
+    tools, fc = _build([_discount_create_ok()])
+    tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at="2099-12-31",
+        confirm=True,
+    )
+    assert fc.calls[0][1]["input"]["endsAt"] == "2099-12-31T00:00:00Z"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["not-a-date", "2099-13-31", "31/12/2099", "2099-12-31T99:99:99Z", "tomorrow"],
+)
+def test_create_discount_code_rejects_malformed_ends_at(bad):
+    """A malformed ends_at is refused before any network call."""
+    tools, fc = _build([])
+    out = tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at=bad,
+        confirm=True,
+    )
+    assert "Error: ends_at" in out
+    assert len(fc.calls) == 0, "malformed ends_at must not issue any Shopify call"
+
+
+@pytest.mark.parametrize("past", ["2020-01-01T00:00:00Z", "1999-12-31", "2020-06-01"])
+def test_create_discount_code_rejects_ends_at_not_after_start(past):
+    """An end date at or before the start would create an already-expired code."""
+    tools, fc = _build([])
+    out = tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at=past,
+        confirm=True,
+    )
+    assert "Error: ends_at" in out
+    assert "after" in out
+    assert len(fc.calls) == 0, "a past ends_at must not issue any Shopify call"
+
+
+def test_create_discount_code_preview_shows_the_expiry():
+    """The preview must surface the expiry, since its absence is exactly what
+    made this gap invisible before confirming (Story 9.15)."""
+    tools, fc = _build([])
+    out = tools["create_discount_code"](
+        title="Fest Drop",
+        code="FEST20",
+        percentage_off=20,
+        ends_at=_FUTURE,
+        confirm=False,
+    )
+    assert f"Ends          : {_FUTURE}" in out
+    assert len(fc.calls) == 0
+
+
+def test_create_discount_code_preview_shows_no_expiry_when_omitted():
+    """Wording mirrors the read side's `Ends: ... or 'no expiry'`."""
+    tools, fc = _build([])
+    out = tools["create_discount_code"](
+        title="Fest Drop",
+        code="FEST20",
+        percentage_off=20,
+        confirm=False,
+    )
+    assert "Ends          : no expiry" in out
+    assert len(fc.calls) == 0
+
+
+def test_create_discount_code_validates_ends_at_before_previewing():
+    """Validation precedes the preview, matching the percentage_off guard — a
+    bad date must not preview as though it were legitimate."""
+    tools, fc = _build([])
+    out = tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at="not-a-date",
+        confirm=False,
+    )
+    assert "Error: ends_at" in out
+    assert "PREVIEW" not in out
+    assert len(fc.calls) == 0

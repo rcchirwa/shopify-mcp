@@ -35,6 +35,41 @@ from shopify_mcp.tools._response import (
 DISCOUNT_PCT_MIN = 0
 DISCOUNT_PCT_MAX = 100
 
+# The wire format Shopify accepts for DiscountCodeBasicInput's startsAt/endsAt.
+_ISO_Z = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def _normalize_ends_at(value: str, starts_at: datetime) -> tuple[str, str]:
+    """Parse a caller-supplied expiry into Shopify's ISO-8601 UTC wire format.
+
+    Returns ``(iso, "")`` on success and ``("", error)`` on failure, matching
+    this module's convention of returning an error string rather than raising.
+
+    Story 9.15 introduced the first caller-supplied date in this codebase, so
+    two judgement calls are recorded here rather than left implicit: a naive
+    value is read as UTC instead of refused, because a bare calendar date is
+    the form a caller reaches for; and the result must fall *strictly* after
+    ``starts_at``, since an equal or earlier value would create a code that is
+    already expired the moment it exists.
+    """
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return "", (
+            f"Error: ends_at must be an ISO-8601 date or timestamp "
+            f"(e.g. 2026-09-20 or 2026-09-20T23:59:59Z) — got {value!r}."
+        )
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    parsed = parsed.astimezone(UTC)
+    if parsed <= starts_at:
+        return "", (
+            f"Error: ends_at must be after the start "
+            f"({starts_at.strftime(_ISO_Z)}) — got {parsed.strftime(_ISO_Z)}."
+        )
+    return parsed.strftime(_ISO_Z), ""
+
+
 # The GraphQL strings now live in shopify.queries.discounts. They are re-exported
 # here so existing callers/tests (`from tools.discounts import GET_CODE_DISCOUNTS`)
 # keep resolving to the same objects the operations layer executes.
@@ -95,12 +130,16 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         code: str,
         percentage_off: float,
         usage_limit: int = 0,
+        ends_at: str = "",
         confirm: bool = False,
     ) -> str:
         """
         Create a new percentage-off discount code.
         percentage_off: e.g. 20 = 20% off. Must be > 0 and <= 100.
         usage_limit: 0 = unlimited.
+        ends_at: optional expiry as an ISO-8601 date or timestamp (e.g.
+          2026-09-20 or 2026-09-20T23:59:59Z); a value with no timezone is read
+          as UTC. Omit for a code that never expires. Must be after now.
         Returns a preview unless confirm=True.
         """
         if not (DISCOUNT_PCT_MIN < percentage_off <= DISCOUNT_PCT_MAX):
@@ -109,12 +148,23 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"<= {DISCOUNT_PCT_MAX} (got {percentage_off})."
             )
 
+        # Stamped once and reused for both the expiry comparison and the
+        # payload: calling now() twice could compare against one instant and
+        # send another.
+        starts_at = datetime.now(UTC)
+        ends_at_iso = ""
+        if ends_at:
+            ends_at_iso, error = _normalize_ends_at(ends_at, starts_at)
+            if error:
+                return error
+
         preview = (
             f"PREVIEW — New discount code\n"
             f"  Title         : {title}\n"
             f"  Code          : {code}\n"
             f"  Discount      : {percentage_off}% off\n"
-            f"  Usage limit   : {'unlimited' if usage_limit == 0 else usage_limit}"
+            f"  Usage limit   : {'unlimited' if usage_limit == 0 else usage_limit}\n"
+            f"  Ends          : {ends_at_iso or 'no expiry'}"
         )
 
         if not confirm:
@@ -123,7 +173,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         discount_input: dict[str, Any] = {
             "title": title,
             "code": code,
-            "startsAt": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "startsAt": starts_at.strftime(_ISO_Z),
             # Nullable in the schema, but confirmed live (2026-09-14) that
             # discountCodeBasicCreate rejects a missing `context` with "Context
             # can't be blank" — {all: ALL} is the buyer-selection equivalent of
@@ -136,6 +186,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         }
         if usage_limit > 0:
             discount_input["usageLimit"] = usage_limit
+        # Conditional, mirroring usageLimit above: the no-expiry path must send
+        # no endsAt key at all rather than an explicit null, preserving the
+        # pre-9.15 payload byte-for-byte for callers that don't pass one.
+        if ends_at_iso:
+            discount_input["endsAt"] = ends_at_iso
 
         result = ops.create_discount_code_basic(client, discount_input)
         errors = extract_user_errors(result, "discountCodeBasicCreate")
