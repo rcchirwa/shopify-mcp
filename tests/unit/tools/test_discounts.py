@@ -1,9 +1,10 @@
 """
 Offline unit tests for tools/discounts.py.
 
-Covers the read-only get_discount_codes listing and the two-step create_
-discount_code write path (price_rule create → code attach). No Shopify API
-calls or .env required.
+Covers the read-only get_discount_codes listing and the create_discount_code
+write path — a single discountCodeBasicCreate mutation (Story 9.14; formerly a
+two-step price-rule-create → code-attach flow). No Shopify API calls or .env
+required.
 
 Usage:
   cd ~/shopify-mcp
@@ -16,11 +17,7 @@ import re
 import pytest
 
 from shopify_mcp.tools import discounts
-from shopify_mcp.tools.discounts import (
-    CREATE_DISCOUNT_CODE,
-    CREATE_PRICE_RULE,
-    GET_CODE_DISCOUNTS,
-)
+from shopify_mcp.tools.discounts import CREATE_DISCOUNT_CODE_BASIC, GET_CODE_DISCOUNTS
 from tests.support import CapturingServer, FakeClient
 
 
@@ -74,38 +71,20 @@ def _discount_node(
     return {"id": f"gid://shopify/DiscountCodeNode/{gid}", "discount": discount}
 
 
-def _price_rule_create_ok(rid="5001"):
+def _discount_create_ok(node_id="5001"):
     return {
-        "priceRuleCreate": {
-            "priceRule": {"id": f"gid://shopify/PriceRule/{rid}"},
-            "priceRuleUserErrors": [],
-        }
-    }
-
-
-def _price_rule_create_err(field, message):
-    return {
-        "priceRuleCreate": {
-            "priceRule": None,
-            "priceRuleUserErrors": [{"field": field, "message": message}],
-        }
-    }
-
-
-def _discount_code_create_ok(code):
-    return {
-        "priceRuleDiscountCodeCreate": {
-            "priceRuleDiscountCode": {"code": code},
+        "discountCodeBasicCreate": {
+            "codeDiscountNode": {"id": f"gid://shopify/DiscountCodeNode/{node_id}"},
             "userErrors": [],
         }
     }
 
 
-def _discount_code_create_err(field, message):
+def _discount_create_err(field, message, code=None):
     return {
-        "priceRuleDiscountCodeCreate": {
-            "priceRuleDiscountCode": None,
-            "userErrors": [{"field": field, "message": message}],
+        "discountCodeBasicCreate": {
+            "codeDiscountNode": None,
+            "userErrors": [{"field": field, "message": message, "code": code}],
         }
     }
 
@@ -311,12 +290,7 @@ def test_create_discount_code_masks_code_in_audit_log(monkeypatch):
         "log_write",
         lambda name, desc: captured.update(name=name, desc=desc),
     )
-    tools, fc = _build(
-        [
-            _price_rule_create_ok(rid="5001"),
-            _discount_code_create_ok("LAUNCH20"),
-        ]
-    )
+    tools, fc = _build([_discount_create_ok("5001")])
     out = tools["create_discount_code"](
         title="Launch Drop",
         code="LAUNCH20",
@@ -328,13 +302,8 @@ def test_create_discount_code_masks_code_in_audit_log(monkeypatch):
     assert "code=***" in captured["desc"]
 
 
-def test_create_discount_code_confirmed_issues_two_mutations_in_order():
-    tools, fc = _build(
-        [
-            _price_rule_create_ok(rid="5001"),
-            _discount_code_create_ok("LAUNCH20"),
-        ]
-    )
+def test_create_discount_code_confirmed_issues_one_mutation():
+    tools, fc = _build([_discount_create_ok("5001")])
     out = tools["create_discount_code"](
         title="Launch Drop",
         code="LAUNCH20",
@@ -342,45 +311,29 @@ def test_create_discount_code_confirmed_issues_two_mutations_in_order():
         confirm=True,
     )
     assert out.startswith("Done.")
-    assert "Price rule id=5001 created." in out
-    assert len(fc.calls) == 2
-    assert fc.calls[0][0] == CREATE_PRICE_RULE
-    assert fc.calls[1][0] == CREATE_DISCOUNT_CODE
-    # Second call references the rule id from the first response.
-    assert fc.calls[1][1] == {
-        "priceRuleId": "gid://shopify/PriceRule/5001",
-        "code": "LAUNCH20",
-    }
+    assert "Discount id=5001 created." in out
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == CREATE_DISCOUNT_CODE_BASIC
 
 
-def test_create_discount_code_negates_percentage_on_write():
-    """Shopify wants a negative value for percentage-off — the tool normalizes
-    positive inputs by flipping the sign."""
-    tools, fc = _build(
-        [
-            _price_rule_create_ok(),
-            _discount_code_create_ok("X"),
-        ]
-    )
+def test_create_discount_code_percentage_is_sent_as_a_fraction():
+    """Shopify's DiscountCustomerGetsValueInput.percentage is a 0-1 decimal
+    fraction, not the whole-number percentage_off the tool takes as input."""
+    tools, fc = _build([_discount_create_ok()])
     tools["create_discount_code"](
         title="Test",
         code="X",
         percentage_off=20,
         confirm=True,
     )
-    rule_input = fc.calls[0][1]["input"]
-    assert rule_input["value"] == "-20"
+    discount_input = fc.calls[0][1]["input"]
+    assert discount_input["customerGets"]["value"]["percentage"] == 0.2
 
 
 def test_create_discount_code_usage_limit_zero_omits_key():
-    """usage_limit=0 means unlimited — the PriceRuleInput should NOT include a
+    """usage_limit=0 means unlimited — the input should NOT include a
     usageLimit key (Shopify interprets null as unlimited but a 0 as invalid)."""
-    tools, fc = _build(
-        [
-            _price_rule_create_ok(),
-            _discount_code_create_ok("X"),
-        ]
-    )
+    tools, fc = _build([_discount_create_ok()])
     tools["create_discount_code"](
         title="Unlim",
         code="X",
@@ -388,17 +341,12 @@ def test_create_discount_code_usage_limit_zero_omits_key():
         usage_limit=0,
         confirm=True,
     )
-    rule_input = fc.calls[0][1]["input"]
-    assert "usageLimit" not in rule_input
+    discount_input = fc.calls[0][1]["input"]
+    assert "usageLimit" not in discount_input
 
 
 def test_create_discount_code_usage_limit_positive_included():
-    tools, fc = _build(
-        [
-            _price_rule_create_ok(),
-            _discount_code_create_ok("X"),
-        ]
-    )
+    tools, fc = _build([_discount_create_ok()])
     tools["create_discount_code"](
         title="Capped",
         code="X",
@@ -411,12 +359,7 @@ def test_create_discount_code_usage_limit_positive_included():
 
 def test_create_discount_code_starts_at_is_iso8601_z():
     """startsAt must be a Shopify-accepted ISO-8601 UTC string."""
-    tools, fc = _build(
-        [
-            _price_rule_create_ok(),
-            _discount_code_create_ok("X"),
-        ]
-    )
+    tools, fc = _build([_discount_create_ok()])
     tools["create_discount_code"](
         title="T",
         code="X",
@@ -427,55 +370,44 @@ def test_create_discount_code_starts_at_is_iso8601_z():
     assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", starts_at), starts_at
 
 
-def test_create_discount_code_price_rule_input_shape():
-    """PriceRuleInput must have the fixed-shape fields Shopify requires."""
-    tools, fc = _build(
-        [
-            _price_rule_create_ok(),
-            _discount_code_create_ok("X"),
-        ]
-    )
+def test_create_discount_code_discount_input_shape():
+    """DiscountCodeBasicInput must have the fixed-shape fields Shopify requires
+    — no customerSelection field exists on this input (unlike the old
+    PriceRuleInput): a code-based discount is gated by the code itself."""
+    tools, fc = _build([_discount_create_ok()])
     tools["create_discount_code"](
         title="Shape Check",
-        code="X",
+        code="SHAPE20",
         percentage_off=20,
         confirm=True,
     )
-    rule_input = fc.calls[0][1]["input"]
-    assert rule_input["title"] == "Shape Check"
-    assert rule_input["target"] == "LINE_ITEM"
-    assert rule_input["allocationMethod"] == "ACROSS"
-    assert rule_input["valueType"] == "PERCENTAGE"
-    assert rule_input["customerSelection"] == {"forAllCustomers": True}
+    discount_input = fc.calls[0][1]["input"]
+    assert discount_input["title"] == "Shape Check"
+    assert discount_input["code"] == "SHAPE20"
+    assert discount_input["customerGets"]["items"] == {"all": True}
+    assert "customerSelection" not in discount_input
+
+
+def test_create_discount_code_sends_context_all_buyers():
+    """`context` is nullable in the schema but confirmed live (2026-09-14) to
+    be business-logic required — Shopify rejects the mutation with "Context
+    can't be blank" if it's omitted, a requirement introspection can't show."""
+    tools, fc = _build([_discount_create_ok()])
+    tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        confirm=True,
+    )
+    assert fc.calls[0][1]["input"]["context"] == {"all": "ALL"}
 
 
 # ---- create_discount_code — error paths ----
 
 
-def test_create_discount_code_halts_before_code_creation_on_price_rule_error():
-    """priceRuleUserErrors on step 1 must short-circuit — no code creation call."""
+def test_create_discount_code_surfaces_user_errors():
     tools, fc = _build(
-        [
-            _price_rule_create_err(["input", "title"], "Title has already been used"),
-        ]
-    )
-    out = tools["create_discount_code"](
-        title="Dup",
-        code="X",
-        percentage_off=10,
-        confirm=True,
-    )
-    assert out.startswith("Error creating price rule:")
-    assert "Title has already been used" in out
-    assert len(fc.calls) == 1, "code-create step must not run after rule-create fails"
-
-
-def test_create_discount_code_surfaces_code_attachment_user_errors():
-    tools, fc = _build(
-        [
-            _price_rule_create_ok(),
-            _discount_code_create_err(["code"], "Code has already been taken"),
-        ]
+        [_discount_create_err(["basicCodeDiscount", "code"], "Code has already been taken")]
     )
     out = tools["create_discount_code"](
         title="T",
@@ -483,8 +415,20 @@ def test_create_discount_code_surfaces_code_attachment_user_errors():
         percentage_off=10,
         confirm=True,
     )
-    assert out.startswith("Error attaching discount code:")
-    assert "Code has already been taken" in out
+    assert out.startswith("Error creating discount code:")
+    assert "basicCodeDiscount.code: Code has already been taken" in out
+    assert len(fc.calls) == 1
+
+
+def test_create_discount_code_user_error_with_no_field_still_readable():
+    tools, fc = _build([_discount_create_err(None, "Something went wrong")])
+    out = tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        confirm=True,
+    )
+    assert "(no field): Something went wrong" in out
 
 
 # ---- create_discount_code — percentage_off boundary ----
@@ -506,12 +450,7 @@ def test_create_discount_code_rejects_out_of_range_percentage(percentage_off):
 
 @pytest.mark.parametrize("percentage_off", [1, 20, 100])
 def test_create_discount_code_accepts_boundary_and_typical_percentages(percentage_off):
-    tools, fc = _build(
-        [
-            _price_rule_create_ok(),
-            _discount_code_create_ok("X"),
-        ]
-    )
+    tools, fc = _build([_discount_create_ok()])
     out = tools["create_discount_code"](
         title="Good",
         code="GOOD",
@@ -521,15 +460,15 @@ def test_create_discount_code_accepts_boundary_and_typical_percentages(percentag
     assert out.startswith("Done.")
 
 
-def test_create_discount_code_handles_missing_rule_id_defensively():
-    """If the priceRuleCreate payload has no id (shape drift, partial response),
-    don't attempt the second step with None — surface a clear error."""
+def test_create_discount_code_handles_missing_node_id_defensively():
+    """If the discountCodeBasicCreate payload has no id (shape drift, partial
+    response) and no userErrors, surface a clear error rather than crashing."""
     tools, fc = _build(
         [
             {
-                "priceRuleCreate": {
-                    "priceRule": None,
-                    "priceRuleUserErrors": [],
+                "discountCodeBasicCreate": {
+                    "codeDiscountNode": None,
+                    "userErrors": [],
                 }
             }
         ]
@@ -540,5 +479,5 @@ def test_create_discount_code_handles_missing_rule_id_defensively():
         percentage_off=10,
         confirm=True,
     )
-    assert "price rule created but no ID returned" in out
+    assert "discount code created but no ID returned" in out
     assert len(fc.calls) == 1
