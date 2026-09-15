@@ -10,7 +10,7 @@ flow, and output formatting; the GraphQL strings live in
 create_discount_code requires confirm=True.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -28,12 +28,79 @@ from shopify_mcp.tools._response import (
     format_path_user_errors,
     with_confirm_hint,
 )
+from shopify_mcp.tools._scrub import cap, sanitize_control_chars
 
 # Shopify rejects a 0% or negative discount, and a >100% value would zero out
 # (or overpay) a line item — bound client-side rather than let a nonsensical
 # code preview as legitimate (SEC-07).
 DISCOUNT_PCT_MIN = 0
 DISCOUNT_PCT_MAX = 100
+
+# The wire format Shopify accepts for DiscountCodeBasicInput's startsAt/endsAt.
+_ISO_Z = "%Y-%m-%dT%H:%M:%SZ"
+# A bare calendar date is read as the last second of that day — see
+# _normalize_ends_at for why.
+_END_OF_DAY = time(23, 59, 59)
+
+
+def _normalize_ends_at(value: str, starts_at: datetime) -> tuple[str, str]:
+    """Parse a caller-supplied expiry into Shopify's ISO-8601 UTC wire format.
+
+    Returns ``(iso, "")`` on success and ``("", error)`` on failure, matching
+    this module's convention of returning an error string rather than raising.
+
+    Story 9.15 introduced the first caller-supplied date in this codebase, so
+    the judgement calls are recorded here rather than left implicit:
+
+    * A **bare calendar date means the END of that day.** An operator who says
+      "expires 2026-09-19" means the 19th is the last day the code works, not
+      that it dies as the 19th begins. Reading it as midnight would silently
+      cut a promotion a day short — the same shape of failure this story
+      exists to prevent, just moved from "never expires" to "expired early".
+    * A naive timestamp is read as UTC rather than refused.
+    * The result must fall *strictly* after ``starts_at``, since an equal or
+      earlier value creates a code already expired the moment it exists.
+
+    Python's ISO parser accepts a wider grammar than the examples above —
+    week dates (``2099-W01-1``), compact forms (``20991231``) and sub-minute
+    offsets all parse, and a week date resolves to a different calendar year
+    than it appears to name. That is left permissive rather than restricted:
+    the normalized value is what both the preview and the payload carry, so a
+    caller always sees the instant they actually bought.
+    """
+    try:
+        # date.fromisoformat rejects anything carrying a time component, which
+        # makes it a clean discriminator for "date only" — no string sniffing.
+        parsed = datetime.combine(date.fromisoformat(value), _END_OF_DAY, tzinfo=UTC)
+    except (TypeError, ValueError):
+        try:
+            parsed = datetime.fromisoformat(value)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            parsed = parsed.astimezone(UTC)
+        except (TypeError, ValueError, OverflowError):
+            # All three are reachable and all must return a string rather than
+            # raise: ValueError for a malformed value, TypeError for a non-str,
+            # and OverflowError from astimezone when a near-datetime.max value
+            # with a negative offset shifts past the representable range
+            # (e.g. 9999-12-31T23:59:59-01:00).
+            return "", (
+                f"Error: ends_at must be an ISO-8601 date or timestamp "
+                f"(e.g. 2026-09-20 or 2026-09-20T23:59:59Z) — got "
+                f"{cap(str(value))!r}."
+            )
+    # Truncate to the wire format's resolution BEFORE comparing. Flooring only
+    # starts_at is not enough: a value 0.9s after a whole-second start compares
+    # as later while serializing to the same second, so the guard would pass and
+    # Shopify would receive endsAt == startsAt.
+    parsed = parsed.replace(microsecond=0)
+    if parsed <= starts_at:
+        return "", (
+            f"Error: ends_at must be after the start "
+            f"({starts_at.strftime(_ISO_Z)}) — got {parsed.strftime(_ISO_Z)}."
+        )
+    return parsed.strftime(_ISO_Z), ""
+
 
 # The GraphQL strings now live in shopify.queries.discounts. They are re-exported
 # here so existing callers/tests (`from tools.discounts import GET_CODE_DISCOUNTS`)
@@ -95,12 +162,16 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         code: str,
         percentage_off: float,
         usage_limit: int = 0,
+        ends_at: str = "",
         confirm: bool = False,
     ) -> str:
         """
         Create a new percentage-off discount code.
         percentage_off: e.g. 20 = 20% off. Must be > 0 and <= 100.
         usage_limit: 0 = unlimited.
+        ends_at: optional expiry as an ISO-8601 date or timestamp (e.g.
+          2026-09-20 or 2026-09-20T23:59:59Z); a value with no timezone is read
+          as UTC. Omit for a code that never expires. Must be after now.
         Returns a preview unless confirm=True.
         """
         if not (DISCOUNT_PCT_MIN < percentage_off <= DISCOUNT_PCT_MAX):
@@ -109,12 +180,36 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"<= {DISCOUNT_PCT_MAX} (got {percentage_off})."
             )
 
+        # Stamped ONCE and reused for both the expiry comparison and the
+        # payload. Calling now() twice would compare against one instant and
+        # send another, so an expiry landing between the two serializes to
+        # endsAt == startsAt — the exact case the guard exists to reject.
+        #
+        # The floor here is for symmetry, not correctness: the truncation that
+        # actually makes the comparison honest happens to `parsed` inside
+        # _normalize_ends_at, since strftime already formats only whole seconds.
+        # Keeping both operands at the same resolution stops a future reader
+        # from reintroducing a microsecond comparison.
+        starts_at = datetime.now(UTC).replace(microsecond=0)
+        ends_at_iso = ""
+        if ends_at:
+            ends_at_iso, error = _normalize_ends_at(ends_at, starts_at)
+            if error:
+                return error
+
+        # title/code are escaped for CR/LF, not merely echoed: a newline in
+        # either forges extra preview lines, and now that the preview carries an
+        # expiry there is something worth forging. A crafted title could render
+        # its own "Ends : <date>" line ABOVE the real one, so an operator
+        # reading top-down approves a perpetual code believing it expires. The
+        # helper leaves text without control characters byte-for-byte unchanged.
         preview = (
             f"PREVIEW — New discount code\n"
-            f"  Title         : {title}\n"
-            f"  Code          : {code}\n"
+            f"  Title         : {sanitize_control_chars(title)}\n"
+            f"  Code          : {sanitize_control_chars(code)}\n"
             f"  Discount      : {percentage_off}% off\n"
-            f"  Usage limit   : {'unlimited' if usage_limit == 0 else usage_limit}"
+            f"  Usage limit   : {'unlimited' if usage_limit == 0 else usage_limit}\n"
+            f"  Ends          : {ends_at_iso or 'no expiry'}"
         )
 
         if not confirm:
@@ -123,7 +218,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         discount_input: dict[str, Any] = {
             "title": title,
             "code": code,
-            "startsAt": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "startsAt": starts_at.strftime(_ISO_Z),
             # Nullable in the schema, but confirmed live (2026-09-14) that
             # discountCodeBasicCreate rejects a missing `context` with "Context
             # can't be blank" — {all: ALL} is the buyer-selection equivalent of
@@ -136,6 +231,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         }
         if usage_limit > 0:
             discount_input["usageLimit"] = usage_limit
+        # Conditional, mirroring usageLimit above: the no-expiry path must send
+        # no endsAt key at all rather than an explicit null, preserving the
+        # pre-9.15 payload byte-for-byte for callers that don't pass one.
+        if ends_at_iso:
+            discount_input["endsAt"] = ends_at_iso
 
         result = ops.create_discount_code_basic(client, discount_input)
         errors = extract_user_errors(result, "discountCodeBasicCreate")
@@ -151,12 +251,24 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not node_id:
             return "Error: discount code created but no ID returned."
 
-        # SEC-12: the discount code is masked in the durable audit log. The
-        # node id below already identifies the discount, and the code is
-        # recoverable from Shopify — so plaintext buys no audit value while
-        # leaving a secret-shaped string in a local file.
+        # SEC-12: the discount code is masked in the durable audit log, because
+        # it is recoverable from Shopify and plaintext would leave a
+        # secret-shaped string in a local file.
+        #
+        # ends_at is recorded because it is a material term of the same kind as
+        # percentage_off and usage_limit — without it the log cannot tell a
+        # seven-day 90%-off code from a perpetual one, which is the entire
+        # subject of Story 9.15.
+        #
+        # NOTE: this line carries no identifier for the created discount. The
+        # comment here previously claimed "the node id below already identifies
+        # the discount" — it does not; "below" is the return value, which goes
+        # to the caller and not to the log. Pre-existing and left alone by 9.15
+        # rather than silently widening its scope; see the card for the
+        # follow-up, since fixing it also amends the SEC-12 ledger row.
         log_write(
             "create_discount_code",
-            f"title={title} code=*** percentage_off={percentage_off}% usage_limit={usage_limit}",
+            f"title={title} code=*** percentage_off={percentage_off}% "
+            f"usage_limit={usage_limit} ends_at={ends_at_iso or 'none'}",
         )
         return f"Done. Discount id={from_gid(node_id)} created.\n{preview}"

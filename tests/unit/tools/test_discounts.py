@@ -13,6 +13,7 @@ Usage:
 """
 
 import re
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -481,3 +482,353 @@ def test_create_discount_code_handles_missing_node_id_defensively():
     )
     assert "discount code created but no ID returned" in out
     assert len(fc.calls) == 1
+
+
+# ---- ends_at / expiry (Story 9.15) ----
+#
+# A far-future literal is used rather than a now()-relative value so these
+# tests assert the parameter's behaviour, not the clock.
+_FUTURE = "2099-12-31T23:59:59Z"
+
+
+def test_create_discount_code_sends_ends_at_as_iso8601_z():
+    """A supplied ends_at reaches Shopify as endsAt, normalized to ISO-8601 UTC."""
+    tools, fc = _build([_discount_create_ok()])
+    tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at=_FUTURE,
+        confirm=True,
+    )
+    ends_at = fc.calls[0][1]["input"]["endsAt"]
+    assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", ends_at), ends_at
+    assert ends_at == _FUTURE
+
+
+def test_create_discount_code_without_ends_at_sends_no_ends_at_key():
+    """Omitting ends_at must send NO endsAt key at all — not null, not empty —
+    so the pre-9.15 perpetual-code behaviour is byte-for-byte preserved."""
+    tools, fc = _build([_discount_create_ok()])
+    tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        confirm=True,
+    )
+    assert "endsAt" not in fc.calls[0][1]["input"]
+
+
+def test_create_discount_code_reads_a_date_only_ends_at_as_end_of_that_day():
+    """A bare calendar date must mean the END of that day. "expires 2099-12-31"
+    means the 31st is the last day the code works — reading it as midnight would
+    silently cut the promotion a day short, which is the same shape of failure
+    Story 9.15 exists to prevent."""
+    tools, fc = _build([_discount_create_ok()])
+    tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at="2099-12-31",
+        confirm=True,
+    )
+    assert fc.calls[0][1]["input"]["endsAt"] == "2099-12-31T23:59:59Z"
+
+
+def test_create_discount_code_reads_a_naive_timestamp_as_utc():
+    """A timestamp with a time component but no timezone is read as UTC rather
+    than refused. Distinct from the date-only case above, which takes the
+    end-of-day branch — this one carries its own time and must be preserved."""
+    tools, fc = _build([_discount_create_ok()])
+    tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at="2099-12-31T18:30:00",
+        confirm=True,
+    )
+    assert fc.calls[0][1]["input"]["endsAt"] == "2099-12-31T18:30:00Z"
+
+
+def test_create_discount_code_converts_an_offset_timestamp_to_utc():
+    """An explicit non-UTC offset is converted, not truncated — the preview and
+    payload both show the UTC instant so a timezone misreading is visible."""
+    tools, fc = _build([_discount_create_ok()])
+    tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at="2099-12-31T23:59:59+05:00",
+        confirm=True,
+    )
+    assert fc.calls[0][1]["input"]["endsAt"] == "2099-12-31T18:59:59Z"
+
+
+def test_create_discount_code_rejects_a_sub_second_expiry_window():
+    """The guard must compare what the wire format actually carries. At
+    microsecond precision an expiry a fraction of a second after the start
+    passed validation and then serialized to endsAt == startsAt."""
+    tools, fc = _build([])
+    now = datetime.now(UTC).replace(microsecond=0)
+    sub_second = (now + timedelta(microseconds=900000)).isoformat()
+    out = tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at=sub_second,
+        confirm=True,
+    )
+    assert "Error: ends_at" in out
+    assert len(fc.calls) == 0
+
+
+@pytest.mark.parametrize("not_a_string", [True, 20991231, 3.14, ["2099-12-31"]])
+def test_create_discount_code_returns_an_error_for_a_non_string_ends_at(not_a_string):
+    """fromisoformat raises TypeError (not ValueError) on a non-str, so the
+    guard must catch both — every other bad input here returns an error string
+    rather than raising."""
+    tools, fc = _build([])
+    out = tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at=not_a_string,
+        confirm=True,
+    )
+    assert "Error: ends_at" in out
+    assert len(fc.calls) == 0
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["not-a-date", "2099-13-31", "31/12/2099", "2099-12-31T99:99:99Z", "tomorrow"],
+)
+def test_create_discount_code_rejects_malformed_ends_at(bad):
+    """A malformed ends_at is refused before any network call."""
+    tools, fc = _build([])
+    out = tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at=bad,
+        confirm=True,
+    )
+    assert "Error: ends_at" in out
+    assert len(fc.calls) == 0, "malformed ends_at must not issue any Shopify call"
+
+
+@pytest.mark.parametrize("past", ["2020-01-01T00:00:00Z", "1999-12-31", "2020-06-01"])
+def test_create_discount_code_rejects_ends_at_not_after_start(past):
+    """An end date at or before the start would create an already-expired code."""
+    tools, fc = _build([])
+    out = tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at=past,
+        confirm=True,
+    )
+    assert "Error: ends_at" in out
+    assert "after" in out
+    assert len(fc.calls) == 0, "a past ends_at must not issue any Shopify call"
+
+
+def test_create_discount_code_rejects_an_overflowing_ends_at():
+    """A near-datetime.max value with a negative offset shifts past the
+    representable range and raises OverflowError from astimezone -- neither a
+    ValueError nor a TypeError, so it needs its own arm of the except."""
+    tools, fc = _build([])
+    out = tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at="9999-12-31T23:59:59-01:00",
+        confirm=True,
+    )
+    assert "Error: ends_at" in out
+    assert len(fc.calls) == 0
+
+
+def test_create_discount_code_caps_the_reflected_ends_at():
+    """The rejection message echoes caller input, so it must be capped like
+    every other reflection site in the repo -- an uncapped multi-KB value
+    floods model context (REFLECT_MAX_LEN, tools/_scrub.py)."""
+    tools, fc = _build([])
+    out = tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at="9" * 200_000,
+        confirm=True,
+    )
+    assert "Error: ends_at" in out
+    assert len(out) < 1_000, f"reflected value not capped: {len(out)} chars"
+    assert len(fc.calls) == 0
+
+
+def test_create_discount_code_preview_cannot_be_forged_with_a_newline():
+    """A newline in title or code would forge extra preview lines. Now that the
+    preview carries an expiry, a forged `Ends` line could render ABOVE the real
+    one and an operator approving top-down would create a perpetual code
+    believing it expires."""
+    tools, fc = _build([])
+    out = tools["create_discount_code"](
+        title="Autumn Sale\n  Ends          : 2099-12-31T23:59:59Z",
+        code="AUT20",
+        percentage_off=90,
+        confirm=False,
+    )
+    # The property that matters is LINE structure, not substring absence: the
+    # forged text may still appear as visible characters on the Title line, but
+    # it must not become a line of its own that an operator reads as a field.
+    ends_lines = [ln for ln in out.splitlines() if ln.startswith("  Ends")]
+    assert len(ends_lines) == 1, f"forged an extra Ends line: {ends_lines}"
+    assert ends_lines[0] == "  Ends          : no expiry"
+    assert "\\n" in out, "the newline should be escaped, not honoured"
+    assert len(fc.calls) == 0
+
+
+def test_create_discount_code_audit_log_records_the_expiry(monkeypatch):
+    """SEC-12 logs the material terms; the expiry is one -- without it the log
+    cannot distinguish a time-boxed code from a perpetual one."""
+    captured = []
+    monkeypatch.setattr(discounts, "log_write", lambda *a: captured.append(a))
+    tools, _fc = _build([_discount_create_ok()])
+    tools["create_discount_code"](
+        title="T",
+        code="SECRET20",
+        percentage_off=10,
+        ends_at="2099-12-31",
+        confirm=True,
+    )
+    assert "ends_at=2099-12-31T23:59:59Z" in captured[0][1]
+    assert "code=***" in captured[0][1], "SEC-12 masking must survive"
+    assert "SECRET20" not in captured[0][1]
+
+
+def test_create_discount_code_audit_log_says_none_without_an_expiry(monkeypatch):
+    """The perpetual case must be positively recorded, not merely absent -- an
+    omitted field is indistinguishable from a logger that dropped it."""
+    captured = []
+    monkeypatch.setattr(discounts, "log_write", lambda *a: captured.append(a))
+    tools, _fc = _build([_discount_create_ok()])
+    tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        confirm=True,
+    )
+    assert "ends_at=none" in captured[0][1]
+
+
+def test_create_discount_code_preview_shows_the_expiry():
+    """The preview must surface the expiry, since its absence is exactly what
+    made this gap invisible before confirming (Story 9.15)."""
+    tools, fc = _build([])
+    out = tools["create_discount_code"](
+        title="Fest Drop",
+        code="FEST20",
+        percentage_off=20,
+        ends_at=_FUTURE,
+        confirm=False,
+    )
+    assert f"Ends          : {_FUTURE}" in out
+    assert len(fc.calls) == 0
+
+
+@pytest.mark.parametrize(
+    ("supplied", "normalized"),
+    [
+        ("2099-12-31", "2099-12-31T23:59:59Z"),
+        ("2099-12-31T23:59:59+05:00", "2099-12-31T18:59:59Z"),
+        ("2099-W01-1", "2098-12-29T23:59:59Z"),
+    ],
+)
+def test_create_discount_code_preview_shows_the_normalized_expiry(supplied, normalized):
+    """The preview IS the confirm gate, so it must show the instant that will
+    actually be sent rather than echoing the caller's string.
+
+    A value whose normalized form is byte-identical to its input (e.g. an
+    already-UTC timestamp) cannot test this — the assertion would pass whether
+    the preview showed the raw or the normalized value. Each case here is chosen
+    so the two differ: a bare date gains end-of-day, an offset is converted, and
+    an ISO week date resolves to a different calendar year (which is the only
+    thing that makes that surprise visible before committing)."""
+    tools, fc = _build([])
+    out = tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at=supplied,
+        confirm=False,
+    )
+    # Compare the whole line, not substring presence: a supplied value can be a
+    # PREFIX of its normalized form ("2099-12-31" inside "2099-12-31T23:59:59Z"),
+    # so `supplied not in out` would fail on correct code. The exact line both
+    # proves normalization happened and catches a raw echo.
+    ends_lines = [ln for ln in out.splitlines() if ln.startswith("  Ends")]
+    assert ends_lines == [f"  Ends          : {normalized}"]
+    assert len(fc.calls) == 0
+
+
+def test_create_discount_code_stamps_the_start_once(monkeypatch):
+    """`starts_at` is stamped once and reused for both the guard and the payload.
+
+    With two now() calls, an expiry landing between them serializes to
+    endsAt == startsAt — exactly what the guard rejects. Nothing pinned this, so
+    reinstating the second now() passed the whole suite. The clock below returns
+    a later second on each call, which is only observable if the code calls it
+    more than once."""
+
+    class _AdvancingClock(datetime):
+        calls = 0
+
+        @classmethod
+        def now(cls, tz=None):
+            cls.calls += 1
+            return datetime(2099, 6, 1, 12, 0, cls.calls - 1, tzinfo=tz)
+
+    monkeypatch.setattr(discounts, "datetime", _AdvancingClock)
+    tools, fc = _build([_discount_create_ok()])
+    tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        # One second after the FIRST stamp: passes the guard either way, but
+        # equals the SECOND stamp if the start is re-read for the payload.
+        ends_at="2099-06-01T12:00:01Z",
+        confirm=True,
+    )
+    sent = fc.calls[0][1]["input"]
+    assert sent["startsAt"] == "2099-06-01T12:00:00Z"
+    assert sent["endsAt"] == "2099-06-01T12:00:01Z"
+    assert sent["endsAt"] > sent["startsAt"], "endsAt must not collapse onto startsAt"
+
+
+def test_create_discount_code_preview_shows_no_expiry_when_omitted():
+    """Wording mirrors the read side's `Ends: ... or 'no expiry'`."""
+    tools, fc = _build([])
+    out = tools["create_discount_code"](
+        title="Fest Drop",
+        code="FEST20",
+        percentage_off=20,
+        confirm=False,
+    )
+    assert "Ends          : no expiry" in out
+    assert len(fc.calls) == 0
+
+
+def test_create_discount_code_validates_ends_at_before_previewing():
+    """Validation precedes the preview, matching the percentage_off guard — a
+    bad date must not preview as though it were legitimate."""
+    tools, fc = _build([])
+    out = tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at="not-a-date",
+        confirm=False,
+    )
+    assert "Error: ends_at" in out
+    assert "PREVIEW" not in out
+    assert len(fc.calls) == 0
