@@ -15,6 +15,7 @@ import os
 import pytest
 from gql.transport.exceptions import TransportQueryError, TransportServerError
 from pydantic import ValidationError
+from requests.structures import CaseInsensitiveDict
 
 from shopify_mcp import client as sc
 from shopify_mcp.client import (
@@ -62,6 +63,11 @@ def _make_client(result=None, exc=None, settings=None):
     client = object.__new__(ShopifyClient)
     client._client = _StubGqlClient(result=result, exc=exc)
     client._settings = settings or _test_settings()
+    # Story 9.13: execute() reads the served API version off the transport.
+    # These builders skip __init__, so they stand in for what it would set —
+    # a None transport reports no headers, so the check stays silent.
+    client._transport = None
+    client._api_version_mismatch_logged = False
     return client
 
 
@@ -348,6 +354,11 @@ def _make_scripted(script, settings=None):
     client = object.__new__(ShopifyClient)
     client._client = _ScriptedGqlClient(script)
     client._settings = settings or _test_settings()
+    # Story 9.13: execute() reads the served API version off the transport.
+    # These builders skip __init__, so they stand in for what it would set —
+    # a None transport reports no headers, so the check stays silent.
+    client._transport = None
+    client._api_version_mismatch_logged = False
     return client
 
 
@@ -872,6 +883,11 @@ def _make_always_not_done_client(settings=None):
     client = object.__new__(ShopifyClient)
     client._client = _AlwaysNotDone()
     client._settings = settings or _test_settings()
+    # Story 9.13: execute() reads the served API version off the transport.
+    # These builders skip __init__, so they stand in for what it would set —
+    # a None transport reports no headers, so the check stays silent.
+    client._transport = None
+    client._api_version_mismatch_logged = False
     return client
 
 
@@ -890,6 +906,11 @@ def _make_done_after_n_client(n: int, settings=None):
     client = object.__new__(ShopifyClient)
     client._client = _DoneAfterN()
     client._settings = settings or _test_settings()
+    # Story 9.13: execute() reads the served API version off the transport.
+    # These builders skip __init__, so they stand in for what it would set —
+    # a None transport reports no headers, so the check stays silent.
+    client._transport = None
+    client._api_version_mismatch_logged = False
     return client
 
 
@@ -1031,3 +1052,150 @@ def test_s1067_transport_protocol_error_is_caught_and_bounded():
     assert "protocol error" in msg
     assert "Q" * REFLECT_MAX_LEN not in msg or len(msg) < len(body)
     assert body[: REFLECT_MAX_LEN + 1] not in msg
+
+
+# ---------- Story 9.13: served vs. requested Admin API version ----------
+#
+# Shopify answers an unsupported SHOPIFY_API_VERSION pin with HTTP 200 on the
+# oldest still-supported version instead of an error, naming what it actually
+# served in the X-Shopify-Api-Version response header. Nothing read that
+# header, so a rotten pin stayed invisible until a field it depended on was
+# removed — Story 9.12's outage. These tests pin the surfacing behaviour.
+
+
+def _transport_with_headers(headers):
+    """A stand-in for gql's RequestsHTTPTransport carrying response headers.
+
+    Real `requests` responses expose a CaseInsensitiveDict, so the tests use
+    one too — a plain dict would let a case-sensitive lookup pass here and
+    still fail against Shopify.
+    """
+
+    class _Transport:
+        response_headers = headers
+
+    return _Transport()
+
+
+def _client_with_served_version(served, *, requested="2026-01"):
+    """Build a client whose next execute() sees `served` in the response header."""
+    client = _make_client(
+        result={"ok": True},
+        settings=_test_settings(shopify_api_version=requested),
+    )
+    headers = None if served is None else CaseInsensitiveDict({"X-Shopify-Api-Version": served})
+    client._transport = _transport_with_headers(headers)
+    client._api_version_mismatch_logged = False
+    return client
+
+
+def test_served_version_matching_requested_logs_no_warning(caplog):
+    """AC2: a call served the version we pinned must stay silent."""
+    client = _client_with_served_version("2026-01", requested="2026-01")
+    with caplog.at_level("WARNING", logger="shopify_mcp.client"):
+        client.execute("query Ping { __typename }")
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_served_version_differing_from_requested_logs_warning(caplog):
+    """AC1/AC3: the mismatch that hid Story 9.12's outage must be surfaced.
+
+    This is the test that fails if the comparison is removed or broken.
+    """
+    client = _client_with_served_version("2025-10", requested="2024-01")
+    with caplog.at_level("WARNING", logger="shopify_mcp.client"):
+        client.execute("query Ping { __typename }")
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "2024-01" in message
+    assert "2025-10" in message
+
+
+def test_version_mismatch_warns_once_per_client_not_once_per_call(caplog):
+    """The pin is static for a client's life, so repeating it adds noise only."""
+    client = _client_with_served_version("2025-10", requested="2024-01")
+    with caplog.at_level("WARNING", logger="shopify_mcp.client"):
+        client.execute("query Ping { __typename }")
+        client.execute("query Ping { __typename }")
+        client.execute("query Ping { __typename }")
+    assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
+
+
+def test_no_warning_when_transport_has_not_recorded_headers_yet(caplog):
+    """gql sets `response_headers = None` in __init__ and only fills it after a
+    request, so the attribute is present-but-empty before the first execute().
+    Reading it must neither warn nor raise."""
+    client = _client_with_served_version(None, requested="2026-01")
+    with caplog.at_level("WARNING", logger="shopify_mcp.client"):
+        client.execute("query Ping { __typename }")
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_no_warning_when_headers_omit_the_version_header(caplog):
+    """A response without the header tells us nothing — silence beats a false
+    alarm naming `None` as the served version."""
+    client = _make_client(result={"ok": True})
+    client._transport = _transport_with_headers(CaseInsensitiveDict({"X-Request-Id": "abc"}))
+    client._api_version_mismatch_logged = False
+    with caplog.at_level("WARNING", logger="shopify_mcp.client"):
+        client.execute("query Ping { __typename }")
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_version_check_survives_a_transport_without_response_headers(caplog):
+    """The check is observability: if a future gql drops the attribute it must
+    fail open, never break the data path it is only meant to watch."""
+
+    class _NoHeaders:
+        pass
+
+    client = _make_client(result={"ok": True})
+    client._transport = _NoHeaders()
+    client._api_version_mismatch_logged = False
+    with caplog.at_level("WARNING", logger="shopify_mcp.client"):
+        assert client.execute("query Ping { __typename }") == {"ok": True}
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_version_header_lookup_is_case_insensitive_like_real_responses(caplog):
+    """Shopify's header casing is not a contract; requests normalises it."""
+    client = _make_client(
+        result={"ok": True}, settings=_test_settings(shopify_api_version="2024-01")
+    )
+    client._transport = _transport_with_headers(
+        CaseInsensitiveDict({"x-shopify-api-version": "2025-10"})
+    )
+    client._api_version_mismatch_logged = False
+    with caplog.at_level("WARNING", logger="shopify_mcp.client"):
+        client.execute("query Ping { __typename }")
+    assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
+
+
+def test_served_version_is_sanitised_before_reaching_the_log(caplog):
+    """The served version is upstream-controlled text. A CR/LF in it would
+    forge extra lines in the log an operator reads to diagnose the drift."""
+    client = _client_with_served_version("2025-10\r\nINFO forged log line", requested="2024-01")
+    with caplog.at_level("WARNING", logger="shopify_mcp.client"):
+        client.execute("query Ping { __typename }")
+    [warning] = [r for r in caplog.records if r.levelname == "WARNING"]
+    message = warning.getMessage()
+    assert "\r" not in message
+    assert "\n" not in message
+    assert "2025-10" in message
+
+
+def test_init_keeps_the_transport_reachable_for_the_version_check(monkeypatch, tmp_path):
+    """The served version is read off the transport instance, so __init__ must
+    keep a reference rather than dropping it into Client() and forgetting it."""
+    monkeypatch.setenv("SHOPIFY_STORE_URL", "test.myshopify.com")
+    monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "shpat_test00000000000000000000000")
+    monkeypatch.setattr(sc, "_ENV_PATH", tmp_path / "nonexistent.env")
+    sentinel = object()
+    monkeypatch.setattr(sc, "RequestsHTTPTransport", lambda **_kw: sentinel)
+    monkeypatch.setattr(sc, "Client", lambda **_kw: object())
+
+    client = sc.ShopifyClient()
+
+    assert client._transport is sentinel
+    assert client._api_version_mismatch_logged is False

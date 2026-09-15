@@ -76,6 +76,16 @@ _RETRYABLE_HTTP_RE = re.compile(
 # query/mutation/subscription; falls back to "<anonymous>" for shorthand queries.
 _GQL_OP_NAME_RE = re.compile(r"(?:query|mutation|subscription)\s+(\w+)", re.IGNORECASE)
 
+# Response header naming the Admin API version Shopify actually served.
+#
+# Shopify does not reject an unsupported SHOPIFY_API_VERSION pin — it answers
+# HTTP 200 on the oldest still-supported version and names that version here.
+# Story 9.12's outage is what that silence costs: the pin sat at a retired
+# 2024-01 while the API moved underneath it, and nothing surfaced until fields
+# the queries depended on were removed. Story 9.13 reads the header so the
+# drift is visible the moment it starts rather than whenever it first breaks.
+_API_VERSION_HEADER = "X-Shopify-Api-Version"
+
 # Pin .env to the repo root so loading is independent of the working directory
 # the MCP process is launched with. Claude Desktop launches subprocesses with
 # CWD=/, which makes the default `load_dotenv()` (which walks up from CWD)
@@ -200,7 +210,10 @@ class ShopifyClient:
             env_src,
         )
 
-        transport = RequestsHTTPTransport(
+        # Held as an attribute (not just handed to Client) because gql records
+        # each response's headers on the transport instance, and that is where
+        # _warn_on_api_version_drift reads the served version from.
+        self._transport = RequestsHTTPTransport(
             url=(
                 f"https://{self._settings.shopify_store_url}"
                 f"/admin/api/{self._settings.shopify_api_version}/graphql.json"
@@ -211,8 +224,12 @@ class ShopifyClient:
             },
             timeout=self._settings.request_timeout_s,
         )
+        # Set once the served-vs-requested mismatch has been reported. The pin
+        # is fixed for this client's life, so warning per call would repeat one
+        # unchanging fact on every query instead of informing anyone.
+        self._api_version_mismatch_logged = False
         self._client = Client(
-            transport=transport,
+            transport=self._transport,
             fetch_schema_from_transport=False,
         )
 
@@ -243,6 +260,40 @@ class ShopifyClient:
                     f"{cap_text(str(e))} after {attempt + 1} attempts"
                 ) from e
         raise TransientShopifyError(f"{label} retry loop exhausted")  # pragma: no cover
+
+    def _warn_on_api_version_drift(self) -> None:
+        """Log a WARNING once if Shopify served a version we did not request.
+
+        Called after a successful GraphQL call, when gql has recorded the
+        response headers on the transport. Reads defensively and stays silent
+        whenever it cannot tell: `response_headers` is None until the first
+        request completes, a response need not carry the header, and a future
+        gql could stop exposing it at all. This is observability watching the
+        data path — it must never be the reason the data path fails.
+        """
+        if self._api_version_mismatch_logged:
+            return
+        headers = getattr(self._transport, "response_headers", None)
+        if not headers:
+            return
+        served = headers.get(_API_VERSION_HEADER)
+        requested = self._settings.shopify_api_version
+        if served is None or served == requested:
+            return
+        self._api_version_mismatch_logged = True
+        # `served` is upstream-controlled text on its way into a log line, so
+        # it gets the same treatment as every other reflected value here
+        # (SEC-20, SEC-24): strip control characters that could forge extra log
+        # lines, then bound the length. `requested` is validated by Settings.
+        served = cap_text(sanitize_control_chars(served))
+        logger.warning(
+            "Shopify served Admin API version %s but SHOPIFY_API_VERSION requests %s — "
+            "the pinned version is unsupported and Shopify silently substituted the "
+            "oldest supported one. Update SHOPIFY_API_VERSION in .env to a supported "
+            "version; queries will otherwise break without warning as fields are removed.",
+            served,
+            requested,
+        )
 
     def execute(self, query_str: str, variables: dict | None = None) -> dict:
         gql_query = gql(query_str)
@@ -294,7 +345,11 @@ class ShopifyClient:
         # op_name is extracted via regex from an in-code GraphQL query string
         # (never caller-controlled), so unlike fetch_bytes' `url` it carries
         # no injection risk and doesn't need sanitize_control_chars (SEC-20).
-        return self._with_retry(_attempt, label=f"op={op_name}")
+        result = self._with_retry(_attempt, label=f"op={op_name}")
+        # After the call, so gql has recorded the response headers the served
+        # API version is read from (Story 9.13).
+        self._warn_on_api_version_drift()
+        return result
 
     def fetch_bytes(
         self,
