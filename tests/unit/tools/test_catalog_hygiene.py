@@ -2079,7 +2079,9 @@ def test_update_product_category_mutation_uses_product_update_input_shape():
     )
     query, variables = fc.calls[2]
     assert query == UPDATE_PRODUCT_CATEGORY
-    # The spec pins `product: ProductUpdateInput!` — NOT `input: ProductInput!`.
+    # The spec pins `product: ProductUpdateInput!`. (Story 9.18: the legacy
+    # `input: ProductInput!` shape this used to be contrasted against no longer
+    # exists on 2026-01 — every productUpdate in the repo is now on this one.)
     assert "product" in variables
     assert variables["product"] == {
         "id": "gid://shopify/Product/5234567890",

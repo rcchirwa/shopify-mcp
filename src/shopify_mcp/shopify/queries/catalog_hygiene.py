@@ -88,9 +88,15 @@ query GetProductVendorByHandle($handle: String!) {
 """
 )
 
-# Per spec: ProductUpdateInput (not the older `input: ProductInput!` shape used
-# in tools/products.py). Documented in shopify-aon-mcp-catalog-tools-spec.md
-# §"Tool 2 — Underlying Shopify GraphQL".
+# Per spec: ProductUpdateInput. Documented in
+# shopify-aon-mcp-catalog-tools-spec.md §"Tool 2 — Underlying Shopify GraphQL".
+#
+# Story 9.18: this comment used to describe `queries/products.py` as still on
+# the older `input: ProductInput!` shape. That shape was removed from the Admin
+# API by 2026-01 and products.py has been moved onto this one — the two are now
+# the same shape, differing only in their selection sets. Keep them separate
+# anyway: the selections here are load-bearing, because the catalog-hygiene
+# tools read their post-write snapshot out of the response.
 UPDATE_PRODUCT_VENDOR = """
 mutation productUpdate($product: ProductUpdateInput!) {
   productUpdate(product: $product) {
@@ -190,10 +196,11 @@ query taxonomyCategories($search: String!) {
 }
 """
 
-# 2025+ Admin API takes `ProductUpdateInput` (singular `product:` argument);
-# the legacy `ProductInput` shape is what `tools/products.py` still uses for
-# title/handle/seo writes. Story 9.1 spec pins the new shape — keep them
-# distinct so a future API-version bump doesn't have to untangle them.
+# 2025+ Admin API takes `ProductUpdateInput` (singular `product:` argument).
+# Story 9.1 spec pins this shape. Story 9.18 moved `queries/products.py` onto
+# it too — the legacy `ProductInput` shape it used for title/handle/seo writes
+# was removed from the API — so the constants now differ only in selection set.
+# They stay distinct because these selections are read back by their callers.
 UPDATE_PRODUCT_CATEGORY = """
 mutation productUpdate($product: ProductUpdateInput!) {
   productUpdate(product: $product) {

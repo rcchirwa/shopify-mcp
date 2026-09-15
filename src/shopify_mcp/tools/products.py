@@ -89,7 +89,10 @@ def slugify_shopify_handle(title: str) -> str:
 
 # The full ProductStatus vocabulary, for reads (the get_products filter) and
 # writes (update_product_status) alike — Shopify models one enum for both, and
-# ProductInput.status is typed with it, so this module does not split the two.
+# ProductUpdateInput.status is typed with it, so this module does not split the
+# two. (Story 9.18 corrected the type name from the removed `ProductInput`; the
+# same-enum conclusion is unchanged — verified `ProductUpdateInput.status:
+# ProductStatus` by live introspection against a positively-read 2026-01.)
 #
 # UNLISTED arrived in Story 10.74, not from Shopify: introspection on
 # 2026-09-05 showed all four values present and undeprecated on API versions

@@ -112,8 +112,8 @@ query GetProductByHandle($handle: String!, $first: Int = 50, $after: String) {
 )
 
 UPDATE_PRODUCT = """
-mutation UpdateProduct($input: ProductInput!) {
-  productUpdate(input: $input) {
+mutation UpdateProduct($product: ProductUpdateInput!) {
+  productUpdate(product: $product) {
     product { id title handle }
     userErrors { field message }
   }
@@ -229,8 +229,8 @@ query GetProductSeoById($id: ID!) {
 """
 
 UPDATE_PRODUCT_TAGS = """
-mutation UpdateProductTags($input: ProductInput!) {
-  productUpdate(input: $input) {
+mutation UpdateProductTags($product: ProductUpdateInput!) {
+  productUpdate(product: $product) {
     product { id tags }
     userErrors { field message }
   }
@@ -238,8 +238,8 @@ mutation UpdateProductTags($input: ProductInput!) {
 """
 
 UPDATE_PRODUCT_STATUS = """
-mutation UpdateProductStatus($input: ProductInput!) {
-  productUpdate(input: $input) {
+mutation UpdateProductStatus($product: ProductUpdateInput!) {
+  productUpdate(product: $product) {
     product { id status }
     userErrors { field message }
   }

@@ -906,7 +906,7 @@ def test_update_product_title_builds_input_and_returns_result():
     result = ops.update_product_title(fc, "5", "New", "new-handle")
     assert result["productUpdate"]["product"]["id"] == "g"
     assert fc.calls[0][0] == q.UPDATE_PRODUCT
-    assert fc.calls[0][1]["input"] == {
+    assert fc.calls[0][1]["product"] == {
         "id": "gid://shopify/Product/5",
         "title": "New",
         "handle": "new-handle",
@@ -917,7 +917,7 @@ def test_update_product_description_builds_input():
     fc = FakeClient([{"productUpdate": {"userErrors": []}}])
     ops.update_product_description(fc, "5", "<p>new</p>")
     assert fc.calls[0][0] == q.UPDATE_PRODUCT
-    assert fc.calls[0][1]["input"] == {
+    assert fc.calls[0][1]["product"] == {
         "id": "gid://shopify/Product/5",
         "descriptionHtml": "<p>new</p>",
     }
@@ -926,21 +926,21 @@ def test_update_product_description_builds_input():
 def test_update_product_seo_builds_input():
     fc = FakeClient([{"productUpdate": {"userErrors": []}}])
     ops.update_product_seo(fc, "5", {"title": "S"})
-    assert fc.calls[0][1]["input"] == {"id": "gid://shopify/Product/5", "seo": {"title": "S"}}
+    assert fc.calls[0][1]["product"] == {"id": "gid://shopify/Product/5", "seo": {"title": "S"}}
 
 
 def test_update_product_tags_builds_input():
     fc = FakeClient([{"productUpdate": {"userErrors": []}}])
     ops.update_product_tags(fc, "5", ["a", "b"])
     assert fc.calls[0][0] == q.UPDATE_PRODUCT_TAGS
-    assert fc.calls[0][1]["input"] == {"id": "gid://shopify/Product/5", "tags": ["a", "b"]}
+    assert fc.calls[0][1]["product"] == {"id": "gid://shopify/Product/5", "tags": ["a", "b"]}
 
 
 def test_update_product_status_builds_input():
     fc = FakeClient([{"productUpdate": {"userErrors": []}}])
     ops.update_product_status(fc, "5", "ARCHIVED")
     assert fc.calls[0][0] == q.UPDATE_PRODUCT_STATUS
-    assert fc.calls[0][1]["input"] == {"id": "gid://shopify/Product/5", "status": "ARCHIVED"}
+    assert fc.calls[0][1]["product"] == {"id": "gid://shopify/Product/5", "status": "ARCHIVED"}
 
 
 def test_update_variant_inventory_policy_builds_input():

@@ -103,7 +103,7 @@ def test_create_webhook_builds_input_and_returns_raw_result():
     assert fc.calls[0][1] == {
         "topic": "ORDERS_CREATE",
         "webhookSubscription": {
-            "callbackUrl": "https://example.com/hook",
+            "uri": "https://example.com/hook",
             "format": "JSON",
         },
     }

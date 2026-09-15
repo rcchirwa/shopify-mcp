@@ -148,8 +148,8 @@ def test_seo_both_fields_mutation_shape():
     assert out.startswith("CONFIRMED —"), out
     assert "PREVIEW" not in out, out
     _, vars_put = fc.calls[1]
-    assert vars_put["input"]["id"] == "gid://shopify/Product/6803111739545"
-    assert vars_put["input"]["seo"] == {
+    assert vars_put["product"]["id"] == "gid://shopify/Product/6803111739545"
+    assert vars_put["product"]["seo"] == {
         "title": "Vanish Trucker Hat | Streetwear",
         "description": "The signature V, embroidered front and center.",
     }, vars_put
@@ -180,7 +180,7 @@ def test_seo_title_only_mutation_shape():
         confirm=True,
     )
     _, vars_put = fc.calls[1]
-    assert vars_put["input"]["seo"] == {"title": "Only Title"}, vars_put
+    assert vars_put["product"]["seo"] == {"title": "Only Title"}, vars_put
 
 
 def test_seo_description_only_mutation_shape():
@@ -191,7 +191,7 @@ def test_seo_description_only_mutation_shape():
         confirm=True,
     )
     _, vars_put = fc.calls[1]
-    assert vars_put["input"]["seo"] == {"description": "Only desc"}, vars_put
+    assert vars_put["product"]["seo"] == {"description": "Only desc"}, vars_put
 
 
 def test_seo_user_errors_surfaced():
@@ -289,8 +289,8 @@ def test_update_seo_confirm_strips_disallowed_html_from_description():
         confirm=True,
     )
     _, vars_put = fc.calls[1]
-    assert "<script" not in vars_put["input"]["seo"]["description"]
-    assert "<p>desc</p>" in vars_put["input"]["seo"]["description"]
+    assert "<script" not in vars_put["product"]["seo"]["description"]
+    assert "<p>desc</p>" in vars_put["product"]["seo"]["description"]
 
 
 def test_update_seo_confirm_strips_disallowed_html_from_title():
@@ -301,7 +301,7 @@ def test_update_seo_confirm_strips_disallowed_html_from_title():
         confirm=True,
     )
     _, vars_put = fc.calls[1]
-    assert "onerror" not in vars_put["input"]["seo"]["title"]
+    assert "onerror" not in vars_put["product"]["seo"]["title"]
 
 
 def test_update_seo_confirm_preserves_plain_text_title_and_description():
@@ -313,7 +313,7 @@ def test_update_seo_confirm_preserves_plain_text_title_and_description():
         confirm=True,
     )
     _, vars_put = fc.calls[1]
-    assert vars_put["input"]["seo"] == {
+    assert vars_put["product"]["seo"] == {
         "title": "Vanish Trucker Hat | Streetwear",
         "description": "The signature V, embroidered front and center.",
     }
@@ -350,7 +350,7 @@ def test_title_change_handle_false_preserves_handle_explicitly():
         confirm=True,
     )
     assert "UNCHANGED (preserved; change_handle=False)" in out, out
-    assert fc.calls[1][1]["input"]["handle"] == CUR_HANDLE
+    assert fc.calls[1][1]["product"]["handle"] == CUR_HANDLE
     assert fc.calls[0][0] == GET_PRODUCT_BY_ID
     assert fc.calls[1][0] == UPDATE_PRODUCT
 
@@ -369,7 +369,7 @@ def test_title_change_handle_true_slug_matches_shows_unchanged():
         confirm=True,
     )
     assert f"UNCHANGED (new slug matches existing: {CUR_HANDLE})" in out, out
-    assert fc.calls[1][1]["input"]["handle"] == CUR_HANDLE
+    assert fc.calls[1][1]["product"]["handle"] == CUR_HANDLE
 
 
 def test_title_change_handle_true_slug_differs_shows_old_new_pair():
@@ -1165,7 +1165,7 @@ def test_tags_replace_skips_pre_read_and_writes_verbatim():
     # replace mode: NO pre-read, only the UPDATE call.
     assert len(fc.calls) == 1
     assert fc.calls[0][0] == UPDATE_PRODUCT_TAGS
-    assert fc.calls[0][1]["input"] == {
+    assert fc.calls[0][1]["product"] == {
         "id": "gid://shopify/Product/123",
         "tags": ["vaulted"],
     }
@@ -1184,7 +1184,7 @@ def test_tags_append_dedupes_and_preserves_order():
         mode="append",
         confirm=True,
     )
-    assert fc.calls[1][1]["input"]["tags"] == [
+    assert fc.calls[1][1]["product"]["tags"] == [
         "vanish-clothing",
         "april-drop",
         "vaulted",
@@ -1204,7 +1204,7 @@ def test_tags_remove_strips_only_named():
         mode="remove",
         confirm=True,
     )
-    assert fc.calls[1][1]["input"]["tags"] == ["vanish-clothing", "april-drop"]
+    assert fc.calls[1][1]["product"]["tags"] == ["vanish-clothing", "april-drop"]
 
 
 def test_tags_preview_does_not_call_mutation():
@@ -1301,7 +1301,7 @@ def test_status_valid_transition_mutation_shape(target):
     assert out.startswith("CONFIRMED —"), out
     assert fc.calls[0][0] == GET_PRODUCT_BY_ID
     assert fc.calls[1][0] == UPDATE_PRODUCT_STATUS
-    assert fc.calls[1][1]["input"] == {
+    assert fc.calls[1][1]["product"] == {
         "id": "gid://shopify/Product/123",
         "status": target,
     }
@@ -1570,7 +1570,7 @@ def test_tags_append_all_existing_still_writes_unchanged_list():
         mode="append",
         confirm=True,
     )
-    assert fc.calls[1][1]["input"]["tags"] == ["vanish-clothing", "vaulted"]
+    assert fc.calls[1][1]["product"]["tags"] == ["vanish-clothing", "vaulted"]
 
 
 def test_tags_remove_no_match_still_writes_unchanged_list():
@@ -1586,7 +1586,7 @@ def test_tags_remove_no_match_still_writes_unchanged_list():
         mode="remove",
         confirm=True,
     )
-    assert fc.calls[1][1]["input"]["tags"] == ["vanish-clothing", "april-drop"]
+    assert fc.calls[1][1]["product"]["tags"] == ["vanish-clothing", "april-drop"]
 
 
 def test_tags_replace_identical_list_still_writes():
@@ -1600,7 +1600,7 @@ def test_tags_replace_identical_list_still_writes():
         confirm=True,
     )
     assert len(fc.calls) == 1
-    assert fc.calls[0][1]["input"]["tags"] == ["vanish-clothing", "vaulted"]
+    assert fc.calls[0][1]["product"]["tags"] == ["vanish-clothing", "vaulted"]
 
 
 def test_policy_product_with_no_variants_skips_mutation():
@@ -1635,7 +1635,7 @@ def test_tags_append_is_case_insensitive_existing_casing_wins():
         confirm=True,
     )
     # 'Vaulted' collides with 'vaulted' (existing wins); 'April-Drop' is new.
-    assert fc.calls[1][1]["input"]["tags"] == [
+    assert fc.calls[1][1]["product"]["tags"] == [
         "vaulted",
         "vanish-clothing",
         "April-Drop",
@@ -1656,7 +1656,7 @@ def test_tags_remove_is_case_insensitive():
         mode="remove",
         confirm=True,
     )
-    assert fc.calls[1][1]["input"]["tags"] == ["vanish-clothing"]
+    assert fc.calls[1][1]["product"]["tags"] == ["vanish-clothing"]
 
 
 def test_policy_unresolved_variant_ids_are_deduped():
@@ -2213,7 +2213,7 @@ def test_update_description_confirmed_stripped_shows_sanitized_prefix():
     assert "stripped" in out
     # The mutation itself must carry the sanitized (script-free) value.
     _, vars_put = fc.calls[1]
-    assert "<script" not in vars_put["input"]["descriptionHtml"]
+    assert "<script" not in vars_put["product"]["descriptionHtml"]
 
 
 def test_update_description_confirmed_shows_sanitized_prefix_for_duplicate_tag_strip():
@@ -2234,7 +2234,7 @@ def test_update_description_confirmed_shows_sanitized_prefix_for_duplicate_tag_s
     )
     assert out.startswith("Done ✂")
     _, vars_put = fc.calls[1]
-    assert "javascript:" not in vars_put["input"]["descriptionHtml"]
+    assert "javascript:" not in vars_put["product"]["descriptionHtml"]
 
 
 def test_update_description_confirmed_safe_shows_plain_done():
@@ -2268,7 +2268,7 @@ def test_update_description_confirm_sends_update_mutation():
     assert out.startswith("Done.")
     query, vars_ = fc.calls[1]
     assert query == UPDATE_PRODUCT
-    assert vars_["input"] == {
+    assert vars_["product"] == {
         "id": "gid://shopify/Product/7",
         "descriptionHtml": "<p>new</p>",
     }
@@ -2306,8 +2306,8 @@ def test_update_description_confirm_strips_iframe_before_write():
         confirm=True,
     )
     _, vars_put = fc.calls[1]
-    assert "<iframe" not in vars_put["input"]["descriptionHtml"]
-    assert "<p>hi</p>" in vars_put["input"]["descriptionHtml"]
+    assert "<iframe" not in vars_put["product"]["descriptionHtml"]
+    assert "<p>hi</p>" in vars_put["product"]["descriptionHtml"]
 
 
 def test_update_description_confirm_preserves_fully_allowed_html():
@@ -2327,7 +2327,7 @@ def test_update_description_confirm_preserves_fully_allowed_html():
     )
     assert out.startswith("Done.")
     _, vars_put = fc.calls[1]
-    assert vars_put["input"]["descriptionHtml"] == new_desc
+    assert vars_put["product"]["descriptionHtml"] == new_desc
 
 
 def test_update_description_preview_shows_strip_diff_for_disallowed_content():

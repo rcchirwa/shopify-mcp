@@ -41,14 +41,23 @@ from shopify_mcp.tools._url_safety import _reject_if_private_host
 _T = TypeVar("_T")
 
 # Some Shopify mutations (collectionAddProductsV2, collectionRemoveProducts, …)
-# return a Job node rather than completing inline. `node(id)` lets us resolve
-# any gid to its underlying type; the inline `... on Job` fragment exposes
-# `done`, which flips to `true` once the server-side work has finished.
+# return a Job rather than completing inline; `done` flips to `true` once the
+# server-side work has finished.
+#
+# Story 9.18: this used to be `node(id: $id) { ... on Job { id done } }`, which
+# cannot work on 2026-01 — `Job` implements no interfaces, so it is not a `Node`
+# and the inline fragment can never match ("Fragment cannot be spread here as
+# objects of type 'Node' can never be of type 'Job'"). `QueryRoot.job(id:)` is
+# the replacement and returns `Job` directly.
+#
+# The response key below is load-bearing: `poll_job` reads the top-level field
+# this document selects, so the two must change together. A test in
+# tests/unit/test_client.py derives the key from this parsed query rather than
+# restating it, because fixing one without the other leaves the whole suite
+# green while live polling never completes.
 JOB_STATUS_QUERY = """
 query JobStatus($id: ID!) {
-  node(id: $id) {
-    ... on Job { id done }
-  }
+  job(id: $id) { id done }
 }
 """
 
@@ -558,7 +567,7 @@ def poll_job(
     interval_s: float | None = None,
 ) -> dict:
     """
-    Poll a Shopify Job node until `done=true` or the budget is exhausted.
+    Poll a Shopify Job until `done=true` or the budget is exhausted.
 
     Returns a dict with keys:
       - id: str            — the job gid (echoed for logging)
@@ -573,6 +582,17 @@ def poll_job(
 
     Does NOT raise. The underlying mutation has already succeeded by the time
     the caller invokes this — polling is strictly informational.
+
+    Story 9.18 — unknown/expired job ids now read as DONE. `QueryRoot.job(id:)`
+    answers `{"done": true}` for an id it does not recognise, where the removed
+    `node(id:)` shape returned null and read as not-done until the budget ran
+    out. So `timed_out` is now reachable essentially only through transport
+    errors. This is deliberately NOT compensated for: by the time `poll_job`
+    runs the mutation has already succeeded, so reporting an unrecognised job
+    as finished is the same answer the caller would have got after waiting, and
+    reaching it immediately is strictly better than burning the full timeout.
+    The timeout branch stays meaningful for the case that still matters — a
+    real job whose polls keep failing in transport.
     """
     effective_timeout = timeout_s if timeout_s is not None else client._settings.job_poll_timeout_s
     poll_base = client._settings.poll_base_s
@@ -584,8 +604,8 @@ def poll_job(
     while True:
         try:
             result = client.execute(JOB_STATUS_QUERY, {"id": job_gid})
-            node = (result or {}).get("node") or {}
-            last_done = bool(node.get("done"))
+            job = (result or {}).get("job") or {}
+            last_done = bool(job.get("done"))
             last_error = None
         except Exception as e:
             # Reset done on failure so a stale True from a prior iteration

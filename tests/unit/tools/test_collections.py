@@ -383,7 +383,7 @@ def test_remove_product_surfaces_user_errors():
 
 
 def _job_status(job_id, done):
-    return {"node": {"id": f"gid://shopify/Job/{job_id}", "done": done}}
+    return {"job": {"id": f"gid://shopify/Job/{job_id}", "done": done}}
 
 
 class RaisingFakeClient:
