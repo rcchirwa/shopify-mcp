@@ -704,7 +704,7 @@ def test_reorder_polls_job_when_not_done():
         [
             _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
             _reorder_ok(done=False, job_id="gid://shopify/Job/abc"),
-            # poll_job uses JOB_STATUS_QUERY; we return a node with done=True.
+            # poll_job uses JOB_STATUS_QUERY; we return a job with done=True.
             {"job": {"id": "gid://shopify/Job/abc", "done": True}},
         ]
     )

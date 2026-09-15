@@ -55,6 +55,7 @@ from graphql import build_schema, parse, validate
 from graphql.execution.values import get_variable_values
 
 from shopify_mcp.client import JOB_STATUS_QUERY
+from shopify_mcp.shopify.operations import catalog_hygiene as hygiene_ops
 from shopify_mcp.shopify.operations import products as ops
 from shopify_mcp.shopify.operations import webhooks as webhook_ops
 from shopify_mcp.shopify.queries.discounts import CREATE_DISCOUNT_CODE_BASIC, GET_CODE_DISCOUNTS
@@ -372,7 +373,16 @@ type UserError {
   message: String!
 }
 
-type Product {
+# `Node` and a type that implements it are carried deliberately, not
+# incidentally: without them the "Job is not a Node" test degenerates into
+# "this slice has no `node` field", which would pass byte-identically even if
+# Job DID implement Node — i.e. even if the bug this story fixes had never
+# existed. Product implements Node on 2026-01; Job implements nothing.
+interface Node {
+  id: ID!
+}
+
+type Product implements Node {
   id: ID!
   title: String!
   handle: String!
@@ -421,6 +431,7 @@ type WebhookSubscriptionCreatePayload {
 
 extend type Query {
   job(id: ID!): Job
+  node(id: ID!): Node
 }
 
 extend type Mutation {
@@ -509,16 +520,33 @@ def test_validator_catches_product_update_input_argument():
     bad = "mutation Bad($input: ProductUpdateInput!) { productUpdate(input: $input) { product { id } } }"
     errors = validate(_SCHEMA, parse(bad))
     assert errors != []
-    assert any("input" in str(e) for e in errors)
+    # Anchored, not a bare "input" substring: graphql-core also says
+    # "Variable '$input' is never used", so a loose match would pass even if
+    # the unknown-argument check stopped firing.
+    assert any("Unknown argument 'input'" in str(e) for e in errors)
 
 
 def test_validator_catches_job_spread_inside_node():
     """`Job` implements no interfaces on 2026-01, so it is not a `Node` and the
-    old `node(id:) { ... on Job }` shape can never match. Recorded here as the
-    schema slice declares no `node` field at all, which is the same catch."""
+    old `node(id:) { ... on Job }` shape can never match.
+
+    The slice carries `Node` and `node(id:)` precisely so this asserts the real
+    thing. Without them the only error would be "Cannot query field 'node'",
+    which would pass identically in a world where Job *did* implement Node —
+    it would pin the slice's own incompleteness, not the bug."""
     bad = "query Bad($id: ID!) { node(id: $id) { ... on Job { id done } } }"
     errors = validate(_SCHEMA, parse(bad))
     assert errors != []
+    joined = " ".join(str(e) for e in errors)
+    assert "can never be of type 'Job'" in joined, joined
+
+
+def test_the_node_control_is_live_so_the_job_test_cannot_pass_vacuously():
+    """The control for the test above: spreading a type that DOES implement
+    Node is accepted. If this ever fails, `node(id:)` has gone missing from the
+    slice and the Job assertion above is no longer testing what it claims."""
+    good = "query Good($id: ID!) { node(id: $id) { ... on Product { id title } } }"
+    assert validate(_SCHEMA, parse(good)) == []
 
 
 # ===========================================================================
@@ -597,6 +625,29 @@ _PID = "6803111739545"
             ),
             id="create_webhook",
         ),
+        # The other three productUpdate writes. These were never broken — they
+        # were already on the `product:` shape, and are in fact the in-repo
+        # control that proved the removal was real. They are covered here
+        # anyway because coercion needs only the variable definitions and the
+        # input type, both of which already exist: leaving them out would mean
+        # the suite that exists to catch a removed ProductUpdateInput field
+        # watched six of the nine writes that use it.
+        pytest.param(
+            lambda: _emit(
+                hygiene_ops.update_product_category,
+                f"gid://shopify/Product/{_PID}",
+                "gid://shopify/TaxonomyCategory/aa-1",
+            ),
+            id="category",
+        ),
+        pytest.param(
+            lambda: _emit(hygiene_ops.update_product_vendor, f"gid://shopify/Product/{_PID}", "V"),
+            id="vendor",
+        ),
+        pytest.param(
+            lambda: _emit(hygiene_ops.update_product_type, f"gid://shopify/Product/{_PID}", "Tee"),
+            id="product_type",
+        ),
     ],
 )
 def test_emitted_payloads_coerce_against_pinned_schema(emit):
@@ -646,9 +697,20 @@ def test_coercion_rejects_callback_url_on_webhook_subscription_input():
 def test_document_validation_alone_cannot_see_the_webhook_break():
     """Pins WHY leg (b) exists, so nobody deletes it as redundant.
 
-    The broken payload from the test above is attached to a document that
-    passes `validate()` without complaint. If this assertion ever flips, the
-    validator has grown the ability to see into variable-supplied input objects
-    and the coercion leg's rationale would need rewriting — but until then,
-    dropping leg (b) would silently re-open this exact hole."""
+    Asserts the ASYMMETRY on one payload rather than restating that the
+    document validates: the exact `callbackUrl` payload that killed
+    `register_webhook` live is invisible to `validate()` — which reads only the
+    document, and cannot be handed variables at all — while `get_variable_values`
+    rejects it. That gap is the entire reason for the second leg. If a future
+    graphql-core learns to see into variable-supplied input objects, the first
+    assertion here is what will notice."""
+    broken_payload = {
+        "topic": "ORDERS_CREATE",
+        "webhookSubscription": {"callbackUrl": "https://example.com/hook", "format": "JSON"},
+    }
+
+    # Leg (a) — blind to it. `validate()` takes no variables by construction.
     assert validate(_SCHEMA, parse(CREATE_WEBHOOK)) == []
+
+    # Leg (b) — catches it.
+    assert not isinstance(_coerce(CREATE_WEBHOOK, broken_payload), dict)

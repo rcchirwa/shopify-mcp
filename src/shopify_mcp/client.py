@@ -567,7 +567,7 @@ def poll_job(
     interval_s: float | None = None,
 ) -> dict:
     """
-    Poll a Shopify Job node until `done=true` or the budget is exhausted.
+    Poll a Shopify Job until `done=true` or the budget is exhausted.
 
     Returns a dict with keys:
       - id: str            — the job gid (echoed for logging)

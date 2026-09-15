@@ -170,7 +170,7 @@ def test_register_confirmed_surfaces_user_errors(monkeypatch):
                     "webhookSubscription": None,
                     "userErrors": [
                         {
-                            "field": ["webhookSubscription", "callbackUrl"],
+                            "field": ["webhookSubscription", "uri"],
                             "message": "must be https",
                         },
                     ],
