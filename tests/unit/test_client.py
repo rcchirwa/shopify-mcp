@@ -14,6 +14,7 @@ import os
 
 import pytest
 from gql.transport.exceptions import TransportQueryError, TransportServerError
+from graphql import parse
 from pydantic import ValidationError
 from requests.structures import CaseInsensitiveDict
 
@@ -880,7 +881,7 @@ def _make_always_not_done_client(settings=None):
 
     class _AlwaysNotDone:
         def execute(self, *_a, **_kw):
-            return {"node": {"id": "gid://shopify/Job/1", "done": False}}
+            return {"job": {"id": "gid://shopify/Job/1", "done": False}}
 
     return _bare_client(_AlwaysNotDone(), settings)
 
@@ -895,7 +896,7 @@ def _make_done_after_n_client(n: int, settings=None):
         def execute(self, *_a, **_kw):
             self.calls += 1
             done = self.calls >= n
-            return {"node": {"id": "gid://shopify/Job/1", "done": done}}
+            return {"job": {"id": "gid://shopify/Job/1", "done": done}}
 
     return _bare_client(_DoneAfterN(), settings)
 
@@ -1266,3 +1267,67 @@ def test_init_keeps_the_transport_reachable_for_the_version_check(monkeypatch, t
 
     assert client._transport is sentinel
     assert client._warned_served_version is None
+
+
+# ---------- Story 9.18: poll_job's response key must track the query ----------
+
+
+def _job_status_response_key() -> str:
+    """The response key `JOB_STATUS_QUERY`'s top-level selection actually returns.
+
+    DERIVED from the parsed document (alias if present, else the field name)
+    rather than restated as a literal. That is the whole point: a test that
+    spells the key out cannot notice the query drifting away from it, which is
+    exactly how `poll_job` came to read `"node"` from a document that no longer
+    selects `node`.
+    """
+    operation = parse(sc.JOB_STATUS_QUERY).definitions[0]
+    field = operation.selection_set.selections[0]
+    return (field.alias or field.name).value
+
+
+def test_poll_job_reads_the_key_the_query_actually_selects():
+    """Closes Story 9.18's half-applied-fix trap.
+
+    Fixing `JOB_STATUS_QUERY` while leaving `poll_job`'s `.get()` on the old key
+    leaves every scripted stub in this suite green and live polling broken
+    forever. Binding the stub's key to the parsed query makes that impossible:
+    whichever field the document selects is the field `poll_job` must read.
+    """
+    from shopify_mcp.client import poll_job
+
+    key = _job_status_response_key()
+
+    class _Stub:
+        def execute(self, *_a, **_kw):
+            return {key: {"id": "gid://shopify/Job/1", "done": True}}
+
+    result = poll_job(_bare_client(_Stub()), "gid://shopify/Job/1", timeout_s=30)
+
+    assert result["done"] is True
+    assert result["timed_out"] is False
+
+
+def test_poll_job_ignores_the_removed_node_response_shape():
+    """The discriminating half: `node` is the shape 2026-01 removed.
+
+    Without this, a `poll_job` that read *both* keys — or one still reading only
+    `node` under a query that no longer selects it — could satisfy the positive
+    test above by accident. Asserting that the derived key is not itself `node`
+    keeps the pair meaningful if the query ever regresses.
+    """
+    from shopify_mcp.client import poll_job
+
+    assert _job_status_response_key() != "node", (
+        "JOB_STATUS_QUERY has regressed to the removed node(id:) shape; "
+        "Job implements no interfaces on 2026-01, so `... on Job` can never match"
+    )
+
+    class _NodeShaped:
+        def execute(self, *_a, **_kw):
+            return {"node": {"id": "gid://shopify/Job/1", "done": True}}
+
+    result = poll_job(_bare_client(_NodeShaped()), "gid://shopify/Job/1", timeout_s=0)
+
+    assert result["done"] is False
+    assert result["timed_out"] is True

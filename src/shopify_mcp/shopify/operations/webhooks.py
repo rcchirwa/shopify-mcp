@@ -31,13 +31,21 @@ def create_webhook(
 ) -> dict[str, Any]:
     """Execute ``webhookSubscriptionCreate`` for an HTTPS endpoint.
 
-    Builds the ``WebhookSubscriptionInput`` (``callbackUrl`` + ``format``) from the
+    Builds the ``WebhookSubscriptionInput`` (``uri`` + ``format``) from the
     endpoint URL and message format, and returns the raw mutation result for the
-    tool layer to map userErrors / surface the new subscription id."""
+    tool layer to map userErrors / surface the new subscription id.
+
+    Story 9.18: the input field is ``uri``, not ``callbackUrl`` — the latter was
+    removed from ``WebhookSubscriptionInput`` by 2026-01. Note this is only the
+    INPUT side; ``WebhookHttpEndpoint.callbackUrl`` is alive and well on the
+    response, which is what ``LIST_WEBHOOKS`` and this mutation's own selection
+    set read back. Document validation could never have caught this: the input
+    arrives as a variable, so ``CREATE_WEBHOOK`` validates perfectly clean while
+    the call fails live. The contract suite's coercion leg is what catches it."""
     variables = {
         "topic": topic,
         "webhookSubscription": {
-            "callbackUrl": endpoint_url,
+            "uri": endpoint_url,
             "format": message_format,
         },
     }

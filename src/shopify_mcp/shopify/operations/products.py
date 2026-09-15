@@ -443,7 +443,7 @@ def update_product_title(
     return client.execute(
         UPDATE_PRODUCT,
         {
-            "input": {
+            "product": {
                 "id": to_gid("Product", product_id),
                 "title": new_title,
                 "handle": target_handle,
@@ -458,7 +458,7 @@ def update_product_description(
     """Execute a productUpdate setting descriptionHtml."""
     return client.execute(
         UPDATE_PRODUCT,
-        {"input": {"id": to_gid("Product", product_id), "descriptionHtml": new_description}},
+        {"product": {"id": to_gid("Product", product_id), "descriptionHtml": new_description}},
     )
 
 
@@ -468,7 +468,7 @@ def update_product_seo(
     """Execute a productUpdate setting the seo sub-input."""
     return client.execute(
         UPDATE_PRODUCT,
-        {"input": {"id": to_gid("Product", product_id), "seo": seo_input}},
+        {"product": {"id": to_gid("Product", product_id), "seo": seo_input}},
     )
 
 
@@ -476,7 +476,7 @@ def update_product_tags(client: GraphQLClient, product_id: str, tags: list[str])
     """Execute a productUpdate setting the tag list verbatim."""
     return client.execute(
         UPDATE_PRODUCT_TAGS,
-        {"input": {"id": to_gid("Product", product_id), "tags": tags}},
+        {"product": {"id": to_gid("Product", product_id), "tags": tags}},
     )
 
 
@@ -486,7 +486,7 @@ def update_product_status(
     """Execute a productUpdate setting status."""
     return client.execute(
         UPDATE_PRODUCT_STATUS,
-        {"input": {"id": to_gid("Product", product_id), "status": new_status}},
+        {"product": {"id": to_gid("Product", product_id), "status": new_status}},
     )
 
 

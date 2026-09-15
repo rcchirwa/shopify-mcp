@@ -705,7 +705,7 @@ def test_reorder_polls_job_when_not_done():
             _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
             _reorder_ok(done=False, job_id="gid://shopify/Job/abc"),
             # poll_job uses JOB_STATUS_QUERY; we return a node with done=True.
-            {"node": {"id": "gid://shopify/Job/abc", "done": True}},
+            {"job": {"id": "gid://shopify/Job/abc", "done": True}},
         ]
     )
     with patch("shopify_mcp.tools.media._upload.time.sleep"):
@@ -1801,7 +1801,7 @@ def test_upload_reorder_polls_job_when_not_done():
             _node_media_status(MEDIA_C, status="READY"),
             _reorder_ok(done=False, job_id="gid://shopify/Job/up1"),
             # poll_job uses JOB_STATUS_QUERY — return done=True quickly.
-            {"node": {"id": "gid://shopify/Job/up1", "done": True}},
+            {"job": {"id": "gid://shopify/Job/up1", "done": True}},
         ]
     )
     with (
@@ -1834,12 +1834,12 @@ def test_reorder_job_timeout_surfaces_timeout_hint():
         [
             _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
             _reorder_ok(done=False, job_id="gid://shopify/Job/slow1"),
-            {"node": {"id": "gid://shopify/Job/slow1", "done": False}},
-            {"node": {"id": "gid://shopify/Job/slow1", "done": False}},
-            {"node": {"id": "gid://shopify/Job/slow1", "done": False}},
-            {"node": {"id": "gid://shopify/Job/slow1", "done": False}},
-            {"node": {"id": "gid://shopify/Job/slow1", "done": False}},
-            {"node": {"id": "gid://shopify/Job/slow1", "done": False}},
+            {"job": {"id": "gid://shopify/Job/slow1", "done": False}},
+            {"job": {"id": "gid://shopify/Job/slow1", "done": False}},
+            {"job": {"id": "gid://shopify/Job/slow1", "done": False}},
+            {"job": {"id": "gid://shopify/Job/slow1", "done": False}},
+            {"job": {"id": "gid://shopify/Job/slow1", "done": False}},
+            {"job": {"id": "gid://shopify/Job/slow1", "done": False}},
         ]
     )
     tick = {"t": 0.0}

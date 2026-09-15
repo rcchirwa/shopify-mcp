@@ -4,7 +4,31 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-09-12.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-09-15.
+
+---
+
+## 2026-09-15 — Story 9.18 (six write tools and `poll_job` were broken on the pinned API version)
+
+Six write tools were dead against the `2026-01` pin, live and unhit, with CI green throughout. Three independent removals:
+
+1. **`productUpdate(input:)` no longer exists** — the only arguments are `product: ProductUpdateInput` and `media: [CreateMediaInput!]`. Three constants in `shopify/queries/products.py` still sent `input:`, and `shopify/operations/products.py` keyed the payload `"input"`. Broke `update_product_title`, `update_product_description`, `update_product_seo`, `update_product_tags`, `update_product_status`.
+2. **`Job` implements no interfaces**, so `client.py`'s `node(id:) { ... on Job }` could never match. Broke `poll_job` and its three callers (`tools/collections.py`, `tools/media/_reorder.py`, `tools/media/_upload.py`).
+3. **`WebhookSubscriptionInput.callbackUrl` was removed** (now `uri`), while `shopify/operations/webhooks.py` still sent `callbackUrl`. Broke `register_webhook`.
+
+**The debt this records is not the three removals — it is that nothing could see them.** Two distinct blind spots:
+
+**Blind spot 1 — document validation cannot see a removed input-object field.** `graphql.validate` reads the document; an input object arriving as a *variable* is opaque to it. `CREATE_WEBHOOK` validated perfectly clean for the entire period `register_webhook` was dead. This is a whole class of break that a query-string check can never catch, and it was found only by coercing the payloads the operations layer actually emits (`get_variable_values`). The contract suite now carries both legs, plus negative tests — a coercion leg that accepted everything would pass and prove nothing. **Input objects in any future snapshot generator must be emitted with their real fields, never a placeholder**, or the leg is decorative. (Story 9.16 was amended for this before it was written.)
+
+**Blind spot 2 — nothing tied `poll_job`'s response key to the field its query selects.** Fixing the query and forgetting `.get("node")` left all 1953 tests green — every job stub in the suite pinned the removed shape — while live polling would never complete. The regression test now derives the key from the parsed query rather than restating it; a restated key cannot see this drift by construction.
+
+**Behavioural change, accepted deliberately:** `job(id:)` answers `done: true` for an unknown or expired job id, where `node(id:)` returned null and read as not-done until the budget expired. `timed_out` is therefore now reachable essentially only through transport errors. Not compensated for — the underlying mutation has already succeeded by the time `poll_job` runs, so an unrecognised job reporting finished is the same answer the caller would have got after waiting. Documented in the `poll_job` docstring.
+
+**Consolidating the six `productUpdate` constants: declined.** Three live in `products.py` and three in `catalog_hygiene.py` (`UPDATE_PRODUCT_VENDOR`/`_TYPE`/`_CATEGORY`), each with a different selection set, and the catalog_hygiene ones are load-bearing — their tools read the post-write snapshot out of the response. Merging rewrites ~15 query-identity assertions for no behavioural gain and raises per-call query cost. More to the point it would not have prevented this: the rot was "written once in a 2024 shape, never validated", which a contract test fixes and a shared constant does not.
+
+**Correction carried in this entry:** the card's step 1 said ~10 `callbackUrl` test assertions become `uri`. Only **two** do. `WebhookHttpEndpoint.callbackUrl` is alive (`URL!`) and is what `LIST_WEBHOOKS` and the create mutation's own selection set read back — only the *input* field moved. Renaming the response-side assertions would have broken the read path.
+
+**Residual:** the pinned-version sweep is still narrow by construction — the contract suite covers the operations it names, not every operation in `src/shopify_mcp`. Story 9.16 is what widens it, and this card unblocks it.
 
 ---
 
@@ -815,13 +839,13 @@ Filtering three ways summed to something that looked complete.
 
 The card asked whether the server should be able to transition a product *into* UNLISTED, or only read and filter it. Settled as **both**:
 
-1. **Shopify models one enum for reads and writes.** Introspection confirms `ProductInput.status` is typed `ProductStatus` — the same four-value enum on 2026-01, not a narrower writable variant. Refusing on write what the API accepts would invent a distinction the schema does not make.
+1. **Shopify models one enum for reads and writes.** Introspection confirms `ProductUpdateInput.status` is typed `ProductStatus` — the same four-value enum on 2026-01, not a narrower writable variant. Refusing on write what the API accepts would invent a distinction the schema does not make.
 2. **The write path is already gated.** `update_product_status` previews, requires `confirm=True`, and surfaces Shopify `userErrors` verbatim. Allowing UNLISTED is the same guarded flow that already allows ARCHIVED, the more destructive transition of the two.
 3. **The one-way door was the sharper half of the defect.** A product could be moved out of UNLISTED but never back. Splitting the vocabularies would have left that permanent.
 
 **A wrong argument, removed rather than quietly dropped.** The first draft of this entry also argued that splitting read and write vocabularies would force 10.72's equality guard down to a subset assertion. That was false, and the review caught it: the guard compares `PRODUCT_STATUS_VALUES` to `PRODUCT_STATUS_QUERY` (read vocabulary against fragment table), so adding a separate writable tuple would have left it byte-identical. The decision above stands on reasons 1–3; it never needed that one.
 
-**Still unverified, precisely scoped:** whether Shopify's *business logic* accepts `status: UNLISTED` on `productUpdate` for this store's plan (Basic, per `shop.plan.displayName`). Settling it means firing a real mutation at the live store, which this story did not license. What *is* verified is the type layer on the configured version: the enum carries the value and `ProductInput.status` accepts it.
+**Still unverified, precisely scoped:** whether Shopify's *business logic* accepts `status: UNLISTED` on `productUpdate` for this store's plan (Basic, per `shop.plan.displayName`). Settling it means firing a real mutation at the live store, which this story did not license. What *is* verified is the type layer on the configured version: the enum carries the value and `ProductUpdateInput.status` accepts it.
 
 The two failure modes differ, and the first draft of this entry conflated them:
 - **Business-logic rejection** (valid enum, disallowed transition) returns `userErrors`, which `write_gate` formats into an `Error:` string. Contained, and pinned by `test_status_user_errors_surfaced`.

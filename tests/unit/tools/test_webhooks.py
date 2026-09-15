@@ -152,7 +152,7 @@ def test_register_confirmed_submits_create(monkeypatch):
     assert variables == {
         "topic": "ORDERS_CREATE",
         "webhookSubscription": {
-            "callbackUrl": "https://example.com/hook",
+            "uri": "https://example.com/hook",
             "format": "JSON",
         },
     }
