@@ -682,6 +682,18 @@ def test_map_user_error_empty_field_falls_back_to_unknown():
     assert mapped["channel_name"] == "(unknown)"
 
 
+def test_map_user_error_null_field_falls_back_to_unknown():
+    """A null `field` must read "(unknown)", not the string "None".
+
+    This pins the `or []` on the `field` local: the isinstance guard tests
+    that normalized local, while the dotted-path join re-reads the raw dict.
+    Dropping the `or []` as redundant (format_field_path applies its own)
+    would send None down the `str(field)` branch and emit "None" here.
+    """
+    mapped = _map_user_error({"field": None, "message": "boom"}, [])
+    assert mapped["channel_name"] == "(unknown)"
+
+
 # ---------- _split_current: rp with missing publication id ----------
 
 

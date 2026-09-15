@@ -217,6 +217,18 @@ def test_format_field_path_stringifies_non_string_segments() -> None:
     assert format_field_path({"field": ["variants", 0, "price"]}) == "variants.0.price"
 
 
+def test_format_field_path_joins_a_scalar_string_per_character() -> None:
+    # Pins the documented limitation, not a desirable output: `field` is
+    # `[String!]` in the schema, so a scalar never arrives from Shopify — but
+    # iterating one would yield "t.i.t.l.e". Nine inlined copies shared this
+    # assumption; consolidating them put it behind a single symbol, so a
+    # future "fix" here would silently rewrite the error text at every
+    # unguarded call site. This test makes that edit fail loudly instead.
+    # The one caller that can see a scalar (publications._map_user_error)
+    # guards with isinstance(field, list) — see its own direct tests.
+    assert format_field_path({"field": "title"}) == "t.i.t.l.e"
+
+
 # ---------- format_path_user_errors ----------
 
 
@@ -240,6 +252,13 @@ def test_format_path_user_errors_renders_no_field_placeholder() -> None:
 def test_format_path_user_errors_missing_message_renders_empty() -> None:
     # Defensive: matches the `e.get("message", "")` the nine inlined copies used.
     assert format_path_user_errors([{"field": ["code"]}]) == "code: "
+
+
+def test_format_path_user_errors_null_message_renders_none() -> None:
+    # An explicit null is distinct from a missing key: `.get("message", "")`
+    # returns None rather than the default, so the row reads "code: None".
+    # Matches the scalar sibling's documented "None: None" behavior.
+    assert format_path_user_errors([{"field": ["code"], "message": None}]) == "code: None"
 
 
 def test_format_path_user_errors_empty_list_returns_empty_string() -> None:
