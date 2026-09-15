@@ -10,7 +10,7 @@ flow, and output formatting; the GraphQL strings live in
 create_discount_code requires confirm=True.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -37,6 +37,9 @@ DISCOUNT_PCT_MAX = 100
 
 # The wire format Shopify accepts for DiscountCodeBasicInput's startsAt/endsAt.
 _ISO_Z = "%Y-%m-%dT%H:%M:%SZ"
+# A bare calendar date is read as the last second of that day — see
+# _normalize_ends_at for why.
+_END_OF_DAY = time(23, 59, 59)
 
 
 def _normalize_ends_at(value: str, starts_at: datetime) -> tuple[str, str]:
@@ -46,22 +49,40 @@ def _normalize_ends_at(value: str, starts_at: datetime) -> tuple[str, str]:
     this module's convention of returning an error string rather than raising.
 
     Story 9.15 introduced the first caller-supplied date in this codebase, so
-    two judgement calls are recorded here rather than left implicit: a naive
-    value is read as UTC instead of refused, because a bare calendar date is
-    the form a caller reaches for; and the result must fall *strictly* after
-    ``starts_at``, since an equal or earlier value would create a code that is
-    already expired the moment it exists.
+    the judgement calls are recorded here rather than left implicit:
+
+    * A **bare calendar date means the END of that day.** An operator who says
+      "expires 2026-09-19" means the 19th is the last day the code works, not
+      that it dies as the 19th begins. Reading it as midnight would silently
+      cut a promotion a day short — the same shape of failure this story
+      exists to prevent, just moved from "never expires" to "expired early".
+    * A naive timestamp is read as UTC rather than refused.
+    * The result must fall *strictly* after ``starts_at``, since an equal or
+      earlier value creates a code already expired the moment it exists.
     """
     try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        return "", (
-            f"Error: ends_at must be an ISO-8601 date or timestamp "
-            f"(e.g. 2026-09-20 or 2026-09-20T23:59:59Z) — got {value!r}."
-        )
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    parsed = parsed.astimezone(UTC)
+        # date.fromisoformat rejects anything carrying a time component, which
+        # makes it a clean discriminator for "date only" — no string sniffing.
+        parsed = datetime.combine(date.fromisoformat(value), _END_OF_DAY, tzinfo=UTC)
+    except (TypeError, ValueError):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except (TypeError, ValueError):
+            # TypeError as well as ValueError: fromisoformat raises TypeError on
+            # a non-str, and this function's contract is to return an error
+            # string rather than let one shape of bad input raise.
+            return "", (
+                f"Error: ends_at must be an ISO-8601 date or timestamp "
+                f"(e.g. 2026-09-20 or 2026-09-20T23:59:59Z) — got {value!r}."
+            )
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        parsed = parsed.astimezone(UTC)
+    # Truncate to the wire format's resolution BEFORE comparing. Flooring only
+    # starts_at is not enough: a value 0.9s after a whole-second start compares
+    # as later while serializing to the same second, so the guard would pass and
+    # Shopify would receive endsAt == startsAt.
+    parsed = parsed.replace(microsecond=0)
     if parsed <= starts_at:
         return "", (
             f"Error: ends_at must be after the start "
@@ -150,8 +171,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         # Stamped once and reused for both the expiry comparison and the
         # payload: calling now() twice could compare against one instant and
-        # send another.
-        starts_at = datetime.now(UTC)
+        # send another. Floored to whole seconds so the guard compares exactly
+        # what the wire format carries — at microsecond precision a sub-second
+        # window passes the check and then serializes to endsAt == startsAt.
+        starts_at = datetime.now(UTC).replace(microsecond=0)
         ends_at_iso = ""
         if ends_at:
             ends_at_iso, error = _normalize_ends_at(ends_at, starts_at)

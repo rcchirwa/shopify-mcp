@@ -13,6 +13,7 @@ Usage:
 """
 
 import re
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -518,9 +519,11 @@ def test_create_discount_code_without_ends_at_sends_no_ends_at_key():
     assert "endsAt" not in fc.calls[0][1]["input"]
 
 
-def test_create_discount_code_accepts_a_date_only_ends_at():
-    """A bare calendar date is the form a human reaches for; treat it as UTC
-    midnight rather than rejecting it."""
+def test_create_discount_code_reads_a_date_only_ends_at_as_end_of_that_day():
+    """A bare calendar date must mean the END of that day. "expires 2099-12-31"
+    means the 31st is the last day the code works — reading it as midnight would
+    silently cut the promotion a day short, which is the same shape of failure
+    Story 9.15 exists to prevent."""
     tools, fc = _build([_discount_create_ok()])
     tools["create_discount_code"](
         title="T",
@@ -529,7 +532,71 @@ def test_create_discount_code_accepts_a_date_only_ends_at():
         ends_at="2099-12-31",
         confirm=True,
     )
-    assert fc.calls[0][1]["input"]["endsAt"] == "2099-12-31T00:00:00Z"
+    assert fc.calls[0][1]["input"]["endsAt"] == "2099-12-31T23:59:59Z"
+
+
+def test_create_discount_code_reads_a_naive_timestamp_as_utc():
+    """A timestamp with a time component but no timezone is read as UTC rather
+    than refused. Distinct from the date-only case above, which takes the
+    end-of-day branch — this one carries its own time and must be preserved."""
+    tools, fc = _build([_discount_create_ok()])
+    tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at="2099-12-31T18:30:00",
+        confirm=True,
+    )
+    assert fc.calls[0][1]["input"]["endsAt"] == "2099-12-31T18:30:00Z"
+
+
+def test_create_discount_code_converts_an_offset_timestamp_to_utc():
+    """An explicit non-UTC offset is converted, not truncated — the preview and
+    payload both show the UTC instant so a timezone misreading is visible."""
+    tools, fc = _build([_discount_create_ok()])
+    tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at="2099-12-31T23:59:59+05:00",
+        confirm=True,
+    )
+    assert fc.calls[0][1]["input"]["endsAt"] == "2099-12-31T18:59:59Z"
+
+
+def test_create_discount_code_rejects_a_sub_second_expiry_window():
+    """The guard must compare what the wire format actually carries. At
+    microsecond precision an expiry a fraction of a second after the start
+    passed validation and then serialized to endsAt == startsAt."""
+    tools, fc = _build([])
+    now = datetime.now(UTC).replace(microsecond=0)
+    sub_second = (now + timedelta(microseconds=900000)).isoformat()
+    out = tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at=sub_second,
+        confirm=True,
+    )
+    assert "Error: ends_at" in out
+    assert len(fc.calls) == 0
+
+
+@pytest.mark.parametrize("not_a_string", [True, 20991231, 3.14, ["2099-12-31"]])
+def test_create_discount_code_returns_an_error_for_a_non_string_ends_at(not_a_string):
+    """fromisoformat raises TypeError (not ValueError) on a non-str, so the
+    guard must catch both — every other bad input here returns an error string
+    rather than raising."""
+    tools, fc = _build([])
+    out = tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at=not_a_string,
+        confirm=True,
+    )
+    assert "Error: ends_at" in out
+    assert len(fc.calls) == 0
 
 
 @pytest.mark.parametrize(
