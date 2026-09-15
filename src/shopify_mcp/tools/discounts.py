@@ -28,6 +28,7 @@ from shopify_mcp.tools._response import (
     format_path_user_errors,
     with_confirm_hint,
 )
+from shopify_mcp.tools._scrub import cap, sanitize_control_chars
 
 # Shopify rejects a 0% or negative discount, and a >100% value would zero out
 # (or overpay) a line item — bound client-side rather than let a nonsensical
@@ -59,6 +60,13 @@ def _normalize_ends_at(value: str, starts_at: datetime) -> tuple[str, str]:
     * A naive timestamp is read as UTC rather than refused.
     * The result must fall *strictly* after ``starts_at``, since an equal or
       earlier value creates a code already expired the moment it exists.
+
+    Python's ISO parser accepts a wider grammar than the examples above —
+    week dates (``2099-W01-1``), compact forms (``20991231``) and sub-minute
+    offsets all parse, and a week date resolves to a different calendar year
+    than it appears to name. That is left permissive rather than restricted:
+    the normalized value is what both the preview and the payload carry, so a
+    caller always sees the instant they actually bought.
     """
     try:
         # date.fromisoformat rejects anything carrying a time component, which
@@ -67,17 +75,20 @@ def _normalize_ends_at(value: str, starts_at: datetime) -> tuple[str, str]:
     except (TypeError, ValueError):
         try:
             parsed = datetime.fromisoformat(value)
-        except (TypeError, ValueError):
-            # TypeError as well as ValueError: fromisoformat raises TypeError on
-            # a non-str, and this function's contract is to return an error
-            # string rather than let one shape of bad input raise.
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            parsed = parsed.astimezone(UTC)
+        except (TypeError, ValueError, OverflowError):
+            # All three are reachable and all must return a string rather than
+            # raise: ValueError for a malformed value, TypeError for a non-str,
+            # and OverflowError from astimezone when a near-datetime.max value
+            # with a negative offset shifts past the representable range
+            # (e.g. 9999-12-31T23:59:59-01:00).
             return "", (
                 f"Error: ends_at must be an ISO-8601 date or timestamp "
-                f"(e.g. 2026-09-20 or 2026-09-20T23:59:59Z) — got {value!r}."
+                f"(e.g. 2026-09-20 or 2026-09-20T23:59:59Z) — got "
+                f"{cap(str(value))!r}."
             )
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        parsed = parsed.astimezone(UTC)
     # Truncate to the wire format's resolution BEFORE comparing. Flooring only
     # starts_at is not enough: a value 0.9s after a whole-second start compares
     # as later while serializing to the same second, so the guard would pass and
@@ -181,10 +192,16 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             if error:
                 return error
 
+        # title/code are escaped for CR/LF, not merely echoed: a newline in
+        # either forges extra preview lines, and now that the preview carries an
+        # expiry there is something worth forging. A crafted title could render
+        # its own "Ends : <date>" line ABOVE the real one, so an operator
+        # reading top-down approves a perpetual code believing it expires. The
+        # helper leaves text without control characters byte-for-byte unchanged.
         preview = (
             f"PREVIEW — New discount code\n"
-            f"  Title         : {title}\n"
-            f"  Code          : {code}\n"
+            f"  Title         : {sanitize_control_chars(title)}\n"
+            f"  Code          : {sanitize_control_chars(code)}\n"
             f"  Discount      : {percentage_off}% off\n"
             f"  Usage limit   : {'unlimited' if usage_limit == 0 else usage_limit}\n"
             f"  Ends          : {ends_at_iso or 'no expiry'}"
@@ -229,12 +246,24 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not node_id:
             return "Error: discount code created but no ID returned."
 
-        # SEC-12: the discount code is masked in the durable audit log. The
-        # node id below already identifies the discount, and the code is
-        # recoverable from Shopify — so plaintext buys no audit value while
-        # leaving a secret-shaped string in a local file.
+        # SEC-12: the discount code is masked in the durable audit log, because
+        # it is recoverable from Shopify and plaintext would leave a
+        # secret-shaped string in a local file.
+        #
+        # ends_at is recorded because it is a material term of the same kind as
+        # percentage_off and usage_limit — without it the log cannot tell a
+        # seven-day 90%-off code from a perpetual one, which is the entire
+        # subject of Story 9.15.
+        #
+        # NOTE: this line carries no identifier for the created discount. The
+        # comment here previously claimed "the node id below already identifies
+        # the discount" — it does not; "below" is the return value, which goes
+        # to the caller and not to the log. Pre-existing and left alone by 9.15
+        # rather than silently widening its scope; see the card for the
+        # follow-up, since fixing it also amends the SEC-12 ledger row.
         log_write(
             "create_discount_code",
-            f"title={title} code=*** percentage_off={percentage_off}% usage_limit={usage_limit}",
+            f"title={title} code=*** percentage_off={percentage_off}% "
+            f"usage_limit={usage_limit} ends_at={ends_at_iso or 'none'}",
         )
         return f"Done. Discount id={from_gid(node_id)} created.\n{preview}"

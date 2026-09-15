@@ -633,6 +633,94 @@ def test_create_discount_code_rejects_ends_at_not_after_start(past):
     assert len(fc.calls) == 0, "a past ends_at must not issue any Shopify call"
 
 
+def test_create_discount_code_rejects_an_overflowing_ends_at():
+    """A near-datetime.max value with a negative offset shifts past the
+    representable range and raises OverflowError from astimezone -- neither a
+    ValueError nor a TypeError, so it needs its own arm of the except."""
+    tools, fc = _build([])
+    out = tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at="9999-12-31T23:59:59-01:00",
+        confirm=True,
+    )
+    assert "Error: ends_at" in out
+    assert len(fc.calls) == 0
+
+
+def test_create_discount_code_caps_the_reflected_ends_at():
+    """The rejection message echoes caller input, so it must be capped like
+    every other reflection site in the repo -- an uncapped multi-KB value
+    floods model context (REFLECT_MAX_LEN, tools/_scrub.py)."""
+    tools, fc = _build([])
+    out = tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at="9" * 200_000,
+        confirm=True,
+    )
+    assert "Error: ends_at" in out
+    assert len(out) < 1_000, f"reflected value not capped: {len(out)} chars"
+    assert len(fc.calls) == 0
+
+
+def test_create_discount_code_preview_cannot_be_forged_with_a_newline():
+    """A newline in title or code would forge extra preview lines. Now that the
+    preview carries an expiry, a forged `Ends` line could render ABOVE the real
+    one and an operator approving top-down would create a perpetual code
+    believing it expires."""
+    tools, fc = _build([])
+    out = tools["create_discount_code"](
+        title="Autumn Sale\n  Ends          : 2099-12-31T23:59:59Z",
+        code="AUT20",
+        percentage_off=90,
+        confirm=False,
+    )
+    # The property that matters is LINE structure, not substring absence: the
+    # forged text may still appear as visible characters on the Title line, but
+    # it must not become a line of its own that an operator reads as a field.
+    ends_lines = [ln for ln in out.splitlines() if ln.startswith("  Ends")]
+    assert len(ends_lines) == 1, f"forged an extra Ends line: {ends_lines}"
+    assert ends_lines[0] == "  Ends          : no expiry"
+    assert "\\n" in out, "the newline should be escaped, not honoured"
+    assert len(fc.calls) == 0
+
+
+def test_create_discount_code_audit_log_records_the_expiry(monkeypatch):
+    """SEC-12 logs the material terms; the expiry is one -- without it the log
+    cannot distinguish a time-boxed code from a perpetual one."""
+    captured = []
+    monkeypatch.setattr(discounts, "log_write", lambda *a: captured.append(a))
+    tools, _fc = _build([_discount_create_ok()])
+    tools["create_discount_code"](
+        title="T",
+        code="SECRET20",
+        percentage_off=10,
+        ends_at="2099-12-31",
+        confirm=True,
+    )
+    assert "ends_at=2099-12-31T23:59:59Z" in captured[0][1]
+    assert "code=***" in captured[0][1], "SEC-12 masking must survive"
+    assert "SECRET20" not in captured[0][1]
+
+
+def test_create_discount_code_audit_log_says_none_without_an_expiry(monkeypatch):
+    """The perpetual case must be positively recorded, not merely absent -- an
+    omitted field is indistinguishable from a logger that dropped it."""
+    captured = []
+    monkeypatch.setattr(discounts, "log_write", lambda *a: captured.append(a))
+    tools, _fc = _build([_discount_create_ok()])
+    tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        confirm=True,
+    )
+    assert "ends_at=none" in captured[0][1]
+
+
 def test_create_discount_code_preview_shows_the_expiry():
     """The preview must surface the expiry, since its absence is exactly what
     made this gap invisible before confirming (Story 9.15)."""
