@@ -736,6 +736,75 @@ def test_create_discount_code_preview_shows_the_expiry():
     assert len(fc.calls) == 0
 
 
+@pytest.mark.parametrize(
+    ("supplied", "normalized"),
+    [
+        ("2099-12-31", "2099-12-31T23:59:59Z"),
+        ("2099-12-31T23:59:59+05:00", "2099-12-31T18:59:59Z"),
+        ("2099-W01-1", "2098-12-29T23:59:59Z"),
+    ],
+)
+def test_create_discount_code_preview_shows_the_normalized_expiry(supplied, normalized):
+    """The preview IS the confirm gate, so it must show the instant that will
+    actually be sent rather than echoing the caller's string.
+
+    A value whose normalized form is byte-identical to its input (e.g. an
+    already-UTC timestamp) cannot test this — the assertion would pass whether
+    the preview showed the raw or the normalized value. Each case here is chosen
+    so the two differ: a bare date gains end-of-day, an offset is converted, and
+    an ISO week date resolves to a different calendar year (which is the only
+    thing that makes that surprise visible before committing)."""
+    tools, fc = _build([])
+    out = tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        ends_at=supplied,
+        confirm=False,
+    )
+    # Compare the whole line, not substring presence: a supplied value can be a
+    # PREFIX of its normalized form ("2099-12-31" inside "2099-12-31T23:59:59Z"),
+    # so `supplied not in out` would fail on correct code. The exact line both
+    # proves normalization happened and catches a raw echo.
+    ends_lines = [ln for ln in out.splitlines() if ln.startswith("  Ends")]
+    assert ends_lines == [f"  Ends          : {normalized}"]
+    assert len(fc.calls) == 0
+
+
+def test_create_discount_code_stamps_the_start_once(monkeypatch):
+    """`starts_at` is stamped once and reused for both the guard and the payload.
+
+    With two now() calls, an expiry landing between them serializes to
+    endsAt == startsAt — exactly what the guard rejects. Nothing pinned this, so
+    reinstating the second now() passed the whole suite. The clock below returns
+    a later second on each call, which is only observable if the code calls it
+    more than once."""
+
+    class _AdvancingClock(datetime):
+        calls = 0
+
+        @classmethod
+        def now(cls, tz=None):
+            cls.calls += 1
+            return datetime(2099, 6, 1, 12, 0, cls.calls - 1, tzinfo=tz)
+
+    monkeypatch.setattr(discounts, "datetime", _AdvancingClock)
+    tools, fc = _build([_discount_create_ok()])
+    tools["create_discount_code"](
+        title="T",
+        code="X",
+        percentage_off=10,
+        # One second after the FIRST stamp: passes the guard either way, but
+        # equals the SECOND stamp if the start is re-read for the payload.
+        ends_at="2099-06-01T12:00:01Z",
+        confirm=True,
+    )
+    sent = fc.calls[0][1]["input"]
+    assert sent["startsAt"] == "2099-06-01T12:00:00Z"
+    assert sent["endsAt"] == "2099-06-01T12:00:01Z"
+    assert sent["endsAt"] > sent["startsAt"], "endsAt must not collapse onto startsAt"
+
+
 def test_create_discount_code_preview_shows_no_expiry_when_omitted():
     """Wording mirrors the read side's `Ends: ... or 'no expiry'`."""
     tools, fc = _build([])

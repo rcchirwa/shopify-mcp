@@ -180,11 +180,16 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"<= {DISCOUNT_PCT_MAX} (got {percentage_off})."
             )
 
-        # Stamped once and reused for both the expiry comparison and the
-        # payload: calling now() twice could compare against one instant and
-        # send another. Floored to whole seconds so the guard compares exactly
-        # what the wire format carries — at microsecond precision a sub-second
-        # window passes the check and then serializes to endsAt == startsAt.
+        # Stamped ONCE and reused for both the expiry comparison and the
+        # payload. Calling now() twice would compare against one instant and
+        # send another, so an expiry landing between the two serializes to
+        # endsAt == startsAt — the exact case the guard exists to reject.
+        #
+        # The floor here is for symmetry, not correctness: the truncation that
+        # actually makes the comparison honest happens to `parsed` inside
+        # _normalize_ends_at, since strftime already formats only whole seconds.
+        # Keeping both operands at the same resolution stops a future reader
+        # from reintroducing a microsecond comparison.
         starts_at = datetime.now(UTC).replace(microsecond=0)
         ends_at_iso = ""
         if ends_at:
