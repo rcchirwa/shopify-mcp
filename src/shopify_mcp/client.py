@@ -224,10 +224,10 @@ class ShopifyClient:
             },
             timeout=self._settings.request_timeout_s,
         )
-        # Set once the served-vs-requested mismatch has been reported. The pin
-        # is fixed for this client's life, so warning per call would repeat one
-        # unchanging fact on every query instead of informing anyone.
-        self._api_version_mismatch_logged = False
+        # The served version last warned about, so a persistent drift reports
+        # once rather than on every query — but a *different* substitution
+        # later in this process still gets its own line.
+        self._warned_served_version: str | None = None
         self._client = Client(
             transport=self._transport,
             fetch_schema_from_transport=False,
@@ -262,38 +262,59 @@ class ShopifyClient:
         raise TransientShopifyError(f"{label} retry loop exhausted")  # pragma: no cover
 
     def _warn_on_api_version_drift(self) -> None:
-        """Log a WARNING once if Shopify served a version we did not request.
+        """Log a WARNING when Shopify serves a version we did not request.
 
-        Called after a successful GraphQL call, when gql has recorded the
-        response headers on the transport. Reads defensively and stays silent
-        whenever it cannot tell: `response_headers` is None until the first
-        request completes, a response need not carry the header, and a future
-        gql could stop exposing it at all. This is observability watching the
-        data path — it must never be the reason the data path fails.
+        Runs after every call, successful or not — the call most likely to
+        expose a drifted pin is the one that *fails* because the substituted
+        version removed a field it selects.
+
+        Warns once per distinct served version rather than once per call. The
+        requested pin cannot change while the process runs, so repeating it
+        every query would bury the signal; but Shopify's substitute *can*
+        change under a long-lived process, because what it substitutes is the
+        oldest still-supported version and that rotates. A second, different
+        substitution is news, so it gets its own line.
+
+        Stays silent whenever it cannot tell: headers are None until the first
+        response lands, a response need not carry the header, and after a
+        connection-level failure they still describe the previous call (same
+        pinned URL, so the verdict stays true even then). Unexpected shapes are
+        swallowed as well: this is observability watching the data path, and it
+        must never be the reason that path fails — nor, running in `finally`,
+        replace the real exception it is unwinding from.
         """
-        if self._api_version_mismatch_logged:
-            return
-        headers = getattr(self._transport, "response_headers", None)
-        if not headers:
-            return
-        served = headers.get(_API_VERSION_HEADER)
-        requested = self._settings.shopify_api_version
-        if served is None or served == requested:
-            return
-        self._api_version_mismatch_logged = True
-        # `served` is upstream-controlled text on its way into a log line, so
-        # it gets the same treatment as every other reflected value here
-        # (SEC-20, SEC-24): strip control characters that could forge extra log
-        # lines, then bound the length. `requested` is validated by Settings.
-        served = cap_text(sanitize_control_chars(served))
-        logger.warning(
-            "Shopify served Admin API version %s but SHOPIFY_API_VERSION requests %s — "
-            "the pinned version is unsupported and Shopify silently substituted the "
-            "oldest supported one. Update SHOPIFY_API_VERSION in .env to a supported "
-            "version; queries will otherwise break without warning as fields are removed.",
-            served,
-            requested,
-        )
+        try:
+            headers = getattr(self._transport, "response_headers", None)
+            if not headers:
+                return
+            served = headers.get(_API_VERSION_HEADER)
+            requested = self._settings.shopify_api_version
+            # isinstance, not `is None`: a non-str value would otherwise reach
+            # sanitize_control_chars and raise out of an observability helper.
+            if not isinstance(served, str) or served == requested:
+                return
+            if served == self._warned_served_version:
+                return
+            self._warned_served_version = served
+            logger.warning(
+                "Shopify served Admin API version %s but SHOPIFY_API_VERSION requests %s — "
+                "the pinned version is unsupported and Shopify silently substituted the "
+                "oldest supported one. Update SHOPIFY_API_VERSION in .env to a supported "
+                "version; queries will otherwise break without warning as fields are removed.",
+                # `served` is upstream-controlled text on its way into a log
+                # line, so it gets the same treatment as every other reflected
+                # value here (SEC-20, SEC-24): strip control characters that
+                # could forge extra log lines, then bound the length.
+                # `requested` is validated by Settings._validate_api_version.
+                cap_text(sanitize_control_chars(served)),
+                requested,
+            )
+        except Exception:
+            # Deliberately broad. The only thing worse than missing a drift
+            # warning is turning a working call — or a clean ShopifyError —
+            # into an AttributeError from the watcher. Reachable today if gql
+            # ever hands back a non-mapping `response_headers`.
+            logger.debug("Admin API version drift check skipped", exc_info=True)
 
     def execute(self, query_str: str, variables: dict | None = None) -> dict:
         gql_query = gql(query_str)
@@ -345,11 +366,16 @@ class ShopifyClient:
         # op_name is extracted via regex from an in-code GraphQL query string
         # (never caller-controlled), so unlike fetch_bytes' `url` it carries
         # no injection risk and doesn't need sanitize_control_chars (SEC-20).
-        result = self._with_retry(_attempt, label=f"op={op_name}")
-        # After the call, so gql has recorded the response headers the served
-        # API version is read from (Story 9.13).
-        self._warn_on_api_version_drift()
-        return result
+        # `finally`, not just the success path: the call most likely to expose a
+        # drifted pin is the one that FAILS because the substituted version
+        # removed a field the query selects — Story 9.12's outage exactly. gql
+        # records the response headers before raising, so the served version is
+        # just as readable there, and suppressing the warning would hide the
+        # drift at the one moment it is doing visible damage (Story 9.13).
+        try:
+            return self._with_retry(_attempt, label=f"op={op_name}")
+        finally:
+            self._warn_on_api_version_drift()
 
     def fetch_bytes(
         self,
