@@ -23,7 +23,11 @@ from shopify_mcp.shopify.queries.discounts import (
 )
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
-from shopify_mcp.tools._response import extract_user_errors, with_confirm_hint
+from shopify_mcp.tools._response import (
+    extract_user_errors,
+    format_path_user_errors,
+    with_confirm_hint,
+)
 
 # Shopify rejects a 0% or negative discount, and a >100% value would zero out
 # (or overpay) a line item — bound client-side rather than let a nonsensical
@@ -39,21 +43,6 @@ __all__ = [
     "GET_CODE_DISCOUNTS",
     "register",
 ]
-
-
-def _format_discount_user_errors(errors: list[dict[str, Any]]) -> str:
-    """Join DiscountUserError entries as 'field.path: message; …'.
-
-    ``DiscountUserError.field`` is ``[String!]`` (a path, e.g.
-    ``["basicCodeDiscount", "code"]``), not the plain string
-    ``format_user_errors`` assumes — same dotted-path convention already used
-    for other list-``field`` UserError types in catalog_hygiene.py/products.py.
-    """
-    return "; ".join(
-        f"{'.'.join(str(f) for f in (e.get('field') or [])) or '(no field)'}: "
-        f"{e.get('message', '')}"
-        for e in errors
-    )
 
 
 def register(server: FastMCP, client: ShopifyClient) -> None:
@@ -151,7 +140,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         result = ops.create_discount_code_basic(client, discount_input)
         errors = extract_user_errors(result, "discountCodeBasicCreate")
         if errors:
-            return f"Error creating discount code: {_format_discount_user_errors(errors)}"
+            return f"Error creating discount code: {format_path_user_errors(errors)}"
 
         # codeDiscountNode is None when the mutation shape-drifts or userErrors
         # are empty but the server-side commit still failed — guard with `or {}`

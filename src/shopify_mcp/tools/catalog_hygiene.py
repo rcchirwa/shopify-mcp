@@ -77,7 +77,13 @@ from shopify_mcp.tools._gid import from_gid, to_gid
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._product_resolver import _resolve_product
 from shopify_mcp.tools._resolvers import resolve_variant_ids_with_variants
-from shopify_mcp.tools._response import extract_user_errors, format_user_errors, with_confirm_hint
+from shopify_mcp.tools._response import (
+    extract_user_errors,
+    format_field_path,
+    format_path_user_errors,
+    format_user_errors,
+    with_confirm_hint,
+)
 from shopify_mcp.tools._scrub import cap
 from shopify_mcp.tools._untrusted import INJECTION_REMINDER, wrap
 from shopify_mcp.tools.media._constants import MEDIA_IDS_MAX
@@ -316,21 +322,6 @@ def _expand_append_entries(variant_id: str, media_ids: list[str]) -> list[dict[s
     return [{"variantId": variant_id, "mediaIds": [mid]} for mid in media_ids]
 
 
-def _format_user_errors(errors: list[dict[str, Any]]) -> str:
-    """Render a Shopify userErrors list as a single human-readable string.
-
-    Shopify returns `field` as a list of path segments; joining with '.' is
-    more readable than str(list). Shared by the detach-halt path and the
-    append-failure path so formatting stays consistent across both.
-    """
-
-    def _fmt(e: dict[str, Any]) -> str:
-        field_path = ".".join(str(f) for f in (e.get("field") or []))
-        return f"{field_path or '(no field)'}: {e.get('message', '')}"
-
-    return "; ".join(_fmt(e) for e in errors)
-
-
 def _media_node_to_json(node: dict[str, Any]) -> dict[str, Any]:
     """Serialize a media node into the spec-aligned JSON-tail shape.
 
@@ -379,7 +370,7 @@ def _handle_append_failure_after_detach(
         except Exception as exc:
             rollback_errors = [{"message": f"rollback raised: {cap(str(exc))}"}]
 
-    head = f"Error: append failed after detach — {_format_user_errors(real_errors)}"
+    head = f"Error: append failed after detach — {format_path_user_errors(real_errors)}"
     return _render(
         head,
         {
@@ -1850,14 +1841,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         user_errors = extract_user_errors(result, "productVariantsBulkUpdate")
         if user_errors:
-            # `field` is a dotted-path list on productVariantsBulkUpdate; mirror
-            # the local formatter from tools/products.py:868 so paths render
-            # readably (format_user_errors stringifies the whole list).
-            def _fmt(e: dict[str, Any]) -> str:
-                field_path = ".".join(str(f) for f in (e.get("field") or []))
-                return f"{field_path or '(no field)'}: {e.get('message', '')}"
-
-            msgs = "; ".join(_fmt(e) for e in user_errors)
+            # `field` is a dotted-path list on productVariantsBulkUpdate, so
+            # paths go through the shared path formatter (format_user_errors
+            # stringifies the whole list).
+            msgs = format_path_user_errors(user_errors)
             return _render(
                 f"Error: {msgs}",
                 {"ok": False, "variants": [], "errors": list(user_errors)},
@@ -2916,7 +2903,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 return _render(msg, _err_payload(cap(str(exc))))
             detach_errors = extract_user_errors(detach_result, "productVariantDetachMedia")
             if detach_errors:
-                msgs = _format_user_errors(detach_errors)
+                msgs = format_path_user_errors(detach_errors)
                 return _render(
                     f"Error: detach failed — {msgs}",
                     {"ok": False, "variants": [], "errors": list(detach_errors)},
@@ -3176,11 +3163,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 "See https://shopify.dev/docs/api/usage/access-scopes"
                 "#authenticated-access-scopes"
             )
-            err_summary = "; ".join(
-                f"{'.'.join(str(f) for f in (e.get('field') or [])) or '(no field)'}: "
-                f"{e.get('message', '')}"
-                for e in access_denied
-            )
+            err_summary = format_path_user_errors(access_denied)
             head = (
                 f"Error: metafieldsSet ACCESS_DENIED — likely missing the "
                 f"write_metafields scope.\n  {err_summary}\n"
@@ -3199,13 +3182,6 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
 
         if user_errors:
-            # Mirror Story 9.6's dotted-path formatter — Shopify returns
-            # `field` as a list like ["metafields", "0", "value"]; str() of
-            # the raw list reads poorly in a head.
-            def _fmt(e: dict[str, Any]) -> str:
-                field_path = ".".join(str(f) for f in (e.get("field") or []))
-                return f"{field_path or '(no field)'}: {e.get('message', '')}"
-
             # Bucket userErrors by entry index for the `errorsByIndex` map.
             by_index: dict[str, list[dict[str, Any]]] = {}
             for e in user_errors:
@@ -3221,7 +3197,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                     idx_str = field[1]
                 by_index.setdefault(idx_str, []).append(dict(e))
 
-            msgs = "; ".join(_fmt(e) for e in user_errors)
+            # Shopify returns `field` as a list like ["metafields", "0",
+            # "value"]; str() of the raw list reads poorly in a head.
+            msgs = format_path_user_errors(user_errors)
             head = f"Error: metafieldsSet userErrors: {msgs}"
             return (
                 head
@@ -3599,12 +3577,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             deleted_payload.append(row)
 
         if non_idempotent_errors:
-
-            def _fmt(e: dict[str, Any]) -> str:
-                field_path = ".".join(str(f) for f in (e.get("field") or []))
-                return f"{field_path or '(no field)'}: {e.get('message', '')}"
-
-            msgs = "; ".join(_fmt(e) for e in non_idempotent_errors)
+            msgs = format_path_user_errors(non_idempotent_errors)
             head = f"Error: metafieldsDelete userErrors: {msgs}"
             return (
                 head
@@ -4241,9 +4214,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             # Preserve `code` in the head so the caller can string-match without
             # parsing the JSON tail.
             def _fmt(e: dict[str, Any]) -> str:
-                field_path = ".".join(str(f) for f in (e.get("field") or []))
                 code_part = f" [{e['code']}]" if e.get("code") else ""
-                return f"{field_path or '(no field)'}{code_part}: {e.get('message', '')}"
+                return f"{format_field_path(e) or '(no field)'}{code_part}: {e.get('message', '')}"
 
             msgs = "; ".join(_fmt(e) for e in user_errors)
             return f"Error: productOptionUpdate userErrors: {msgs}\n\n" + _format_options_payload(

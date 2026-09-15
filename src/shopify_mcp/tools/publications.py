@@ -44,7 +44,11 @@ from shopify_mcp.shopify.queries.publications import (
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._product_resolver import identifier_error, to_gid
-from shopify_mcp.tools._response import extract_user_errors, with_confirm_hint
+from shopify_mcp.tools._response import (
+    extract_user_errors,
+    format_field_path,
+    with_confirm_hint,
+)
 from shopify_mcp.tools._scrub import cap
 
 # The GraphQL strings now live in shopify.queries.publications. They are re-exported
@@ -169,7 +173,9 @@ def _map_user_error(user_error: dict, targets: list) -> dict:
             idx = None
     if idx is not None and 0 <= idx < len(targets):
         return {"channel_name": targets[idx].get("name"), "error": message}
-    raw = ".".join(str(f) for f in field) if isinstance(field, list) else str(field)
+    # `format_field_path` assumes the `[String!]` list shape, so the
+    # non-list branch stays: a scalar string would join character-by-character.
+    raw = format_field_path(user_error) if isinstance(field, list) else str(field)
     return {"channel_name": raw or "(unknown)", "error": message}
 
 

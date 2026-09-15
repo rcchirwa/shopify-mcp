@@ -44,7 +44,11 @@ from shopify_mcp.tools._filters import (
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._product_resolver import identifier_error
-from shopify_mcp.tools._response import extract_user_errors, with_confirm_hint
+from shopify_mcp.tools._response import (
+    extract_user_errors,
+    format_path_user_errors,
+    with_confirm_hint,
+)
 from shopify_mcp.tools._untrusted import with_reminder, wrap
 from shopify_mcp.tools._write_tool import write_gate
 from shopify_mcp.validators.naming import format_validation_diff
@@ -903,12 +907,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             # `field` is a dotted path list on productVariantsBulkUpdate (e.g.
             # ["variants", "0", "inventoryPolicy"]) — unlike simple scalar-field
             # mutations — so format_user_errors' stringify-field logic won't
-            # render it readably. Keep the local formatter.
-            def _fmt(e: dict[str, Any]) -> str:
-                field_path = ".".join(str(f) for f in (e.get("field") or []))
-                return f"{field_path or '(no field)'}: {e.get('message', '')}"
-
-            msgs = "; ".join(_fmt(e) for e in user_errors)
+            # render it readably. Use the shared path formatter.
+            msgs = format_path_user_errors(user_errors)
             return f"Error: {msgs}"
 
         updated = (result.get("productVariantsBulkUpdate") or {}).get("productVariants") or []

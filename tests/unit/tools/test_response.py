@@ -1,6 +1,7 @@
 """
 Offline unit tests for tools._response (with_confirm_hint / extract_user_errors /
-format_user_errors_joined / format_user_errors).
+format_user_errors_joined / format_user_errors / format_field_path /
+format_path_user_errors).
 
 Usage:
   cd ~/shopify-mcp
@@ -10,6 +11,8 @@ Usage:
 
 from shopify_mcp.tools._response import (
     extract_user_errors,
+    format_field_path,
+    format_path_user_errors,
     format_user_errors,
     format_user_errors_joined,
     with_confirm_hint,
@@ -179,3 +182,86 @@ def test_format_user_errors_tolerates_missing_field_or_message() -> None:
     # response shape yields "None: None" rather than a KeyError.
     result: dict = {"productUpdate": {"userErrors": [{}]}}
     assert format_user_errors(result, "productUpdate") == "Error: None: None"
+
+
+# ---------- format_field_path ----------
+
+
+def test_format_field_path_joins_multiple_segments_with_dots() -> None:
+    # DiscountUserError.field is [String!] — a path, not a scalar.
+    assert format_field_path({"field": ["basicCodeDiscount", "code"]}) == "basicCodeDiscount.code"
+
+
+def test_format_field_path_single_segment_has_no_separator() -> None:
+    assert format_field_path({"field": ["code"]}) == "code"
+
+
+def test_format_field_path_empty_list_returns_empty_string() -> None:
+    # Callers render the empty string as their own placeholder, so the
+    # helper itself stays placeholder-free.
+    assert format_field_path({"field": []}) == ""
+
+
+def test_format_field_path_missing_field_key_returns_empty_string() -> None:
+    assert format_field_path({"message": "something went wrong"}) == ""
+
+
+def test_format_field_path_none_field_returns_empty_string() -> None:
+    # Shopify can return explicit null for an error with no field context.
+    assert format_field_path({"field": None}) == ""
+
+
+def test_format_field_path_stringifies_non_string_segments() -> None:
+    # productVariantsBulkUpdate paths carry a positional index; the schema
+    # types it as a string, but str() keeps an int from raising.
+    assert format_field_path({"field": ["variants", 0, "price"]}) == "variants.0.price"
+
+
+def test_format_field_path_joins_a_scalar_string_per_character() -> None:
+    # Pins the documented limitation, not a desirable output: `field` is
+    # `[String!]` in the schema, so a scalar never arrives from Shopify — but
+    # iterating one would yield "t.i.t.l.e". Nine inlined copies shared this
+    # assumption; consolidating them put it behind a single symbol, so a
+    # future "fix" here would silently rewrite the error text at every
+    # unguarded call site. This test makes that edit fail loudly instead.
+    # The one caller that can see a scalar (publications._map_user_error)
+    # guards with isinstance(field, list) — see its own direct tests.
+    assert format_field_path({"field": "title"}) == "t.i.t.l.e"
+
+
+# ---------- format_path_user_errors ----------
+
+
+def test_format_path_user_errors_joins_errors_with_semicolons() -> None:
+    errors = [
+        {"field": ["metafields", "0", "value"], "message": "is invalid"},
+        {"field": ["metafields", "1", "key"], "message": "is blank"},
+    ]
+    assert format_path_user_errors(errors) == (
+        "metafields.0.value: is invalid; metafields.1.key: is blank"
+    )
+
+
+def test_format_path_user_errors_renders_no_field_placeholder() -> None:
+    # An error with no field context must not render as ": message".
+    assert format_path_user_errors([{"field": [], "message": "is invalid"}]) == (
+        "(no field): is invalid"
+    )
+
+
+def test_format_path_user_errors_missing_message_renders_empty() -> None:
+    # Defensive: matches the `e.get("message", "")` the nine inlined copies used.
+    assert format_path_user_errors([{"field": ["code"]}]) == "code: "
+
+
+def test_format_path_user_errors_null_message_renders_none() -> None:
+    # An explicit null is distinct from a missing key: `.get("message", "")`
+    # returns None rather than the default, so the row reads "code: None".
+    # Matches the scalar sibling's documented "None: None" behavior.
+    assert format_path_user_errors([{"field": ["code"], "message": None}]) == "code: None"
+
+
+def test_format_path_user_errors_empty_list_returns_empty_string() -> None:
+    # Callers guard on the error list being non-empty before formatting, so
+    # this is the degenerate case rather than a None-returning signal.
+    assert format_path_user_errors([]) == ""
