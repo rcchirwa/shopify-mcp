@@ -373,6 +373,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         Update a product's SEO title and/or meta description.
         At least one of new_seo_title or new_seo_description must be provided.
         Returns a preview unless confirm=True.
+
+        The field you do not supply is PRESERVED: its stored value is read and
+        re-sent unchanged, because Shopify replaces the SEO object wholesale and
+        would otherwise clear it (Story 9.19). An empty string means "not
+        supplied", and a value that sanitizes to empty is refused, so this tool
+        cannot clear an SEO field — do that in the Shopify admin.
         """
         if not new_seo_title and not new_seo_description:
             return "Error: provide at least one of new_seo_title or new_seo_description."
@@ -431,15 +437,32 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 + ", ".join(description_stripped)
             )
 
+        # This tool never clears an SEO field (Story 9.19), so a supplied value
+        # the sanitizer reduces to nothing is refused rather than written as "".
+        # The warnings say why it came out empty.
+        if (new_seo_title and not sanitized_title) or (
+            new_seo_description and not sanitized_description
+        ):
+            return (
+                "Error: a supplied SEO value is empty after sanitizing; this tool "
+                "does not clear SEO fields — do that in the Shopify admin.\n\nWarnings:\n"
+                + "\n".join(f"  • {w}" for w in warnings)
+            )
+
         old_title_line = old_title if old_title else "(empty)"
         old_desc_line = old_desc if old_desc else "(empty)"
+        # An unsupplied field is re-sent as stored (see _execute), so the
+        # preview says so and shows the value — never "(unchanged)", which is
+        # what this line printed while the write was erasing it (Story 9.19).
         new_title_line = (
-            f"{new_seo_title} ({len(new_seo_title)} chars)" if new_seo_title else "(unchanged)"
+            f"{new_seo_title} ({len(new_seo_title)} chars)"
+            if new_seo_title
+            else f"(preserved) {old_title_line}"
         )
         new_desc_line = (
             f"{new_seo_description} ({len(new_seo_description)} chars)"
             if new_seo_description
-            else "(unchanged)"
+            else f"(preserved) {old_desc_line}"
         )
 
         body = (
@@ -452,13 +475,18 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if warnings:
             body += "\n\nWarnings:\n" + "\n".join(f"  • {w}" for w in warnings)
 
-        def _seo_input() -> dict[str, str]:
-            inp: dict[str, str] = {}
-            if new_seo_title:
-                inp["title"] = sanitized_title
-            if new_seo_description:
-                inp["description"] = sanitized_description
-            return inp
+        def _execute() -> dict[str, Any]:
+            # Read-modify-write: productUpdate replaces `seo` wholesale, so the
+            # field the caller did not supply goes back exactly as read (null
+            # included) and is not re-sanitized — it was sanitized when written.
+            return ops.update_product_seo(
+                client,
+                product_id,
+                title=sanitized_title if new_seo_title else old_seo.get("title"),
+                description=(
+                    sanitized_description if new_seo_description else old_seo.get("description")
+                ),
+            )
 
         def _log_desc() -> str:
             parts: list[str] = []
@@ -473,7 +501,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         return write_gate(
             preview=f"PREVIEW — Product SEO update\n{body}",
             confirm=confirm,
-            execute=lambda: ops.update_product_seo(client, product_id, _seo_input()),
+            execute=_execute,
             mutation_key="productUpdate",
             log_name="update_product_seo",
             log_description=_log_desc,

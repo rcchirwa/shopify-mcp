@@ -172,7 +172,51 @@ def test_seo_preview_path_does_not_call_mutation():
     assert fc.calls[0][0] == GET_PRODUCT_SEO_BY_ID
 
 
-def test_seo_title_only_mutation_shape():
+# Story 9.19: productUpdate REPLACES the nested `seo` input wholesale — a key
+# omitted from it is CLEARED, not left alone (proven live: a title-only call
+# wiped a 141-char description). So a one-field call must re-send the other
+# field's stored value. These assert on the emitted KEYS: the broken
+# `{"title": …}` shape is a valid SEOInput and passes schema validation and
+# coercion alike, so only the keys can tell it apart.
+_STORED_SEO_TITLE = "Vanish | Iconic V Crewneck"
+_STORED_SEO_DESC = "Oversized V logo, front and center. Classic crewneck silhouette."
+
+
+def test_seo_title_only_call_resends_stored_description():
+    tools, fc = _build(
+        [_seo_read(_STORED_SEO_TITLE, _STORED_SEO_DESC), _update_ok()],
+    )
+    tools["update_product_seo"](
+        product_id="123",
+        new_seo_title="Only Title",
+        confirm=True,
+    )
+    _, vars_put = fc.calls[1]
+    assert vars_put["product"]["seo"] == {
+        "title": "Only Title",
+        "description": _STORED_SEO_DESC,
+    }, vars_put
+
+
+def test_seo_description_only_call_resends_stored_title():
+    tools, fc = _build(
+        [_seo_read(_STORED_SEO_TITLE, _STORED_SEO_DESC), _update_ok()],
+    )
+    tools["update_product_seo"](
+        product_id="123",
+        new_seo_description="Only desc",
+        confirm=True,
+    )
+    _, vars_put = fc.calls[1]
+    assert vars_put["product"]["seo"] == {
+        "title": _STORED_SEO_TITLE,
+        "description": "Only desc",
+    }, vars_put
+
+
+def test_seo_one_field_call_resends_an_unset_field_as_unset():
+    """An unset stored field goes back exactly as read (null), not as "" —
+    the payload must restate the stored state, not invent a new one."""
     tools, fc = _build([_seo_read(), _update_ok()])
     tools["update_product_seo"](
         product_id="123",
@@ -180,18 +224,50 @@ def test_seo_title_only_mutation_shape():
         confirm=True,
     )
     _, vars_put = fc.calls[1]
-    assert vars_put["product"]["seo"] == {"title": "Only Title"}, vars_put
+    assert vars_put["product"]["seo"] == {"title": "Only Title", "description": None}, vars_put
 
 
-def test_seo_description_only_mutation_shape():
-    tools, fc = _build([_seo_read(), _update_ok()])
-    tools["update_product_seo"](
-        product_id="123",
-        new_seo_description="Only desc",
-        confirm=True,
-    )
+# A value `sanitize_html` does NOT return unchanged ("&" -> "&amp;"). A fixture
+# the sanitizer leaves alone would let a re-sanitizing implementation pass.
+_SANITIZER_SENSITIVE = "Tee & Hat"
+
+
+def test_seo_sanitizer_sensitive_fixture_really_is():
+    from shopify_mcp.tools._filters import sanitize_html
+
+    assert sanitize_html(_SANITIZER_SENSITIVE) != _SANITIZER_SENSITIVE
+
+
+@pytest.mark.parametrize(
+    ("stored", "supplied", "preserved_key"),
+    [
+        ((_SANITIZER_SENSITIVE, "old"), {"new_seo_description": "new"}, "title"),
+        (("old", _SANITIZER_SENSITIVE), {"new_seo_title": "new"}, "description"),
+    ],
+    ids=["title", "description"],
+)
+def test_seo_preserved_value_is_not_re_sanitized(stored, supplied, preserved_key):
+    """The preserved field is sent byte-for-byte as stored. It was sanitized
+    when written; re-sanitizing on every unrelated write risks silent drift
+    (e.g. an admin-typed "Tee & Hat" becoming "Tee &amp; Hat")."""
+    tools, fc = _build([_seo_read(*stored), _update_ok()])
+    tools["update_product_seo"](product_id="123", confirm=True, **supplied)
     _, vars_put = fc.calls[1]
-    assert vars_put["product"]["seo"] == {"description": "Only desc"}, vars_put
+    assert vars_put["product"]["seo"][preserved_key] == _SANITIZER_SENSITIVE, vars_put
+
+
+@pytest.mark.parametrize("field", ["new_seo_title", "new_seo_description"])
+def test_seo_value_that_sanitizes_to_empty_is_refused(field):
+    """The tool does not clear SEO fields (Story 9.19 decision). A supplied value
+    the sanitizer reduces to "" would clear one anyway, so it is refused before
+    any write — in preview and confirm alike."""
+    for confirm in (False, True):
+        tools, fc = _build([_seo_read("t", "d")])
+        out = tools["update_product_seo"](
+            product_id="123", confirm=confirm, **{field: "<script></script>"}
+        )
+        assert out.startswith("Error:") and "empty" in out, out
+        assert [call[0] for call in fc.calls] == [GET_PRODUCT_SEO_BY_ID], fc.calls
 
 
 def test_seo_user_errors_surfaced():
@@ -211,7 +287,7 @@ def _between(text, label, next_label=None):
     return text[start:end]
 
 
-def test_seo_preview_shows_old_empty_and_unchanged_field():
+def test_seo_preview_shows_old_empty_and_preserved_empty_field():
     tools, fc = _build([_seo_read()])
     out = tools["update_product_seo"](
         product_id="123",
@@ -224,7 +300,33 @@ def test_seo_preview_shows_old_empty_and_unchanged_field():
     new_desc_val = _between(out, "New SEO description", "\n\n")
     assert "(empty)" in old_title_val, out
     assert "(empty)" in old_desc_val, out
-    assert "(unchanged)" in new_desc_val, out
+    assert "(preserved)" in new_desc_val and "(empty)" in new_desc_val, out
+
+
+def test_seo_preview_shows_the_preserved_value_it_will_resend():
+    """Story 9.19: the preview used to print `(unchanged)` for the very field the
+    write was about to erase. It must now show the value being re-sent — and
+    never the word `(unchanged)`, which is what gave the false assurance."""
+    tools, fc = _build([_seo_read(_STORED_SEO_TITLE, _STORED_SEO_DESC)])
+    out = tools["update_product_seo"](
+        product_id="123",
+        new_seo_title="Fresh title",
+        confirm=False,
+    )
+    new_desc_val = _between(out, "New SEO description", "\n\n")
+    assert "(preserved)" in new_desc_val, out
+    assert _STORED_SEO_DESC in new_desc_val, out
+    assert "(unchanged)" not in out, out
+
+    tools, fc = _build([_seo_read(_STORED_SEO_TITLE, _STORED_SEO_DESC)])
+    out = tools["update_product_seo"](
+        product_id="123",
+        new_seo_description="Fresh description",
+        confirm=False,
+    )
+    new_title_val = _between(out, "New SEO title", "Old SEO description")
+    assert "(preserved)" in new_title_val and _STORED_SEO_TITLE in new_title_val, out
+    assert "(unchanged)" not in out, out
 
 
 def test_update_seo_warns_on_dangerous_pattern_in_description():

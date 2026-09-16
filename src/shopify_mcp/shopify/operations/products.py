@@ -463,12 +463,28 @@ def update_product_description(
 
 
 def update_product_seo(
-    client: GraphQLClient, product_id: str, seo_input: dict[str, str]
+    client: GraphQLClient,
+    product_id: str,
+    *,
+    title: str | None,
+    description: str | None,
 ) -> dict[str, Any]:
-    """Execute a productUpdate setting the seo sub-input."""
+    """Execute a productUpdate setting the COMPLETE seo sub-input.
+
+    Story 9.19: ``productUpdate`` replaces the nested ``seo`` input wholesale —
+    a key omitted from it is CLEARED, not left alone (proven live: a title-only
+    write wiped a stored description). Both fields are therefore required, so a
+    partial ``SEOInput`` cannot be expressed here; the caller re-sends the stored
+    value of whichever field it is not changing (read-modify-write).
+    """
     return client.execute(
         UPDATE_PRODUCT,
-        {"product": {"id": to_gid("Product", product_id), "seo": seo_input}},
+        {
+            "product": {
+                "id": to_gid("Product", product_id),
+                "seo": {"title": title, "description": description},
+            }
+        },
     )
 
 
