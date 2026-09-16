@@ -449,8 +449,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 + "\n".join(f"  • {w}" for w in warnings)
             )
 
-        old_title_line = old_title if old_title else "(empty)"
-        old_desc_line = old_desc if old_desc else "(empty)"
+        # Stored SEO values are store content read back (SEO apps, agencies,
+        # imports write them), so every echo is fenced; the caller's new values
+        # stay raw — the same provenance split as update_product_description
+        # (Story 10.92 / SEC-04-seo). Gated at assignment so an empty value never
+        # renders a bare fence; "(empty)" is our text and stays outside. Display
+        # only: _execute and _log_desc keep reading the raw values.
+        old_title_line = wrap(old_title) if old_title else "(empty)"
+        old_desc_line = wrap(old_desc) if old_desc else "(empty)"
         # An unsupplied field is re-sent as stored (see _execute), so the
         # preview says so and shows the value — never "(unchanged)", which is
         # what this line printed while the write was erasing it (Story 9.19).
@@ -499,13 +505,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return f"id={product_id} | " + " | ".join(parts)
 
         return write_gate(
-            preview=f"PREVIEW — Product SEO update\n{body}",
+            preview=with_reminder(f"PREVIEW — Product SEO update\n{body}"),
             confirm=confirm,
             execute=_execute,
             mutation_key="productUpdate",
             log_name="update_product_seo",
             log_description=_log_desc,
-            done_text=f"CONFIRMED — Product SEO updated\n{body}",
+            done_text=with_reminder(f"CONFIRMED — Product SEO updated\n{body}"),
         )
 
     @server.tool()
@@ -665,8 +671,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
         tags = ", ".join(p.get("tags") or []) or "(none)"
         seo = p.get("seo") or {}
-        seo_title = seo.get("title") or "(none)"
-        seo_desc = seo.get("description") or "(none)"
+        # Stored SEO values are fenced like bodyHtml (Story 10.92 / SEC-04-seo);
+        # "(none)" is our placeholder and stays outside the fence.
+        seo_title = wrap(seo["title"]) if seo.get("title") else "(none)"
+        seo_desc = wrap(seo["description"]) if seo.get("description") else "(none)"
         cat = p.get("category") or {}
         cat_id = cat.get("id") or "(none)"
         cat_name = cat.get("name") or "(none)"
@@ -706,7 +714,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if capped:
             result += "\nWARNING: variant pagination stopped short — additional variants (if any) are not shown here."
         # Reminder leads the whole output, cap warning included — it is about
-        # the wrapped body below, not about where the string happens to end.
+        # the wrapped values above, not about where the string happens to end.
         return with_reminder(result)
 
     @server.tool()
