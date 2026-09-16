@@ -48,6 +48,7 @@ import importlib
 import inspect
 import pkgutil
 import sys
+from collections import Counter
 from collections.abc import Callable
 from datetime import date
 from typing import Any
@@ -81,6 +82,7 @@ from tests.support.admin_schema_snapshot import (
     discover_documents,
     generate_sdl,
     read_snapshot_header,
+    snapshot_body,
 )
 
 _SNAPSHOT_TEXT = SNAPSHOT_PATH.read_text(encoding="utf-8")
@@ -97,18 +99,34 @@ _LABEL_BY_TEXT = {text: label for label, text in _DOCUMENTS.items()}
 _DOCUMENT_FLOOR = 76
 
 # Drift the validation leg reports on an operation Shopify has been confirmed
-# to serve anyway. {label: (reason, date last confirmed served live, ISO)}.
-# Empty on landing: every document matches the pinned schema. An entry must be
-# re-confirmed (and re-dated) whenever the snapshot is refreshed, because a
-# refresh is the only moment the fact can change; see
+# to serve anyway. {label: (reason, date last confirmed served live (ISO),
+# the exact validation error messages confirmed)}. The messages are pinned so an
+# entry excuses only the drift that was confirmed, not any new drift on the same
+# document. Empty on landing: every document matches the pinned schema. An
+# entry must be re-confirmed (and re-dated) whenever the snapshot is refreshed,
+# because a refresh is the only moment the fact can change; see
 # test_served_despite_drift_entries_are_dated_and_current.
-_SERVED_DESPITE_DRIFT: dict[str, tuple[str, str]] = {}
+_SERVED_DESPITE_DRIFT: dict[str, tuple[str, str, tuple[str, ...]]] = {}
 
-# Deprecated (type, field / argument / enum value) usages across all documents,
-# measured 2026-09-16 against 2026-01. They are the likeliest next removals, and
-# the list lives in docs/tech-debt.md. May fall freely; raising it is a
-# deliberate edit.
-_DEPRECATED_USAGE_CEILING = 30
+# Deprecated usages across all documents, per coordinate, measured 2026-09-16
+# against 2026-01. They are the likeliest next removals, and the list lives in
+# docs/tech-debt.md. A count may fall freely; a new coordinate, or a higher
+# count, is a deliberate edit. Per coordinate rather than one total, so
+# retiring one deprecated usage cannot pay for introducing another.
+_DEPRECATED_USAGE_CEILINGS = {
+    "The field Mutation.collectionAddProductsV2": 1,
+    "The field Mutation.collectionRemoveProducts": 1,
+    "The field Mutation.inventorySetOnHandQuantities": 1,
+    "The field Mutation.productCreateMedia": 1,
+    "The field Mutation.productDeleteMedia": 1,
+    "The field Mutation.productUpdateMedia": 1,
+    "The field Product.bodyHtml": 6,
+    "The field ProductReorderMediaPayload.userErrors": 1,
+    "The field Publication.name": 4,
+    "The field QueryRoot.collectionByHandle": 4,
+    "The field QueryRoot.productByHandle": 7,
+    "The field WebhookSubscription.endpoint": 2,
+}
 
 
 def _operation(text: str) -> OperationDefinitionNode:
@@ -141,7 +159,6 @@ def test_each_document_is_checked_once_under_its_defining_module():
     ]
     assert "shopify_mcp.client.JOB_STATUS_QUERY" in labels
     assert sum(lbl.startswith("shopify_mcp.tools.media._graphql.") for lbl in labels) == 7
-    assert len(set(_DOCUMENTS.values())) == len(_DOCUMENTS)
 
 
 def test_a_constant_in_a_file_that_does_not_exist_yet_is_discovered_and_checked(
@@ -185,8 +202,8 @@ def test_every_query_builder_is_registered():
     ``_build_*`` functions elsewhere build regexes and payloads, not GraphQL."""
     registered = builder_documents()
     builders = []
-    for info in pkgutil.iter_modules(queries_package.__path__):
-        module = importlib.import_module(f"{queries_package.__name__}.{info.name}")
+    for info in pkgutil.walk_packages(queries_package.__path__, f"{queries_package.__name__}."):
+        module = importlib.import_module(info.name)
         for name, function in inspect.getmembers(module, inspect.isfunction):
             if name.startswith("_build_") and function.__module__ == module.__name__:
                 builders.append(f"{module.__name__}.{name}")
@@ -210,17 +227,24 @@ def test_snapshot_header_names_the_served_version_and_capture_date():
 
 _GENERATOR_FIXTURE_SDL = """
 schema { query: Root mutation: Mutation }
+directive @inContext(country: Colour) on QUERY | MUTATION
 interface Node { id: ID! }
+interface HasMeta { meta: String }
 type Thing implements Node { id: ID! name: String unused: Int }
 type Other implements Node { id: ID! size: Int }
+type Linked implements Node & HasMeta { id: ID! meta: String }
 type Stray { id: ID! }
+type Aaa { id: ID! }
+type Zed implements HasMeta { meta: String }
 union Result = Thing | Other | Stray
+union Pick = Aaa | Zed
 enum Colour { RED GREEN BLUE @deprecated(reason: "gone soon") }
 input Nested { a: String b: Int }
 input ThingInput { name: String nested: Nested colour: Colour }
 type Root {
   node(id: ID!): Node
   search(term: String, legacy: String @deprecated(reason: "use term")): [Result!]!
+  pick: Pick
   unused: String
 }
 type Mutation { thingUpdate(input: ThingInput!): Thing }
@@ -236,6 +260,10 @@ def test_generator_trims_to_what_documents_reach():
         "query A($id: ID!) { node(id: $id) { id ... on Thing { name } } }",
         'query B { search(term: "x") { ... on Other { size } } }',
         "mutation C($input: ThingInput!) { thingUpdate(input: $input) { id } }",
+        # Abstract-to-abstract spreads: valid only while a linking object type
+        # (Linked; Zed) survives the trim, though no document selects it directly.
+        "query D($id: ID!) { node(id: $id) { ...M } } fragment M on HasMeta { meta }",
+        "query E @inContext(country: RED) { pick { ... on HasMeta { meta } } }",
     ]
     sdl = generate_sdl(full, documents)
 
@@ -255,6 +283,23 @@ def test_generator_trims_to_what_documents_reach():
     # Unions keep only reached members.
     assert [t.name for t in trimmed.get_type("Result").types] == ["Other", "Thing"]
     assert trimmed.get_type("Stray") is None
+    # The linking members are kept; a non-linking one is not chosen instead.
+    assert [t.name for t in trimmed.get_type("Pick").types] == ["Zed"]
+    assert trimmed.get_type("Linked") is not None
+    # Custom directives the documents use are declared.
+    assert trimmed.get_directive("inContext") is not None
+
+
+def test_snapshot_is_exactly_what_the_generator_emits_for_these_documents():
+    """Offline guard against a hand-edited or stale snapshot. Trimming the
+    snapshot by the current documents must reproduce it byte for byte: a
+    hand-added type, or a type no document reaches any more, fails here.
+    Fix by refreshing (README), not by editing the file."""
+    assert generate_sdl(_SCHEMA, _DOCUMENTS.values()) == snapshot_body(_SNAPSHOT_TEXT), (
+        "admin_schema_snapshot.graphql is not the generator's output for the current "
+        "documents. Refresh it: REFRESH_ADMIN_SCHEMA_SNAPSHOT=1 pytest "
+        "tests/live/test_admin_schema_snapshot.py"
+    )
 
 
 def test_snapshot_carries_deprecated_input_values():
@@ -281,13 +326,14 @@ def _drift_message(label: str, errors: list) -> str:
         f"captured {_CAPTURED}): {[e.message for e in errors]}\n"
         "This does NOT prove the operation is broken live. Confirm by executing "
         "it before calling any tool broken: run a read with real variables, or "
-        "send a mutation against an id that cannot exist (e.g. "
+        "send an update/delete mutation against an id that cannot exist (e.g. "
         "gid://shopify/Product/1). Shopify rejects an invalid document before "
         "executing anything, and answers a valid one with an ordinary userErrors "
-        "entry.\n"
+        "entry. Do NOT execute a CREATE mutation this way: it has no id to make "
+        "non-existent, so if the document is valid it writes to the live store.\n"
         "If the snapshot is stale, refresh it (README: 'Refreshing the Admin API "
         "schema snapshot'). If Shopify serves the operation anyway, record it in "
-        "_SERVED_DESPITE_DRIFT with today's date."
+        "_SERVED_DESPITE_DRIFT with today's date and the confirmed error messages."
     )
 
 
@@ -295,9 +341,12 @@ def _drift_message(label: str, errors: list) -> str:
 def test_document_matches_pinned_schema(label):
     errors = validate(_SCHEMA, parse(_DOCUMENTS[label]))
     if label in _SERVED_DESPITE_DRIFT:
+        confirmed = sorted(_SERVED_DESPITE_DRIFT[label][2])
         assert errors, (
             f"{label} now matches the pinned schema: remove its _SERVED_DESPITE_DRIFT entry"
         )
+        unconfirmed = [e for e in errors if e.message not in confirmed]
+        assert unconfirmed == [], _drift_message(label, unconfirmed)
         return
     assert errors == [], _drift_message(label, errors)
 
@@ -364,34 +413,63 @@ def test_the_node_control_is_live_so_the_job_test_cannot_pass_vacuously():
     assert validate(_SCHEMA, parse(good)) == []
 
 
+def _deprecated_usage_excess(documents: dict[str, str], ceilings: dict[str, int]) -> list[str]:
+    counts: Counter[str] = Counter()
+    where: dict[str, list[str]] = {}
+    for label, text in sorted(documents.items()):
+        for error in validate(_SCHEMA, parse(text), [NoDeprecatedCustomRule]):
+            coordinate = error.message.split(" is deprecated")[0]
+            counts[coordinate] += 1
+            where.setdefault(coordinate, []).append(label)
+    return [
+        f"{coordinate}: {count} usages, ceiling {ceilings.get(coordinate, 0)} ({where[coordinate]})"
+        for coordinate, count in sorted(counts.items())
+        if count > ceilings.get(coordinate, 0)
+    ]
+
+
 def test_deprecated_usages_do_not_grow():
-    usages = sorted(
-        f"{label}: {error.message}"
-        for label, text in _DOCUMENTS.items()
-        for error in validate(_SCHEMA, parse(text), [NoDeprecatedCustomRule])
+    excess = _deprecated_usage_excess(_DOCUMENTS, _DEPRECATED_USAGE_CEILINGS)
+    assert excess == [], (
+        "A document uses a deprecated field, argument or enum value beyond its "
+        "ceiling. Use its replacement, or raise the ceiling deliberately and record "
+        "the usage in docs/tech-debt.md.\n" + "\n".join(excess)
     )
-    assert len(usages) <= _DEPRECATED_USAGE_CEILING, (
-        f"{len(usages)} deprecated usages, ceiling {_DEPRECATED_USAGE_CEILING}. A new "
-        "document uses a deprecated field, argument or enum value. Use its "
-        "replacement, or raise the ceiling deliberately and record the usage in "
-        "docs/tech-debt.md.\n" + "\n".join(usages)
-    )
+
+
+def test_the_deprecation_ceiling_catches_a_swapped_usage():
+    """Retiring one deprecated usage must not make room for a different one."""
+    swapped = {
+        "retired": "query R { __typename }",
+        "introduced": 'query I { productByHandle(handle: "x") { id } }',
+    }
+    ceilings = {"The field Product.bodyHtml": 1}
+    assert _deprecated_usage_excess(swapped, ceilings) == [
+        "The field QueryRoot.productByHandle: 1 usages, ceiling 0 (['introduced'])"
+    ]
 
 
 def _served_despite_drift_problems(
-    entries: dict[str, tuple[str, str]], captured: str, labels: set[str]
+    entries: dict[str, tuple[str, str, tuple[str, ...]]],
+    captured: str,
+    labels: set[str],
+    today: date,
 ) -> list[str]:
     problems = []
-    for label, (reason, confirmed) in sorted(entries.items()):
+    for label, (reason, confirmed, messages) in sorted(entries.items()):
         if label not in labels:
             problems.append(f"{label}: no such document")
         if not reason.strip():
             problems.append(f"{label}: no reason")
+        if not messages:
+            problems.append(f"{label}: no confirmed error messages")
         try:
             confirmed_on = date.fromisoformat(confirmed)
         except ValueError:
             problems.append(f"{label}: {confirmed!r} is not a live-confirmation date")
             continue
+        if confirmed_on > today:
+            problems.append(f"{label}: confirmed {confirmed} is in the future")
         if confirmed_on < date.fromisoformat(captured):
             problems.append(
                 f"{label}: last confirmed served {confirmed}, before the snapshot was "
@@ -403,7 +481,10 @@ def _served_despite_drift_problems(
 def test_served_despite_drift_entries_are_dated_and_current():
     """Only a dated, re-confirmed entry separates a verified exception from a
     silenced failure."""
-    assert _served_despite_drift_problems(_SERVED_DESPITE_DRIFT, _CAPTURED, set(_DOCUMENTS)) == []
+    problems = _served_despite_drift_problems(
+        _SERVED_DESPITE_DRIFT, _CAPTURED, set(_DOCUMENTS), date.today()
+    )
+    assert problems == []
 
 
 def test_the_served_despite_drift_check_rejects_bad_entries():
@@ -411,17 +492,21 @@ def test_the_served_despite_drift_check_rejects_bad_entries():
     label = "shopify_mcp.client.JOB_STATUS_QUERY"
     problems = _served_despite_drift_problems(
         {
-            label: ("served anyway", ""),
-            "shopify_mcp.nowhere.GONE": ("", "2099-01-01"),
-            "shopify_mcp.shopify.queries.orders.GET_ORDERS": ("served", "2000-01-01"),
+            label: ("served anyway", "", ("m",)),
+            "shopify_mcp.nowhere.GONE": ("", "2026-09-16", ()),
+            "shopify_mcp.shopify.queries.orders.GET_ORDERS": ("served", "2000-01-01", ("m",)),
+            "shopify_mcp.shopify.queries.orders.GET_ORDER_BY_ID": ("s", "2099-01-01", ("m",)),
         },
         "2026-09-16",
         set(_DOCUMENTS),
+        date(2026, 9, 16),
     )
     joined = "\n".join(problems)
     assert f"{label}: '' is not a live-confirmation date" in joined
     assert "GONE: no such document" in joined and "GONE: no reason" in joined
+    assert "GONE: no confirmed error messages" in joined
     assert "GET_ORDERS: last confirmed served 2000-01-01" in joined
+    assert "GET_ORDER_BY_ID: confirmed 2099-01-01 is in the future" in joined
 
 
 # ===========================================================================

@@ -274,8 +274,10 @@ from live introspection. It has two legs, and they prove different things:
 - **Document matches the pinned schema.** A failure means the document has
   *drifted*: it references something the snapshot does not declare. That is not
   proof the tool is broken live. Confirm by executing the operation (a read with
-  real variables, or a mutation against an id that cannot exist, such as
-  `gid://shopify/Product/1`) before calling anything broken.
+  real variables, or an update/delete mutation against an id that cannot exist,
+  such as `gid://shopify/Product/1`) before calling anything broken. Never probe
+  a *create* mutation this way: there is no id to make non-existent, so a valid
+  document writes to the live store.
 - **Emitted payload is accepted by the pinned schema.** A failure means the
   variables the code sends are rejected, which is a real break.
 
