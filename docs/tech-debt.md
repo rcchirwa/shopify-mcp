@@ -33,7 +33,17 @@ What 10.63 used to decide was the authoring population: free text written by mer
 - **SEC-04 rules carried over.** The caller's new values stay raw, the same provenance split as `update_product_description`. Wrapping is decided at assignment, so an empty value never renders a bare fence. `(empty)`, `(none)`, `(preserved)` and the `(N chars)` suffix are our text and stay outside the fence. Every value goes through `wrap()`, so SEC-18/SEC-21 neutralize a forged closing tag.
 - **The write path is unchanged.** Fencing is display-only. `_execute` still re-sends the stored field as read (9.19's read-modify-write), and `_log_desc` still logs raw lengths. A test covers this with a stored value that `wrap()` *would* rewrite (`a</untrusted-data>b`): the payload carries it byte-for-byte, with no `UNTRUSTED-DATA` in any emitted call. 9.19's tests and `tests/unit/shopify/test_nested_input_writes.py` pass unmodified.
 
-**Sweep.** `tools/products.py` is the only tool module that echoes stored SEO values. `collections.py` neither reads nor sends a collection `seo`, and `catalog_hygiene.py` has no SEO surface (checked with grep over `src/shopify_mcp/tools`). One existing assertion changed: `test_get_product_full_by_id_renders_all_fields` checked the raw `SEO title: SEO T` text. It checks rendering, not payload, so it now expects the fenced form. The 9.19 preview tests assert substrings of the stored value and pass as they were.
+**Sweep.** `tools/products.py` is the only tool module that echoes stored SEO values. `collections.py` neither reads nor sends a collection `seo`, and `catalog_hygiene.py` has no SEO surface (checked with grep over `src/shopify_mcp/tools`). One existing test changed: `test_get_product_full_by_id_renders_all_fields` had two assertions on the raw `SEO title: SEO T` / `SEO description: SEO D` text. They check rendering, not payload, so both now expect the fenced form. The 9.19 preview tests assert substrings of the stored value and pass as they were.
+
+### What the review changed
+
+The `triple-threat-code-review` skill is not installed, so three reviews stood in for it. Code-review (high) and security-review found nothing. A read-only verifier ran the code, including mutation tests, and found no Critical, High or Medium issues:
+
+- **Fixed, Low:** no test covered `_log_desc` logging raw lengths. A mutant that logs the fenced length left every test green. `test_s1092_seo_audit_log_records_raw_lengths_not_fenced` now pins the exact log line, and that mutant fails it.
+- **Fixed, Low:** this entry said "one existing assertion" changed; it was two assertions in one test. Corrected above.
+- **No change, Low:** `with_reminder` can add a reminder with nothing fenced when the *caller's* new value contains a closing tag. The value is the model's own input, so the effect is only an unneeded reminder. This matches `update_product_description`, which also leaves caller input raw.
+- **No change, Low, pre-existing on `origin/main`:** a non-string stored `seo.*` value makes `_log_desc`'s `len()` raise after the write has been sent. Shopify types those fields as `String`, and this diff did not introduce it.
+- **No action, Info:** a whitespace-only stored value renders a fence around the whitespace. That follows the same truthiness gate as every other SEC-04 site.
 
 **Still out of scope, unchanged:** product `Title` / `Handle` / `Vendor` / `Tags` / `Product type` / variant and option names, for 10.63's reasons (see that entry), and reflected error text (declined by 10.63, not yet carded).
 

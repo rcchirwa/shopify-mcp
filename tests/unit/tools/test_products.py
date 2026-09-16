@@ -3123,3 +3123,19 @@ def test_s1092_get_product_full_neutralizes_forged_closing_tag_in_seo():
     out = tools["get_product_full"](product_id="7")
     assert "a<\\/untrusted-data>b" in out
     assert "a</untrusted-data>b" not in out
+
+
+def test_s1092_seo_audit_log_records_raw_lengths_not_fenced(monkeypatch):
+    """The fence is display-only: the audit log measures the stored values as read,
+    not their wrapped display form."""
+    from shopify_mcp.tools import _write_tool
+
+    logged = []
+    monkeypatch.setattr(_write_tool, "log_write", lambda name, msg: logged.append((name, msg)))
+    tools, fc = _build([_seo_read("Old T", "Old D"), _update_ok()])
+    tools["update_product_seo"](
+        product_id="123", new_seo_title="New", new_seo_description="Newer", confirm=True
+    )
+    assert logged == [
+        ("update_product_seo", "id=123 | title: 5 chars → 3 chars | description: 5 chars → 5 chars")
+    ]
