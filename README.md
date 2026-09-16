@@ -264,6 +264,42 @@ version range changes:
 pip-compile --generate-hashes --allow-unsafe --strip-extras -o requirements-audit.lock requirements-audit.in
 ```
 
+#### Refreshing the Admin API schema snapshot (Story 9.16)
+
+`tests/unit/shopify/test_admin_schema_contract.py` checks every GraphQL
+operation under `src/shopify_mcp` against
+`tests/unit/shopify/admin_schema_snapshot.graphql`, a trimmed schema generated
+from live introspection. It has two legs, and they prove different things:
+
+- **Document matches the pinned schema.** A failure means the document has
+  *drifted*: it references something the snapshot does not declare. That is not
+  proof the tool is broken live. Confirm by executing the operation (a read with
+  real variables, or an update/delete mutation against an id that cannot exist,
+  such as `gid://shopify/Product/1`) before calling anything broken. Never probe
+  a *create* mutation this way: there is no id to make non-existent, so a valid
+  document writes to the live store.
+- **Emitted payload is accepted by the pinned schema.** A failure means the
+  variables the code sends are rejected, which is a real break.
+
+Neither leg proves an operation works live.
+
+**When to refresh:** after changing `SHOPIFY_API_VERSION`, or when the contract
+test reports drift on a field or type the snapshot simply does not cover yet.
+Set the version in `.env` (the process environment does not override it), then:
+
+```bash
+REFRESH_ADMIN_SCHEMA_SNAPSHOT=1 pytest tests/live/test_admin_schema_snapshot.py -v
+pytest tests/live/test_admin_schema_snapshot.py -v
+pytest tests/unit/shopify/test_admin_schema_contract.py
+```
+
+The first command rewrites the snapshot (read-only against the store). The
+second confirms the committed file is byte-identical to a fresh introspection.
+The runner refuses to write unless Shopify *served* the requested version. The
+third shows what the new schema means for the documents. Review the snapshot
+diff before committing it. Never hand-edit the snapshot: change the generator in
+`tests/support/admin_schema_snapshot.py`.
+
 ### 4. Configure credentials
 
 Copy the example env file and fill in your values:
