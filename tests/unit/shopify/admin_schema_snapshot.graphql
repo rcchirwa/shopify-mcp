@@ -1,0 +1,1936 @@
+# Trimmed Admin GraphQL API schema. GENERATED: do not hand-edit.
+# api_version: 2026-01  captured: 2026-09-16
+# Refresh: REFRESH_ADMIN_SCHEMA_SNAPSHOT=1 pytest tests/live/test_admin_schema_snapshot.py
+# (see README, 'Refreshing the Admin API schema snapshot').
+
+schema {
+  query: QueryRoot
+  mutation: Mutation
+}
+
+type ApiVersion {
+  handle: String!
+}
+
+enum CatalogType {
+  APP
+  COMPANY_LOCATION
+  MARKET
+  NONE
+}
+
+type Collection implements HasMetafields & Node & Publishable {
+  descriptionHtml: HTML!
+  handle: String!
+  id: ID!
+  metafield(namespace: String, key: String!): Metafield
+  products(first: Int, after: String, last: Int, before: String, reverse: Boolean = false, sortKey: ProductCollectionSortKeys = COLLECTION_DEFAULT): ProductConnection!
+  publicationCount(onlyPublished: Boolean = true): Int! @deprecated(reason: "Use `resourcePublicationsCount` instead.")
+  resourcePublications(onlyPublished: Boolean = true, first: Int, after: String, last: Int, before: String, reverse: Boolean = false): ResourcePublicationConnection!
+  ruleSet: CollectionRuleSet
+  title: String!
+}
+
+type CollectionAddProductsV2Payload {
+  job: Job
+  userErrors: [CollectionAddProductsV2UserError!]!
+}
+
+type CollectionAddProductsV2UserError {
+  field: [String!]
+  message: String!
+}
+
+type CollectionConnection {
+  nodes: [Collection!]!
+  pageInfo: PageInfo!
+}
+
+type CollectionCreatePayload {
+  collection: Collection
+  userErrors: [UserError!]!
+}
+
+input CollectionInput {
+  descriptionHtml: String
+  handle: String
+  id: ID
+  image: ImageInput
+  metafields: [MetafieldInput!]
+  products: [ID!]
+  publications: [CollectionPublicationInput!] @deprecated(reason: "Use PublishablePublish instead.")
+  redirectNewHandle: Boolean = false
+  ruleSet: CollectionRuleSetInput
+  seo: SEOInput
+  sortOrder: CollectionSortOrder
+  templateSuffix: String
+  title: String
+}
+
+input CollectionPublicationInput {
+  channelHandle: String @deprecated(reason: "Use publicationId instead.")
+  channelId: ID @deprecated(reason: "Use publicationId instead.")
+  publicationId: ID
+}
+
+type CollectionRemoveProductsPayload {
+  job: Job
+  userErrors: [UserError!]!
+}
+
+enum CollectionRuleColumn {
+  IS_PRICE_REDUCED
+  PRODUCT_CATEGORY_ID
+  PRODUCT_CATEGORY_ID_WITH_DESCENDANTS
+  PRODUCT_METAFIELD_DEFINITION
+  PRODUCT_TAXONOMY_NODE_ID
+  TAG
+  TITLE
+  TYPE
+  VARIANT_COMPARE_AT_PRICE
+  VARIANT_INVENTORY
+  VARIANT_METAFIELD_DEFINITION
+  VARIANT_PRICE
+  VARIANT_TITLE
+  VARIANT_WEIGHT
+  VENDOR
+}
+
+input CollectionRuleInput {
+  column: CollectionRuleColumn!
+  condition: String!
+  conditionObjectId: ID
+  relation: CollectionRuleRelation!
+}
+
+enum CollectionRuleRelation {
+  CONTAINS
+  ENDS_WITH
+  EQUALS
+  GREATER_THAN
+  IS_NOT_SET
+  IS_SET
+  LESS_THAN
+  NOT_CONTAINS
+  NOT_EQUALS
+  STARTS_WITH
+}
+
+type CollectionRuleSet {
+  appliedDisjunctively: Boolean!
+}
+
+input CollectionRuleSetInput {
+  appliedDisjunctively: Boolean!
+  rules: [CollectionRuleInput!]
+}
+
+enum CollectionSortKeys {
+  ID
+  RELEVANCE
+  TITLE
+  UPDATED_AT
+}
+
+enum CollectionSortOrder {
+  ALPHA_ASC
+  ALPHA_DESC
+  BEST_SELLING
+  CREATED
+  CREATED_DESC
+  MANUAL
+  PRICE_ASC
+  PRICE_DESC
+}
+
+type CollectionUpdatePayload {
+  collection: Collection
+  userErrors: [UserError!]!
+}
+
+enum CombinedListingsRole {
+  CHILD
+  PARENT
+}
+
+enum CountryCode {
+  AC
+  AD
+  AE
+  AF
+  AG
+  AI
+  AL
+  AM
+  AN
+  AO
+  AR
+  AT
+  AU
+  AW
+  AX
+  AZ
+  BA
+  BB
+  BD
+  BE
+  BF
+  BG
+  BH
+  BI
+  BJ
+  BL
+  BM
+  BN
+  BO
+  BQ
+  BR
+  BS
+  BT
+  BV
+  BW
+  BY
+  BZ
+  CA
+  CC
+  CD
+  CF
+  CG
+  CH
+  CI
+  CK
+  CL
+  CM
+  CN
+  CO
+  CR
+  CU
+  CV
+  CW
+  CX
+  CY
+  CZ
+  DE
+  DJ
+  DK
+  DM
+  DO
+  DZ
+  EC
+  EE
+  EG
+  EH
+  ER
+  ES
+  ET
+  FI
+  FJ
+  FK
+  FO
+  FR
+  GA
+  GB
+  GD
+  GE
+  GF
+  GG
+  GH
+  GI
+  GL
+  GM
+  GN
+  GP
+  GQ
+  GR
+  GS
+  GT
+  GW
+  GY
+  HK
+  HM
+  HN
+  HR
+  HT
+  HU
+  ID
+  IE
+  IL
+  IM
+  IN
+  IO
+  IQ
+  IR
+  IS
+  IT
+  JE
+  JM
+  JO
+  JP
+  KE
+  KG
+  KH
+  KI
+  KM
+  KN
+  KP
+  KR
+  KW
+  KY
+  KZ
+  LA
+  LB
+  LC
+  LI
+  LK
+  LR
+  LS
+  LT
+  LU
+  LV
+  LY
+  MA
+  MC
+  MD
+  ME
+  MF
+  MG
+  MK
+  ML
+  MM
+  MN
+  MO
+  MQ
+  MR
+  MS
+  MT
+  MU
+  MV
+  MW
+  MX
+  MY
+  MZ
+  NA
+  NC
+  NE
+  NF
+  NG
+  NI
+  NL
+  NO
+  NP
+  NR
+  NU
+  NZ
+  OM
+  PA
+  PE
+  PF
+  PG
+  PH
+  PK
+  PL
+  PM
+  PN
+  PS
+  PT
+  PY
+  QA
+  RE
+  RO
+  RS
+  RU
+  RW
+  SA
+  SB
+  SC
+  SD
+  SE
+  SG
+  SH
+  SI
+  SJ
+  SK
+  SL
+  SM
+  SN
+  SO
+  SR
+  SS
+  ST
+  SV
+  SX
+  SY
+  SZ
+  TA
+  TC
+  TD
+  TF
+  TG
+  TH
+  TJ
+  TK
+  TL
+  TM
+  TN
+  TO
+  TR
+  TT
+  TV
+  TW
+  TZ
+  UA
+  UG
+  UM
+  US
+  UY
+  UZ
+  VA
+  VC
+  VE
+  VG
+  VN
+  VU
+  WF
+  WS
+  XK
+  YE
+  YT
+  ZA
+  ZM
+  ZW
+  ZZ
+}
+
+input CountryHarmonizedSystemCodeInput {
+  countryCode: CountryCode
+  harmonizedSystemCode: String!
+}
+
+input CreateMediaInput {
+  alt: String
+  mediaContentType: MediaContentType!
+  originalSource: String!
+}
+
+enum CropRegion {
+  BOTTOM
+  CENTER
+  LEFT
+  RIGHT
+  TOP
+}
+
+type CustomerJourneySummary {
+  firstVisit: CustomerVisit
+  lastVisit: CustomerVisit
+}
+
+type CustomerVisit implements Node {
+  id: ID!
+  referrerUrl: URL
+  source: String!
+  utmParameters: UTMParameters
+}
+
+scalar DateTime
+
+scalar Decimal
+
+union Discount = DiscountCodeApp | DiscountCodeBasic | DiscountCodeBxgy | DiscountCodeFreeShipping
+
+type DiscountAmount {
+  amount: MoneyV2!
+}
+
+input DiscountAmountInput {
+  amount: Decimal
+  appliesOnEachItem: Boolean
+}
+
+enum DiscountBuyerSelection {
+  ALL
+}
+
+type DiscountCodeApp {
+  codes(first: Int, after: String, last: Int, before: String, reverse: Boolean = false, sortKey: DiscountCodeSortKeys = ID, query: String, savedSearchId: ID): DiscountRedeemCodeConnection!
+  endsAt: DateTime
+  status: DiscountStatus!
+  title: String!
+  usageLimit: Int
+}
+
+type DiscountCodeBasic {
+  codes(first: Int, after: String, last: Int, before: String, reverse: Boolean = false, sortKey: DiscountCodeSortKeys = ID, query: String, savedSearchId: ID): DiscountRedeemCodeConnection!
+  customerGets: DiscountCustomerGets!
+  endsAt: DateTime
+  status: DiscountStatus!
+  title: String!
+  usageLimit: Int
+}
+
+type DiscountCodeBasicCreatePayload {
+  codeDiscountNode: DiscountCodeNode
+  userErrors: [DiscountUserError!]!
+}
+
+input DiscountCodeBasicInput {
+  appliesOncePerCustomer: Boolean
+  code: String
+  combinesWith: DiscountCombinesWithInput
+  context: DiscountContextInput
+  customerGets: DiscountCustomerGetsInput
+  customerSelection: DiscountCustomerSelectionInput @deprecated(reason: "Use `context` instead.")
+  endsAt: DateTime
+  minimumRequirement: DiscountMinimumRequirementInput
+  recurringCycleLimit: Int
+  startsAt: DateTime
+  title: String
+  usageLimit: Int
+}
+
+type DiscountCodeBxgy {
+  codes(first: Int, after: String, last: Int, before: String, reverse: Boolean = false, sortKey: DiscountCodeSortKeys = ID, query: String, savedSearchId: ID): DiscountRedeemCodeConnection!
+  endsAt: DateTime
+  status: DiscountStatus!
+  title: String!
+  usageLimit: Int
+}
+
+type DiscountCodeFreeShipping {
+  codes(first: Int, after: String, last: Int, before: String, reverse: Boolean = false, sortKey: DiscountCodeSortKeys = ID, query: String, savedSearchId: ID): DiscountRedeemCodeConnection!
+  endsAt: DateTime
+  status: DiscountStatus!
+  title: String!
+  usageLimit: Int
+}
+
+type DiscountCodeNode implements HasMetafields & Node {
+  id: ID!
+  metafield(namespace: String, key: String!): Metafield
+}
+
+enum DiscountCodeSortKeys {
+  CODE
+  CREATED_AT
+  ID
+  RELEVANCE
+}
+
+input DiscountCollectionsInput {
+  add: [ID!]
+  remove: [ID!]
+}
+
+input DiscountCombinesWithInput {
+  orderDiscounts: Boolean = false
+  productDiscounts: Boolean = false
+  shippingDiscounts: Boolean = false
+}
+
+input DiscountContextInput {
+  all: DiscountBuyerSelection
+  customerSegments: DiscountCustomerSegmentsInput
+  customers: DiscountCustomersInput
+}
+
+type DiscountCustomerGets {
+  value: DiscountCustomerGetsValue!
+}
+
+input DiscountCustomerGetsInput {
+  appliesOnOneTimePurchase: Boolean
+  appliesOnSubscription: Boolean
+  items: DiscountItemsInput
+  value: DiscountCustomerGetsValueInput
+}
+
+union DiscountCustomerGetsValue = DiscountAmount | DiscountPercentage
+
+input DiscountCustomerGetsValueInput {
+  discountAmount: DiscountAmountInput
+  discountOnQuantity: DiscountOnQuantityInput
+  percentage: Float
+}
+
+input DiscountCustomerSegmentsInput {
+  add: [ID!]
+  remove: [ID!]
+}
+
+input DiscountCustomerSelectionInput {
+  all: Boolean
+  customerSegments: DiscountCustomerSegmentsInput
+  customers: DiscountCustomersInput
+}
+
+input DiscountCustomersInput {
+  add: [ID!]
+  remove: [ID!]
+}
+
+input DiscountEffectInput {
+  amount: Decimal
+  percentage: Float
+}
+
+enum DiscountErrorCode {
+  ACTIVE_PERIOD_OVERLAP
+  APPLIES_ON_NOTHING
+  BLANK
+  CONFLICT
+  DUPLICATE
+  END_DATE_BEFORE_START_DATE
+  EQUAL_TO
+  EXCEEDED_MAX
+  GREATER_THAN
+  GREATER_THAN_OR_EQUAL_TO
+  IMPLICIT_DUPLICATE
+  INCLUSION
+  INTERNAL_ERROR
+  INVALID
+  INVALID_COMBINES_WITH_FOR_DISCOUNT_CLASS
+  INVALID_DISCOUNT_CLASS_FOR_PRICE_RULE
+  LESS_THAN
+  LESS_THAN_OR_EQUAL_TO
+  MAX_APP_DISCOUNTS
+  MINIMUM_SUBTOTAL_AND_QUANTITY_RANGE_BOTH_PRESENT
+  MISSING_ARGUMENT
+  MISSING_FUNCTION_IDENTIFIER
+  MULTIPLE_FUNCTION_IDENTIFIERS
+  MULTIPLE_RECURRING_CYCLE_LIMIT_FOR_NON_SUBSCRIPTION_ITEMS
+  PRESENT
+  RECURRING_CYCLE_LIMIT_NOT_A_VALID_INTEGER
+  TAKEN
+  TOO_LONG
+  TOO_MANY_ARGUMENTS
+  TOO_SHORT
+  VALUE_OUTSIDE_RANGE
+}
+
+input DiscountItemsInput {
+  all: Boolean
+  collections: DiscountCollectionsInput
+  products: DiscountProductsInput
+}
+
+input DiscountMinimumQuantityInput {
+  greaterThanOrEqualToQuantity: UnsignedInt64
+}
+
+input DiscountMinimumRequirementInput {
+  quantity: DiscountMinimumQuantityInput
+  subtotal: DiscountMinimumSubtotalInput
+}
+
+input DiscountMinimumSubtotalInput {
+  greaterThanOrEqualToSubtotal: Decimal
+}
+
+type DiscountNode implements HasMetafields & Node {
+  discount: Discount!
+  id: ID!
+  metafield(namespace: String, key: String!): Metafield
+}
+
+type DiscountNodeConnection {
+  nodes: [DiscountNode!]!
+}
+
+input DiscountOnQuantityInput {
+  effect: DiscountEffectInput
+  quantity: UnsignedInt64
+}
+
+type DiscountPercentage {
+  percentage: Float!
+}
+
+input DiscountProductsInput {
+  productVariantsToAdd: [ID!]
+  productVariantsToRemove: [ID!]
+  productsToAdd: [ID!]
+  productsToRemove: [ID!]
+}
+
+type DiscountRedeemCode {
+  code: String!
+}
+
+type DiscountRedeemCodeConnection {
+  nodes: [DiscountRedeemCode!]!
+  pageInfo: PageInfo!
+}
+
+enum DiscountSortKeys {
+  CREATED_AT
+  ENDS_AT
+  ID
+  RELEVANCE
+  STARTS_AT
+  TITLE
+  UPDATED_AT
+}
+
+enum DiscountStatus {
+  ACTIVE
+  EXPIRED
+  SCHEDULED
+}
+
+type DiscountUserError {
+  code: DiscountErrorCode
+  field: [String!]
+  message: String!
+}
+
+type ExternalVideo implements Media & Node {
+  alt: String
+  id: ID!
+  mediaContentType: MediaContentType!
+  preview: MediaPreviewImage
+  status: MediaStatus!
+}
+
+scalar HTML
+
+interface HasMetafields {
+  metafield(namespace: String, key: String!): Metafield
+}
+
+input HasMetafieldsMetafieldIdentifierInput {
+  key: String!
+  namespace: String
+}
+
+type Image implements HasMetafields {
+  metafield(namespace: String, key: String!): Metafield
+  url(transform: ImageTransformInput): URL!
+}
+
+enum ImageContentType {
+  JPG
+  PNG
+  WEBP
+}
+
+input ImageInput {
+  altText: String
+  id: ID
+  src: String
+}
+
+input ImageTransformInput {
+  crop: CropRegion
+  maxHeight: Int
+  maxWidth: Int
+  preferredContentType: ImageContentType
+  scale: Int = 1
+}
+
+type InventoryAdjustmentGroup implements Node {
+  createdAt: DateTime!
+  id: ID!
+}
+
+input InventoryAdjustmentInput {
+  adjustment: Int
+  changeFromQuantity: Int
+  locationId: ID!
+}
+
+type InventoryItem implements Node {
+  id: ID!
+  inventoryLevels(first: Int, after: String, last: Int, before: String, reverse: Boolean = false, query: String): InventoryLevelConnection!
+  tracked: Boolean!
+}
+
+input InventoryItemInput {
+  cost: Decimal
+  countryCodeOfOrigin: CountryCode
+  countryHarmonizedSystemCodes: [CountryHarmonizedSystemCodeInput!]
+  harmonizedSystemCode: String
+  measurement: InventoryItemMeasurementInput
+  provinceCodeOfOrigin: String
+  requiresShipping: Boolean
+  sku: String
+  tracked: Boolean
+}
+
+input InventoryItemMeasurementInput {
+  shippingPackageId: ID
+  weight: WeightInput
+}
+
+type InventoryItemUpdatePayload {
+  inventoryItem: InventoryItem
+  userErrors: [UserError!]!
+}
+
+type InventoryLevel implements Node {
+  id: ID!
+  location: Location!
+  quantities(names: [String!]!): [InventoryQuantity!]!
+}
+
+type InventoryLevelConnection {
+  nodes: [InventoryLevel!]!
+}
+
+input InventoryLevelInput {
+  availableQuantity: Int!
+  locationId: ID!
+}
+
+type InventoryQuantity implements Node {
+  id: ID!
+  name: String!
+  quantity: Int!
+}
+
+input InventorySetOnHandQuantitiesInput {
+  reason: String!
+  referenceDocumentUri: String
+  setQuantities: [InventorySetQuantityInput!]!
+}
+
+type InventorySetOnHandQuantitiesPayload {
+  inventoryAdjustmentGroup: InventoryAdjustmentGroup
+  userErrors: [InventorySetOnHandQuantitiesUserError!]!
+}
+
+type InventorySetOnHandQuantitiesUserError {
+  field: [String!]
+  message: String!
+}
+
+input InventorySetQuantityInput {
+  changeFromQuantity: Int
+  inventoryItemId: ID!
+  locationId: ID!
+  quantity: Int!
+}
+
+type Job {
+  done: Boolean!
+  id: ID!
+}
+
+type LineItem implements Node {
+  id: ID!
+  name: String!
+  originalUnitPriceSet: MoneyBag!
+  quantity: Int!
+}
+
+type LineItemConnection {
+  nodes: [LineItem!]!
+  pageInfo: PageInfo!
+}
+
+input LinkedMetafieldCreateInput {
+  key: String!
+  namespace: String!
+  values: [String!]
+}
+
+input LinkedMetafieldUpdateInput {
+  key: String!
+  namespace: String!
+}
+
+type Location implements HasMetafields & Node {
+  id: ID!
+  metafield(namespace: String, key: String!): Metafield
+  name: String!
+}
+
+interface Media {
+  alt: String
+  id: ID!
+  mediaContentType: MediaContentType!
+  preview: MediaPreviewImage
+  status: MediaStatus!
+}
+
+type MediaConnection {
+  nodes: [Media!]!
+  pageInfo: PageInfo!
+}
+
+enum MediaContentType {
+  EXTERNAL_VIDEO
+  IMAGE
+  MODEL_3D
+  VIDEO
+}
+
+type MediaImage implements HasMetafields & Media & Node {
+  alt: String
+  id: ID!
+  image: Image
+  mediaContentType: MediaContentType!
+  metafield(namespace: String, key: String!): Metafield @deprecated(reason: "No longer supported. Use metaobjects instead.")
+  preview: MediaPreviewImage
+  status: MediaStatus!
+}
+
+type MediaPreviewImage {
+  image: Image
+}
+
+enum MediaStatus {
+  FAILED
+  PROCESSING
+  READY
+  UPLOADED
+}
+
+type MediaUserError {
+  field: [String!]
+  message: String!
+}
+
+type Metafield implements Node {
+  createdAt: DateTime!
+  id: ID!
+  key: String!
+  namespace: String!
+  owner: HasMetafields!
+  ownerType: MetafieldOwnerType!
+  type: String!
+  updatedAt: DateTime!
+  value: String!
+}
+
+type MetafieldConnection {
+  edges: [MetafieldEdge!]!
+  pageInfo: PageInfo!
+}
+
+type MetafieldEdge {
+  node: Metafield!
+}
+
+type MetafieldIdentifier {
+  key: String!
+  namespace: String!
+  ownerId: ID!
+}
+
+input MetafieldIdentifierInput {
+  key: String!
+  namespace: String!
+  ownerId: ID!
+}
+
+input MetafieldInput {
+  id: ID
+  key: String
+  namespace: String
+  type: String
+  value: String
+}
+
+enum MetafieldOwnerType {
+  API_PERMISSION
+  ARTICLE
+  BLOG
+  CARTTRANSFORM
+  COLLECTION
+  COMPANY
+  COMPANY_LOCATION
+  CUSTOMER
+  DELIVERY_CUSTOMIZATION
+  DISCOUNT
+  DRAFTORDER
+  FULFILLMENT_CONSTRAINT_RULE
+  GIFT_CARD_TRANSACTION
+  LOCATION
+  MARKET
+  MEDIA_IMAGE @deprecated(reason: "`MEDIA_IMAGE` is deprecated.")
+  ORDER
+  ORDER_ROUTING_LOCATION_RULE
+  PAGE
+  PAYMENT_CUSTOMIZATION
+  PRODUCT
+  PRODUCTVARIANT
+  SELLING_PLAN
+  SHOP
+  VALIDATION
+}
+
+type MetafieldsDeletePayload {
+  deletedMetafields: [MetafieldIdentifier]
+  userErrors: [UserError!]!
+}
+
+input MetafieldsSetInput {
+  compareDigest: String
+  key: String!
+  namespace: String
+  ownerId: ID!
+  type: String
+  value: String!
+}
+
+type MetafieldsSetPayload {
+  metafields: [Metafield!]
+  userErrors: [MetafieldsSetUserError!]!
+}
+
+type MetafieldsSetUserError {
+  code: MetafieldsSetUserErrorCode
+  field: [String!]
+  message: String!
+}
+
+enum MetafieldsSetUserErrorCode {
+  APP_NOT_AUTHORIZED
+  BLANK
+  CAPABILITY_VIOLATION
+  INCLUSION
+  INTERNAL_ERROR
+  INVALID
+  INVALID_COMPARE_DIGEST
+  INVALID_TYPE
+  INVALID_VALUE
+  LESS_THAN_OR_EQUAL_TO
+  PRESENT
+  STALE_OBJECT
+  TAKEN
+  TOO_LONG
+  TOO_SHORT
+}
+
+type Model3d implements Media & Node {
+  alt: String
+  id: ID!
+  mediaContentType: MediaContentType!
+  preview: MediaPreviewImage
+  status: MediaStatus!
+}
+
+scalar Money
+
+type MoneyBag {
+  shopMoney: MoneyV2!
+}
+
+type MoneyV2 {
+  amount: Decimal!
+}
+
+input MoveInput {
+  id: ID!
+  newPosition: UnsignedInt64!
+}
+
+type Mutation {
+  collectionAddProductsV2(id: ID!, productIds: [ID!]!): CollectionAddProductsV2Payload @deprecated(reason: "Use `collectionUpdate` with inclusion.selectionsToAdd instead.")
+  collectionCreate(input: CollectionInput!): CollectionCreatePayload
+  collectionRemoveProducts(id: ID!, productIds: [ID!]!): CollectionRemoveProductsPayload @deprecated(reason: "Use `collectionUpdate` with inclusions.selectionsToRemove instead.")
+  collectionUpdate(input: CollectionInput!): CollectionUpdatePayload
+  discountCodeBasicCreate(basicCodeDiscount: DiscountCodeBasicInput!): DiscountCodeBasicCreatePayload
+  inventoryItemUpdate(id: ID!, input: InventoryItemInput!): InventoryItemUpdatePayload
+  inventorySetOnHandQuantities(input: InventorySetOnHandQuantitiesInput!): InventorySetOnHandQuantitiesPayload @deprecated(reason: "Use `inventorySetQuantities` to set on_hand or available quantites instead.")
+  metafieldsDelete(metafields: [MetafieldIdentifierInput!]!): MetafieldsDeletePayload
+  metafieldsSet(metafields: [MetafieldsSetInput!]!): MetafieldsSetPayload
+  productCreateMedia(productId: ID!, media: [CreateMediaInput!]!): ProductCreateMediaPayload @deprecated(reason: "Use `productUpdate` or `productSet` instead.")
+  productDeleteMedia(productId: ID!, mediaIds: [ID!]!): ProductDeleteMediaPayload @deprecated(reason: "Use `fileUpdate` instead.")
+  productOptionUpdate(option: OptionUpdateInput!, productId: ID!, optionValuesToAdd: [OptionValueCreateInput!], optionValuesToUpdate: [OptionValueUpdateInput!], optionValuesToDelete: [ID!], variantStrategy: ProductOptionUpdateVariantStrategy): ProductOptionUpdatePayload
+  productReorderMedia(id: ID!, moves: [MoveInput!]!): ProductReorderMediaPayload
+  productUpdate(input: ProductInput @deprecated(reason: "Use `product` instead."), product: ProductUpdateInput, media: [CreateMediaInput!]): ProductUpdatePayload
+  productUpdateMedia(productId: ID!, media: [UpdateMediaInput!]!): ProductUpdateMediaPayload @deprecated(reason: "Use `fileUpdate` instead.")
+  productVariantAppendMedia(productId: ID!, variantMedia: [ProductVariantAppendMediaInput!]!): ProductVariantAppendMediaPayload
+  productVariantDetachMedia(productId: ID!, variantMedia: [ProductVariantDetachMediaInput!]!): ProductVariantDetachMediaPayload
+  productVariantsBulkUpdate(variants: [ProductVariantsBulkInput!]!, productId: ID!, media: [CreateMediaInput!], allowPartialUpdates: Boolean = false): ProductVariantsBulkUpdatePayload
+  publishablePublish(id: ID!, input: [PublicationInput!]!): PublishablePublishPayload
+  publishableUnpublish(id: ID!, input: [PublicationInput!]!): PublishableUnpublishPayload
+  stagedUploadsCreate(input: [StagedUploadInput!]!): StagedUploadsCreatePayload
+  webhookSubscriptionCreate(topic: WebhookSubscriptionTopic!, webhookSubscription: WebhookSubscriptionInput!): WebhookSubscriptionCreatePayload
+  webhookSubscriptionDelete(id: ID!): WebhookSubscriptionDeletePayload
+}
+
+interface Node {
+  id: ID!
+}
+
+input OptionCreateInput {
+  linkedMetafield: LinkedMetafieldCreateInput
+  name: String
+  position: Int
+  values: [OptionValueCreateInput!]
+}
+
+input OptionUpdateInput {
+  id: ID!
+  linkedMetafield: LinkedMetafieldUpdateInput
+  name: String
+  position: Int
+}
+
+input OptionValueCreateInput {
+  linkedMetafieldValue: String
+  name: String
+}
+
+input OptionValueUpdateInput {
+  id: ID!
+  linkedMetafieldValue: String
+  name: String
+}
+
+type Order implements HasMetafields & Node {
+  createdAt: DateTime!
+  customerJourneySummary: CustomerJourneySummary
+  displayFinancialStatus: OrderDisplayFinancialStatus
+  displayFulfillmentStatus: OrderDisplayFulfillmentStatus!
+  id: ID!
+  lineItems(first: Int, after: String, last: Int, before: String, reverse: Boolean = false): LineItemConnection!
+  metafield(namespace: String, key: String!): Metafield
+  name: String!
+  totalPriceSet: MoneyBag!
+}
+
+type OrderConnection {
+  nodes: [Order!]!
+}
+
+enum OrderDisplayFinancialStatus {
+  AUTHORIZED
+  EXPIRED
+  PAID
+  PARTIALLY_PAID
+  PARTIALLY_REFUNDED
+  PENDING
+  REFUNDED
+  VOIDED
+}
+
+enum OrderDisplayFulfillmentStatus {
+  FULFILLED
+  IN_PROGRESS
+  ON_HOLD
+  OPEN
+  PARTIALLY_FULFILLED
+  PENDING_FULFILLMENT
+  REQUEST_DECLINED
+  RESTOCKED
+  SCHEDULED
+  UNFULFILLED
+}
+
+enum OrderSortKeys {
+  CREATED_AT
+  CURRENT_TOTAL_PRICE
+  CUSTOMER_NAME
+  DESTINATION
+  FINANCIAL_STATUS
+  FULFILLMENT_STATUS
+  ID
+  ORDER_NUMBER
+  PO_NUMBER
+  PROCESSED_AT
+  RELEVANCE
+  TOTAL_ITEMS_QUANTITY
+  TOTAL_PRICE
+  UPDATED_AT
+}
+
+type PageInfo {
+  endCursor: String
+  hasNextPage: Boolean!
+}
+
+type Product implements HasMetafields & Node & Publishable {
+  bodyHtml: String @deprecated(reason: "Use `descriptionHtml` instead.")
+  category: TaxonomyCategory
+  collections(first: Int, after: String, last: Int, before: String, reverse: Boolean = false, sortKey: CollectionSortKeys = ID, query: String): CollectionConnection!
+  handle: String!
+  id: ID!
+  media(first: Int, after: String, last: Int, before: String, reverse: Boolean = false, sortKey: ProductMediaSortKeys = POSITION, query: String): MediaConnection!
+  metafield(namespace: String, key: String!): Metafield
+  metafields(namespace: String, keys: [String!], first: Int, after: String, last: Int, before: String, reverse: Boolean = false): MetafieldConnection!
+  options(first: Int): [ProductOption!]!
+  productType: String!
+  publicationCount(onlyPublished: Boolean = true): Int! @deprecated(reason: "Use `resourcePublicationsCount` instead.")
+  resourcePublications(onlyPublished: Boolean = true, first: Int, after: String, last: Int, before: String, reverse: Boolean = false): ResourcePublicationConnection!
+  seo: SEO!
+  status: ProductStatus!
+  tags: [String!]!
+  title: String!
+  variants(first: Int, after: String, last: Int, before: String, reverse: Boolean = false, sortKey: ProductVariantSortKeys = POSITION): ProductVariantConnection!
+  vendor: String!
+}
+
+input ProductClaimOwnershipInput {
+  bundles: Boolean
+}
+
+enum ProductCollectionSortKeys {
+  BEST_SELLING
+  COLLECTION_DEFAULT
+  CREATED
+  ID
+  MANUAL
+  PRICE
+  RELEVANCE
+  TITLE
+}
+
+type ProductConnection {
+  nodes: [Product!]!
+  pageInfo: PageInfo!
+}
+
+type ProductCreateMediaPayload {
+  media: [Media!]
+  mediaUserErrors: [MediaUserError!]!
+}
+
+type ProductDeleteMediaPayload {
+  deletedMediaIds: [ID!]
+  mediaUserErrors: [MediaUserError!]!
+  product: Product
+}
+
+input ProductInput {
+  category: ID
+  claimOwnership: ProductClaimOwnershipInput
+  collectionsToJoin: [ID!]
+  collectionsToLeave: [ID!]
+  combinedListingRole: CombinedListingsRole
+  descriptionHtml: String
+  giftCard: Boolean
+  giftCardTemplateSuffix: String
+  handle: String
+  id: ID
+  metafields: [MetafieldInput!]
+  productOptions: [OptionCreateInput!]
+  productPublications: [ProductPublicationInput!] @deprecated(reason: "Use [`PublishablePublish`](https://shopify.dev/docs/api/admin-graphql/latest/mutations/publishablePublish)\ninstead.\n")
+  productType: String
+  publications: [ProductPublicationInput!] @deprecated(reason: "Use [`PublishablePublish`](https://shopify.dev/docs/api/admin-graphql/latest/mutations/publishablePublish)\ninstead.\n")
+  publishDate: DateTime @deprecated(reason: "Use [`PublishablePublish`](https://shopify.dev/docs/api/admin-graphql/latest/mutations/publishablePublish)\ninstead.\n")
+  publishOn: DateTime @deprecated(reason: "Use [`PublishablePublish`](https://shopify.dev/docs/api/admin-graphql/latest/mutations/publishablePublish)\ninstead.\n")
+  published: Boolean @deprecated(reason: "Use [`PublishablePublish`](https://shopify.dev/docs/api/admin-graphql/latest/mutations/publishablePublish)\ninstead.\n")
+  publishedAt: DateTime @deprecated(reason: "Use [`PublishablePublish`](https://shopify.dev/docs/api/admin-graphql/latest/mutations/publishablePublish)\ninstead.\n")
+  redirectNewHandle: Boolean
+  requiresSellingPlan: Boolean
+  seo: SEOInput
+  status: ProductStatus
+  tags: [String!]
+  templateSuffix: String
+  title: String
+  vendor: String
+}
+
+enum ProductMediaSortKeys {
+  ID
+  POSITION
+}
+
+type ProductOption implements Node {
+  id: ID!
+  name: String!
+  optionValues: [ProductOptionValue!]!
+}
+
+type ProductOptionUpdatePayload {
+  product: Product
+  userErrors: [ProductOptionUpdateUserError!]!
+}
+
+type ProductOptionUpdateUserError {
+  code: ProductOptionUpdateUserErrorCode
+  field: [String!]
+  message: String!
+}
+
+enum ProductOptionUpdateUserErrorCode {
+  CANNOT_COMBINE_LINKED_AND_NONLINKED_OPTION_VALUES
+  CANNOT_CREATE_VARIANTS_ABOVE_LIMIT
+  CANNOT_DELETE_ALL_OPTION_VALUES_IN_OPTION
+  CANNOT_DELETE_VARIANT_WITHOUT_PERMISSION
+  CANNOT_LEAVE_OPTIONS_WITHOUT_VARIANTS
+  CANNOT_MAKE_CHANGES_IF_VARIANT_IS_MISSING_REQUIRED_SKU
+  DUPLICATED_OPTION_VALUE
+  DUPLICATE_LINKED_OPTION
+  INVALID_METAFIELD_VALUE_FOR_LINKED_OPTION
+  INVALID_NAME
+  INVALID_POSITION
+  KEY_MISSING_IN_INPUT
+  LINKED_METAFIELD_DEFINITION_NOT_FOUND
+  LINKED_OPTIONS_NOT_SUPPORTED_FOR_SHOP
+  LINKED_OPTION_UPDATE_MISSING_VALUES
+  NO_KEY_ON_CREATE
+  OPTION_ALREADY_EXISTS
+  OPTION_DOES_NOT_EXIST
+  OPTION_LINKED_METAFIELD_ALREADY_TAKEN
+  OPTION_NAME_TOO_LONG
+  OPTION_VALUES_OVER_LIMIT
+  OPTION_VALUE_ALREADY_EXISTS
+  OPTION_VALUE_CONFLICTING_OPERATION
+  OPTION_VALUE_DOES_NOT_EXIST
+  OPTION_VALUE_HAS_VARIANTS
+  OPTION_VALUE_NAME_TOO_LONG
+  PRODUCT_DOES_NOT_EXIST
+  PRODUCT_SUSPENDED
+  TOO_MANY_VARIANTS_CREATED
+  UNSUPPORTED_COMBINED_LISTING_PARENT_OPERATION
+}
+
+enum ProductOptionUpdateVariantStrategy {
+  LEAVE_AS_IS
+  MANAGE
+}
+
+type ProductOptionValue implements Node {
+  id: ID!
+  name: String!
+}
+
+input ProductPublicationInput {
+  channelHandle: String @deprecated(reason: "Use publicationId instead.")
+  channelId: ID @deprecated(reason: "Use publicationId instead.")
+  publicationId: ID
+  publishDate: DateTime
+}
+
+type ProductReorderMediaPayload {
+  job: Job
+  mediaUserErrors: [MediaUserError!]!
+  userErrors: [UserError!]! @deprecated(reason: "Use `mediaUserErrors` instead.")
+}
+
+enum ProductSortKeys {
+  CREATED_AT
+  ID
+  INVENTORY_TOTAL
+  PRODUCT_TYPE
+  PUBLISHED_AT
+  RELEVANCE
+  TITLE
+  UPDATED_AT
+  VENDOR
+}
+
+enum ProductStatus {
+  ACTIVE
+  ARCHIVED
+  DRAFT
+  UNLISTED
+}
+
+input ProductUpdateInput {
+  category: ID
+  collectionsToJoin: [ID!]
+  collectionsToLeave: [ID!]
+  deleteConflictingConstrainedMetafields: Boolean = false
+  descriptionHtml: String
+  giftCardTemplateSuffix: String
+  handle: String
+  id: ID
+  metafields: [MetafieldInput!]
+  productType: String
+  redirectNewHandle: Boolean
+  requiresSellingPlan: Boolean
+  seo: SEOInput
+  status: ProductStatus
+  tags: [String!]
+  templateSuffix: String
+  title: String
+  vendor: String
+}
+
+type ProductUpdateMediaPayload {
+  media: [Media!]
+  mediaUserErrors: [MediaUserError!]!
+}
+
+type ProductUpdatePayload {
+  product: Product
+  userErrors: [UserError!]!
+}
+
+type ProductVariant implements HasMetafields & Node {
+  compareAtPrice: Money
+  id: ID!
+  inventoryItem: InventoryItem!
+  inventoryPolicy: ProductVariantInventoryPolicy!
+  media(first: Int, after: String, last: Int, before: String, reverse: Boolean = false): MediaConnection!
+  metafield(namespace: String, key: String!): Metafield
+  metafields(namespace: String, keys: [String!], first: Int, after: String, last: Int, before: String, reverse: Boolean = false): MetafieldConnection!
+  price: Money!
+  selectedOptions: [SelectedOption!]!
+  sku: String
+  title: String!
+}
+
+input ProductVariantAppendMediaInput {
+  mediaIds: [ID!]!
+  variantId: ID!
+}
+
+type ProductVariantAppendMediaPayload {
+  productVariants: [ProductVariant!]
+  userErrors: [MediaUserError!]!
+}
+
+type ProductVariantConnection {
+  edges: [ProductVariantEdge!]!
+  nodes: [ProductVariant!]!
+  pageInfo: PageInfo!
+}
+
+input ProductVariantDetachMediaInput {
+  mediaIds: [ID!]!
+  variantId: ID!
+}
+
+type ProductVariantDetachMediaPayload {
+  product: Product
+  userErrors: [MediaUserError!]!
+}
+
+type ProductVariantEdge {
+  node: ProductVariant!
+}
+
+enum ProductVariantInventoryPolicy {
+  CONTINUE
+  DENY
+}
+
+enum ProductVariantSortKeys {
+  FULL_TITLE
+  ID
+  INVENTORY_LEVELS_AVAILABLE
+  INVENTORY_MANAGEMENT
+  INVENTORY_POLICY
+  INVENTORY_QUANTITY
+  NAME
+  POPULAR
+  POSITION
+  RELEVANCE
+  SKU
+  TITLE
+}
+
+input ProductVariantsBulkInput {
+  barcode: String
+  compareAtPrice: Money
+  id: ID
+  inventoryItem: InventoryItemInput
+  inventoryPolicy: ProductVariantInventoryPolicy
+  inventoryQuantities: [InventoryLevelInput!]
+  mediaId: ID
+  mediaSrc: [String!]
+  metafields: [MetafieldInput!]
+  optionValues: [VariantOptionValueInput!]
+  price: Money
+  quantityAdjustments: [InventoryAdjustmentInput!]
+  requiresComponents: Boolean
+  showUnitPrice: Boolean
+  taxCode: String
+  taxable: Boolean
+  unitPriceMeasurement: UnitPriceMeasurementInput
+}
+
+type ProductVariantsBulkUpdatePayload {
+  product: Product
+  productVariants: [ProductVariant!]
+  userErrors: [ProductVariantsBulkUpdateUserError!]!
+}
+
+type ProductVariantsBulkUpdateUserError {
+  field: [String!]
+  message: String!
+}
+
+type Publication implements Node {
+  id: ID!
+  name: String! @deprecated(reason: "Use [Catalog.title](https://shopify.dev/api/admin-graphql/unstable/interfaces/Catalog#field-catalog-title) instead.")
+  supportsFuturePublishing: Boolean!
+}
+
+type PublicationConnection {
+  nodes: [Publication!]!
+  pageInfo: PageInfo!
+}
+
+input PublicationInput {
+  channelId: ID @deprecated(reason: "Use publicationId instead.")
+  publicationId: ID
+  publishDate: DateTime
+}
+
+interface Publishable {
+  publicationCount(onlyPublished: Boolean = true): Int! @deprecated(reason: "Use `resourcePublicationsCount` instead.")
+}
+
+type PublishablePublishPayload {
+  publishable: Publishable
+  userErrors: [UserError!]!
+}
+
+type PublishableUnpublishPayload {
+  publishable: Publishable
+  userErrors: [UserError!]!
+}
+
+type QueryRoot {
+  collectionByHandle(handle: String!): Collection @deprecated(reason: "Use `collectionByIdentifier` instead.")
+  discountNodes(first: Int, after: String, last: Int, before: String, reverse: Boolean = false, sortKey: DiscountSortKeys = ID, query: String, savedSearchId: ID): DiscountNodeConnection!
+  inventoryItem(id: ID!): InventoryItem
+  job(id: ID!): Job
+  node(id: ID!): Node
+  order(id: ID!): Order
+  orders(first: Int, after: String, last: Int, before: String, reverse: Boolean = false, sortKey: OrderSortKeys = PROCESSED_AT, query: String, savedSearchId: ID): OrderConnection!
+  product(id: ID!): Product
+  productByHandle(handle: String!): Product @deprecated(reason: "Use `productByIdentifier` instead.")
+  products(first: Int, after: String, last: Int, before: String, reverse: Boolean = false, sortKey: ProductSortKeys = ID, query: String, savedSearchId: ID): ProductConnection!
+  publications(catalogType: CatalogType, first: Int, after: String, last: Int, before: String, reverse: Boolean = false): PublicationConnection!
+  taxonomy: Taxonomy
+  webhookSubscriptions(callbackUrl: URL @deprecated(reason: "Use `uri` instead."), uri: String, format: WebhookSubscriptionFormat, topics: [WebhookSubscriptionTopic!], first: Int, after: String, last: Int, before: String, reverse: Boolean = false, sortKey: WebhookSubscriptionSortKeys = CREATED_AT, query: String): WebhookSubscriptionConnection!
+}
+
+type ResourcePublication {
+  isPublished: Boolean!
+  publication: Publication!
+  publishDate: DateTime!
+}
+
+type ResourcePublicationConnection {
+  nodes: [ResourcePublication!]!
+  pageInfo: PageInfo!
+}
+
+type SEO {
+  description: String
+  title: String
+}
+
+input SEOInput {
+  description: String
+  title: String
+}
+
+type SelectedOption {
+  name: String!
+  value: String!
+}
+
+type StagedMediaUploadTarget {
+  parameters: [StagedUploadParameter!]!
+  resourceUrl: URL
+  url: URL
+}
+
+enum StagedUploadHttpMethodType {
+  POST
+  PUT
+}
+
+input StagedUploadInput {
+  fileSize: UnsignedInt64
+  filename: String!
+  httpMethod: StagedUploadHttpMethodType = PUT
+  mimeType: String!
+  resource: StagedUploadTargetGenerateUploadResource!
+}
+
+type StagedUploadParameter {
+  name: String!
+  value: String!
+}
+
+enum StagedUploadTargetGenerateUploadResource {
+  BULK_MUTATION_VARIABLES
+  COLLECTION_IMAGE
+  DISPUTE_FILE_UPLOAD
+  FILE
+  IMAGE
+  MODEL_3D
+  PRODUCT_IMAGE @deprecated(reason: "Use IMAGE instead. This resource type will be removed in a future version.")
+  RETURN_LABEL
+  SHOP_IMAGE
+  URL_REDIRECT_IMPORT
+  VIDEO
+}
+
+type StagedUploadsCreatePayload {
+  stagedTargets: [StagedMediaUploadTarget!]
+  userErrors: [UserError!]!
+}
+
+type Taxonomy {
+  categories(search: String, childrenOf: ID, siblingsOf: ID, descendantsOf: ID, first: Int, after: String, last: Int, before: String): TaxonomyCategoryConnection!
+}
+
+type TaxonomyCategory implements Node {
+  fullName: String!
+  id: ID!
+  isLeaf: Boolean!
+  isRoot: Boolean!
+  level: Int!
+  name: String!
+}
+
+type TaxonomyCategoryConnection {
+  nodes: [TaxonomyCategory!]!
+}
+
+scalar URL
+
+type UTMParameters {
+  campaign: String
+  medium: String
+  source: String
+}
+
+input UnitPriceMeasurementInput {
+  quantityUnit: UnitPriceMeasurementMeasuredUnit
+  quantityValue: Float
+  referenceUnit: UnitPriceMeasurementMeasuredUnit
+  referenceValue: Int
+}
+
+enum UnitPriceMeasurementMeasuredUnit {
+  CL
+  CM
+  FLOZ
+  FT
+  FT2
+  G
+  GAL
+  IN
+  ITEM
+  KG
+  L
+  LB
+  M
+  M2
+  M3
+  MG
+  ML
+  MM
+  OZ
+  PT
+  QT
+  UNKNOWN
+  YD
+}
+
+scalar UnsignedInt64
+
+input UpdateMediaInput {
+  alt: String
+  id: ID!
+  previewImageSource: String
+}
+
+type UserError {
+  field: [String!]
+  message: String!
+}
+
+input VariantOptionValueInput {
+  id: ID
+  linkedMetafieldValue: String
+  name: String
+  optionId: ID
+  optionName: String
+}
+
+type Video implements Media & Node {
+  alt: String
+  id: ID!
+  mediaContentType: MediaContentType!
+  preview: MediaPreviewImage
+  status: MediaStatus!
+}
+
+type WebhookHttpEndpoint {
+  callbackUrl: URL!
+}
+
+type WebhookSubscription implements Node {
+  apiVersion: ApiVersion!
+  createdAt: DateTime!
+  endpoint: WebhookSubscriptionEndpoint! @deprecated(reason: "Use `uri` instead.")
+  format: WebhookSubscriptionFormat!
+  id: ID!
+  topic: WebhookSubscriptionTopic!
+}
+
+type WebhookSubscriptionConnection {
+  nodes: [WebhookSubscription!]!
+}
+
+type WebhookSubscriptionCreatePayload {
+  userErrors: [UserError!]!
+  webhookSubscription: WebhookSubscription
+}
+
+type WebhookSubscriptionDeletePayload {
+  deletedWebhookSubscriptionId: ID
+  userErrors: [UserError!]!
+}
+
+union WebhookSubscriptionEndpoint = WebhookHttpEndpoint
+
+enum WebhookSubscriptionFormat {
+  JSON
+  XML
+}
+
+input WebhookSubscriptionInput {
+  callbackUrl: URL @deprecated(reason: "Use `uri` instead.")
+  filter: String
+  format: WebhookSubscriptionFormat
+  includeFields: [String!]
+  metafieldNamespaces: [String!]
+  metafields: [HasMetafieldsMetafieldIdentifierInput!]
+  uri: String
+}
+
+enum WebhookSubscriptionSortKeys {
+  CREATED_AT
+  ID
+}
+
+enum WebhookSubscriptionTopic {
+  APP_PURCHASES_ONE_TIME_UPDATE
+  APP_SCOPES_UPDATE
+  APP_SUBSCRIPTIONS_APPROACHING_CAPPED_AMOUNT
+  APP_SUBSCRIPTIONS_UPDATE
+  APP_UNINSTALLED
+  ATTRIBUTED_SESSIONS_FIRST
+  ATTRIBUTED_SESSIONS_LAST
+  AUDIT_EVENTS_ADMIN_API_ACTIVITY
+  BULK_OPERATIONS_FINISH
+  CARTS_CREATE
+  CARTS_UPDATE
+  CHANNELS_DELETE
+  CHECKOUTS_CREATE
+  CHECKOUTS_DELETE
+  CHECKOUTS_UPDATE
+  CHECKOUT_AND_ACCOUNTS_CONFIGURATIONS_UPDATE
+  COLLECTIONS_CREATE
+  COLLECTIONS_DELETE
+  COLLECTIONS_UPDATE
+  COLLECTION_LISTINGS_ADD
+  COLLECTION_LISTINGS_REMOVE
+  COLLECTION_LISTINGS_UPDATE
+  COLLECTION_PUBLICATIONS_CREATE
+  COLLECTION_PUBLICATIONS_DELETE
+  COLLECTION_PUBLICATIONS_UPDATE
+  COMPANIES_CREATE
+  COMPANIES_DELETE
+  COMPANIES_UPDATE
+  COMPANY_CONTACTS_CREATE
+  COMPANY_CONTACTS_DELETE
+  COMPANY_CONTACTS_UPDATE
+  COMPANY_CONTACT_ROLES_ASSIGN
+  COMPANY_CONTACT_ROLES_REVOKE
+  COMPANY_LOCATIONS_CREATE
+  COMPANY_LOCATIONS_DELETE
+  COMPANY_LOCATIONS_UPDATE
+  CUSTOMERS_CREATE
+  CUSTOMERS_DELETE
+  CUSTOMERS_DISABLE
+  CUSTOMERS_EMAIL_MARKETING_CONSENT_UPDATE
+  CUSTOMERS_ENABLE
+  CUSTOMERS_MARKETING_CONSENT_UPDATE
+  CUSTOMERS_MERGE
+  CUSTOMERS_PURCHASING_SUMMARY
+  CUSTOMERS_UPDATE
+  CUSTOMER_ACCOUNT_SETTINGS_UPDATE
+  CUSTOMER_GROUPS_CREATE
+  CUSTOMER_GROUPS_DELETE
+  CUSTOMER_GROUPS_UPDATE
+  CUSTOMER_JOINED_SEGMENT
+  CUSTOMER_LEFT_SEGMENT
+  CUSTOMER_PAYMENT_METHODS_CREATE
+  CUSTOMER_PAYMENT_METHODS_REVOKE
+  CUSTOMER_PAYMENT_METHODS_UPDATE
+  CUSTOMER_TAGS_ADDED
+  CUSTOMER_TAGS_REMOVED
+  DELIVERY_PROMISE_SETTINGS_UPDATE
+  DISCOUNTS_CREATE
+  DISCOUNTS_DELETE
+  DISCOUNTS_REDEEMCODE_ADDED
+  DISCOUNTS_REDEEMCODE_REMOVED
+  DISCOUNTS_UPDATE
+  DISPUTES_CREATE
+  DISPUTES_UPDATE
+  DOMAINS_CREATE
+  DOMAINS_DESTROY
+  DOMAINS_UPDATE
+  DRAFT_ORDERS_CREATE
+  DRAFT_ORDERS_DELETE
+  DRAFT_ORDERS_UPDATE
+  FINANCE_APP_STAFF_MEMBER_DELETE
+  FINANCE_APP_STAFF_MEMBER_GRANT
+  FINANCE_APP_STAFF_MEMBER_REVOKE
+  FINANCE_APP_STAFF_MEMBER_UPDATE
+  FINANCE_KYC_INFORMATION_UPDATE
+  FULFILLMENTS_CREATE
+  FULFILLMENTS_UPDATE
+  FULFILLMENT_EVENTS_CREATE
+  FULFILLMENT_EVENTS_DELETE
+  FULFILLMENT_HOLDS_ADDED
+  FULFILLMENT_HOLDS_RELEASED
+  FULFILLMENT_ORDERS_CANCELLATION_REQUEST_ACCEPTED
+  FULFILLMENT_ORDERS_CANCELLATION_REQUEST_REJECTED
+  FULFILLMENT_ORDERS_CANCELLATION_REQUEST_SUBMITTED
+  FULFILLMENT_ORDERS_CANCELLED
+  FULFILLMENT_ORDERS_FULFILLMENT_REQUEST_ACCEPTED
+  FULFILLMENT_ORDERS_FULFILLMENT_REQUEST_REJECTED
+  FULFILLMENT_ORDERS_FULFILLMENT_REQUEST_SUBMITTED
+  FULFILLMENT_ORDERS_FULFILLMENT_SERVICE_FAILED_TO_COMPLETE
+  FULFILLMENT_ORDERS_HOLD_RELEASED
+  FULFILLMENT_ORDERS_LINE_ITEMS_PREPARED_FOR_LOCAL_DELIVERY
+  FULFILLMENT_ORDERS_LINE_ITEMS_PREPARED_FOR_PICKUP
+  FULFILLMENT_ORDERS_MERGED
+  FULFILLMENT_ORDERS_MOVED
+  FULFILLMENT_ORDERS_ORDER_ROUTING_COMPLETE
+  FULFILLMENT_ORDERS_PLACED_ON_HOLD
+  FULFILLMENT_ORDERS_RESCHEDULED
+  FULFILLMENT_ORDERS_SCHEDULED_FULFILLMENT_ORDER_READY
+  FULFILLMENT_ORDERS_SPLIT
+  INVENTORY_ITEMS_CREATE
+  INVENTORY_ITEMS_DELETE
+  INVENTORY_ITEMS_UPDATE
+  INVENTORY_LEVELS_CONNECT
+  INVENTORY_LEVELS_DISCONNECT
+  INVENTORY_LEVELS_UPDATE
+  INVENTORY_SHIPMENTS_ADD_ITEMS
+  INVENTORY_SHIPMENTS_CREATE
+  INVENTORY_SHIPMENTS_DELETE
+  INVENTORY_SHIPMENTS_MARK_IN_TRANSIT
+  INVENTORY_SHIPMENTS_RECEIVE_ITEMS
+  INVENTORY_SHIPMENTS_REMOVE_ITEMS
+  INVENTORY_SHIPMENTS_UPDATE_ITEM_QUANTITIES
+  INVENTORY_SHIPMENTS_UPDATE_TRACKING
+  INVENTORY_TRANSFERS_ADD_ITEMS
+  INVENTORY_TRANSFERS_CANCEL
+  INVENTORY_TRANSFERS_COMPLETE
+  INVENTORY_TRANSFERS_READY_TO_SHIP
+  INVENTORY_TRANSFERS_REMOVE_ITEMS
+  INVENTORY_TRANSFERS_UPDATE_ITEM_QUANTITIES
+  LOCALES_CREATE
+  LOCALES_DESTROY
+  LOCALES_UPDATE
+  LOCATIONS_ACTIVATE
+  LOCATIONS_CREATE
+  LOCATIONS_DEACTIVATE
+  LOCATIONS_DELETE
+  LOCATIONS_UPDATE
+  MACHINE_TRANSLATION_BATCH_COMPLETED
+  MARKETS_BACKUP_REGION_UPDATE
+  MARKETS_CREATE
+  MARKETS_DELETE
+  MARKETS_UPDATE
+  METAFIELD_DEFINITIONS_CREATE
+  METAFIELD_DEFINITIONS_DELETE
+  METAFIELD_DEFINITIONS_UPDATE
+  METAOBJECTS_CREATE
+  METAOBJECTS_DELETE
+  METAOBJECTS_UPDATE
+  ORDERS_CANCELLED
+  ORDERS_CREATE
+  ORDERS_DELETE
+  ORDERS_EDITED
+  ORDERS_FULFILLED
+  ORDERS_LINK_REQUESTED
+  ORDERS_PAID
+  ORDERS_PARTIALLY_FULFILLED
+  ORDERS_RISK_ASSESSMENT_CHANGED
+  ORDERS_SHOPIFY_PROTECT_ELIGIBILITY_CHANGED
+  ORDERS_UPDATED
+  ORDER_TRANSACTIONS_CREATE
+  PAYMENT_SCHEDULES_DUE
+  PAYMENT_TERMS_CREATE
+  PAYMENT_TERMS_DELETE
+  PAYMENT_TERMS_UPDATE
+  PRODUCTS_CREATE
+  PRODUCTS_DELETE
+  PRODUCTS_UPDATE
+  PRODUCT_FEEDS_CREATE
+  PRODUCT_FEEDS_FULL_SYNC
+  PRODUCT_FEEDS_FULL_SYNC_FINISH
+  PRODUCT_FEEDS_INCREMENTAL_SYNC
+  PRODUCT_FEEDS_UPDATE
+  PRODUCT_LISTINGS_ADD
+  PRODUCT_LISTINGS_REMOVE
+  PRODUCT_LISTINGS_UPDATE
+  PRODUCT_PUBLICATIONS_CREATE
+  PRODUCT_PUBLICATIONS_DELETE
+  PRODUCT_PUBLICATIONS_UPDATE
+  PROFILES_CREATE
+  PROFILES_DELETE
+  PROFILES_UPDATE
+  PUBLICATIONS_DELETE
+  REFUNDS_CREATE
+  RETURNS_APPROVE
+  RETURNS_CANCEL
+  RETURNS_CLOSE
+  RETURNS_DECLINE
+  RETURNS_PROCESS
+  RETURNS_REOPEN
+  RETURNS_REQUEST
+  RETURNS_UPDATE
+  REVERSE_DELIVERIES_ATTACH_DELIVERABLE
+  REVERSE_FULFILLMENT_ORDERS_DISPOSE
+  SCHEDULED_PRODUCT_LISTINGS_ADD
+  SCHEDULED_PRODUCT_LISTINGS_REMOVE
+  SCHEDULED_PRODUCT_LISTINGS_UPDATE
+  SEGMENTS_CREATE
+  SEGMENTS_DELETE
+  SEGMENTS_UPDATE
+  SELLING_PLAN_GROUPS_CREATE
+  SELLING_PLAN_GROUPS_DELETE
+  SELLING_PLAN_GROUPS_UPDATE
+  SHIPPING_ADDRESSES_CREATE
+  SHIPPING_ADDRESSES_UPDATE
+  SHOP_UPDATE
+  SUBSCRIPTION_BILLING_ATTEMPTS_CHALLENGED
+  SUBSCRIPTION_BILLING_ATTEMPTS_FAILURE
+  SUBSCRIPTION_BILLING_ATTEMPTS_SUCCESS
+  SUBSCRIPTION_BILLING_CYCLES_SKIP
+  SUBSCRIPTION_BILLING_CYCLES_UNSKIP
+  SUBSCRIPTION_BILLING_CYCLE_EDITS_CREATE
+  SUBSCRIPTION_BILLING_CYCLE_EDITS_DELETE
+  SUBSCRIPTION_BILLING_CYCLE_EDITS_UPDATE
+  SUBSCRIPTION_CONTRACTS_ACTIVATE
+  SUBSCRIPTION_CONTRACTS_CANCEL
+  SUBSCRIPTION_CONTRACTS_CREATE
+  SUBSCRIPTION_CONTRACTS_EXPIRE
+  SUBSCRIPTION_CONTRACTS_FAIL
+  SUBSCRIPTION_CONTRACTS_PAUSE
+  SUBSCRIPTION_CONTRACTS_UPDATE
+  TAX_PARTNERS_UPDATE
+  TAX_SERVICES_CREATE
+  TAX_SERVICES_UPDATE
+  TAX_SUMMARIES_CREATE
+  TENDER_TRANSACTIONS_CREATE
+  THEMES_CREATE
+  THEMES_DELETE
+  THEMES_PUBLISH
+  THEMES_UPDATE
+  VARIANTS_IN_STOCK
+  VARIANTS_OUT_OF_STOCK
+}
+
+input WeightInput {
+  unit: WeightUnit!
+  value: Float!
+}
+
+enum WeightUnit {
+  GRAMS
+  KILOGRAMS
+  OUNCES
+  POUNDS
+}

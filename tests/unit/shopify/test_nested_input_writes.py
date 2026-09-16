@@ -447,8 +447,12 @@ def test_completeness_check_rejects_a_null_nested_input():
 
 def test_completeness_check_refuses_a_type_outside_the_pinned_schema():
     """Otherwise the walk would silently check nothing and pass."""
-    query = "mutation C($input: CollectionInput!) { collectionUpdate(input: $input) { id } }"
-    with pytest.raises(AssertionError, match="CollectionInput is not in the pinned schema"):
+    # CustomerInput: no document selects customers, so the generated snapshot
+    # (Story 9.16) never reaches it. CollectionInput used to serve here, but the
+    # snapshot now covers every document and so carries it.
+    query = "mutation C($input: CustomerInput!) { customerUpdate(input: $input) { id } }"
+    assert _SCHEMA.get_type("CustomerInput") is None
+    with pytest.raises(AssertionError, match="CustomerInput is not in the pinned schema"):
         _incomplete_nested_inputs(query, {"input": {"seo": {"title": "x"}}})
 
 

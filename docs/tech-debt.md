@@ -8,6 +8,26 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-09-16 — Story 9.16 (schema contract generalized to every operation)
+
+**What changed.** The contract suite used to check a handful of documents against a hand-trimmed SDL literal. It now checks **all 76 operations** (66 module-level constants found by a repo-wide sweep, deduped by defining module, plus 10 call-time builder outputs) against `tests/unit/shopify/admin_schema_snapshot.graphql`. That file is generated from live introspection by `tests/support/admin_schema_snapshot.py` and refreshed with `tests/live/test_admin_schema_snapshot.py` (README: "Refreshing the Admin API schema snapshot"). Guards: a pinned document floor, a synthetic-module discovery test, a `_build_*` registry check, and an offline test of the generator itself.
+
+### Correction to the 2026-09-15 Story 9.18 entry below
+
+`productUpdate(input:)` and `WebhookSubscriptionInput.callbackUrl` are **deprecated on `2026-01`, not removed**. The 2026-09-16 introspection (served `2026-01`) lists `input` with "Use `product` instead." and `callbackUrl` with "Use `uri` instead." The standard introspection query leaves out deprecated arguments and input fields unless `includeDeprecated` is requested. That omission is what made them look removed. It also explains why Shopify "served a removed argument": it never was removed. A query-only live probe confirmed that Shopify **rejects** an argument it does not declare (`Field 'shop' doesn't accept argument 'bogusArg'`). So the validation leg is not a source of false positives by design, **provided the snapshot includes deprecated input values**. The generator requests them (`INTROSPECTION_OPTIONS`) and `test_snapshot_carries_deprecated_input_values` pins it.
+
+Still open and **not verified here**: whether `register_webhook` was really broken live with `callbackUrl`. It was deprecated at the time, not removed, so the cause may have been something else. The `uri` fix is correct regardless.
+
+The suite still does not claim that a drift report means breakage. The failure message tells the reader to confirm by executing. `_SERVED_DESPITE_DRIFT` (empty) records any confirmed exception with a live-confirmation date that must postdate the snapshot capture.
+
+### Residuals, recorded not fixed
+
+- **Deprecated usages: 30** across the documents. The suite pins a ceiling that may fall but not rise. These are the likeliest next removals: `QueryRoot.productByHandle` x7 (use `productByIdentifier`), `Product.bodyHtml` x6 (use `descriptionHtml`), `QueryRoot.collectionByHandle` x4 (use `collectionByIdentifier`), `Publication.name` x4 (use `Catalog.title`), `WebhookSubscription.endpoint` x2 (use `uri`), and x1 each: `Mutation.collectionAddProductsV2`, `Mutation.collectionRemoveProducts`, `Mutation.inventorySetOnHandQuantities`, `Mutation.productCreateMedia`, `Mutation.productUpdateMedia`, `Mutation.productDeleteMedia`, `ProductReorderMediaPayload.userErrors`.
+- **Coercion-leg coverage gap: 13 of 25** documents that take an input object have no emitted-payload check. 9 forward a payload the tool layer builds (`metafieldsSet`, `metafieldsDelete`, variant media append/detach, `productOptionUpdate`, both `productVariantsBulkUpdate` documents, `discountCodeBasicCreate`, `inventorySetOnHandQuantities`), and 4 are executed directly by `tools/media` with no operations function. They are listed in `_PAYLOAD_BUILT_UPSTREAM`, and a two-way equality test stops the list from drifting. Closing the gap means driving the tools, not the operations layer.
+- **The snapshot is only as current as its last refresh.** Nothing offline can notice that Shopify changed the schema. Only the live runner can, so run it on every API version bump.
+
+---
+
 ## 2026-09-16 — Story 10.92 (SEC-04-seo — stored SEO title/description reached the model unfenced)
 
 Trello: https://trello.com/c/EDbOmTAp (Story 10.92, Epic 10). Found by the security review on Story 9.19, whose `(preserved) <stored value>` line made the stored value appear twice.
