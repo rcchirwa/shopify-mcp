@@ -614,7 +614,7 @@ _PID = "6803111739545"
         pytest.param(lambda: _emit(ops.update_product_title, _PID, "T", "t-handle"), id="title"),
         pytest.param(lambda: _emit(ops.update_product_description, _PID, "<p>d</p>"), id="desc"),
         pytest.param(
-            lambda: _emit(ops.update_product_seo, _PID, {"title": "S", "description": "D"}),
+            lambda: _emit(ops.update_product_seo, _PID, title="S", description="D"),
             id="seo",
         ),
         pytest.param(lambda: _emit(ops.update_product_tags, _PID, ["a", "b"]), id="tags"),

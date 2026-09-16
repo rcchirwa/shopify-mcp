@@ -4,7 +4,46 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-09-15.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-09-16.
+
+---
+
+## 2026-09-16 — Story 9.19 (`update_product_seo` silently destroyed the SEO description)
+
+**The instance.** A title-only `update_product_seo` call wiped a stored 141-char SEO description on a draft product (found live 2026-09-15 during 9.18's verification, against served `2026-01`), while the `confirm=False` preview printed `New SEO description : (unchanged)` and the write reported success. The payload builder was not wrong in the usual sense — it omitted the `description` key, exactly as intended.
+
+**The class.** `productUpdate` **replaces a nested input object wholesale.** Sending `product: {id, seo: {title}}` sets the whole `SEOInput`, so the omitted `description` is cleared. That is the **opposite** of top-level behaviour, where omitting `tags` or `status` from `ProductUpdateInput` really does leave them alone — and that asymmetry is why nobody anticipated it. On a nested input object, "omit the key" means "clear it".
+
+**Why nothing could see it.** `{"seo": {"title": "…"}}` is a perfectly valid `SEOInput`: it passes `graphql.validate` *and* `get_variable_values` coercion, the two legs 9.18 built. Both check **shape**; this is **semantics**. Only a live round-trip with a full-object diff (snapshot, write, re-read, compare) caught it. It was also unobservable before 9.18: the tool had been dead since the `2026-01` pin, and restoring a broken write path exposed destructive behaviour — **a repaired write tool needs its semantics re-verified, not just its syntax.**
+
+### Closed
+
+- **Read-modify-write.** `operations.products.update_product_seo` now takes `title` and `description` as required keyword arguments and always sends both, so a partial `SEOInput` cannot be expressed at that site. The tool re-sends the stored value of the field the caller did not supply — byte-for-byte as read (a stored `null` goes back as `null`), and **not** re-sanitized, since it was sanitized when written.
+- **The preview tells the truth.** An unsupplied field now reads `(preserved) <stored value>` instead of `(unchanged)`.
+- **Clearing decision:** the tool **cannot clear** an SEO field. Empty arguments mean "not supplied", and the only previous way to empty a field was this bug. Clearing is done in the Shopify admin; adding an explicit clear flag was judged out of scope until someone needs it.
+- **Guard — fails on a new site, not only today's** (`tests/unit/shopify/test_nested_input_writes.py`). It *discovers* every function in `shopify_mcp.shopify` and `shopify_mcp.tools` whose code names a mutation document (32 today) and requires a recorded verdict per site, two-way, so an unclassified new write or a stale verdict both fail. Every `productUpdate` call site — the mutation proven to replace wholesale — must additionally be emitted, and any nested input object in its payload must carry every field the pinned schema declares for its type. Negative test: the exact 2026-09-15 payload is rejected.
+
+### Sweep verdicts (card step 4)
+
+Every mutation call site, classified from the payload it emits. **Only `seo` on `productUpdate` sends a nested input object into an update**, and it is now sent complete.
+
+| Mutation | Call site(s) | Verdict |
+|---|---|---|
+| `productUpdate` | `update_product_seo` | **was PARTIAL nested update — fixed** (read-modify-write) |
+| `productUpdate` | `update_product_title` / `_description` / `_tags` / `_status`, hygiene `update_product_category` / `_vendor` / `_type` | top-level scalars only — safe; payload-checked by the guard |
+| `collectionUpdate` | `update_collection` | top-level scalars only. `CollectionInput` also has a nested `seo`, **not sent** — sending it would need the same fix |
+| `inventoryItemUpdate` | `update_inventory_item_tracked` | top-level scalar (`tracked`) |
+| `productVariantsBulkUpdate` | `update_variant_inventory_policy`, `update_variants_pricing` | one `{id, <scalars>}` entry per variant |
+| `productOptionUpdate` | `update_product_option` | `{id, name}` option and value entries, scalars only |
+| `productUpdateMedia` | `tools/media/_update.py` | one `{id, alt}` entry per media |
+| creates | `collectionCreate`, `discountCodeBasicCreate`, `webhookSubscriptionCreate`, `stagedUploadsCreate`, `productCreateMedia` | full new object — nothing stored to clear |
+| complete records / identifiers | `metafieldsSet`, `metafieldsDelete`, `inventorySetOnHandQuantities`, `publishablePublish`/`Unpublish`, collection add/remove, variant media append/detach, `productReorderMedia`, `productDeleteMedia`, `webhookSubscriptionDelete` | self-contained entries — no nested object inside an update |
+
+### Residuals, recorded not fixed
+
+- **The wholesale-replacement premise is proven for `productUpdate.seo` only.** Whether other mutations' nested inputs merge or replace is unverified live; no call site sends one today, so the guard's verdict table is the tripwire rather than a proof. Do not extrapolate the SEO result across mutations without a probe.
+- **Omitted top-level fields of list *entries*** (e.g. `UpdateMediaInput.previewImageSource` absent from `{id, alt}`) are assumed to behave like top-level `ProductUpdateInput` fields — left alone. Consistent with every live write so far, but not separately probed.
+- **Verdicts are a human reading** for every site except the `productUpdate` callers, whose payloads are machine-checked. A new nested field added to an *existing* non-`productUpdate` site is not caught.
 
 ---
 

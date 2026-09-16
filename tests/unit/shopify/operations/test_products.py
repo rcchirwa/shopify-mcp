@@ -925,8 +925,21 @@ def test_update_product_description_builds_input():
 
 def test_update_product_seo_builds_input():
     fc = FakeClient([{"productUpdate": {"userErrors": []}}])
-    ops.update_product_seo(fc, "5", {"title": "S"})
-    assert fc.calls[0][1]["product"] == {"id": "gid://shopify/Product/5", "seo": {"title": "S"}}
+    ops.update_product_seo(fc, "5", title="S", description=None)
+    assert fc.calls[0][1]["product"] == {
+        "id": "gid://shopify/Product/5",
+        "seo": {"title": "S", "description": None},
+    }
+
+
+def test_update_product_seo_cannot_be_called_with_a_partial_seo():
+    """Story 9.19: productUpdate replaces `seo` wholesale, so an omitted key is
+    cleared. Both fields are required keyword arguments — a partial SEOInput
+    cannot be expressed at this call site at all."""
+    fc = FakeClient([])
+    with pytest.raises(TypeError):
+        ops.update_product_seo(fc, "5", title="S")  # type: ignore[call-arg]
+    assert fc.calls == []
 
 
 def test_update_product_tags_builds_input():
