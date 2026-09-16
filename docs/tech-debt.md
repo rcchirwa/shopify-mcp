@@ -20,8 +20,8 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 - **Read-modify-write.** `operations.products.update_product_seo` now takes `title` and `description` as required keyword arguments and always sends both, so a partial `SEOInput` cannot be expressed at that site. The tool re-sends the stored value of the field the caller did not supply — byte-for-byte as read (a stored `null` goes back as `null`), and **not** re-sanitized, since it was sanitized when written.
 - **The preview tells the truth.** An unsupplied field now reads `(preserved) <stored value>` instead of `(unchanged)`.
-- **Clearing decision:** the tool **cannot clear** an SEO field. Empty arguments mean "not supplied", and the only previous way to empty a field was this bug. Clearing is done in the Shopify admin; adding an explicit clear flag was judged out of scope until someone needs it.
-- **Guard — fails on a new site, not only today's** (`tests/unit/shopify/test_nested_input_writes.py`). It *discovers* every function in `shopify_mcp.shopify` and `shopify_mcp.tools` whose code names a mutation document (32 today) and requires a recorded verdict per site, two-way, so an unclassified new write or a stale verdict both fail. Every `productUpdate` call site — the mutation proven to replace wholesale — must additionally be emitted, and any nested input object in its payload must carry every field the pinned schema declares for its type. Negative test: the exact 2026-09-15 payload is rejected.
+- **Clearing decision:** the tool **cannot clear** an SEO field. Empty arguments mean "not supplied", a supplied value that sanitizes to empty (e.g. `<script></script>`) is refused rather than written as `""`, and the only previous way to empty a field was this bug. Clearing is done in the Shopify admin; adding an explicit clear flag was judged out of scope until someone needs it.
+- **Guard — fails on a new site, not only today's** (`tests/unit/shopify/test_nested_input_writes.py`). It *discovers* every function, class method, property and decorated function (unwrapped) anywhere in `shopify_mcp` whose code names a mutation document constant or carries an inline mutation literal (32 today) and requires a recorded verdict per site, two-way, so an unclassified new write or a stale verdict both fail. Every `productUpdate` call site — the mutation proven to replace wholesale — must additionally be emitted, and any nested input object in its payload must carry every field the pinned schema declares for its type (a `null` nested object is flagged, and a type missing from the pinned slice fails rather than passing unchecked). Negative tests: the exact 2026-09-15 payload is rejected, and a synthetic module proves inline, decorated and method sites are discovered.
 
 ### Sweep verdicts (card step 4)
 
@@ -37,13 +37,15 @@ Every mutation call site, classified from the payload it emits. **Only `seo` on 
 | `productOptionUpdate` | `update_product_option` | `{id, name}` option and value entries, scalars only |
 | `productUpdateMedia` | `tools/media/_update.py` | one `{id, alt}` entry per media |
 | creates | `collectionCreate`, `discountCodeBasicCreate`, `webhookSubscriptionCreate`, `stagedUploadsCreate`, `productCreateMedia` | full new object — nothing stored to clear |
-| complete records / identifiers | `metafieldsSet`, `metafieldsDelete`, `inventorySetOnHandQuantities`, `publishablePublish`/`Unpublish`, collection add/remove, variant media append/detach, `productReorderMedia`, `productDeleteMedia`, `webhookSubscriptionDelete` | self-contained entries — no nested object inside an update |
+| complete records / identifiers | `metafieldsSet`, `metafieldsDelete`, `inventorySetOnHandQuantities`, `publishablePublish`/`Unpublish`, collection add/remove, variant media append/detach, `productReorderMedia`, `productDeleteMedia`, `webhookSubscriptionDelete` | creates, sets or identifier lists — each entry is sent whole (`inventorySetOnHandQuantities`' `setQuantities` entries sit inside `input`, but the mutation sets quantities rather than merging into a stored object) |
 
 ### Residuals, recorded not fixed
 
 - **The wholesale-replacement premise is proven for `productUpdate.seo` only.** Whether other mutations' nested inputs merge or replace is unverified live; no call site sends one today, so the guard's verdict table is the tripwire rather than a proof. Do not extrapolate the SEO result across mutations without a probe.
 - **Omitted top-level fields of list *entries*** (e.g. `UpdateMediaInput.previewImageSource` absent from `{id, alt}`) are assumed to behave like top-level `ProductUpdateInput` fields — left alone. Consistent with every live write so far, but not separately probed.
 - **Verdicts are a human reading** for every site except the `productUpdate` callers, whose payloads are machine-checked. A new nested field added to an *existing* non-`productUpdate` site is not caught.
+- **Discovery blind spots:** a mutation document assembled at runtime (f-string or concatenation), a document passed in from outside the package, or one reached only through a local alias. Recorded in the guard's docstring.
+- **Not live-verified:** that `seo.title` / `seo.description` read back as `null` when unset rather than a storefront fallback (e.g. the product title). If a fallback came back, read-modify-write would pin it as an explicit value. Card step 9's live round-trip is what checks this.
 
 ---
 

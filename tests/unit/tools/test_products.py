@@ -227,18 +227,47 @@ def test_seo_one_field_call_resends_an_unset_field_as_unset():
     assert vars_put["product"]["seo"] == {"title": "Only Title", "description": None}, vars_put
 
 
-def test_seo_preserved_value_is_not_re_sanitized():
+# A value `sanitize_html` does NOT return unchanged ("&" -> "&amp;"). A fixture
+# the sanitizer leaves alone would let a re-sanitizing implementation pass.
+_SANITIZER_SENSITIVE = "Tee & Hat"
+
+
+def test_seo_sanitizer_sensitive_fixture_really_is():
+    from shopify_mcp.tools._filters import sanitize_html
+
+    assert sanitize_html(_SANITIZER_SENSITIVE) != _SANITIZER_SENSITIVE
+
+
+@pytest.mark.parametrize(
+    ("stored", "supplied", "preserved_key"),
+    [
+        ((_SANITIZER_SENSITIVE, "old"), {"new_seo_description": "new"}, "title"),
+        (("old", _SANITIZER_SENSITIVE), {"new_seo_title": "new"}, "description"),
+    ],
+    ids=["title", "description"],
+)
+def test_seo_preserved_value_is_not_re_sanitized(stored, supplied, preserved_key):
     """The preserved field is sent byte-for-byte as stored. It was sanitized
-    when written; re-sanitizing on every unrelated write risks silent drift."""
-    stored_title = "Tee <b>&amp;</b> Hat"
-    tools, fc = _build([_seo_read(stored_title, "old"), _update_ok()])
-    tools["update_product_seo"](
-        product_id="123",
-        new_seo_description="new",
-        confirm=True,
-    )
+    when written; re-sanitizing on every unrelated write risks silent drift
+    (e.g. an admin-typed "Tee & Hat" becoming "Tee &amp; Hat")."""
+    tools, fc = _build([_seo_read(*stored), _update_ok()])
+    tools["update_product_seo"](product_id="123", confirm=True, **supplied)
     _, vars_put = fc.calls[1]
-    assert vars_put["product"]["seo"]["title"] == stored_title, vars_put
+    assert vars_put["product"]["seo"][preserved_key] == _SANITIZER_SENSITIVE, vars_put
+
+
+@pytest.mark.parametrize("field", ["new_seo_title", "new_seo_description"])
+def test_seo_value_that_sanitizes_to_empty_is_refused(field):
+    """The tool does not clear SEO fields (Story 9.19 decision). A supplied value
+    the sanitizer reduces to "" would clear one anyway, so it is refused before
+    any write — in preview and confirm alike."""
+    for confirm in (False, True):
+        tools, fc = _build([_seo_read("t", "d")])
+        out = tools["update_product_seo"](
+            product_id="123", confirm=confirm, **{field: "<script></script>"}
+        )
+        assert out.startswith("Error:") and "empty" in out, out
+        assert [call[0] for call in fc.calls] == [GET_PRODUCT_SEO_BY_ID], fc.calls
 
 
 def test_seo_user_errors_surfaced():

@@ -13,10 +13,10 @@ SEMANTICS.
 
 **Why a registry, and why it is discovered rather than listed.** A point-in-time
 sweep is what let the bug reach production. So this module does not list the
-mutation call sites it knows about — it FINDS every function in
-``shopify_mcp.shopify`` and ``shopify_mcp.tools`` whose code names a mutation
-document, and requires each to carry a recorded verdict in ``_VERDICTS``. A new
-write, anywhere in those packages, fails here until someone has decided whether
+mutation call sites it knows about — it FINDS every function or method anywhere
+in ``shopify_mcp`` whose code names a mutation document constant or carries an
+inline mutation literal, and requires each to carry a recorded verdict in
+``_VERDICTS``. A new write fails here until someone has decided whether
 it sends a nested object into an update. The equality runs both ways, so a
 removed or renamed site fails too rather than leaving a stale verdict behind.
 
@@ -29,16 +29,19 @@ too — not just a brand-new site. Other mutations' nested semantics are
 UNVERIFIED live (see the per-site verdicts and ``docs/tech-debt.md``); none of
 them sends a nested object into an update today.
 
-Scope note: the walk covers ``shopify_mcp.shopify`` and ``shopify_mcp.tools``
-(including ``tools/media``, which executes its own mutations) — every mutation
-document in the package lives there. ``server``/``__main__`` are not imported:
-importing them has start-up side effects and they define no documents.
+**Known blind spots** (recorded, not closed): a mutation document assembled at
+runtime (an f-string or concatenation, so no literal in any code object);
+a document passed in from outside the package; and code that executes a
+document reached only through a local alias the walker cannot name. A NEW
+nested field added to an EXISTING non-``productUpdate`` site is also not caught
+— its verdict is a human reading, not a payload check.
 """
 
 import importlib
+import inspect
 import pkgutil
 from collections.abc import Callable, Iterator
-from types import CodeType
+from types import CodeType, ModuleType
 from typing import Any
 
 import pytest
@@ -53,8 +56,7 @@ from graphql import (
 from graphql.error import GraphQLError
 from graphql.language import print_ast
 
-import shopify_mcp.shopify
-import shopify_mcp.tools
+import shopify_mcp
 from shopify_mcp.shopify.operations import catalog_hygiene as hygiene_ops
 from shopify_mcp.shopify.operations import products as ops
 from tests.unit.shopify.test_admin_schema_contract import _SCHEMA
@@ -138,10 +140,9 @@ _REPLACES_NESTED_WHOLESALE = {"productUpdate"}
 
 
 def _modules() -> Iterator[Any]:
-    for package in (shopify_mcp.shopify, shopify_mcp.tools):
-        yield package
-        for info in pkgutil.walk_packages(package.__path__, f"{package.__name__}."):
-            yield importlib.import_module(info.name)
+    yield shopify_mcp
+    for info in pkgutil.walk_packages(shopify_mcp.__path__, "shopify_mcp."):
+        yield importlib.import_module(info.name)
 
 
 def _mutation(value: object) -> OperationDefinitionNode | None:
@@ -160,10 +161,10 @@ def _mutation(value: object) -> OperationDefinitionNode | None:
     return None
 
 
-def _mutation_documents() -> dict[str, OperationDefinitionNode]:
-    """Module-level constant NAME -> parsed mutation, across both packages."""
+def _mutation_documents(modules: list[Any]) -> dict[str, OperationDefinitionNode]:
+    """Module-level constant NAME -> parsed mutation, across `modules`."""
     found: dict[str, OperationDefinitionNode] = {}
-    for module in _modules():
+    for module in modules:
         for name, value in vars(module).items():
             operation = _mutation(value)
             if operation is None:
@@ -184,27 +185,56 @@ def _code_objects(code: CodeType) -> Iterator[CodeType]:
             yield from _code_objects(const)
 
 
-def _call_sites() -> dict[str, set[str]]:
-    """`module:qualname` of every function naming a mutation document -> root fields."""
-    documents = _mutation_documents()
+def _root_fields(operation: OperationDefinitionNode) -> set[str]:
+    return {sel.name.value for sel in operation.selection_set.selections}  # type: ignore[attr-defined]
+
+
+def _module_code(module: Any) -> Iterator[CodeType]:
+    """Top-level code of every function and class method the module defines.
+
+    Decorated functions are unwrapped (`__wrapped__`), and staticmethods,
+    classmethods and properties are opened, so none hides its body."""
+    candidates: list[Any] = []
+    for value in vars(module).values():
+        if getattr(value, "__module__", None) != module.__name__:
+            continue
+        if isinstance(value, type):
+            for member in vars(value).values():
+                if isinstance(member, property):
+                    candidates += [member.fget, member.fset, member.fdel]
+                else:
+                    candidates.append(getattr(member, "__func__", member))
+        else:
+            candidates.append(value)
+    for candidate in candidates:
+        code = getattr(inspect.unwrap(candidate), "__code__", None) if candidate else None
+        if isinstance(code, CodeType):
+            yield code
+
+
+def _call_sites(modules: list[Any] | None = None) -> dict[str, set[str]]:
+    """`module:qualname` of every function using a mutation document -> root fields.
+
+    A function "uses" a document if its code names a module-level document
+    constant, or carries a mutation string literal of its own (an inline
+    document never reaches `_mutation_documents`)."""
+    modules = list(_modules()) if modules is None else modules
+    documents = _mutation_documents(modules)
     sites: dict[str, set[str]] = {}
-    for module in _modules():
-        for value in vars(module).values():
-            if not callable(value) or getattr(value, "__module__", None) != module.__name__:
-                continue
-            code = getattr(value, "__code__", None)
-            if code is None:
-                continue
+    for module in modules:
+        for code in _module_code(module):
             for inner in _code_objects(code):
-                named = documents.keys() & set(inner.co_names)
-                if not named:
-                    continue
-                roots = sites.setdefault(f"{module.__name__}:{inner.co_qualname}", set())
-                for name in named:
-                    roots.update(
-                        sel.name.value  # type: ignore[attr-defined]
-                        for sel in documents[name].selection_set.selections
-                    )
+                roots = {
+                    root
+                    for name in documents.keys() & set(inner.co_names)
+                    for root in _root_fields(documents[name])
+                }
+                for const in inner.co_consts:
+                    operation = _mutation(const)
+                    if operation is not None:
+                        roots |= _root_fields(operation)
+                if roots:
+                    sites.setdefault(f"{module.__name__}:{inner.co_qualname}", set()).update(roots)
     return sites
 
 
@@ -231,6 +261,59 @@ def test_discovery_sees_the_site_that_shipped_the_bug():
         "productUpdateMedia"
     }
     assert len(sites) >= 32
+
+
+_SYNTHETIC_SOURCE = """
+import functools
+
+DOC = "mutation M($product: ProductUpdateInput!) { productUpdate(product: $product) { userErrors { message } } }"
+
+def _deco(fn):
+    @functools.wraps(fn)
+    def inner(*args, **kwargs):
+        return fn(*args, **kwargs)
+    return inner
+
+@_deco
+def decorated(client):
+    return client.execute(DOC, {})
+
+def inline(client):
+    return client.execute(
+        "mutation I($id: ID!) { webhookSubscriptionDelete(id: $id) { userErrors { message } } }",
+        {},
+    )
+
+class Writer:
+    def method(self, client):
+        return client.execute(DOC, {})
+
+    @staticmethod
+    def static(client):
+        return client.execute(DOC, {})
+
+    @property
+    def prop(self):
+        return DOC
+
+def reads_only(client):
+    return client.execute("query Q { shop { name } }", {})
+"""
+
+
+def test_discovery_sees_decorated_inline_and_method_sites():
+    """The shapes a module-level-function-only walk missed (verifier, 9.19):
+    each must surface as a site, so none can add an unclassified write."""
+    module = ModuleType("synthetic_writes")
+    exec(_SYNTHETIC_SOURCE, module.__dict__)  # fixed test source
+    sites = _call_sites([module])
+    assert sites == {
+        "synthetic_writes:decorated": {"productUpdate"},
+        "synthetic_writes:inline": {"webhookSubscriptionDelete"},
+        "synthetic_writes:Writer.method": {"productUpdate"},
+        "synthetic_writes:Writer.static": {"productUpdate"},
+        "synthetic_writes:Writer.prop": {"productUpdate"},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -294,7 +377,14 @@ def _incomplete_nested_inputs(query: str, variables: dict[str, Any]) -> list[str
                 walk(item, type_, f"{path}[]", is_root)
             return
         input_type = _named_input(type_)
-        if input_type is None or not isinstance(value, dict):
+        if input_type is None:
+            return
+        if value is None and not is_root:
+            # `seo: null` replaces the nested object with nothing — it clears
+            # every field, which is the partial write at its most extreme.
+            problems.append(f"{path} ({input_type.name}) is null")
+            return
+        if not isinstance(value, dict):
             return
         if not is_root:
             missing = sorted(input_type.fields.keys() - value.keys())
@@ -306,8 +396,13 @@ def _incomplete_nested_inputs(query: str, variables: dict[str, Any]) -> list[str
 
     for definition in operation.variable_definitions:
         name = definition.variable.name.value
-        schema_type = _SCHEMA.get_type(print_ast(definition.type).strip("[]!"))
-        walk(variables.get(name), schema_type, f"${name}", is_root=True)
+        type_name = print_ast(definition.type).strip("[]!")
+        schema_type = _SCHEMA.get_type(type_name)
+        # A type missing from the pinned slice would make the walk a silent
+        # no-op — transcribe it into the contract SDL instead.
+        assert schema_type is not None, f"${name}: {type_name} is not in the pinned schema"
+        assert name in variables, f"${name} is declared but the payload does not supply it"
+        walk(variables[name], schema_type, f"${name}", is_root=True)
     return problems
 
 
@@ -339,6 +434,22 @@ def test_completeness_check_rejects_the_payload_that_destroyed_live_data():
     assert _incomplete_nested_inputs(query, broken) == [
         "$product.seo (SEOInput) omits ['description']"
     ]
+
+
+def test_completeness_check_rejects_a_null_nested_input():
+    """`seo: null` clears every field — flagged, not skipped as a non-dict."""
+    client = _CapturingClient()
+    ops.update_product_seo(client, _PID, title="S", description=None)
+    query, _ = client.calls[0]
+    broken = {"product": {"id": _GID, "seo": None}}
+    assert _incomplete_nested_inputs(query, broken) == ["$product.seo (SEOInput) is null"]
+
+
+def test_completeness_check_refuses_a_type_outside_the_pinned_schema():
+    """Otherwise the walk would silently check nothing and pass."""
+    query = "mutation C($input: CollectionInput!) { collectionUpdate(input: $input) { id } }"
+    with pytest.raises(AssertionError, match="CollectionInput is not in the pinned schema"):
+        _incomplete_nested_inputs(query, {"input": {"seo": {"title": "x"}}})
 
 
 def test_completeness_check_leaves_omitted_top_level_fields_alone():

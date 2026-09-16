@@ -377,8 +377,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         The field you do not supply is PRESERVED: its stored value is read and
         re-sent unchanged, because Shopify replaces the SEO object wholesale and
         would otherwise clear it (Story 9.19). An empty string means "not
-        supplied", so this tool cannot clear an SEO field — do that in the
-        Shopify admin.
+        supplied", and a value that sanitizes to empty is refused, so this tool
+        cannot clear an SEO field — do that in the Shopify admin.
         """
         if not new_seo_title and not new_seo_description:
             return "Error: provide at least one of new_seo_title or new_seo_description."
@@ -437,9 +437,21 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 + ", ".join(description_stripped)
             )
 
+        # This tool never clears an SEO field (Story 9.19), so a supplied value
+        # the sanitizer reduces to nothing is refused rather than written as "".
+        # The warnings say why it came out empty.
+        if (new_seo_title and not sanitized_title) or (
+            new_seo_description and not sanitized_description
+        ):
+            return (
+                "Error: a supplied SEO value is empty after sanitizing; this tool "
+                "does not clear SEO fields — do that in the Shopify admin.\n\nWarnings:\n"
+                + "\n".join(f"  • {w}" for w in warnings)
+            )
+
         old_title_line = old_title if old_title else "(empty)"
         old_desc_line = old_desc if old_desc else "(empty)"
-        # An unsupplied field is re-sent as stored (see _seo_input), so the
+        # An unsupplied field is re-sent as stored (see _execute), so the
         # preview says so and shows the value — never "(unchanged)", which is
         # what this line printed while the write was erasing it (Story 9.19).
         new_title_line = (
