@@ -187,10 +187,14 @@ def _binding_detach_then_append() -> list[Call]:
     )
 
 
+def _bindings(variables: dict[str, Any]) -> set[tuple[str, str]]:
+    return {(e["variantId"], m) for e in variables["variantMedia"] for m in e["mediaIds"]}
+
+
 def _binding_append_fails_then_rollback() -> list[Call]:
     # The second productVariantAppendMedia is the rollback built by
     # _handle_append_failure_after_detach, re-binding what the detach removed.
-    return _drive(
+    calls = _drive(
         catalog_hygiene.register,
         [
             _binding_read([_MEDIA_1]),
@@ -204,6 +208,16 @@ def _binding_append_fails_then_rollback() -> list[Call]:
             confirm=True,
         ),
     )
+    # Two appends by count alone would also be satisfied by a retry of the main
+    # append, so pin that the last one re-binds exactly what was detached.
+    detached = [v for q, v in calls if q == PRODUCT_VARIANT_DETACH_MEDIA]
+    appended = [v for q, v in calls if q == PRODUCT_VARIANT_APPEND_MEDIA]
+    assert detached and appended, "rollback driver emitted no detach or no append"
+    assert _bindings(appended[-1]) == _bindings(detached[0]), (
+        "the last productVariantAppendMedia is not the rollback of the detach: "
+        f"re-binds {_bindings(appended[-1])}, detach removed {_bindings(detached[0])}"
+    )
+    return calls
 
 
 def _set_metafields() -> list[Call]:
