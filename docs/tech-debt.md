@@ -4,7 +4,19 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-09-16.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-09-17.
+
+---
+
+## 2026-09-17 — Story 9.20 (coercion leg reaches the tool-built payloads)
+
+**Closes** the Story 9.16 residual "Coercion-leg coverage gap: 13 of 25". All 25 documents that take an input object now have their payload coerced against the snapshot, and `_PAYLOAD_BUILT_UPSTREAM` is gone. No document is left uncovered.
+
+**How.** `tests/support/tool_emitters.py` drives the real write tools (`CapturingServer` + `FakeClient`, `confirm=True`, canned pre-write reads) and captures every `execute()`. Each driver declares the documents it must emit and a minimum count. The contract suite selects captured calls by query text, coerces each one, and fails a run that emitted less than it declared, so a driver whose reads stop reaching the write cannot pass by checking nothing. The two-way guard now counts tool-driven emissions. Secondary emit paths have their own drivers: the `update_variant_image_binding` rollback (declares two appends), both `inventorySetOnHandQuantities` call sites (`update_inventory`, `update_variant_inventory_quantity`), and the upload flow's own `productReorderMedia`. Tests only; no tool file changed.
+
+**Proven to discriminate** by mutating tool source on 2026-09-17. Each mutation failed only its driver's test, and the failure named the input type: leaking the internal `ownerType` into `MetafieldsSetInput`; `ownerId` → `ownerID` in `MetafieldIdentifierInput` (delete); `compareAtPrice` in `ProductVariantsBulkInput` (pricing); `variantId` in the rollback's `ProductVariantAppendMediaInput`; `usageLimit` in `DiscountCodeBasicInput`; `inventoryItemId` at the second `InventorySetQuantityInput` site; `mediaContentType` in `CreateMediaInput`. Two no-emission mutations (the rollback never sent; `update_product_media` never writing) failed with "emitted N, expected at least M". One mutation did not count: renaming `ownerId` where metafield entries are normalized crashed the tool's preview before the write, so its failure proves nothing about coercion.
+
+**Still true, per 9.16's framing.** This checks payload SHAPE against the pinned schema. It does not prove a write works live (business rules such as "Context can't be blank" are out of reach), and the canned reads only need to reach the write, so tool behaviour stays the per-tool suites' job.
 
 ---
 
@@ -23,7 +35,7 @@ The suite still does not claim that a drift report means breakage. The failure m
 ### Residuals, recorded not fixed
 
 - **Deprecated usages: 30** across the documents. The suite pins a ceiling per deprecated coordinate; a count may fall but not rise, and a new coordinate fails. These are the likeliest next removals: `QueryRoot.productByHandle` x7 (use `productByIdentifier`), `Product.bodyHtml` x6 (use `descriptionHtml`), `QueryRoot.collectionByHandle` x4 (use `collectionByIdentifier`), `Publication.name` x4 (use `Catalog.title`), `WebhookSubscription.endpoint` x2 (use `uri`), and x1 each: `Mutation.collectionAddProductsV2`, `Mutation.collectionRemoveProducts`, `Mutation.inventorySetOnHandQuantities`, `Mutation.productCreateMedia`, `Mutation.productUpdateMedia`, `Mutation.productDeleteMedia`, `ProductReorderMediaPayload.userErrors`.
-- **Coercion-leg coverage gap: 13 of 25** documents that take an input object have no emitted-payload check. 9 forward a payload the tool layer builds (`metafieldsSet`, `metafieldsDelete`, variant media append/detach, `productOptionUpdate`, both `productVariantsBulkUpdate` documents, `discountCodeBasicCreate`, `inventorySetOnHandQuantities`), and 4 are executed directly by `tools/media` with no operations function. They are listed in `_PAYLOAD_BUILT_UPSTREAM`, and a two-way equality test stops the list from drifting. Closing the gap means driving the tools, not the operations layer.
+- **[CLOSED 2026-09-17 by Story 9.20, see above]** **Coercion-leg coverage gap: 13 of 25** documents that take an input object have no emitted-payload check. 9 forward a payload the tool layer builds (`metafieldsSet`, `metafieldsDelete`, variant media append/detach, `productOptionUpdate`, both `productVariantsBulkUpdate` documents, `discountCodeBasicCreate`, `inventorySetOnHandQuantities`), and 4 are executed directly by `tools/media` with no operations function. They are listed in `_PAYLOAD_BUILT_UPSTREAM`, and a two-way equality test stops the list from drifting. Closing the gap means driving the tools, not the operations layer.
 - **The snapshot is only as current as its last refresh.** Nothing offline can notice that Shopify changed the schema. Only the live runner can, so run it on every API version bump.
 
 ---

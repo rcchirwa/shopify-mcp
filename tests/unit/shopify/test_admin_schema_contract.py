@@ -11,8 +11,10 @@ generalizing Stories 9.12, 9.14 and 9.18).
   ``referringSite``, ``node { ... on Job }``). It is NOT proof the operation is
   broken live. The snapshot can be stale, or the drift can be harmless.
   Confirm by executing the operation before calling a tool broken.
-- ``test_emitted_payload_is_accepted_by_pinned_schema`` coerces the variables
-  the operations layer actually emits. Document validation cannot see inside an
+- ``test_emitted_payload_is_accepted_by_pinned_schema`` and
+  ``test_tool_built_payload_is_accepted_by_pinned_schema`` coerce the variables
+  the code actually emits, from the operations layer or, where the tool builds
+  the payload, from the tool itself. Document validation cannot see inside an
   input object supplied as a variable (see
   ``test_document_validation_alone_cannot_see_inside_a_variable``). A coercion
   failure means the payload itself is rejected, which is a real break.
@@ -84,6 +86,7 @@ from tests.support.admin_schema_snapshot import (
     read_snapshot_header,
     snapshot_body,
 )
+from tests.support.tool_emitters import TOOL_EMITTERS
 
 _SNAPSHOT_TEXT = SNAPSHOT_PATH.read_text(encoding="utf-8")
 _API_VERSION, _CAPTURED = read_snapshot_header(_SNAPSHOT_TEXT)
@@ -561,33 +564,6 @@ _EMITTERS: dict[str, Callable[[_CapturingClient], Any]] = {
     ),
 }
 
-# Documents taking an input object whose payload is assembled OUTSIDE the
-# operations layer (the tool builds it and the operations function forwards it
-# verbatim), so no operations call here can emit the real thing. Recorded gaps,
-# not coverage.
-_PAYLOAD_BUILT_UPSTREAM: dict[str, str] = dict.fromkeys(
-    (
-        "shopify_mcp.shopify.queries.catalog_hygiene.METAFIELDS_DELETE_MUTATION",
-        "shopify_mcp.shopify.queries.catalog_hygiene.METAFIELDS_SET_MUTATION",
-        "shopify_mcp.shopify.queries.catalog_hygiene.PRODUCT_VARIANT_APPEND_MEDIA",
-        "shopify_mcp.shopify.queries.catalog_hygiene.PRODUCT_VARIANT_DETACH_MEDIA",
-        "shopify_mcp.shopify.queries.catalog_hygiene.UPDATE_PRODUCT_OPTION",
-        "shopify_mcp.shopify.queries.catalog_hygiene.UPDATE_PRODUCT_VARIANTS_PRICING",
-        "shopify_mcp.shopify.queries.discounts.CREATE_DISCOUNT_CODE_BASIC",
-        "shopify_mcp.shopify.queries.inventory.SET_INVENTORY",
-        "shopify_mcp.shopify.queries.products.UPDATE_PRODUCT_VARIANTS_POLICY",
-    ),
-    "payload built in the tool layer; the operations function forwards it",
-) | dict.fromkeys(
-    (
-        "shopify_mcp.tools.media._graphql.PRODUCT_CREATE_MEDIA",
-        "shopify_mcp.tools.media._graphql.PRODUCT_REORDER_MEDIA",
-        "shopify_mcp.tools.media._graphql.PRODUCT_UPDATE_MEDIA",
-        "shopify_mcp.tools.media._graphql.STAGED_UPLOADS_CREATE",
-    ),
-    "tools/media builds and executes these directly; there is no operations function",
-)
-
 
 def _emit(emitter: Callable[[_CapturingClient], Any]) -> tuple[str, dict]:
     client = _CapturingClient()
@@ -619,10 +595,68 @@ def test_emitted_payload_is_accepted_by_pinned_schema(name):
     )
 
 
-def test_every_document_taking_an_input_object_is_emitted_or_a_recorded_gap():
+# ---- payloads built in the tool layer (Story 9.20) ---------------------------
+#
+# For these documents the TOOL assembles the input object (or ``tools/media``
+# executes the document itself), so the operations functions above would only
+# forward a payload the test author wrote. ``tests/support/tool_emitters.py``
+# drives the real tools instead; see its docstring.
+
+
+def _select_declared(
+    calls: list[tuple[str, dict]], must_emit: dict[str, int]
+) -> tuple[list[tuple[str, dict]], list[str]]:
+    """The captured calls whose query text is a declared document, plus one
+    problem per declared document emitted fewer times than required. Selecting
+    by text, not position, because a tool makes several calls per run."""
+    selected = [(query, variables) for query, variables in calls if query in must_emit]
+    counts = Counter(query for query, _ in selected)
+    missing = [
+        f"{_LABEL_BY_TEXT.get(query, '<a document discovery does not know>')}: "
+        f"emitted {counts[query]}, expected at least {minimum}"
+        for query, minimum in must_emit.items()
+        if counts[query] < minimum
+    ]
+    return selected, missing
+
+
+@pytest.mark.parametrize("name", sorted(TOOL_EMITTERS))
+def test_tool_built_payload_is_accepted_by_pinned_schema(name):
+    emitter = TOOL_EMITTERS[name]
+    selected, missing = _select_declared(emitter.run(), emitter.must_emit)
+    assert missing == [], (
+        f"{name}: the tool run did not emit what it declares, so nothing would be "
+        f"checked. Its canned reads no longer carry the tool to its write: {missing}"
+    )
+    for query, variables in selected:
+        assert query in _LABEL_BY_TEXT, f"{name} sent a document discovery does not know about"
+        coerced = _coerce(query, variables)
+        assert isinstance(coerced, dict), (
+            f"{name}: the payload the TOOL builds for {_LABEL_BY_TEXT[query]} is REJECTED "
+            f"by the pinned schema ({_API_VERSION}): {[str(e) for e in coerced]}"
+        )
+
+
+def test_a_tool_run_that_emits_less_than_it_declares_fails():
+    """Without this, a driver whose canned reads stopped short of the write
+    would coerce nothing and pass."""
+    other = "query Other { shop { id } }"
+    selected, missing = _select_declared(
+        [(other, {}), (CREATE_WEBHOOK, {"topic": "ORDERS_CREATE"})],
+        {CREATE_WEBHOOK: 2, UPDATE_PRODUCT: 1},
+    )
+    assert selected == [(CREATE_WEBHOOK, {"topic": "ORDERS_CREATE"})]
+    assert missing == [
+        "shopify_mcp.shopify.queries.webhooks.CREATE_WEBHOOK: emitted 1, expected at least 2",
+        "shopify_mcp.shopify.queries.products.UPDATE_PRODUCT: emitted 0, expected at least 1",
+    ]
+
+
+def test_every_document_taking_an_input_object_has_its_payload_emitted():
     """A new write that sends an input object must join ``_EMITTERS`` or
-    ``_PAYLOAD_BUILT_UPSTREAM``, so the coercion leg's coverage cannot shrink
-    silently. The equality runs both ways, so a stale entry fails too."""
+    ``TOOL_EMITTERS``, so the coercion leg's coverage cannot shrink silently.
+    The equality runs both ways, so an emitter of a document that takes no
+    input object fails too."""
 
     def takes_input_object(text: str) -> bool:
         return any(
@@ -632,8 +666,15 @@ def test_every_document_taking_an_input_object_is_emitted_or_a_recorded_gap():
 
     taking = {label for label, text in _DOCUMENTS.items() if takes_input_object(text)}
     emitted = {_LABEL_BY_TEXT[_emit(emitter)[0]] for emitter in _EMITTERS.values()}
-    assert not emitted & _PAYLOAD_BUILT_UPSTREAM.keys()
-    assert taking == emitted | _PAYLOAD_BUILT_UPSTREAM.keys()
+    tool_emitted = {
+        _LABEL_BY_TEXT[query]
+        for emitter in TOOL_EMITTERS.values()
+        for query, _ in _select_declared(emitter.run(), emitter.must_emit)[0]
+    }
+    assert taking == emitted | tool_emitted, (
+        f"not emitted: {sorted(taking - emitted - tool_emitted)}; "
+        f"emitted but taking no input object: {sorted((emitted | tool_emitted) - taking)}"
+    )
 
 
 # ---- the discriminating negatives ------------------------------------------
