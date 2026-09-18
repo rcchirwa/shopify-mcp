@@ -24,6 +24,11 @@ from shopify_mcp.tools import _log
 # Explicitly asking for them still works: `pytest tests/live`.
 collect_ignore = ["live"]
 
+# Resolved from this conftest, like collect_ignore above, so it holds from any
+# working directory. `_redirect_audit_log` exempts tests under here: they mutate
+# a real store and their audit lines are the genuine record of it.
+_LIVE_TESTS_DIR = Path(__file__).resolve().parent / "live"
+
 
 # Captured at conftest import — before any fixture below can run — so it holds
 # the value _log.py computes for production. Once _redirect_audit_log is active
@@ -63,9 +68,9 @@ def _reset_audit_logger() -> None:
 
 @pytest.fixture(autouse=True)
 def _redirect_audit_log(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> Generator[None, None, None]:
-    """Send audit lines to a per-test tmp file, never the real trail.
+    """Send offline audit lines to a per-test tmp file, never the real trail.
 
     `_log.LOG_FILE` resolves to the repo root of whatever checkout runs the
     tests. In the main checkout that is the same `aon_mcp_log.txt` the live
@@ -85,9 +90,27 @@ def _redirect_audit_log(
     in place: several tests assert on the calls they intercept, and this fixture
     is a backstop for the paths nothing else covers, not a replacement.
 
+    **tests/live/ is deliberately exempt.** Those runners mutate a real store —
+    they register and delete a live webhook, create a collection, publish and
+    unpublish one — and each tool's audit line is the durable record that the
+    store was touched. Redirecting them would strip genuine entries from the
+    very trail this fixture exists to keep trustworthy, which is the opposite
+    of the point. They are out of default discovery (`collect_ignore` above),
+    so they only run when asked for by name, and then they should log for real.
+
+    **Function-scoped, so it covers test bodies and not fixture setup.** A
+    session-, package-, module- or class-scoped fixture that drives a confirmed
+    write would run outside this redirect and reach the real file, and no guard
+    below would notice. Every higher-scoped fixture in the suite today lives in
+    tests/live and only reads, so this is a limit to respect when adding one,
+    not a live hole.
+
     Guarded by tests/unit/tools/test_log_isolation.py — remove this and those
     two tests fail.
     """
+    if _LIVE_TESTS_DIR in request.path.parents:
+        yield
+        return
     _reset_audit_logger()
     monkeypatch.setattr(_log, "LOG_FILE", str(tmp_path / "aon_mcp_log.txt"))
     yield

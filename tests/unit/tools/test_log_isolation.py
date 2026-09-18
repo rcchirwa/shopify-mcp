@@ -25,7 +25,15 @@ from shopify_mcp.tools import _log, media
 from tests.support import CapturingServer, FakeClient
 
 PRODUCT_GID = "gid://shopify/Product/123"
-MEDIA_A = "gid://shopify/MediaImage/111"
+
+# Deliberately NOT one of test_media.py's 111/222/333 ids. The live audit trail
+# already carries historical fixture lines from those (200 occurrences of
+# MediaImage/333 in the main checkout as of 2026-09-18), so keying the
+# "did not reach the live log" assertion on a shared id would fail on the old
+# pollution this story does not clean up, instead of on a redirect that leaked.
+# This id appears nowhere else, so finding it in the live log means this run put
+# it there. `product=123` is shared and cannot serve as the fingerprint.
+GUARD_MEDIA = "gid://shopify/MediaImage/109300"
 
 
 def _live_log() -> Path:
@@ -68,7 +76,6 @@ def test_a_real_tool_write_is_captured_by_the_redirect_not_the_live_log():
     pass just as happily if the tool had stopped logging altogether.
     """
     live = _live_log()
-    size_before = live.stat().st_size if live.exists() else None
 
     tools = _media_tools(
         [
@@ -79,7 +86,7 @@ def test_a_real_tool_write_is_captured_by_the_redirect_not_the_live_log():
                     "media": {
                         "nodes": [
                             {
-                                "id": MEDIA_A,
+                                "id": GUARD_MEDIA,
                                 "alt": "",
                                 "mediaContentType": "IMAGE",
                                 "status": "READY",
@@ -92,7 +99,7 @@ def test_a_real_tool_write_is_captured_by_the_redirect_not_the_live_log():
             },
             {
                 "productDeleteMedia": {
-                    "deletedMediaIds": [MEDIA_A],
+                    "deletedMediaIds": [GUARD_MEDIA],
                     "product": {"id": PRODUCT_GID},
                     "mediaUserErrors": [],
                 }
@@ -100,7 +107,7 @@ def test_a_real_tool_write_is_captured_by_the_redirect_not_the_live_log():
         ]
     )
 
-    out = tools["delete_product_media"](product_id="123", media_ids=[MEDIA_A], confirm=True)
+    out = tools["delete_product_media"](product_id="123", media_ids=[GUARD_MEDIA], confirm=True)
     assert out.startswith("CONFIRMED —"), out
 
     redirected = Path(_log.LOG_FILE)
@@ -108,10 +115,16 @@ def test_a_real_tool_write_is_captured_by_the_redirect_not_the_live_log():
         f"no audit line was written anywhere ({redirected} absent) — the tool "
         "stopped logging, so this test would otherwise pass vacuously"
     )
-    assert "delete_product_media" in redirected.read_text(encoding="utf-8")
+    line = redirected.read_text(encoding="utf-8")
+    assert "delete_product_media" in line
+    assert GUARD_MEDIA in line, f"the captured line does not name this test's media id: {line!r}"
 
-    size_after = live.stat().st_size if live.exists() else None
-    assert size_after == size_before, (
-        f"the confirmed write reached the live audit trail {live}: "
-        f"{size_before} -> {size_after} bytes"
-    )
+    # Assert on content, not on size. The live shopify-gss server appends to
+    # this same file, so comparing before/after bytes would fail whenever a
+    # real store write happened to land mid-run — and would blame this test for
+    # it. What actually matters is that THIS test's line is not in there.
+    if live.exists():
+        assert GUARD_MEDIA not in live.read_text(encoding="utf-8"), (
+            f"this test's fixture media id {GUARD_MEDIA} reached the live audit "
+            f"trail {live}; the redirect is not holding"
+        )
