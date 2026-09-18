@@ -452,17 +452,21 @@ def test_no_legacy_top_level_name_resolves_into_this_repo():
 # --- the path constants whose depth changed ---------------------------------
 
 
-def test_the_write_audit_log_still_resolves_to_the_repo_root():
+def test_the_write_audit_log_still_resolves_to_the_repo_root(production_log_file):
     """AC: the audit log lands at the repo root, not inside src/.
 
     ``tools/_log.py`` derived it from ``dirname(dirname(__file__))``, which was
     the repo root at the old depth and would be ``src/shopify_mcp/`` at the new
     one — silently relocating the write-audit trail.
-    """
-    from shopify_mcp.tools import _log
 
-    assert Path(_log.LOG_FILE).resolve() == _REPO_ROOT / "aon_mcp_log.txt", (
-        f"LOG_FILE resolves to {_log.LOG_FILE!r}, not the repo root."
+    Reads the value conftest captured at import rather than ``_log.LOG_FILE``,
+    because Story 10.93 redirects that attribute per test to keep the suite out
+    of the real audit trail. The assertion is unchanged in intent: it is still
+    the production constant, and checking it while the redirect is active also
+    pins that the fix stayed test-only.
+    """
+    assert Path(production_log_file).resolve() == _REPO_ROOT / "aon_mcp_log.txt", (
+        f"LOG_FILE resolves to {production_log_file!r}, not the repo root."
     )
 
 
