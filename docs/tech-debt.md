@@ -4,7 +4,47 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-09-17.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-09-18.
+
+---
+
+## 2026-09-18 — Story 10.93 (the offline suite wrote to the real audit trail)
+
+**What was wrong.** `tools/_log.py` resolves `LOG_FILE` to the repo root of whatever checkout runs the tests. In the main checkout that is the same `aon_mcp_log.txt` the live `shopify-gss` server appends real Shopify writes to, so running the offline suite appended fixture lines to a durable audit record — one this project's own notes cite as evidence that a write happened, on a log whose rotation is capped at 10 MB x 5, so test churn evicted genuine history.
+
+**Measured, not estimated.** In a fresh worktree with no log present, one full run of the offline suite produced **63 lines from 63 tests, 1:1**: 37 in `test_publications.py`, 21 in `test_media.py`, 5 in `test_products.py`. Per tool: `publish_product_to_channels` 11, `publish_collection_to_channels` 11, `upload_product_image` 10, `unpublish_product_from_channels` 7, `set_product_publications` 6, `update_variant_inventory_policy` 5, `delete_product_media` 5, `reorder_product_media` 4, `update_product_media` 2, `unpublish_collection_from_channels` 2. `test_log.py`'s 13 logging tests are **not** in that set — they redirect `LOG_FILE` themselves via `tmp_log`. A first pass counted them as polluters because the measuring plugin read `_log.LOG_FILE` per test and so followed their redirect; pinning the watched path at import corrected 76 to 63.
+
+**Why per-module patching could not fix it.** Eleven tool modules do `from shopify_mcp.tools._log import log_write`, which binds the name locally — patching one module's binding never intercepts another's. `tests/conftest.py` patched only `_write_tool.log_write` (covering tools migrated to `write_gate()`), and per-suite `_no_log_write` fixtures existed in four test files. Nothing covered `tools/media/*`, `tools/publications.py`, or `tools/products.py`'s direct calls at `:936`/`:962`. Every new tool module or test file reopened the hole.
+
+**How.** A single autouse fixture in `tests/conftest.py` redirects `_log.LOG_FILE` to a per-test `tmp_path` — the one place the path is decided, which all 26 call sites reach through, including sites that do not exist yet. Chosen over patching each module's binding (the card's approach 1) because it needs no `pkgutil` scan and leaves the real logging code running, so `_log.py`'s own behaviour stays exercised rather than stubbed. `_get_logger()` memoises `(logger, path)`, so the fixture clears that cache and closes the handler on both sides of the yield; otherwise a handler leaks on a `tmp_path` file pytest is about to reap, or a closed handler stays installed for the next `log_write`. The existing `_write_tool` patch and the four per-suite fixtures are left alone — several tests assert on the calls they intercept, and this is a backstop for what nothing else covers, not a replacement.
+
+**Tests only. No production path changed:** the diff touches `tests/` and this file, and the live server still writes to the repo-root log.
+
+**Proven to discriminate** by two mutations on 2026-09-18. Disabling the redirect fails both guard tests in `tests/unit/tools/test_log_isolation.py` (`_log.LOG_FILE still points at the live audit trail`, and `the confirmed write reached the live audit trail … None -> 117 bytes`). Separately, deleting `_delete.py`'s confirmed-path `log_write` call fails the second guard with `no audit line was written anywhere` — so the test cannot pass by checking nothing if a tool stops logging, the same non-vacuity trap Story 9.20 recorded. The guard locates the live log from `_log.__file__`'s `parents[3]`, independently of the redirected attribute.
+
+**What the review changed.** Three findings, all fixed in a second commit.
+
+1. **`tests/live/` is now exempt, and that is a correctness fix, not a tidy-up.** The fixture originally sat in the shared `tests/conftest.py` with no carve-out, so it also applied to the live runners — which mutate a real store (`test_webhooks.py` registers and deletes a live subscription, `test_create_collection_probe.py` creates a collection, `test_collection_publish_probe.py` publishes and unpublishes one). Their audit lines are the genuine record that the store was touched, and redirecting them would have stripped real entries from the very trail this story exists to make trustworthy — removing fixture noise at the cost of real evidence. The fixture now yields early when the test's path is under `tests/live/`, verified end-to-end with a throwaway runner placed there, which saw the un-redirected repo-root path.
+2. **The guard no longer compares byte sizes.** It asserted the live log's size was identical before and after, but the live `shopify-gss` server appends to that same file, so any real store write landing mid-run would have failed the test and blamed `delete_product_media`. CI never has the file, so this would have been a local-only flake with a misleading message. It now asserts on content.
+3. **The guard's fingerprint had to be unique.** Keying that content assertion on `test_media`'s shared `MediaImage/111` would have failed in the main checkout against the *historical* pollution this story deliberately leaves alone (200 lines of `MediaImage/333`) rather than against a leaking redirect — a test red for the wrong reason. The guard uses `MediaImage/109300`, which appears nowhere else; `product=123` is shared and cannot serve as the fingerprint.
+
+**What an independent verifier changed.** An Opus verifier reproduced the 63-lines/63-tests measurement on the parent commit and confirmed all six gates, then found three bypass routes the per-test fixture could not cover, two of them demonstrated with a green suite and a polluted log:
+
+1. **A higher-scoped autouse fixture that writes during setup** runs outside a function-scoped fixture. Reproduced: a `scope="module"` autouse fixture driving a confirmed delete appended to the repo-root log with the run reporting `1 passed`.
+2. **A test module defining its own `_redirect_audit_log` shadows the conftest one** by name. Reproduced: `2117 passed` with the real log carrying the fixture line. "Remove this and the guards fail" held only for removal *from conftest*.
+3. **The `tests/live` exemption compared a resolved constant against an unresolved `request.path`**, so invoking through a symlinked path (macOS `/tmp` → `/private/tmp`) missed the exemption and redirected a genuine live-store write, silently.
+
+Routes 1 and 2 are now closed by a **session-wide redirect in `pytest_configure`**, which sets `LOG_FILE` before collection so the production path is never the target regardless of what happens to the per-test fixture; that fixture still runs, narrowing the redirect to one file per test for isolation. It is skipped when the invocation names `tests/live`. Deliberately **not** the post-hoc "did the real log change?" check the verifier first suggested: the live server appends to that file, so such a comparison would fail on someone else's genuine write — the same false-positive class as the byte-size check removed above. Route 3 is a `request.path.resolve()`. All three fixes were re-verified by mutation: disabling the session redirect makes both bypass routes leak again (`MediaImage/777001` from the module-scoped fixture, `777002` from the shadowed one), and the exemption was re-checked both directly and through a symlink.
+
+**A measured cost, now removed.** The verifier found the per-test `tmp_path` took basetemp entries from 44 to 3591 (81x) and the suite from 6.78s to 9.61s (+42%) — paid by all 2116 tests although only ~76 ever log, since the handler is built lazily on first `log_write`. Replaced with one session directory holding a file per test: **2 basetemp entries, 2116 passed in 6.16s**, faster than the pre-story baseline, with per-test isolation intact.
+
+**Known limits, documented in the fixture.** `tests/conftest.py` is outside the coverage gate (`source = ["shopify_mcp"]`), so no test measures the exemption branch — enforcement is the session redirect, not coverage. And guard 2 reads only `aon_mcp_log.txt`, so a leak landing in a rotated `.1`–`.5` file would be missed; that needs 10 MB to reach and is recorded rather than fixed.
+
+**One existing test had to move to a captured value.** `tests/architecture/test_src_layout.py::test_the_write_audit_log_still_resolves_to_the_repo_root` (Story 10.47 / FS-3) asserted on `_log.LOG_FILE` directly, which the redirect makes unanswerable. It now reads `production_log_file`, a session fixture returning the value captured at conftest import before any redirect runs. Intent is unchanged — still the production constant, still pinned to the repo root — and asserting it while the redirect is active now also pins that this fix stayed test-only.
+
+### Residual, recorded not fixed
+
+- **The main checkout's audit trail still carries fixture lines.** 1890 lines as of 2026-09-18, including 200 occurrences of `product=123 media=gid://shopify/MediaImage/333` from a single `test_media` fixture. This story deliberately does **not** touch it: cleaning before the fix lands would simply be re-polluted by the next test run. Card step 8 holds the procedure (back up outside the repo, filter by fixture fingerprint cross-checked against the per-test inventory above, never truncate, keep anything not provably a fixture) and it needs Robert's explicit go-ahead on the proposed diff.
 
 ---
 
