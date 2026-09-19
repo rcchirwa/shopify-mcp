@@ -1,6 +1,9 @@
 """Session-wide pytest fixtures for shopify-mcp offline tests."""
 
+import itertools
 import logging
+import shutil
+import tempfile
 from collections.abc import Generator
 from pathlib import Path
 
@@ -44,6 +47,85 @@ def production_log_file() -> str:
     return _PRODUCTION_LOG_FILE
 
 
+_audit_seq = itertools.count()
+_audit_dir: str | None = None
+
+
+def _audit_redirect_dir() -> Path:
+    """One session directory holding every redirected audit file.
+
+    A directory per test (`tmp_path`) cost 81x the basetemp entries and ~40% of
+    the suite's wall clock for 2116 tests, almost all of which never log at all
+    — the handler is only built on the first `log_write`. One directory with a
+    file per test keeps writers isolated from each other at a fraction of that.
+    """
+    global _audit_dir
+    if _audit_dir is None:
+        _audit_dir = tempfile.mkdtemp(prefix="shopify-mcp-audit-")
+    return Path(_audit_dir)
+
+
+def _invocation_targets_live_tests(config: pytest.Config) -> bool:
+    """Whether this pytest invocation names anything under tests/live/.
+
+    Those runners mutate a real store and must log for real, so a run that asks
+    for them does not get the session-wide redirect below. They are out of
+    default discovery, so this is False for a plain `pytest` and for CI.
+    """
+    for arg in config.args:
+        raw = Path(str(arg).split("::", 1)[0])
+        if not raw.is_absolute():
+            raw = Path(config.invocation_params.dir) / raw
+        try:
+            resolved = raw.resolve()
+        except OSError:
+            # A path arg that cannot be resolved is not a live-test path. No
+            # pragma: the coverage gate measures `shopify_mcp` only, so nothing
+            # under tests/ is reported either way.
+            continue
+        if resolved == _LIVE_TESTS_DIR or _LIVE_TESTS_DIR in resolved.parents:
+            return True
+    return False
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Redirect the audit log for the whole session, before collection starts.
+
+    `_redirect_audit_log` below is function-scoped, and three routes get past a
+    function-scoped fixture with the suite still green — each reproduced by an
+    independent verifier on 2026-09-18:
+
+    * a higher-scoped (session/package/module/class) autouse fixture that drives
+      a confirmed write during setup,
+    * a test module that defines its own `_redirect_audit_log` and so shadows
+      this one by name,
+    * anything that logs at import or collection time.
+
+    Setting LOG_FILE here means the production path is not the target from the
+    moment pytest configures, whatever happens to the per-test fixture. That
+    fixture still runs, narrowing the redirect to one file per test so writers
+    cannot read each other's lines.
+
+    Skipped when the invocation names tests/live — see
+    `_invocation_targets_live_tests`. Deliberately not a post-hoc "did the real
+    log change?" check: the live server appends to that file, so a comparison
+    would fail on someone else's genuine write.
+    """
+    if _invocation_targets_live_tests(config):
+        return
+    _log.LOG_FILE = str(_audit_redirect_dir() / "session.log")
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Undo pytest_configure's redirect and drop the session directory."""
+    global _audit_dir
+    _log.LOG_FILE = _PRODUCTION_LOG_FILE
+    _reset_audit_logger()
+    if _audit_dir is not None:
+        shutil.rmtree(_audit_dir, ignore_errors=True)
+        _audit_dir = None
+
+
 def _reset_audit_logger() -> None:
     """Drop _log's cached logger and close its handler.
 
@@ -68,7 +150,7 @@ def _reset_audit_logger() -> None:
 
 @pytest.fixture(autouse=True)
 def _redirect_audit_log(
-    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> Generator[None, None, None]:
     """Send offline audit lines to a per-test tmp file, never the real trail.
 
@@ -98,21 +180,25 @@ def _redirect_audit_log(
     of the point. They are out of default discovery (`collect_ignore` above),
     so they only run when asked for by name, and then they should log for real.
 
-    **Function-scoped, so it covers test bodies and not fixture setup.** A
-    session-, package-, module- or class-scoped fixture that drives a confirmed
-    write would run outside this redirect and reach the real file, and no guard
-    below would notice. Every higher-scoped fixture in the suite today lives in
-    tests/live and only reads, so this is a limit to respect when adding one,
-    not a live hole.
+    **This fixture gives per-test isolation, not the outer safety net.** Being
+    function-scoped, it cannot cover a higher-scoped fixture that writes during
+    setup, collection-time logging, or a test module that shadows its name.
+    `pytest_configure` above redirects the whole session for exactly those three
+    routes; this narrows that to one file per test so writers cannot read each
+    other's lines.
 
     Guarded by tests/unit/tools/test_log_isolation.py — remove this and those
     two tests fail.
     """
-    if _LIVE_TESTS_DIR in request.path.parents:
+    # .resolve() both sides: _LIVE_TESTS_DIR is resolved, and an invocation
+    # through a symlinked path (macOS /tmp -> /private/tmp) yields an
+    # unresolved request.path, which would silently miss the exemption and
+    # redirect a real live-store write.
+    if _LIVE_TESTS_DIR in request.path.resolve().parents:
         yield
         return
     _reset_audit_logger()
-    monkeypatch.setattr(_log, "LOG_FILE", str(tmp_path / "aon_mcp_log.txt"))
+    monkeypatch.setattr(_log, "LOG_FILE", str(_audit_redirect_dir() / f"t{next(_audit_seq)}.log"))
     yield
     # Before monkeypatch restores the real LOG_FILE, so no handler is left
     # pointing at the tmp file pytest is about to reap.
