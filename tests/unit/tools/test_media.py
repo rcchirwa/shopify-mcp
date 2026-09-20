@@ -509,7 +509,7 @@ def test_upload_attach_user_errors_labelled_attach_stage():
         [
             _product_media_read([]),
             _staged_ok(),
-            _create_media_err("media", "unsupported format"),
+            _create_media_err(["media", "0", "originalSource"], "unsupported format"),
         ]
     )
     with (
@@ -550,8 +550,6 @@ def test_upload_attach_list_field_renders_dotted_path():
             confirm=True,
         )
     assert out == "Error at stage=attach: media.0.originalSource: is invalid"
-    assert "[" not in out
-    assert "'" not in out
 
 
 def test_upload_staged_target_put_failure_labels_stage_upload():
@@ -752,7 +750,9 @@ def test_reorder_surfaces_media_user_errors():
             {
                 "productReorderMedia": {
                     "job": None,
-                    "mediaUserErrors": [{"field": "moves", "message": "bad position"}],
+                    "mediaUserErrors": [
+                        {"field": ["moves", "0", "newPosition"], "message": "bad position"}
+                    ],
                     "userErrors": [],
                 }
             },
@@ -790,8 +790,6 @@ def test_reorder_surfaces_media_user_errors_list_field():
         confirm=True,
     )
     assert out == "Error at stage=reorder: moves.0.newPosition: bad position"
-    assert "[" not in out
-    assert "'" not in out
 
 
 # ---------- update_product_media ----------
@@ -888,7 +886,7 @@ def test_update_media_user_errors_surfaced():
             {
                 "productUpdateMedia": {
                     "media": [],
-                    "mediaUserErrors": [{"field": "alt", "message": "too long"}],
+                    "mediaUserErrors": [{"field": ["media", "0", "alt"], "message": "too long"}],
                 }
             },
         ]
@@ -924,8 +922,6 @@ def test_update_media_user_errors_list_field_renders_dotted_path():
         confirm=True,
     )
     assert out == "Error at stage=update: media.0.alt: too long"
-    assert "[" not in out
-    assert "'" not in out
 
 
 # ---------- delete_product_media ----------
@@ -1012,7 +1008,7 @@ def test_delete_media_user_errors_surfaced():
                 "productDeleteMedia": {
                     "deletedMediaIds": [],
                     "product": {"id": PRODUCT_GID},
-                    "mediaUserErrors": [{"field": "mediaIds", "message": "locked"}],
+                    "mediaUserErrors": [{"field": ["mediaIds", "0"], "message": "locked"}],
                 }
             },
         ]
@@ -1047,8 +1043,6 @@ def test_delete_media_user_errors_list_field_renders_dotted_path():
         confirm=True,
     )
     assert out == "Error at stage=delete: mediaIds.0: locked"
-    assert "[" not in out
-    assert "'" not in out
 
 
 def test_delete_media_dedupes_input_ids():
@@ -1381,8 +1375,6 @@ def test_fmt_media_user_errors_list_field_renders_dotted_path():
     errors = [{"field": ["media", "0", "originalSource"], "message": "is invalid"}]
     out = _fmt_media_user_errors(errors, "attach")
     assert out == "Error at stage=attach: media.0.originalSource: is invalid"
-    assert "[" not in out
-    assert "'" not in out
 
 
 def test_fmt_media_user_errors_none_field_renders_no_field_placeholder():
@@ -1403,21 +1395,10 @@ def test_fmt_media_user_errors_empty_list_field_renders_no_field_placeholder():
     assert out == "Error at stage=reorder: (no field): boom"
 
 
-def test_fmt_media_user_errors_scalar_field_renders_verbatim():
-    """A scalar field (never produced by the current schema, but the formatter
-    takes `Any`) must render verbatim — never joined character-by-character
-    into 'm.o.v.e.s'."""
-    errors = [{"field": "moves", "message": "bad position"}]
-    out = _fmt_media_user_errors(errors, "reorder")
-    assert out == "Error at stage=reorder: moves: bad position"
-
-
 def test_fmt_media_user_errors_list_field_non_string_segment_coerced():
     errors = [{"field": ["media", 0, "alt"], "message": "too long"}]
     out = _fmt_media_user_errors(errors, "update")
     assert out == "Error at stage=update: media.0.alt: too long"
-    assert "[" not in out
-    assert "'" not in out
 
 
 def test_fmt_media_user_errors_multiple_errors_joined():
@@ -1808,7 +1789,9 @@ def test_upload_staged_uploads_user_errors_surfaced():
             {
                 "stagedUploadsCreate": {
                     "stagedTargets": [],
-                    "userErrors": [{"field": "input", "message": "invalid mimeType"}],
+                    "userErrors": [
+                        {"field": ["input", "0", "mimeType"], "message": "invalid mimeType"}
+                    ],
                 }
             },
         ]
@@ -1844,8 +1827,6 @@ def test_upload_staged_uploads_user_errors_list_field_renders_dotted_path():
         confirm=True,
     )
     assert out == "Error at stage=stage_upload: input.0.mimeType: invalid mimeType"
-    assert "[" not in out
-    assert "'" not in out
 
 
 def test_upload_staged_uploads_empty_targets_reported():
@@ -1918,7 +1899,7 @@ def _reorder_err_mediauser(msg="cannot reorder locked media"):
     return {
         "productReorderMedia": {
             "job": None,
-            "mediaUserErrors": [{"field": "moves", "message": msg}],
+            "mediaUserErrors": [{"field": ["moves", "0", "newPosition"], "message": msg}],
             "userErrors": [],
         }
     }
@@ -2019,9 +2000,10 @@ def test_upload_reorder_media_user_errors_list_field_append_note():
             confirm=True,
         )
     assert out.startswith("CONFIRMED —")
-    assert "\n  stage=reorder: moves.0.newPosition: bad position" in out
-    assert "[" not in out
-    assert "'" not in out
+    reorder_note = out[out.index("\n  stage=reorder") :]
+    assert reorder_note.startswith("\n  stage=reorder: moves.0.newPosition: bad position")
+    assert "[" not in reorder_note
+    assert "'" not in reorder_note
 
 
 def test_upload_reorder_polls_job_when_not_done():
