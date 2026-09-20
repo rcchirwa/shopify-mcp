@@ -3,7 +3,7 @@
 from typing import Any
 
 from shopify_mcp.tools._gid import to_gid
-from shopify_mcp.tools._response import extract_user_errors
+from shopify_mcp.tools._response import extract_user_errors, format_path_user_errors
 
 
 def _as_product_gid(pid: str) -> str:
@@ -25,8 +25,15 @@ def _as_product_gid(pid: str) -> str:
 
 
 def _fmt_media_user_errors(errors: list[dict[str, Any]], stage: str) -> str:
-    msgs = "; ".join(f"{e.get('field') or '(no field)'}: {e.get('message', '')}" for e in errors)
-    return f"Error at stage={stage}: {msgs}"
+    """Format a media mutation's userErrors for operator-facing output.
+
+    MediaUserError.field and UserError.field are both declared `[String!]` in
+    the Admin API schema — Shopify returns a path like
+    `["media", "0", "originalSource"]`, not a scalar — so this delegates to
+    the shared `format_path_user_errors` join rather than interpolating the
+    raw list (which would render as the Python list repr).
+    """
+    return f"Error at stage={stage}: {format_path_user_errors(errors)}"
 
 
 def _extract_media_user_errors(result: dict, mutation_key: str) -> list:

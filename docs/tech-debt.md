@@ -4,7 +4,25 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-09-18.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-09-20.
+
+---
+
+## 2026-09-20 — Story 10.91 (media userError `field` rendered as a raw Python list)
+
+**What was wrong.** `_fmt_media_user_errors` (`tools/media/_common.py`) interpolated a UserError's `field` raw: `f"{e.get('field') or '(no field)'}: ..."`. Both `MediaUserError.field` and `UserError.field` are declared `[String!]` in the Admin API (confirmed in the committed schema snapshot, `tests/unit/shopify/admin_schema_snapshot.graphql:888` and `:1632`, `api_version: 2026-01`, matching `settings.py`'s default and the store's pinned `SHOPIFY_API_VERSION`), so a real error surfaced as `['media', '0', 'originalSource']: is invalid` instead of `media.0.originalSource: is invalid`. Six call sites routed through it: `media/_upload.py` (`stage_upload`, `attach`, and the reorder-after-upload note that strips the `Error at ` prefix before appending to a `CONFIRMED —` success block), `media/_reorder.py`, `media/_delete.py`, `media/_update.py`.
+
+**This is an intended output change, not a behaviour-preserving refactor.** Operator-facing media error text now renders a dotted path instead of a Python list repr — e.g. `Error at stage=attach: media.0.originalSource: is invalid` instead of `Error at stage=attach: ['media', '0', 'originalSource']: is invalid`.
+
+**Why the suite stayed green.** Every existing fixture in `tests/unit/tools/test_media.py` used a scalar `field` (`"moves"`, `"alt"`, `"mediaIds"`, `"input"`, `"media"`) — never the list shape the schema actually returns — and the 24 pre-existing assertions all stopped at `out.startswith("Error at stage=...")`, before the field portion. None of them could have caught the defect.
+
+**Fix.** `_fmt_media_user_errors` now delegates entirely to the shared `format_path_user_errors` (`tools/_response.py`), keeping only the `f"Error at stage={stage}: ..."` wrapper — no local loop, no `isinstance` guard. `[String!]` makes a scalar `field` unreachable from a real Shopify response, and CLAUDE.md §2 ("No error handling for impossible scenarios") rules out coding defensively for a shape the schema cannot produce, so media errors now render exactly like every other write tool that already uses `format_path_user_errors`. `None`, missing, and empty-list `field` all still render `(no field)`; a list with a non-string segment (e.g. `["media", 0, "alt"]`) is still `str()`-coerced with no brackets or quotes reaching output — both behaviours come from `format_path_user_errors`/`format_field_path` unchanged.
+
+**Correction to the first commit.** It shipped an `isinstance(field, list)` guard (approach 2) on the rationale that it "keeps every pre-existing scalar-fixture test passing unchanged." Review showed that claim was false: those tests all asserted with `out.startswith(...)`, which passes whether or not the guard exists — only the new scalar-specific unit test this story added actually depended on the guard. The guard was also a tenth hand-rolled copy of the join `format_path_user_errors` (Story 10.90) exists to be the one copy of, and it left `_response.py`'s "`publications.py`'s `_map_user_error` is the one such caller [needing a scalar guard]" docstring stale — a file this story is fenced from touching. The guard is removed; the six pre-existing scalar fixtures (`"moves"`, `"alt"`, `"mediaIds"`, `"input"`, `"media"`) are converted to the list-typed, multi-segment shape the API actually returns.
+
+**Tests.** Six direct unit tests of `_fmt_media_user_errors` cover the list/None/missing-key/empty-list/non-string-segment/multi-error shapes — line coverage (this repo's coverage gate does not set `branch = true`), so each new line needs only one exercising test, not one per branch. Each of the six routing sites has a list-typed, multi-segment fixture (e.g. `["moves", "0", "newPosition"]`, `["media", "0", "originalSource"]`) with an assertion that reaches past the `Error at stage=<stage>:` prefix and pins either the exact formatted string or, for the reorder-after-upload note (which strips the prefix and is appended inside a `CONFIRMED —` block), the exact appended substring, scoped to just that note. The no-Python-list-repr guarantee (AC1) holds for every field shape the `[String!]` schema can produce; a nested list, tuple, or dict `field` is unreachable under that schema and is not handled.
+
+**Step-7 sweep (recorded, not fixed — out of scope for this story).** Two other formatters interpolate a userError `field` the same raw way: `tools/_response.py:107` (`format_user_errors_joined`) and `tools/catalog_hygiene.py:2280` / `:2472`. Left alone: `format_user_errors_joined` is owned by frozen Story 10.75, and both `catalog_hygiene.py` sites are frozen by rule 15. (`catalog_hygiene.py:3188` and `:3550` already guard with `e.get("field") or []` before indexing — not defects.)
 
 ---
 
