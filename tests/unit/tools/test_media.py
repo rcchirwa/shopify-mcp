@@ -22,7 +22,7 @@ from shopify_mcp.client import ShopifyError
 from shopify_mcp.settings import Settings
 from shopify_mcp.tools import media
 from shopify_mcp.tools._untrusted import INJECTION_REMINDER
-from shopify_mcp.tools.media._common import _as_product_gid
+from shopify_mcp.tools.media._common import _as_product_gid, _fmt_media_user_errors
 from shopify_mcp.tools.media._constants import _MAX_IMAGE_BYTES
 from shopify_mcp.tools.media._graphql import (
     GET_MEDIA_STATUS,
@@ -527,6 +527,33 @@ def test_upload_attach_user_errors_labelled_attach_stage():
     assert "unsupported format" in out
 
 
+def test_upload_attach_list_field_renders_dotted_path():
+    """productCreateMedia's mediaUserErrors.field is list-typed per the
+    schema (`["media", "0", "originalSource"]`) — must render dotted, not as
+    a raw Python list repr, past the 'Error at stage=attach:' prefix."""
+    tools, fc = _build(
+        [
+            _product_media_read([]),
+            _staged_ok(),
+            _create_media_err(["media", "0", "originalSource"], "is invalid"),
+        ]
+    )
+    with (
+        patch(
+            "shopify_mcp.tools.media._upload.requests.put",
+            return_value=FakeHTTPResponse(status_code=200),
+        ),
+    ):
+        out = tools["upload_product_image"](
+            product_id="123",
+            source="https://cdn.example.com/hero.jpg",
+            confirm=True,
+        )
+    assert out == "Error at stage=attach: media.0.originalSource: is invalid"
+    assert "[" not in out
+    assert "'" not in out
+
+
 def test_upload_staged_target_put_failure_labels_stage_upload():
     tools, fc = _build(
         [
@@ -740,6 +767,33 @@ def test_reorder_surfaces_media_user_errors():
     assert "bad position" in out
 
 
+def test_reorder_surfaces_media_user_errors_list_field():
+    """productReorderMedia's mediaUserErrors.field is list-typed per the
+    schema — must render dotted, not as a raw Python list repr."""
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
+            {
+                "productReorderMedia": {
+                    "job": None,
+                    "mediaUserErrors": [
+                        {"field": ["moves", "0", "newPosition"], "message": "bad position"}
+                    ],
+                    "userErrors": [],
+                }
+            },
+        ]
+    )
+    out = tools["reorder_product_media"](
+        product_id="123",
+        moves=[{"id": MEDIA_B, "newPosition": 1}],
+        confirm=True,
+    )
+    assert out == "Error at stage=reorder: moves.0.newPosition: bad position"
+    assert "[" not in out
+    assert "'" not in out
+
+
 # ---------- update_product_media ----------
 
 
@@ -849,6 +903,31 @@ def test_update_media_user_errors_surfaced():
     assert "too long" in out
 
 
+def test_update_media_user_errors_list_field_renders_dotted_path():
+    """productUpdateMedia's mediaUserErrors.field is list-typed per the
+    schema — must render dotted, not as a raw Python list repr."""
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A)]),
+            {
+                "productUpdateMedia": {
+                    "media": [],
+                    "mediaUserErrors": [{"field": ["media", "0", "alt"], "message": "too long"}],
+                }
+            },
+        ]
+    )
+    out = tools["update_product_media"](
+        product_id="123",
+        media_id=MEDIA_A,
+        alt="x" * 500,
+        confirm=True,
+    )
+    assert out == "Error at stage=update: media.0.alt: too long"
+    assert "[" not in out
+    assert "'" not in out
+
+
 # ---------- delete_product_media ----------
 
 
@@ -945,6 +1024,31 @@ def test_delete_media_user_errors_surfaced():
     )
     assert out.startswith("Error at stage=delete:"), out
     assert "locked" in out
+
+
+def test_delete_media_user_errors_list_field_renders_dotted_path():
+    """productDeleteMedia's mediaUserErrors.field is list-typed per the
+    schema — must render dotted, not as a raw Python list repr."""
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A)]),
+            {
+                "productDeleteMedia": {
+                    "deletedMediaIds": [],
+                    "product": {"id": PRODUCT_GID},
+                    "mediaUserErrors": [{"field": ["mediaIds", "0"], "message": "locked"}],
+                }
+            },
+        ]
+    )
+    out = tools["delete_product_media"](
+        product_id="123",
+        media_ids=[MEDIA_A],
+        confirm=True,
+    )
+    assert out == "Error at stage=delete: mediaIds.0: locked"
+    assert "[" not in out
+    assert "'" not in out
 
 
 def test_delete_media_dedupes_input_ids():
@@ -1261,6 +1365,70 @@ def test_format_bytes_non_numeric_returns_placeholder():
 def test_format_bytes_kb_and_mb_branches():
     assert _format_bytes(2048) == "2.0 KB"
     assert _format_bytes(5 * 1024 * 1024) == "5.00 MB"
+
+
+# ---------- _fmt_media_user_errors: field-path formatting (Story 10.91) ----------
+#
+# MediaUserError.field and UserError.field are both `[String!]` per the schema
+# snapshot (admin_schema_snapshot.graphql:888, :1632) — Shopify returns a path
+# like ["media", "0", "originalSource"], not a scalar. The formatter must join
+# that into a dotted path rather than interpolating the raw Python list.
+
+
+def test_fmt_media_user_errors_list_field_renders_dotted_path():
+    """A list-typed, multi-segment field must render as a dotted path — not
+    the raw Python list repr — past the 'Error at stage=<stage>:' prefix."""
+    errors = [{"field": ["media", "0", "originalSource"], "message": "is invalid"}]
+    out = _fmt_media_user_errors(errors, "attach")
+    assert out == "Error at stage=attach: media.0.originalSource: is invalid"
+    assert "[" not in out
+    assert "'" not in out
+
+
+def test_fmt_media_user_errors_none_field_renders_no_field_placeholder():
+    errors = [{"field": None, "message": "boom"}]
+    out = _fmt_media_user_errors(errors, "delete")
+    assert out == "Error at stage=delete: (no field): boom"
+
+
+def test_fmt_media_user_errors_missing_field_key_renders_no_field_placeholder():
+    errors = [{"message": "boom"}]
+    out = _fmt_media_user_errors(errors, "update")
+    assert out == "Error at stage=update: (no field): boom"
+
+
+def test_fmt_media_user_errors_empty_list_field_renders_no_field_placeholder():
+    errors = [{"field": [], "message": "boom"}]
+    out = _fmt_media_user_errors(errors, "reorder")
+    assert out == "Error at stage=reorder: (no field): boom"
+
+
+def test_fmt_media_user_errors_scalar_field_renders_verbatim():
+    """A scalar field (never produced by the current schema, but the formatter
+    takes `Any`) must render verbatim — never joined character-by-character
+    into 'm.o.v.e.s'."""
+    errors = [{"field": "moves", "message": "bad position"}]
+    out = _fmt_media_user_errors(errors, "reorder")
+    assert out == "Error at stage=reorder: moves: bad position"
+
+
+def test_fmt_media_user_errors_list_field_non_string_segment_coerced():
+    errors = [{"field": ["media", 0, "alt"], "message": "too long"}]
+    out = _fmt_media_user_errors(errors, "update")
+    assert out == "Error at stage=update: media.0.alt: too long"
+    assert "[" not in out
+    assert "'" not in out
+
+
+def test_fmt_media_user_errors_multiple_errors_joined():
+    errors = [
+        {"field": ["media", "0", "originalSource"], "message": "is invalid"},
+        {"field": ["media", "1", "alt"], "message": "too long"},
+    ]
+    out = _fmt_media_user_errors(errors, "attach")
+    assert out == (
+        "Error at stage=attach: media.0.originalSource: is invalid; media.1.alt: too long"
+    )
 
 
 # ---------- _download_image: delegates HTTP to fetch_bytes, keeps MIME logic ----------
@@ -1654,6 +1822,32 @@ def test_upload_staged_uploads_user_errors_surfaced():
     assert "invalid mimeType" in out
 
 
+def test_upload_staged_uploads_user_errors_list_field_renders_dotted_path():
+    """stagedUploadsCreate's userErrors.field is list-typed per the schema
+    — must render dotted, not as a raw Python list repr."""
+    tools, fc = _build(
+        [
+            _product_media_read([]),
+            {
+                "stagedUploadsCreate": {
+                    "stagedTargets": [],
+                    "userErrors": [
+                        {"field": ["input", "0", "mimeType"], "message": "invalid mimeType"}
+                    ],
+                }
+            },
+        ]
+    )
+    out = tools["upload_product_image"](
+        product_id="123",
+        source="https://cdn.example.com/a.jpg",
+        confirm=True,
+    )
+    assert out == "Error at stage=stage_upload: input.0.mimeType: invalid mimeType"
+    assert "[" not in out
+    assert "'" not in out
+
+
 def test_upload_staged_uploads_empty_targets_reported():
     """Payload parses clean but Shopify returns zero stagedTargets — we can't
     PUT bytes anywhere, so surface the stage-specific error."""
@@ -1787,6 +1981,47 @@ def test_upload_reorder_media_user_errors_append_note():
     assert out.startswith("CONFIRMED —")
     assert "stage=reorder" in out
     assert "bad position" in out
+
+
+def test_upload_reorder_media_user_errors_list_field_append_note():
+    """The reorder-after-upload path strips 'Error at ' but keeps
+    'stage=reorder: ...' — mediaUserErrors.field is list-typed per the
+    schema, so the dotted path (not a raw Python list repr) must survive
+    into the appended CONFIRMED note."""
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
+            _staged_ok(),
+            _create_media_ok(mid=MEDIA_C, status="READY"),
+            _node_media_status(MEDIA_C, status="READY"),
+            {
+                "productReorderMedia": {
+                    "job": None,
+                    "mediaUserErrors": [
+                        {"field": ["moves", "0", "newPosition"], "message": "bad position"}
+                    ],
+                    "userErrors": [],
+                }
+            },
+        ]
+    )
+    with (
+        patch(
+            "shopify_mcp.tools.media._upload.requests.put",
+            return_value=FakeHTTPResponse(status_code=200),
+        ),
+        patch("shopify_mcp.tools.media._upload.time.sleep"),
+    ):
+        out = tools["upload_product_image"](
+            product_id="123",
+            source="https://cdn.example.com/a.jpg",
+            position=1,
+            confirm=True,
+        )
+    assert out.startswith("CONFIRMED —")
+    assert "\n  stage=reorder: moves.0.newPosition: bad position" in out
+    assert "[" not in out
+    assert "'" not in out
 
 
 def test_upload_reorder_polls_job_when_not_done():
