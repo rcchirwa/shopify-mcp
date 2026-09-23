@@ -11,6 +11,7 @@ create_discount_code requires confirm=True.
 """
 
 import re
+import unicodedata
 from datetime import UTC, date, datetime, time
 from typing import Any
 
@@ -56,24 +57,6 @@ _END_OF_DAY = time(23, 59, 59)
 # range (\x80-\x9f) that `\s` does not cover.
 _WHITESPACE_RE = re.compile(r"[\s\x00-\x1f\x7f-\x9f]+")
 
-# Zero-width and bidi-control format characters (Unicode category Cf):
-# removed outright rather than collapsed to a visible space, since a space
-# would misrepresent an otherwise-invisible character. Covers the zero-width
-# space/joiners and the BOM/ZWNBSP (U+200B/200C/200D/FEFF) plus the explicit
-# bidi embedding/override/isolate controls (U+202A-202E, U+2066-2069) — the
-# "Trojan Source" class of character, which could otherwise reorder how a
-# forged name reads on screen without changing its underlying bytes.
-# Built from chr() by codepoint, not typed as literal characters or as
-# backslash-u escapes in a string literal: several of these codepoints are
-# themselves invisible or bidi-reordering, so typing them (or their escape
-# text) directly into source risks the exact "characters aren't what they
-# look like" class of mistake this code exists to defend against.
-_ZERO_WIDTH_CODEPOINTS = (0x200B, 0x200C, 0x200D, 0xFEFF)  # ZWSP, ZWNJ, ZWJ, BOM/ZWNBSP
-_BIDI_CONTROL_CODEPOINTS = (0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069)
-_ZERO_WIDTH_RE = re.compile(
-    "[" + "".join(chr(c) for c in _ZERO_WIDTH_CODEPOINTS + _BIDI_CONTROL_CODEPOINTS) + "]+"
-)
-
 
 def _sanitize_segment_name(name: str) -> str | None:
     """Sanitize a segment name for display, or None if nothing is left to show.
@@ -85,17 +68,30 @@ def _sanitize_segment_name(name: str) -> str | None:
     segment name is operator-authored Shopify data, not a value this tool
     controls, so any run of whitespace or C0/C1 control character collapses
     to one space (making multi-line forgery impossible), and every
-    zero-width/bidi-control character is removed outright.
+    "format" character (``unicodedata.category(ch) == "Cf"``) is removed
+    outright rather than collapsed to a visible space, since a space would
+    misrepresent an otherwise-invisible character.
+
+    Round-3 review: an earlier version removed only a hand-picked list of
+    zero-width/bidi codepoints (ZWSP/ZWNJ/ZWJ/BOM, the explicit bidi
+    embedding/override/isolate controls). That list covered the 9 bidi
+    controls but missed roughly 150 OTHER Cf characters Unicode defines —
+    e.g. RLM (U+200F), ALM (U+061C), WORD JOINER (U+2060), and SOFT HYPHEN
+    (U+00AD) all rendered as an empty-looking but non-empty named segment.
+    Checking the Unicode category directly closes the whole class at once,
+    including the "Trojan Source" bidi-reordering characters, rather than
+    re-deriving the same incomplete list from memory.
 
     Returns ``None`` once that stripping leaves nothing — a name that is only
-    spaces, or only zero-width characters, is not real display text and must
-    be counted the same as a segment with no name at all (an "unnamed"
+    spaces, or only Cf characters, is not real display text and must be
+    counted the same as a segment with no name at all (an "unnamed"
     segment), not rendered as an empty quoted segment (``segment ""``).
 
     Discount code TITLES have the same pre-existing gap on this read path;
     left alone here — see docs/tech-debt.md (Story 9.17) for the residual.
     """
-    collapsed = _WHITESPACE_RE.sub(" ", _ZERO_WIDTH_RE.sub("", name)).strip()
+    no_format_chars = "".join(ch for ch in name if unicodedata.category(ch) != "Cf")
+    collapsed = _WHITESPACE_RE.sub(" ", no_format_chars).strip()
     return collapsed or None
 
 

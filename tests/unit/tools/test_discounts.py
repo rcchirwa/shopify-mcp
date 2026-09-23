@@ -815,6 +815,33 @@ def test_get_discount_codes_segment_name_quote_cannot_forge_a_second_segment():
     )
 
 
+def test_get_discount_codes_segment_name_trailing_backslash_is_escaped():
+    """Review fix (round 3): escaping only the double-quote and not the
+    backslash before it would let a segment name ending in a backslash
+    produce a rendered closing quote that LOOKS escaped (``\\"``) rather than
+    closed. `_escape_quotes_for_display` escapes `\\` before `"`, so a
+    trailing backslash renders as two literal backslashes ahead of a real
+    closing quote, never as an escape sequence that could swallow it. Built
+    from `chr(92)`, not a typed backslash, matching this file's rule for
+    payload characters."""
+    forged_name = "VIP" + chr(92)  # a single trailing backslash
+    tools, fc = _build(
+        [
+            {
+                "discountNodes": {
+                    "nodes": [
+                        _discount_node(
+                            "5001", "Segment Forge", context=_context_segments(forged_name)
+                        )
+                    ]
+                }
+            }
+        ]
+    )
+    out = tools["get_discount_codes"]()
+    assert _eligibility_line(out) == '    Eligibility: restricted to segment "VIP\\\\"'
+
+
 def test_get_discount_codes_whitespace_only_segment_name_reads_unnamed():
     """Review fix (round 2): a segment name that is only spaces sanitizes to
     an empty string — it must be counted as unnamed, not rendered as an empty
@@ -860,36 +887,45 @@ def test_get_discount_codes_zero_width_only_segment_name_reads_unnamed():
     assert _eligibility_line(out) == "    Eligibility: restricted to 1 unnamed segment"
 
 
-# C1 controls collapse to a single space (same treatment as a C0 control);
-# bidi-embedding/override/isolate controls are zero-width format characters
-# and are removed outright, same as a ZWSP. Both are a separate hardening
-# concern from the line-break test above: neither affects `str.splitlines()`
-# (confirmed by direct check during review), so a bidi override in
-# particular could otherwise reorder how the rest of a forged name reads on
-# screen without changing `len(out.splitlines())` at all.
-_C1_AND_BIDI_CONTROLS = {
+def test_get_discount_codes_word_joiner_only_segment_name_reads_unnamed():
+    """Review fix (round 3): U+2060 WORD JOINER is Unicode category Cf, same
+    as a ZWSP, but was never in the round-2 hand-picked codepoint list — a
+    name made only of it rendered as an empty-looking but non-empty NAMED
+    segment before the category-based fix below. Built from chr(), never
+    typed literally."""
+    tools, fc = _build(
+        [
+            {
+                "discountNodes": {
+                    "nodes": [
+                        _discount_node(
+                            "5001", "Word Joiner Name", context=_context_segments(chr(0x2060))
+                        )
+                    ]
+                }
+            }
+        ]
+    )
+    out = tools["get_discount_codes"]()
+    assert _eligibility_line(out) == "    Eligibility: restricted to 1 unnamed segment"
+
+
+# C1 controls collapse to a single space (same treatment as a C0 control) via
+# `_WHITESPACE_RE`, not the Cf-category check below — a separate mechanism,
+# tested separately.
+_C1_CONTROLS = {
     "C1-0x80": ("\x80", "VIP Segment"),
     "C1-0x9f": ("\x9f", "VIP Segment"),
-    "LRE": (chr(0x202A), "VIPSegment"),
-    "RLO": (chr(0x202E), "VIPSegment"),
-    "LRI": (chr(0x2066), "VIPSegment"),
-    "PDI": (chr(0x2069), "VIPSegment"),
 }
 
 
 @pytest.mark.parametrize(
-    ("control_char", "expected_name"),
-    _C1_AND_BIDI_CONTROLS.values(),
-    ids=list(_C1_AND_BIDI_CONTROLS),
+    ("control_char", "expected_name"), _C1_CONTROLS.values(), ids=list(_C1_CONTROLS)
 )
-def test_get_discount_codes_c1_and_bidi_controls_stripped_from_segment_name(
-    control_char, expected_name
-):
+def test_get_discount_codes_c1_controls_collapsed_from_segment_name(control_char, expected_name):
     """Review fix (round 2): C1 controls (U+0080-009F) collapse to a space
-    like any other control character; bidi controls (U+202A-202E,
-    U+2066-2069) are removed outright like a zero-width character. Neither
-    the raw control character nor a residual space where a bidi control was
-    removed may reach the rendered name."""
+    like any other control character. The raw control character may not
+    reach the rendered name."""
     name = f"VIP{control_char}Segment"
     tools, fc = _build(
         [
@@ -904,6 +940,55 @@ def test_get_discount_codes_c1_and_bidi_controls_stripped_from_segment_name(
     )
     out = tools["get_discount_codes"]()
     assert _eligibility_line(out) == f'    Eligibility: restricted to segment "{expected_name}"'
+
+
+# Every Unicode category-Cf ("format") character is removed outright, not
+# collapsed to a space (round-3 review): the round-2 fix removed a
+# hand-picked list of 9 bidi-embedding/override/isolate controls plus
+# ZWSP/ZWNJ/ZWJ/BOM, which missed ~150 other Cf characters Unicode defines.
+# All 9 bidi controls plus three more Cf characters not in that list (RLM,
+# ALM, WORD JOINER) plus SOFT HYPHEN (Cf, not the hyphen-minus it looks like)
+# are exercised here; none affects `str.splitlines()` (confirmed by direct
+# check during review), so this is a separate hardening concern from the
+# line-break forgery test above — a bidi override in particular could
+# otherwise reorder how the rest of a forged name reads on screen without
+# changing the line count at all.
+_CF_FORMAT_CHARACTERS = {
+    "LRE": chr(0x202A),
+    "RLE": chr(0x202B),
+    "PDF": chr(0x202C),
+    "LRO": chr(0x202D),
+    "RLO": chr(0x202E),
+    "LRI": chr(0x2066),
+    "RLI": chr(0x2067),
+    "FSI": chr(0x2068),
+    "PDI": chr(0x2069),
+    "RLM": chr(0x200F),
+    "ALM": chr(0x061C),
+    "WORD-JOINER": chr(0x2060),
+    "SOFT-HYPHEN": chr(0x00AD),
+}
+
+
+@pytest.mark.parametrize("cf_char", _CF_FORMAT_CHARACTERS.values(), ids=list(_CF_FORMAT_CHARACTERS))
+def test_get_discount_codes_cf_format_characters_removed_from_segment_name(cf_char):
+    """Review fix (round 3): every Cf character is removed outright, not
+    collapsed to a space, so `VIP<Cf>Segment` reads as `VIPSegment` with no
+    residual space — checked via `unicodedata.category`, not a fixed list."""
+    name = f"VIP{cf_char}Segment"
+    tools, fc = _build(
+        [
+            {
+                "discountNodes": {
+                    "nodes": [
+                        _discount_node("5001", "Controlled Name", context=_context_segments(name))
+                    ]
+                }
+            }
+        ]
+    )
+    out = tools["get_discount_codes"]()
+    assert _eligibility_line(out) == '    Eligibility: restricted to segment "VIPSegment"'
 
 
 def test_get_discount_codes_usage_limit_five_pins_exact_wording():

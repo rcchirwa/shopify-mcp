@@ -13,11 +13,24 @@ Usage:
   pytest tests/unit/shopify/operations/test_discounts.py -v
 """
 
-from graphql import FieldNode, InlineFragmentNode, OperationDefinitionNode, parse
+from graphql import (
+    FieldNode,
+    GraphQLSchema,
+    InlineFragmentNode,
+    OperationDefinitionNode,
+    TypeInfo,
+    TypeInfoVisitor,
+    Visitor,
+    build_schema,
+    get_named_type,
+    parse,
+    visit,
+)
 
 from shopify_mcp.shopify.operations import discounts as ops
 from shopify_mcp.shopify.queries import discounts as q
 from tests.support import FakeClient
+from tests.support.admin_schema_snapshot import SNAPSHOT_PATH
 
 # ---------- AC3: no shared fragment applies to discounts ----------
 
@@ -42,14 +55,103 @@ def test_no_shared_fragment_in_discount_queries():
 # `customers { __typename }` both select no field named "email" and so
 # survive it, even though the first leaks an email address and the second
 # leaks nothing useful but is still not what this query is supposed to send.
-# The denylist-of-one-field-name test was REMOVED (not amended in place) once
-# `test_get_code_discounts_customers_selection_is_exactly_id` below fully
-# subsumed it for this query: that test asserts every `customers` selection
-# set is exactly `{ id }`, which bans `email` (and every other field) from
-# ever reaching that selection, structurally rather than by name. There is no
-# other place in GET_CODE_DISCOUNTS an "email" field could plausibly appear,
-# so keeping both was a strictly weaker duplicate rather than independent
-# coverage.
+# The denylist-of-one-field-name test was REMOVED, not amended in place, once
+# `test_get_code_discounts_customers_selection_is_exactly_id` below appeared
+# to subsume it for this query's `customers { }` selection specifically.
+#
+# **Correction, round-3 review: that removal lost real, document-wide
+# protection.** The claim (previously here) that "there is no other place in
+# GET_CODE_DISCOUNTS an 'email' field could plausibly appear" was checked
+# against the query as it stood, not against the schema's full reach from
+# `DiscountNode`. The 2026-01 schema has PII paths that never pass through
+# `context.customers` at all: `events { ... on CommentEvent { author { email
+# phone firstName lastName } } }` (`author` resolves to `StaffMember`) and
+# `metafield(s) { owner { ... on Customer { defaultEmailAddress {
+# emailAddress } addresses note } } }` -- both `DiscountCodeNode.events` and
+# `DiscountCodeNode.metafield` exist on 2026-01 and are exactly as reachable
+# as the `customers` selection the narrower guard covers.
+# `test_get_code_discounts_never_reaches_pii_beyond_customer_id` below
+# restores document-wide protection: it walks the WHOLE document against the
+# schema with graphql-core's `TypeInfo`, not one selection set, checking
+# every field by the TYPE it resolves to rather than by name alone.
+# `test_get_code_discounts_customers_selection_is_exactly_id` is kept as-is
+# alongside it -- redundant for the one selection it covers, but a more
+# targeted, more readable failure message for that specific case.
+
+
+_PII_CARRYING_TYPES = frozenset(
+    {"StaffMember", "MailingAddress", "CustomerEmailAddress", "CustomerPhoneNumber"}
+)
+_PII_FIELD_NAMES = frozenset({"email", "phone", "defaultEmailAddress"})
+
+
+def _pii_violations(document_text: str, schema: GraphQLSchema) -> list[str]:
+    """Every PII-risk violation `document_text` reaches against `schema`,
+    walked with graphql-core's `TypeInfo` so each field is checked against
+    the type it actually resolves to at that point in the tree (an inline
+    fragment's type condition included), rather than by name alone:
+
+    (a) a field whose PARENT type, or whose own FIELD type, is one of the
+        PII-carrying types confirmed live on 2026-01 -- `StaffMember` (via
+        `events { ... on CommentEvent { author { ... } } }`),
+        `MailingAddress`/`CustomerEmailAddress`/`CustomerPhoneNumber` (via a
+        `Customer`'s own fields, reachable from `metafield(s) { owner {
+        ... on Customer { ... } } }`);
+    (b) any field selected on `Customer` other than bare `id`;
+    (c) a denylisted field name (`email`/`phone`/`defaultEmailAddress`)
+        anywhere in the document, as a cheap belt-and-braces backstop
+        alongside the typed checks above -- catches a rename of the parent
+        type this guard does not yet know about.
+    """
+    document = parse(document_text)
+    type_info = TypeInfo(schema)
+    violations: list[str] = []
+
+    class _Collector(Visitor):
+        def enter_field(self, node: FieldNode, *_args: object) -> None:
+            name = node.name.value
+            if name.startswith("__"):
+                return
+            parent = type_info.get_parent_type()
+            field_def = type_info.get_field_def()
+            if parent is None or field_def is None:
+                return  # not in the schema -- the contract suite reports this
+            parent_name = get_named_type(parent).name
+            field_type_name = get_named_type(field_def.type).name
+            if parent_name in _PII_CARRYING_TYPES or field_type_name in _PII_CARRYING_TYPES:
+                violations.append(
+                    f"{parent_name}.{name} reaches PII-carrying type {field_type_name}"
+                )
+            if parent_name == "Customer" and name != "id":
+                violations.append(f"Customer.{name} selected -- only `id` may be")
+            if name in _PII_FIELD_NAMES:
+                violations.append(f"field named {name!r} selected under {parent_name}")
+
+    visit(document, TypeInfoVisitor(type_info, _Collector()))
+    return violations
+
+
+_PII_GUARD_SCHEMA = build_schema(SNAPSHOT_PATH.read_text(encoding="utf-8"))
+
+
+def test_get_code_discounts_never_reaches_pii_beyond_customer_id():
+    """Document-wide PII guard (Story 9.17 round-3 review). Built against the
+    COMMITTED schema snapshot -- the same file the contract suite validates
+    documents against -- so a future selection that reaches a PII-carrying
+    type is caught by the TYPE it resolves to, not by matching a field name
+    a mutation might rename or nest differently.
+
+    Proven to discriminate during review by three offline mutations, each
+    with the schema snapshot refreshed from the mutated query FIRST (same
+    offline regeneration script used to land this story), so the schema
+    formally allows the mutated shape and the schema-CONTRACT test cannot be
+    what fails it -- only this guard can: adding
+    `events(first: 1) { nodes { ... on CommentEvent { author { email } } }
+    }` under a `DiscountCodeNode`; adding `metafield(namespace: "x", key:
+    "y") { owner { ... on Customer { defaultEmailAddress { emailAddress } }
+    } }`; and `author { firstName lastName phone }` in place of `author {
+    email }`. All three failed only this test."""
+    assert _pii_violations(q.GET_CODE_DISCOUNTS, _PII_GUARD_SCHEMA) == []
 
 
 def _operation(text: str) -> OperationDefinitionNode:
