@@ -49,6 +49,8 @@ def _discount_node(
     usage_limit=None,
     ends_at=None,
     typename="DiscountCodeBasic",
+    context=None,
+    applies_once_per_customer=None,
 ):
     discount = {
         "__typename": typename,
@@ -69,7 +71,34 @@ def _discount_node(
         discount["customerGets"] = {
             "value": {"__typename": "DiscountAmount", "amount": {"amount": amount}}
         }
+    if context is not None:
+        discount["context"] = context
+    if applies_once_per_customer is not None:
+        discount["appliesOncePerCustomer"] = applies_once_per_customer
     return {"id": f"gid://shopify/DiscountCodeNode/{gid}", "discount": discount}
+
+
+# ---- context fixture builders (Story 9.17 eligibility) ----
+
+
+def _context_open():
+    return {"__typename": "DiscountBuyerSelectionAll", "all": "ALL"}
+
+
+def _context_customers(*ids):
+    return {
+        "__typename": "DiscountCustomers",
+        "customers": [{"id": f"gid://shopify/Customer/{i}"} for i in ids],
+    }
+
+
+def _context_segments(*names):
+    return {
+        "__typename": "DiscountCustomerSegments",
+        "segments": [
+            {"id": f"gid://shopify/Segment/{i}", "name": n} for i, n in enumerate(names, start=1)
+        ],
+    }
 
 
 def _discount_create_ok(node_id="5001"):
@@ -244,6 +273,271 @@ def test_get_discount_codes_handles_null_codes_nodes_defensively():
     )
     out = tools["get_discount_codes"]()
     assert "Codes: (no code)" in out
+
+
+# ---- get_discount_codes eligibility (Story 9.17) ----
+#
+# get_discount_codes reported a code's terms but never WHO may redeem it — on
+# 2026-09-14 that read TEST100/TESTFREE as unlimited 100%-off codes open to
+# anyone, when both are restricted to a single customer, and misread
+# AON_DAY_ONE_VIP/VIPFOUNDERS20 (segment-gated, appliesOncePerCustomer=true)
+# the same way. These pin the WHO-may-redeem rule the read now surfaces, not
+# just its rendering.
+
+
+def test_get_discount_codes_open_context_reads_open_to_all_customers():
+    """Fan508/wiz508/HEMPFEST26-shaped fixture: genuinely open, and the read
+    must say so explicitly rather than leaving it absent."""
+    tools, fc = _build(
+        [{"discountNodes": {"nodes": [_discount_node("5001", "Fan508", context=_context_open())]}}]
+    )
+    out = tools["get_discount_codes"]()
+    assert "Eligibility: open to all customers" in out
+
+
+def test_get_discount_codes_single_customer_shows_numeric_id():
+    """TEST100/TESTFREE-shaped fixture: restricted to exactly one customer —
+    the PII decision allows a bare numeric id for exactly one match."""
+    tools, fc = _build(
+        [
+            {
+                "discountNodes": {
+                    "nodes": [
+                        _discount_node("5001", "TEST100", context=_context_customers("1234567890"))
+                    ]
+                }
+            }
+        ]
+    )
+    out = tools["get_discount_codes"]()
+    assert "Eligibility: restricted to 1 customer (id 1234567890)" in out
+
+
+def test_get_discount_codes_multiple_customers_hide_ids():
+    """More than one customer: count only, never an id — the PII decision
+    forbids listing ids once there is more than one match."""
+    tools, fc = _build(
+        [
+            {
+                "discountNodes": {
+                    "nodes": [
+                        _discount_node(
+                            "5001", "Bulk VIP", context=_context_customers("111", "222", "333")
+                        )
+                    ]
+                }
+            }
+        ]
+    )
+    out = tools["get_discount_codes"]()
+    assert "Eligibility: restricted to 3 customers" in out
+    assert "(id" not in out
+
+
+def test_get_discount_codes_segment_gated_shows_segment_name():
+    """AON_DAY_ONE_VIP-shaped fixture: segment-gated and appliesOncePerCustomer
+    — both terms must be surfaced, not just the segment name alone."""
+    tools, fc = _build(
+        [
+            {
+                "discountNodes": {
+                    "nodes": [
+                        _discount_node(
+                            "5001",
+                            "AON_DAY_ONE_VIP",
+                            context=_context_segments("AON Founders VIP List"),
+                            applies_once_per_customer=True,
+                        )
+                    ]
+                }
+            }
+        ]
+    )
+    out = tools["get_discount_codes"]()
+    assert 'Eligibility: restricted to segment "AON Founders VIP List"' in out
+    assert "(once per customer)" in out
+
+
+def test_get_discount_codes_multiple_segments_joins_names():
+    tools, fc = _build(
+        [
+            {
+                "discountNodes": {
+                    "nodes": [
+                        _discount_node(
+                            "5001", "Multi Segment", context=_context_segments("VIP", "Wholesale")
+                        )
+                    ]
+                }
+            }
+        ]
+    )
+    out = tools["get_discount_codes"]()
+    assert 'Eligibility: restricted to segments "VIP", "Wholesale"' in out
+
+
+def test_get_discount_codes_missing_context_reads_unknown_not_open():
+    """Defensive: a shape-drifted / permissions-trimmed response with no
+    `context` at all must NOT be read as open — that would repeat the exact
+    class of wrong assumption this story exists to fix, just moved from
+    "unlimited" to "context absent"."""
+    tools, fc = _build([{"discountNodes": {"nodes": [_discount_node("5001", "Drifted")]}}])
+    out = tools["get_discount_codes"]()
+    assert "Eligibility: unknown (no eligibility data returned)" in out
+    assert "open" not in out
+
+
+def test_get_discount_codes_applies_once_per_customer_flag_is_surfaced():
+    """appliesOncePerCustomer must be surfaced even on an otherwise-unlimited
+    code, so it isn't read as freely repeatable by the same customer."""
+    tools, fc = _build(
+        [
+            {
+                "discountNodes": {
+                    "nodes": [
+                        _discount_node(
+                            "5001",
+                            "Once Only",
+                            context=_context_open(),
+                            applies_once_per_customer=True,
+                        )
+                    ]
+                }
+            }
+        ]
+    )
+    out = tools["get_discount_codes"]()
+    assert "Usage limit: unlimited redemptions total (once per customer)" in out
+
+
+def test_get_discount_codes_open_and_restricted_render_differently():
+    """Control pair: an open code and a restricted code must not render the
+    same eligibility text."""
+    tools, fc = _build(
+        [
+            {
+                "discountNodes": {
+                    "nodes": [
+                        _discount_node("5001", "Open Code", context=_context_open()),
+                        _discount_node("5002", "Restricted Code", context=_context_customers("1")),
+                    ]
+                }
+            }
+        ]
+    )
+    out = tools["get_discount_codes"]()
+    assert "Eligibility: open to all customers" in out
+    assert "Eligibility: restricted to 1 customer (id 1)" in out
+
+
+def test_get_discount_codes_never_renders_customer_email_even_if_fixture_smuggles_one():
+    """The query never selects Customer.email (pinned independently in
+    tests/unit/shopify/operations/test_discounts.py by parsing the document),
+    but this pins the renderer side too: even if a fixture payload smuggles an
+    email key — data that should never arrive from the real query — the
+    renderer must not surface it."""
+    tools, fc = _build(
+        [
+            {
+                "discountNodes": {
+                    "nodes": [
+                        _discount_node(
+                            "5001",
+                            "TEST100",
+                            context={
+                                "__typename": "DiscountCustomers",
+                                "customers": [
+                                    {
+                                        "id": "gid://shopify/Customer/1234567890",
+                                        "email": "vip@example.com",
+                                    }
+                                ],
+                            },
+                        )
+                    ]
+                }
+            }
+        ]
+    )
+    out = tools["get_discount_codes"]()
+    assert "@" not in out
+    assert "vip@example.com" not in out
+
+
+def test_get_discount_codes_segment_with_no_name_is_defensive():
+    """Defensive: `Segment.name` is non-null in the schema, but a
+    permissions-trimmed / shape-drifted response could still return it null —
+    matches this module's existing defensiveness for other schema-non-null
+    fields (e.g. codes.nodes)."""
+    tools, fc = _build(
+        [
+            {
+                "discountNodes": {
+                    "nodes": [
+                        _discount_node(
+                            "5001",
+                            "Drifted Segment",
+                            context={
+                                "__typename": "DiscountCustomerSegments",
+                                "segments": [{"id": "gid://shopify/Segment/1", "name": None}],
+                            },
+                        )
+                    ]
+                }
+            }
+        ]
+    )
+    out = tools["get_discount_codes"]()
+    assert "Eligibility: restricted to an unnamed customer segment" in out
+
+
+def test_get_discount_codes_unrecognized_context_typename_reads_unknown():
+    """Defensive: an unrecognized `context.__typename` (a future `DiscountContext`
+    union member the schema does not have on 2026-01) must not be silently read
+    as open — same rule as a missing context entirely."""
+    tools, fc = _build(
+        [
+            {
+                "discountNodes": {
+                    "nodes": [
+                        _discount_node(
+                            "5001",
+                            "Future Shape",
+                            context={"__typename": "DiscountSomeFutureThing"},
+                        )
+                    ]
+                }
+            }
+        ]
+    )
+    out = tools["get_discount_codes"]()
+    assert "Eligibility: unknown (no eligibility data returned)" in out
+
+
+def test_get_discount_codes_eligibility_also_renders_for_non_basic_discount_types():
+    """Approach 2 (Story 9.17, see docs/tech-debt.md): eligibility is a
+    property of WHO may redeem a code, not of the reward type, so a
+    Bxgy/FreeShipping/App discount that is just as segment- or
+    customer-restricted as a Basic one must not be left with the same blind
+    spot this story exists to close."""
+    tools, fc = _build(
+        [
+            {
+                "discountNodes": {
+                    "nodes": [
+                        _discount_node(
+                            "5001",
+                            "Free Ship VIP",
+                            typename="DiscountCodeFreeShipping",
+                            context=_context_segments("AON Founders VIP List"),
+                        )
+                    ]
+                }
+            }
+        ]
+    )
+    out = tools["get_discount_codes"]()
+    assert 'Eligibility: restricted to segment "AON Founders VIP List"' in out
 
 
 # ---- create_discount_code — preview ----

@@ -13,6 +13,8 @@ Usage:
   pytest tests/unit/shopify/operations/test_discounts.py -v
 """
 
+from graphql import FieldNode, parse
+
 from shopify_mcp.shopify.operations import discounts as ops
 from shopify_mcp.shopify.queries import discounts as q
 from tests.support import FakeClient
@@ -29,6 +31,49 @@ def test_no_shared_fragment_in_discount_queries():
     assert "fragment " not in q.CREATE_DISCOUNT_CODE_BASIC
     assert "..." not in q.CREATE_DISCOUNT_CODE_BASIC
     assert "fragment " not in q.GET_CODE_DISCOUNTS
+
+
+# ---------- Story 9.17: eligibility selection, PII guard ----------
+
+
+def _selected_field_names(document_text: str) -> set[str]:
+    """Every field name selected anywhere in a document, found by walking the
+    parsed AST (graphql-core) rather than string-matching or identity-
+    comparing the query text — see feedback_pin_graphql_by_parsing: query
+    assertions must survive the text changing while the suite stays green."""
+    document = parse(document_text)
+    names: set[str] = set()
+
+    def walk(selection_set):
+        if selection_set is None:
+            return
+        for selection in selection_set.selections:
+            if isinstance(selection, FieldNode):
+                names.add(selection.name.value)
+            walk(getattr(selection, "selection_set", None))
+
+    for definition in document.definitions:
+        walk(getattr(definition, "selection_set", None))
+    return names
+
+
+def test_get_code_discounts_query_never_selects_email():
+    """PII guard (Story 9.17): the eligibility selection this story adds must
+    never reach `email` — Customer.email is itself deprecated and this tool
+    must never fetch or print a customer's email. Selecting `customers { id }`
+    only means data that never arrives cannot leak."""
+    assert "email" not in _selected_field_names(q.GET_CODE_DISCOUNTS)
+
+
+def test_get_code_discounts_selects_eligibility_fields_on_every_discount_type():
+    """Approach 2 (Story 9.17, see docs/tech-debt.md): eligibility is a
+    property of WHO may redeem the code, not of the reward type, so it is
+    selected identically on all four `Discount` union members rather than
+    only `DiscountCodeBasic`."""
+    assert q.GET_CODE_DISCOUNTS.count("appliesOncePerCustomer") == 4
+    assert q.GET_CODE_DISCOUNTS.count("... on DiscountBuyerSelectionAll") == 4
+    assert q.GET_CODE_DISCOUNTS.count("... on DiscountCustomers") == 4
+    assert q.GET_CODE_DISCOUNTS.count("... on DiscountCustomerSegments") == 4
 
 
 # ---------- read operations (build vars + execute, return node list) ----------

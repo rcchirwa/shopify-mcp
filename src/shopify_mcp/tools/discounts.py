@@ -43,6 +43,46 @@ _ISO_Z = "%Y-%m-%dT%H:%M:%SZ"
 _END_OF_DAY = time(23, 59, 59)
 
 
+def _eligibility_text(context: dict[str, Any] | None) -> str:
+    """Render WHO may redeem a discount code from its `context` selection.
+
+    Story 9.17: `get_discount_codes` used to report a code's terms (status,
+    usage limit, expiry) but never who could redeem it, which read a
+    single-customer or segment-gated code as an unlimited code open to
+    anyone. This is the read side's `DiscountContext` union —
+    `DiscountBuyerSelectionAll | DiscountCustomers | DiscountCustomerSegments`
+    — rendered per the PII decision: exactly one customer may show a bare
+    numeric id, more than one shows only a count, and a segment shows its
+    name(s) as-is (segment names are not customer PII).
+
+    A missing/null `context` (permissions-trimmed or shape-drifted response)
+    is deliberately NOT read as "open" — that would repeat the exact class of
+    wrong assumption this story exists to fix, just moved from "unlimited
+    usage" to "context absent". It renders as unknown instead.
+    """
+    if not context:
+        return "unknown (no eligibility data returned)"
+    typename = context.get("__typename")
+    if typename == "DiscountBuyerSelectionAll":
+        return "open to all customers"
+    if typename == "DiscountCustomers":
+        # `or []`, matching the codes-list defensiveness above: a
+        # permissions-trimmed response can return "customers": null.
+        customers = context.get("customers") or []
+        if len(customers) == 1:
+            return f"restricted to 1 customer (id {from_gid(customers[0].get('id') or '')})"
+        return f"restricted to {len(customers)} customers"
+    if typename == "DiscountCustomerSegments":
+        segments = context.get("segments") or []
+        names = [s["name"] for s in segments if s.get("name")]
+        if not names:
+            return "restricted to an unnamed customer segment"
+        quoted = ", ".join(f'"{n}"' for n in names)
+        noun = "segment" if len(names) == 1 else "segments"
+        return f"restricted to {noun} {quoted}"
+    return "unknown (no eligibility data returned)"
+
+
 def _normalize_ends_at(value: str, starts_at: datetime) -> tuple[str, str]:
     """Parse a caller-supplied expiry into Shopify's ISO-8601 UTC wire format.
 
@@ -148,11 +188,24 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 value_line = f"${amount} off"
             else:
                 value_line = discount.get("__typename", "")
+            # Reworded from a bare "Usage limit: unlimited" (Story 9.17): that
+            # phrasing compounded the eligibility gap below — it means
+            # unlimited REDEMPTIONS, but reads as unlimited exposure. Naming
+            # appliesOncePerCustomer here (not only in Eligibility) matters
+            # because it modifies this same number: "unlimited" total
+            # redemptions can still mean "once" for any given customer.
+            usage_limit = discount.get("usageLimit")
+            usage_text = (
+                f"{usage_limit} redemptions total" if usage_limit else "unlimited redemptions total"
+            )
+            if discount.get("appliesOncePerCustomer"):
+                usage_text += " (once per customer)"
             lines.append(
                 f"  [{from_gid(node['id'])}] {discount.get('title', '')}\n"
                 f"    Codes: {codes_str} | {value_line} | Status: {discount.get('status', '')} | "
-                f"Usage limit: {discount.get('usageLimit') or 'unlimited'} | "
-                f"Ends: {discount.get('endsAt') or 'no expiry'}"
+                f"Usage limit: {usage_text} | "
+                f"Ends: {discount.get('endsAt') or 'no expiry'}\n"
+                f"    Eligibility: {_eligibility_text(discount.get('context'))}"
             )
         return "\n".join(lines)
 
