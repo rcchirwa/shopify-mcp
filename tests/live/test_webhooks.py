@@ -169,11 +169,21 @@ def main():
     try:
         print("Step 3 — register_webhook confirm=True")
         created = register_webhook(topic=TEST_TOPIC, endpoint_url=test_endpoint, confirm=True)
-        if not created.startswith("Done."):
-            _fail("Step 3", f"expected 'Done.' prefix:\n{created}")
+        # Extract the subscription id and arm cleanup BEFORE asserting on the
+        # confirmed-label shape below. If the subscription was actually
+        # created, it must be cleaned up regardless of whether the label
+        # assertion that follows passes — a future label regression (like the
+        # "Done. PREVIEW — ..." defect Story 9.21 fixed) must never strand a
+        # live webhook by exiting before this point.
         sub_id = _extract_subscription_id(created)
         needs_cleanup = True
         print(f"  Created subscription id: {sub_id}")
+        # Story 9.21: the confirmed label is "CONFIRMED — ...", not
+        # "Done. ...". register_webhook can also prepend an external-domain
+        # warning ahead of the header, so check presence/absence rather than
+        # a fixed prefix.
+        if "CONFIRMED —" not in created or "PREVIEW" in created:
+            _fail("Step 3", f"expected 'CONFIRMED —' label, no 'PREVIEW':\n{created}")
         print("Step 3 PASSED.\n")
 
         print("Step 4 — list_webhooks shows new subscription")
@@ -184,8 +194,9 @@ def main():
 
         print("Step 5 — delete_webhook confirm=True")
         deleted = delete_webhook(subscription_id=sub_id, confirm=True)
-        if not deleted.startswith("Done."):
-            _fail("Step 5", f"expected 'Done.' prefix:\n{deleted}")
+        # Story 9.21: the confirmed label is "CONFIRMED — ...", not "Done. ...".
+        if "CONFIRMED —" not in deleted or "PREVIEW" in deleted:
+            _fail("Step 5", f"expected 'CONFIRMED —' label, no 'PREVIEW':\n{deleted}")
         needs_cleanup = False
         print("Step 5 PASSED.\n")
 

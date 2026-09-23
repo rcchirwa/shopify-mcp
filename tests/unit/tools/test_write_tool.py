@@ -67,10 +67,14 @@ def test_confirm_returns_confirmed_header_by_default(monkeypatch: pytest.MonkeyP
 
 
 def test_confirmed_from_preview_preserves_prefix_before_preview_marker() -> None:
-    """A preview can carry a prefix before its "PREVIEW — " header (an
-    injection reminder from with_reminder(), or a tool-specific warning like
-    register_webhook's external-domain annotation). The derivation must
-    replace only the header, leaving the prefix intact."""
+    """A preview can carry a prefix before its "PREVIEW — " header — e.g.
+    update_collection's preview is wrapped by with_reminder(), which prefixes
+    an injection reminder ahead of the header when it applies. The derivation
+    must replace only the header, leaving the prefix intact. (Only the four
+    tools that omit done_text — update_product_title, update_collection,
+    update_inventory, delete_webhook — reach this helper; the other two sites
+    with a preview-prefix pattern, update_product_description and
+    register_webhook, do the identical substitution inline.)"""
     out = _wt._confirmed_from_preview("⚠ some warning\nPREVIEW — update title")
     assert out == "⚠ some warning\nCONFIRMED — update title"
 
@@ -83,6 +87,20 @@ def test_confirmed_from_preview_labels_output_when_no_preview_marker_present() -
     out = _wt._confirmed_from_preview("no marker here")
     assert out == "CONFIRMED — no marker here"
     assert "PREVIEW" not in out
+
+
+def test_confirmed_from_preview_replaces_first_occurrence_only() -> None:
+    """Adversarial (Story 9.21 verifier finding): a preview's BODY (built from
+    merchant/caller data after the tool's own header) can itself contain the
+    literal string "PREVIEW — ...". Only the tool's own header — the FIRST
+    occurrence — may become "CONFIRMED — "; a "replace all" implementation
+    would also rewrite the embedded data, and a "replace last" implementation
+    would rewrite the embedded data INSTEAD of the header. Both falsify what
+    the operator is shown."""
+    out = _wt._confirmed_from_preview(
+        "PREVIEW — update title\n  New title  : PREVIEW — not applied, redo by hand"
+    )
+    assert out == "CONFIRMED — update title\n  New title  : PREVIEW — not applied, redo by hand"
 
 
 def test_confirm_returns_done_text_when_provided(monkeypatch: pytest.MonkeyPatch) -> None:
