@@ -431,12 +431,15 @@ class ShopifyClient:
                     allow_redirects=allow_redirects,
                     headers=headers,
                 )
-            except requests.RequestException as e:
+            except (requests.RequestException, ValueError) as e:
                 # A transport error (DNS, connection reset, read timeout) is
                 # treated as permanent here — mirrors execute(), which only
                 # retries on parsed transient statuses, not raw socket errors.
                 # The text is fenced: it can quote the remote server's own bytes
                 # (http.client's BadStatusLine repeats the status line).
+                # ValueError too: requests resolves the redirect target even
+                # with allow_redirects=False, and with NO_PROXY set a bad
+                # Location port raises a bare ValueError quoting it (Story 10.95).
                 raise ShopifyError(wrap_reflected("request failed: ", e)) from e
 
             status = resp.status_code

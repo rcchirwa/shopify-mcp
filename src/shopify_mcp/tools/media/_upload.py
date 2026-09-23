@@ -50,12 +50,30 @@ from shopify_mcp.tools.media._graphql import (
 # this length are truncated to prevent unbounded string storage (SEC-25).
 _MAX_STAGED_FILENAME_LEN = 100
 
-# An accepted MIME type must be a plain `image/<subtype>` token. The server's
-# Content-Type flows on to stagedUploadsCreate and into the CONFIRMED block's
-# `Bytes` line unfenced, so a type that merely starts with `image/` could carry
-# prose there (Story 10.95 security review). Anything else takes the fenced
-# reject in _download_image.
-_IMAGE_MIME_TYPE = re.compile(r"image/[a-z0-9.+-]{1,64}")
+# The image types an upload accepts. The server's Content-Type flows on to
+# stagedUploadsCreate and into the CONFIRMED block's `Bytes` line unfenced, so
+# anything looser lets it carry prose there: a bare `image/` prefix did, and so
+# did a well-formed token like `image/ignore-previous-instructions` (Story 10.95
+# reviews). Anything else takes the fenced reject in _download_image; Shopify
+# still decides which of these it will actually process.
+_IMAGE_MIME_TYPES = frozenset(
+    {
+        "image/avif",
+        "image/bmp",
+        "image/gif",
+        "image/heic",
+        "image/heif",
+        "image/jpeg",
+        "image/jpg",  # non-standard, but servers send it
+        "image/pjpeg",
+        "image/png",
+        "image/svg+xml",
+        "image/tiff",
+        "image/vnd.microsoft.icon",
+        "image/webp",
+        "image/x-icon",
+    }
+)
 
 
 def _format_bytes(n: Any) -> str:
@@ -108,7 +126,7 @@ def _download_image(client: ShopifyClient, url: str) -> tuple[bytes, str, str]:
     filename = _filename_from_url(url)
     server_type = (content_type_raw or "").split(";")[0].strip().lower()
     content_type = server_type or (mimetypes.guess_type(filename)[0] or "").lower()
-    if not _IMAGE_MIME_TYPE.fullmatch(content_type):
+    if content_type not in _IMAGE_MIME_TYPES:
         head, tail = "unsupported MIME type: ", " — v1 accepts images only"
         # The server's Content-Type is third-party text, so it is fenced. A type
         # guessed from the caller's own URL, and "(unknown)", are not (Story 10.95).
