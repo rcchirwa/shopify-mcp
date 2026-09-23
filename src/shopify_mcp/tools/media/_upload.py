@@ -26,6 +26,7 @@ from shopify_mcp.tools._http import default_headers
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._response import extract_user_errors, with_confirm_hint
 from shopify_mcp.tools._scrub import cap
+from shopify_mcp.tools._untrusted import with_reminder, wrap_bounded
 from shopify_mcp.tools.media._common import (
     _as_product_gid,
     _extract_media_user_errors,
@@ -103,9 +104,10 @@ def _download_image(client: ShopifyClient, url: str) -> tuple[bytes, str, str]:
         guessed, _ = mimetypes.guess_type(filename)
         content_type = (guessed or "").lower()
     if not content_type.startswith("image/"):
-        raise RuntimeError(
-            f"unsupported MIME type: {content_type or '(unknown)'} — v1 accepts images only"
-        )
+        # A non-empty type came from the remote server's Content-Type (or the
+        # URL's own extension), so it is fenced; "(unknown)" is ours (Story 10.95).
+        shown = wrap_bounded(content_type) if content_type else "(unknown)"
+        raise RuntimeError(f"unsupported MIME type: {shown} — v1 accepts images only")
     return body, filename, content_type
 
 
@@ -408,7 +410,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             image_bytes, filename, mime_type = _download_image(client, source)
         except Exception as e:
-            return f"Error at stage=download: {cap(str(e))}"
+            # fetch_bytes / _download_image fence third-party header values with
+            # wrap_bounded, sized so this cap() never reaches a closing tag;
+            # with_reminder() adds the reminder only when something was fenced.
+            return with_reminder(f"Error at stage=download: {cap(str(e))}")
 
         # Stage 2: create the staged upload target.
         target, err = _stage_upload(client, filename, mime_type, len(image_bytes))

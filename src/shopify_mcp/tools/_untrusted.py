@@ -1453,3 +1453,32 @@ def wrap(text: object) -> str:
     if not _has_forged_match(normalized) and not _has_forged_match(raw):
         return _UNTRUSTED.format(raw)
     return _UNTRUSTED.format(_CLOSE_TAG_PATTERN.sub(_neutralize_close_tag, normalized))
+
+
+# Story 10.95 / SEC-04-redirect-header. The longest a fenced third-party value
+# may be, delimiters included, when it is embedded in a reflected error sentence.
+# The tool layer caps that whole sentence at `_scrub.REFLECT_MAX_LEN` (300), and
+# a cap landing inside the fence would cut off the closing tag, leaving an open
+# fence that is worse than none. 150 leaves room for the longest caller sentence
+# (fetch_bytes' redirect refusal, 100 chars of its own) under that cap.
+_BOUNDED_WRAP_MAX_LEN = 150
+
+_WITHHELD = "(value withheld: too long to show safely)"
+
+
+def wrap_bounded(text: object) -> str:
+    """:func:`wrap` whose whole result, delimiters included, is at most 150 chars.
+
+    For a third-party value embedded in a sentence that is later capped as a
+    whole (``fetch_bytes``' redirect ``Location``, a download's ``Content-Type``).
+    The input is truncated to fit first. That alone does not bound the output:
+    once :func:`wrap` neutralizes a forged closer it returns the NFKC-normalized
+    copy, and NFKC can lengthen text -- Latin-1 ``½``, which an HTTP header can
+    carry, becomes three characters. A result that still overflows is withheld
+    rather than truncated, because truncating a fence is exactly the failure this
+    exists to prevent; only a value carrying a forged closer can get there, so
+    nothing legitimate is lost.
+    """
+    room = _BOUNDED_WRAP_MAX_LEN - len(_UNTRUSTED.format(""))
+    fenced = wrap(str(text)[:room])
+    return fenced if len(fenced) <= _BOUNDED_WRAP_MAX_LEN else _WITHHELD

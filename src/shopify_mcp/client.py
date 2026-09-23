@@ -35,6 +35,9 @@ from shopify_mcp.tools._http import default_headers
 # the bound-text helper under its bare name would shadow it there.
 from shopify_mcp.tools._scrub import cap as cap_text
 from shopify_mcp.tools._scrub import sanitize_control_chars
+
+# Also a leaf (imports only the standard library): fences the redirect Location.
+from shopify_mcp.tools._untrusted import wrap_bounded
 from shopify_mcp.tools._url_safety import _reject_if_private_host
 
 # Return type of the callable handed to ShopifyClient._with_retry.
@@ -438,7 +441,13 @@ class ShopifyClient:
             # following a redirect would re-issue the request to the Location
             # host without re-running the SSRF guard, re-opening the bypass.
             if 300 <= status < 400:
-                location = cap_text(resp.headers.get("Location", "(no Location header)"))
+                # The Location value is written by whatever server the caller's
+                # URL points at, so it is fenced as untrusted (Story 10.95), and
+                # bounded so the tool layer's cap() cannot cut the fence off.
+                raw_location = resp.headers.get("Location")
+                location = (
+                    "(no Location header)" if raw_location is None else wrap_bounded(raw_location)
+                )
                 raise ShopifyError(
                     f"HTTP {status} redirect to {location} — refused; redirects can "
                     f"bypass the SSRF guard. Supply the final URL directly."
