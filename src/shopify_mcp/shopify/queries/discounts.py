@@ -30,17 +30,13 @@ from the Admin API — confirmed live against 2026-01, 2026-09-14, alongside
 `discountCodeBasicCreate`, folds the old two-step price-rule-then-attach-code
 flow into a single mutation: `DiscountCodeBasicInput` carries the code and the
 percentage directly (`customerGets.value.percentage`, a 0-1 fraction — not the
-whole-number `PriceRuleInput.value` the old shape used). **Correction,
-2026-09-23 (Story 9.17 review):** this paragraph previously claimed
-`DiscountCodeBasicInput` had "no `customerSelection` field at all, because a
-code-based discount is already gated by whoever holds the code, not a
-customer segment." Both halves were wrong. The input DOES declare a
-`customerSelection` field — deprecated in favor of `context` (the field this
-mutation sends, below) — and a code-based discount can absolutely be
+whole-number `PriceRuleInput.value` the old shape used). `DiscountCodeBasicInput`
+declares a `customerSelection` field, deprecated in favor of `context` (the
+field this mutation sends, below), and a code-based discount can be
 segment- or customer-gated on top of holding the code: confirmed live against
 2026-01, e.g. `AON_DAY_ONE_VIP` and `VIPFOUNDERS20`, both restricted to the
-"AON Founders VIP List" segment. That gap is exactly what Story 9.17's read
-side (below) now surfaces.
+"AON Founders VIP List" segment — the gap Story 9.17's read side (below) now
+surfaces.
 
 `DiscountContextInput` (the `context` field) is schema-nullable but
 **business-logic required** — confirmed live, 2026-09-14: omitting it fails

@@ -31,6 +31,7 @@ from shopify_mcp.tools._response import (
     with_confirm_hint,
 )
 from shopify_mcp.tools._scrub import cap, sanitize_control_chars
+from shopify_mcp.tools._untrusted import _NON_CF_DEFAULT_IGNORABLE
 
 # Shopify rejects a 0% or negative discount, and a >100% value would zero out
 # (or overpay) a line item — bound client-side rather than let a nonsensical
@@ -46,75 +47,55 @@ _END_OF_DAY = time(23, 59, 59)
 
 
 # Runs of whitespace or C0/C1 control characters, collapsed to a single space
-# in a segment name before it ever reaches an f-string — see
-# _sanitize_segment_name. `\s` alone already matches CR, VT, FF, the
-# FS/GS/RS separators (\x1c-\x1e), NEL (\x85), and LINE/PARAGRAPH SEPARATOR
-# (U+2028/U+2029) under Python's default Unicode matching — confirmed by a
-# direct character survey during the Story 9.17 round-2 review, which is why
-# a single `\n`-only forgery test previously left every other line-breaking
-# character unpinned even though the implementation already handled them.
-# `\x00-\x1f\x7f-\x9f` closes the remaining C0 range plus DEL and the C1
-# range (\x80-\x9f) that `\s` does not cover.
+# by _collapse_to_single_line. `\s` matches ordinary spaces plus most
+# line-breaking characters (CR, VT, FF, the FS/GS/RS separators, NEL,
+# LINE/PARAGRAPH SEPARATOR); `\x00-\x1f\x7f-\x9f` closes the remaining C0
+# range plus DEL and the C1 range that `\s` does not cover.
 _WHITESPACE_RE = re.compile(r"[\s\x00-\x1f\x7f-\x9f]+")
 
 
+def _is_invisible(ch: str) -> bool:
+    """True for a Unicode format (Cf) character, or a non-Cf member of
+    Default_Ignorable_Code_Point that `unicodedata.category` cannot report
+    by category alone (e.g. the Hangul fillers U+115F/U+1160/U+3164/U+FFA0,
+    which are category Lo). Reuses `_untrusted.py`'s existing derivation of
+    that non-Cf list rather than re-deriving it, since it exists precisely
+    to catch a character that renders as nothing or next-to-nothing.
+    """
+    return unicodedata.category(ch) == "Cf" or any(
+        lo <= ord(ch) <= hi for lo, hi in _NON_CF_DEFAULT_IGNORABLE
+    )
+
+
+def _collapse_to_single_line(text: str) -> str:
+    """Collapse arbitrary Shopify-supplied text to a single display line.
+
+    Every invisible character (see `_is_invisible`) is removed outright
+    rather than collapsed to a visible space, since a space would
+    misrepresent an otherwise-invisible character. Every remaining run of
+    whitespace or C0/C1 control character collapses to one space, which
+    makes it impossible for the text to place anything on a line of its
+    own. Leading/trailing space is stripped.
+    """
+    no_invisibles = "".join(ch for ch in text if not _is_invisible(ch))
+    return _WHITESPACE_RE.sub(" ", no_invisibles).strip()
+
+
 def _sanitize_segment_name(name: str) -> str | None:
-    """Sanitize a segment name for display, or None if nothing is left to show.
+    """Single-line-collapse a segment name, or None if nothing is left to show.
 
-    Story 9.17 review: a segment named e.g. ``x"\\n    Eligibility: open to
-    all customers\\n    Note: "y`` rendered its own forged
-    ``Eligibility: open to all customers`` line — exactly this story's own
-    wrong-finding class, just moved from the bug into the unsanitized fix. A
-    segment name is operator-authored Shopify data, not a value this tool
-    controls, so any run of whitespace or C0/C1 control character collapses
-    to one space (making multi-line forgery impossible), and every
-    "format" character (``unicodedata.category(ch) == "Cf"``) is removed
-    outright rather than collapsed to a visible space, since a space would
-    misrepresent an otherwise-invisible character.
-
-    Round-3 review: an earlier version removed only a hand-picked list of
-    zero-width/bidi codepoints (ZWSP/ZWNJ/ZWJ/BOM, the explicit bidi
-    embedding/override/isolate controls). That list covered the 9 bidi
-    controls but missed roughly 150 OTHER Cf characters Unicode defines —
-    e.g. RLM (U+200F), ALM (U+061C), WORD JOINER (U+2060), and SOFT HYPHEN
-    (U+00AD) all rendered as an empty-looking but non-empty named segment.
-    Checking the Unicode category directly closes the whole class at once,
-    including the "Trojan Source" bidi-reordering characters, rather than
-    re-deriving the same incomplete list from memory.
-
-    Returns ``None`` once that stripping leaves nothing — a name that is only
-    spaces, or only Cf characters, is not real display text and must be
-    counted the same as a segment with no name at all (an "unnamed"
-    segment), not rendered as an empty quoted segment (``segment ""``).
-
-    Discount code TITLES have the same pre-existing gap on this read path;
-    left alone here — see docs/tech-debt.md (Story 9.17) for the residual.
+    A name that collapses to nothing (all spaces, or all invisible
+    characters) is not real display text and must be counted the same as a
+    segment with no name at all (an "unnamed" segment), not rendered as an
+    empty quoted segment (``segment ""``).
     """
-    no_format_chars = "".join(ch for ch in name if unicodedata.category(ch) != "Cf")
-    collapsed = _WHITESPACE_RE.sub(" ", no_format_chars).strip()
-    return collapsed or None
-
-
-def _escape_quotes_for_display(text: str) -> str:
-    """Escape `\\` and `"` so a segment name can't close its own quote.
-
-    Story 9.17 round-2 review: a segment named ``VIP" — actually open to all
-    customers`` or ``VIP", "Wholesale`` would otherwise close the quote this
-    renderer wraps every name in, forging a same-line clause or a fake
-    second segment in the comma-joined list. Standard backslash-escaping
-    (`\\` first, so an escaped quote is not re-escaped by escaping the quote
-    first) keeps the name inside its own quotes.
-    """
-    return text.replace("\\", "\\\\").replace('"', '\\"')
+    return _collapse_to_single_line(name) or None
 
 
 def _eligibility_text(context: dict[str, Any] | None) -> str:
     """Render WHO may redeem a discount code from its `context` selection.
 
-    Story 9.17: `get_discount_codes` used to report a code's terms (status,
-    usage limit, expiry) but never who could redeem it, which read a
-    single-customer or segment-gated code as an unlimited code open to
-    anyone. This is the read side's `DiscountContext` union —
+    This is the read side's `DiscountContext` union —
     `DiscountBuyerSelectionAll | DiscountCustomers | DiscountCustomerSegments`
     — rendered per the PII decision: exactly one customer may show a bare
     numeric id, more than one shows only a count (never an id, and never
@@ -122,12 +103,10 @@ def _eligibility_text(context: dict[str, Any] | None) -> str:
     `id`), and a segment shows its name(s) as-is (segment names are not
     customer PII).
 
-    Missing or empty data is always "unknown", never a confident claim: a
-    null/absent `context`, and an empty `customers`/`segments` list once the
-    union member IS known, all render the same "unknown" text rather than a
-    count of zero or a guess of "open". Reading absence as open would repeat
-    the exact class of wrong assumption this story exists to fix, just moved
-    from "unlimited usage" to "list happens to be empty".
+    Missing or empty data always renders "unknown", never a confident claim:
+    a null/absent `context`, and an empty `customers`/`segments` list once
+    the union member IS known, all render the same "unknown" text rather
+    than a count of zero or a guess of "open".
     """
     if not context:
         return "unknown (no eligibility data returned)"
@@ -148,18 +127,26 @@ def _eligibility_text(context: dict[str, Any] | None) -> str:
         segments = context.get("segments") or []
         if not segments:
             return "unknown (no eligibility data returned)"
+        # `(s or {})`: a null element in the segments list is tolerated the
+        # same as a dict with no "name" key -- both count as unnamed below.
         # `_sanitize_segment_name` returns None for a name that sanitizes to
-        # nothing (whitespace-only, zero-width-only) — filtered out here so
-        # that name joins the unnamed count below rather than rendering an
-        # empty quoted segment.
-        sanitized = (_sanitize_segment_name(s["name"]) for s in segments if s.get("name"))
+        # nothing (whitespace-only, invisible-characters-only) -- filtered
+        # out here so that name joins the unnamed count too, rather than
+        # rendering an empty quoted segment.
+        sanitized = (_sanitize_segment_name(s["name"]) for s in segments if (s or {}).get("name"))
         names = [n for n in sanitized if n]
         unnamed_count = len(segments) - len(names)
         # Every segment counts, named or not — a mix used to drop the unnamed
         # ones silently instead of surfacing them as restrictions.
         parts = []
         if names:
-            quoted = ", ".join(f'"{_escape_quotes_for_display(n)}"' for n in names)
+            # Escaped inline (`\` before `"`, so an escaped quote is not
+            # re-escaped by escaping the quote first): a segment named
+            # ``VIP" — actually open to all customers`` or ``VIP", "Wholesale``
+            # would otherwise close the quote each name is wrapped in,
+            # forging a same-line clause or a fake second segment.
+            escaped = (n.replace("\\", "\\\\").replace('"', '\\"') for n in names)
+            quoted = ", ".join(f'"{n}"' for n in escaped)
             noun = "segment" if len(names) == 1 else "segments"
             parts.append(f"{noun} {quoted}")
         if unnamed_count:
@@ -281,15 +268,24 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             # because it modifies this same number: "unlimited" total
             # redemptions can still mean "once" for any given customer.
             usage_limit = discount.get("usageLimit")
-            if usage_limit:
+            # `is not None`, not a truthiness check: usageLimit=0 is a real
+            # (if useless) value Shopify could return, and truthiness would
+            # misrender it as "unlimited" instead of "0 redemptions total".
+            if usage_limit is not None:
                 noun = "redemption" if usage_limit == 1 else "redemptions"
                 usage_text = f"{usage_limit} {noun} total"
             else:
                 usage_text = "unlimited redemptions total"
             if discount.get("appliesOncePerCustomer"):
                 usage_text += " (once per customer)"
+            # Single-line-collapsed, not quote-escaped (it isn't quoted): a
+            # title containing a newline plus a fake "Eligibility: open to
+            # all customers" line would otherwise forge its own eligibility
+            # line, the exact wrong-finding class this story exists to
+            # prevent.
+            title = _collapse_to_single_line(discount.get("title", ""))
             lines.append(
-                f"  [{from_gid(node['id'])}] {discount.get('title', '')}\n"
+                f"  [{from_gid(node['id'])}] {title}\n"
                 f"    Codes: {codes_str} | {value_line} | Status: {discount.get('status', '')} | "
                 f"Usage limit: {usage_text} | "
                 f"Ends: {discount.get('endsAt') or 'no expiry'}\n"
