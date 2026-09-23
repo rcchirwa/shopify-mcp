@@ -571,7 +571,8 @@ def test_update_collection_confirm_title_only_sends_only_title_field():
         new_title="Renamed",
         confirm=True,
     )
-    assert out.startswith("Done.")
+    assert out.startswith("CONFIRMED —")
+    assert "PREVIEW" not in out
     # Mutation call: input must carry id + title only — description absent.
     query, vars_ = fc.calls[1]
     assert query == UPDATE_COLLECTION
@@ -587,7 +588,7 @@ def test_update_collection_confirm_description_only_sends_only_description_field
             _collection_update_ok(),
         ]
     )
-    tools["update_collection"](
+    out = tools["update_collection"](
         handle="vanish",
         new_description="<p>rewritten</p>",
         confirm=True,
@@ -595,6 +596,15 @@ def test_update_collection_confirm_description_only_sends_only_description_field
     _, vars_ = fc.calls[1]
     assert vars_["input"]["descriptionHtml"] == "<p>rewritten</p>"
     assert "title" not in vars_["input"]
+    # Story 9.21: the existing description is non-empty here, so the preview
+    # is wrapped by with_reminder() and carries an injection-reminder PREFIX
+    # before "PREVIEW — ...". The confirmed output must still be derived
+    # correctly — reminder preserved, header flipped to CONFIRMED, no leaked
+    # PREVIEW marker or bare "Done." prefix.
+    assert "CONFIRMED —" in out
+    assert "PREVIEW" not in out
+    assert not out.startswith("Done.")
+    assert out.startswith("Note: fields marked <UNTRUSTED-DATA>")
 
 
 # ---------- sanitizer (Approach 2, post-sign-off): disallowed HTML stripped before write ----------

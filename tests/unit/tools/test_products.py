@@ -507,6 +507,26 @@ def test_title_user_errors_surfaced():
     assert out.startswith("Error:") and "has already been taken" in out, out
 
 
+def test_title_confirmed_shows_confirmed_header_not_done_preview():
+    """Story 9.21: a confirmed update_product_title write must read as
+    confirmed, not as an unapplied preview ("Done. PREVIEW — …")."""
+    tools, fc = _build(
+        [
+            _product_read(PROD_ID, CUR_TITLE, CUR_HANDLE),
+            _update_ok(pid=PROD_ID),
+        ]
+    )
+    out = tools["update_product_title"](
+        product_id=PROD_ID,
+        new_title="Totally Different Title",
+        change_handle=False,
+        confirm=True,
+    )
+    assert "CONFIRMED —" in out, out
+    assert "PREVIEW" not in out, out
+    assert not out.startswith("Done."), out
+
+
 # ---------- List / collection response-unwrap regressions ----------
 
 
@@ -2312,8 +2332,10 @@ def test_update_description_confirmed_stripped_shows_sanitized_prefix():
         new_description="<script>alert(1)</script>",
         confirm=True,
     )
-    assert out.startswith("Done ✂")
+    assert out.startswith("CONFIRMED ✂")
     assert "stripped" in out
+    assert "CONFIRMED —" in out
+    assert "PREVIEW" not in out
     # The mutation itself must carry the sanitized (script-free) value.
     _, vars_put = fc.calls[1]
     assert "<script" not in vars_put["product"]["descriptionHtml"]
@@ -2335,7 +2357,8 @@ def test_update_description_confirmed_shows_sanitized_prefix_for_duplicate_tag_s
         new_description=new_desc,
         confirm=True,
     )
-    assert out.startswith("Done ✂")
+    assert out.startswith("CONFIRMED ✂")
+    assert "PREVIEW" not in out
     _, vars_put = fc.calls[1]
     assert "javascript:" not in vars_put["product"]["descriptionHtml"]
 
@@ -2353,7 +2376,8 @@ def test_update_description_confirmed_safe_shows_plain_done():
         new_description="<p>Safe content</p>",
         confirm=True,
     )
-    assert out.startswith("Done.")
+    assert out.startswith("CONFIRMED —")
+    assert "PREVIEW" not in out
 
 
 def test_update_description_confirm_sends_update_mutation():
@@ -2368,7 +2392,11 @@ def test_update_description_confirm_sends_update_mutation():
         new_description="<p>new</p>",
         confirm=True,
     )
-    assert out.startswith("Done.")
+    # Old bodyHtml is non-empty here, so the preview (and thus the confirmed
+    # message) is wrapped by with_reminder() and carries an injection-reminder
+    # PREFIX before "CONFIRMED — " — hence "in", not startswith.
+    assert "CONFIRMED —" in out
+    assert "PREVIEW" not in out
     query, vars_ = fc.calls[1]
     assert query == UPDATE_PRODUCT
     assert vars_["product"] == {
@@ -2428,7 +2456,8 @@ def test_update_description_confirm_preserves_fully_allowed_html():
         new_description=new_desc,
         confirm=True,
     )
-    assert out.startswith("Done.")
+    assert out.startswith("CONFIRMED —")
+    assert "PREVIEW" not in out
     _, vars_put = fc.calls[1]
     assert vars_put["product"]["descriptionHtml"] == new_desc
 

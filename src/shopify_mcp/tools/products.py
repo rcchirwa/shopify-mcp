@@ -355,11 +355,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             log_name="update_product_description",
             log_description=f"id={product_id}",
             done_text=(
-                "Done ✂ — disallowed HTML was stripped before writing. See preview for what changed."
+                (
+                    "CONFIRMED ✂ — disallowed HTML was stripped before writing. "
+                    "See below for what changed.\n"
+                )
                 if stripped
-                else "Done."
+                else ""
             )
-            + f"\n{preview}",
+            + preview.replace("PREVIEW — ", "CONFIRMED — ", 1),
         )
 
     @server.tool()

@@ -18,6 +18,29 @@ from collections.abc import Callable
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._response import format_user_errors, with_confirm_hint
 
+_PREVIEW_MARKER = "PREVIEW — "
+_CONFIRMED_MARKER = "CONFIRMED — "
+
+
+def _confirmed_from_preview(preview: str) -> str:
+    """Derive the default confirmed-write message from a tool's preview string.
+
+    Replaces the first "PREVIEW — " header with "CONFIRMED — ", preserving
+    whatever precedes it (an injection reminder from with_reminder(), or a
+    tool-specific warning such as register_webhook's external-domain
+    annotation). Before this helper existed, the default done text was
+    `f"Done. {preview}"`, which re-embedded the untouched "PREVIEW — " header
+    inside a "confirmed" response — operators read "Done. PREVIEW — …" as the
+    write not having landed and redid it by hand (Story 9.21).
+
+    If `preview` has no "PREVIEW — " header at all, the marker is prefixed
+    onto the whole string instead of silently falling back to an unlabelled
+    "Done." — a confirmed write must always read as confirmed.
+    """
+    if _PREVIEW_MARKER in preview:
+        return preview.replace(_PREVIEW_MARKER, _CONFIRMED_MARKER, 1)
+    return _CONFIRMED_MARKER + preview
+
 
 def write_gate(
     *,
@@ -42,10 +65,13 @@ def write_gate(
     Pass a callable when the description requires non-trivial construction the
     preview path shouldn't pay for.
 
-    done_text overrides the default f"Done. {preview}" return — use it when the
-    tool's done string differs from its preview (e.g. "CONFIRMED — ..." prefix).
-    Accepts a zero-arg callable when the done string depends on the mutation
-    result (capture the result in the closure via the execute() callable).
+    done_text overrides the default return, which derives a "CONFIRMED — ..."
+    message from `preview` via `_confirmed_from_preview` (replacing its
+    "PREVIEW — " header). Pass done_text when the tool's confirmed message
+    needs more than that mechanical substitution (e.g. an extra line appended
+    after execute() runs). Accepts a zero-arg callable when the done string
+    depends on the mutation result (capture the result in the closure via the
+    execute() callable).
 
     post_execute_check is called with the raw mutation result dict AFTER
     format_user_errors passes (no userErrors). The dict is the full, unmodified
@@ -71,5 +97,5 @@ def write_gate(
     desc = log_description() if callable(log_description) else log_description
     log_write(log_name, desc)
     if done_text is None:
-        return f"Done. {preview}"
+        return _confirmed_from_preview(preview)
     return done_text() if callable(done_text) else done_text

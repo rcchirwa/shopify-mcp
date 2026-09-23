@@ -145,7 +145,8 @@ def test_register_confirmed_submits_create(monkeypatch):
         endpoint_url="https://example.com/hook",
         confirm=True,
     )
-    assert out.startswith("Done.")
+    assert out.startswith("CONFIRMED —")
+    assert "PREVIEW" not in out
     assert "42" in out  # numeric id surfaced via from_gid
     query, variables = fc.calls[0]
     assert query == CREATE_WEBHOOK
@@ -250,7 +251,8 @@ def test_delete_confirmed_submits_mutation_with_gid():
         ]
     )
     out = tools["delete_webhook"](subscription_id="123", confirm=True)
-    assert out.startswith("Done.")
+    assert out.startswith("CONFIRMED —")
+    assert "PREVIEW" not in out
     query, variables = fc.calls[0]
     assert query == DELETE_WEBHOOK
     assert variables == {"id": "gid://shopify/WebhookSubscription/123"}
@@ -326,6 +328,44 @@ def test_register_preview_allow_any_host_true_restores_external_domain_warning(m
     assert len(fc.calls) == 0
 
 
+def test_register_confirmed_allow_any_host_true_keeps_warning_and_confirms(monkeypatch):
+    """Story 9.21: register_webhook's preview can carry the external-domain
+    warning BEFORE the "PREVIEW — " header (unlike with_reminder's fixed
+    reminder text, this is a tool-specific prefix). The confirmed done_text
+    must still derive a "CONFIRMED — " header — preserving the warning — and
+    must never read as "Done. PREVIEW — …"."""
+    monkeypatch.delenv("WEBHOOK_ALLOWLIST_HOSTS", raising=False)
+    monkeypatch.setenv("WEBHOOK_ALLOW_ANY_HOST", "true")
+    tools, fc = _build(
+        [
+            {
+                "webhookSubscriptionCreate": {
+                    "webhookSubscription": {
+                        "id": "gid://shopify/WebhookSubscription/42",
+                        "topic": "ORDERS_CREATE",
+                        "format": "JSON",
+                        "endpoint": {
+                            "__typename": "WebhookHttpEndpoint",
+                            "callbackUrl": "https://example.com/hook",
+                        },
+                    },
+                    "userErrors": [],
+                }
+            }
+        ]
+    )
+    out = tools["register_webhook"](
+        topic="ORDERS_CREATE",
+        endpoint_url="https://example.com/hook",
+        confirm=True,
+    )
+    assert out.startswith("⚠ EXTERNAL DOMAIN")
+    assert "CONFIRMED —" in out
+    assert "PREVIEW" not in out
+    assert not out.startswith("Done.")
+    assert "42" in out
+
+
 def test_register_confirmed_https_with_empty_hostname_blocked(monkeypatch):
     """An https:// URL with no hostname (e.g. "https:///hook") can't
     IDNA-normalize to anything meaningful — it must be treated as "not
@@ -398,7 +438,8 @@ def test_register_confirmed_idna_equivalent_hostname_matches_allowlist(monkeypat
         endpoint_url="https://xn--mnchen-3ya.de/hook",
         confirm=True,
     )
-    assert out.startswith("Done.")
+    assert out.startswith("CONFIRMED —")
+    assert "PREVIEW" not in out
     assert len(fc.calls) == 1
 
 
@@ -470,7 +511,8 @@ def test_register_confirmed_hostname_in_allowlist_proceeds(monkeypatch):
         endpoint_url="https://example.com/hook",
         confirm=True,
     )
-    assert out.startswith("Done.")
+    assert out.startswith("CONFIRMED —")
+    assert "PREVIEW" not in out
     assert len(fc.calls) == 1
 
 
