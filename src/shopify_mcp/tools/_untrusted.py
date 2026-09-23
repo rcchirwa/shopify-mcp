@@ -523,6 +523,8 @@ import re
 import unicodedata
 from typing import NamedTuple
 
+from shopify_mcp.tools._scrub import REFLECT_MAX_LEN, cap
+
 # .format() does not re-parse substituted text, so curly braces in values are safe.
 _UNTRUSTED = "<UNTRUSTED-DATA>{}</UNTRUSTED-DATA>"
 
@@ -1453,3 +1455,33 @@ def wrap(text: object) -> str:
     if not _has_forged_match(normalized) and not _has_forged_match(raw):
         return _UNTRUSTED.format(raw)
     return _UNTRUSTED.format(_CLOSE_TAG_PATTERN.sub(_neutralize_close_tag, normalized))
+
+
+# Story 10.95 / SEC-04-redirect-header. What a third-party value becomes when
+# fencing it would still overflow its sentence's budget (see wrap_reflected).
+_WITHHELD = "(value withheld: too long to show safely)"
+
+
+def wrap_reflected(head: str, value: object, tail: str = "") -> str:
+    """Return ``head + wrap(value) + tail``, at most ``REFLECT_MAX_LEN`` chars.
+
+    For a third-party value embedded in an error sentence that the tool layer
+    later caps as a whole at ``REFLECT_MAX_LEN`` (``fetch_bytes``' redirect
+    ``Location`` and transport errors, a download's ``Content-Type``). A cap
+    landing inside the fence would cut off the closing tag, leaving an open
+    fence that is worse than none, so the whole sentence is sized here: the
+    value is truncated to what is left after ``head``, ``tail`` and the
+    delimiters. ``head`` and ``tail`` are the caller's own text and stay
+    outside the fence.
+
+    Truncating first does not bound the output on its own: once :func:`wrap`
+    neutralizes a forged closer it returns the NFKC-normalized copy, and NFKC
+    can lengthen text -- Latin-1 ``½``, which an HTTP header can carry, becomes
+    three characters. A fence that still overflows is withheld rather than
+    truncated, because truncating a fence is exactly the failure this exists to
+    prevent. Only a value carrying a forged closer can get there, so nothing
+    legitimate is lost.
+    """
+    budget = REFLECT_MAX_LEN - len(head) - len(tail)
+    fenced = wrap(cap(str(value), budget - len(_UNTRUSTED.format(""))))
+    return head + (fenced if len(fenced) <= budget else _WITHHELD) + tail

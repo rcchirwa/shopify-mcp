@@ -35,6 +35,10 @@ from shopify_mcp.tools._http import default_headers
 # the bound-text helper under its bare name would shadow it there.
 from shopify_mcp.tools._scrub import cap as cap_text
 from shopify_mcp.tools._scrub import sanitize_control_chars
+
+# Also a leaf (imports only the standard library and tools/_scrub): fences the
+# third-party text fetch_bytes reflects.
+from shopify_mcp.tools._untrusted import wrap_reflected
 from shopify_mcp.tools._url_safety import _reject_if_private_host
 
 # Return type of the callable handed to ShopifyClient._with_retry.
@@ -427,22 +431,34 @@ class ShopifyClient:
                     allow_redirects=allow_redirects,
                     headers=headers,
                 )
-            except requests.RequestException as e:
+            except (requests.RequestException, ValueError) as e:
                 # A transport error (DNS, connection reset, read timeout) is
                 # treated as permanent here — mirrors execute(), which only
                 # retries on parsed transient statuses, not raw socket errors.
-                raise ShopifyError(f"request failed: {cap_text(str(e))}") from e
+                # The text is fenced: it can quote the remote server's own bytes
+                # (http.client's BadStatusLine repeats the status line).
+                # ValueError too: requests resolves the redirect target even
+                # with allow_redirects=False, and with NO_PROXY set a bad
+                # Location port raises a bare ValueError quoting it (Story 10.95).
+                raise ShopifyError(wrap_reflected("request failed: ", e)) from e
 
             status = resp.status_code
             # `allow_redirects=False` makes a 3xx a terminal response. Refuse it:
             # following a redirect would re-issue the request to the Location
             # host without re-running the SSRF guard, re-opening the bypass.
             if 300 <= status < 400:
-                location = cap_text(resp.headers.get("Location", "(no Location header)"))
-                raise ShopifyError(
-                    f"HTTP {status} redirect to {location} — refused; redirects can "
-                    f"bypass the SSRF guard. Supply the final URL directly."
+                # The Location value is written by whatever server the caller's
+                # URL points at, so it is fenced as untrusted (Story 10.95). An
+                # empty header reads as an absent one, never as a bare fence.
+                head = f"HTTP {status} redirect to "
+                tail = (
+                    " — refused; redirects can bypass the SSRF guard. "
+                    "Supply the final URL directly."
                 )
+                location = resp.headers.get("Location")
+                if not location:
+                    raise ShopifyError(f"{head}(no Location header){tail}")
+                raise ShopifyError(wrap_reflected(head, location, tail))
             if status in _RETRYABLE_HTTP_STATUSES:
                 raise TransientShopifyError(f"HTTP {status} from source URL")
             if status >= 400:
@@ -457,14 +473,21 @@ class ShopifyClient:
                 )
 
             buf = bytearray()
-            for chunk in resp.iter_content(chunk_size=65536):
-                if not chunk:
-                    continue
-                buf.extend(chunk)
-                if len(buf) > max_size:
-                    raise ShopifyError(
-                        f"source exceeded the {_human_bytes(max_size)} cap during download"
-                    )
+            try:
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if not chunk:
+                        continue
+                    buf.extend(chunk)
+                    if len(buf) > max_size:
+                        raise ShopifyError(
+                            f"source exceeded the {_human_bytes(max_size)} cap during download"
+                        )
+            except requests.RequestException as e:
+                # A mid-body transport failure is raised here, outside the try
+                # around requests.get(). Permanent like that one, and fenced for
+                # the same reason: urllib3's InvalidChunkLength quotes the
+                # server's chunk-size line (Story 10.95).
+                raise ShopifyError(wrap_reflected("download failed: ", e)) from e
 
             content_type = resp.headers.get("Content-Type") or ""
             return bytes(buf), content_type
