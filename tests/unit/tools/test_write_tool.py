@@ -45,7 +45,10 @@ def test_preview_returns_hint_without_calling_execute() -> None:
 # ---------- confirm=True success ----------
 
 
-def test_confirm_returns_done_preview_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_confirm_returns_confirmed_header_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Story 9.21: the default done text must read as CONFIRMED, never as
+    "Done. PREVIEW — …" — that string reads to an operator as an unapplied
+    preview and caused a confirmed write to be redone by hand."""
     logged: list[tuple[str, str]] = []
     monkeypatch.setattr(_wt, "log_write", lambda name, msg: logged.append((name, msg)))
 
@@ -58,8 +61,46 @@ def test_confirm_returns_done_preview_by_default(monkeypatch: pytest.MonkeyPatch
         log_description="id=1 | 'A' → 'B'",
     )
 
-    assert out == "Done. PREVIEW — update title"
+    assert out == "CONFIRMED — update title"
+    assert "PREVIEW" not in out
     assert logged == [("update_product_title", "id=1 | 'A' → 'B'")]
+
+
+def test_confirmed_from_preview_preserves_prefix_before_preview_marker() -> None:
+    """A preview can carry a prefix before its "PREVIEW — " header — e.g.
+    update_collection's preview is wrapped by with_reminder(), which prefixes
+    an injection reminder ahead of the header when it applies. The derivation
+    must replace only the header, leaving the prefix intact. (Only the four
+    tools that omit done_text — update_product_title, update_collection,
+    update_inventory, delete_webhook — reach this helper; the other two sites
+    with a preview-prefix pattern, update_product_description and
+    register_webhook, do the identical substitution inline.)"""
+    out = _wt._confirmed_from_preview("⚠ some warning\nPREVIEW — update title")
+    assert out == "⚠ some warning\nCONFIRMED — update title"
+
+
+def test_confirmed_from_preview_labels_output_when_no_preview_marker_present() -> None:
+    """A preview with no "PREVIEW — " header at all must still read as
+    confirmed rather than silently falling back to an unlabelled string —
+    the whole point of this helper is that a confirmed write is never
+    ambiguous about whether it landed."""
+    out = _wt._confirmed_from_preview("no marker here")
+    assert out == "CONFIRMED — no marker here"
+    assert "PREVIEW" not in out
+
+
+def test_confirmed_from_preview_replaces_first_occurrence_only() -> None:
+    """Adversarial (Story 9.21 verifier finding): a preview's BODY (built from
+    merchant/caller data after the tool's own header) can itself contain the
+    literal string "PREVIEW — ...". Only the tool's own header — the FIRST
+    occurrence — may become "CONFIRMED — "; a "replace all" implementation
+    would also rewrite the embedded data, and a "replace last" implementation
+    would rewrite the embedded data INSTEAD of the header. Both falsify what
+    the operator is shown."""
+    out = _wt._confirmed_from_preview(
+        "PREVIEW — update title\n  New title  : PREVIEW — not applied, redo by hand"
+    )
+    assert out == "CONFIRMED — update title\n  New title  : PREVIEW — not applied, redo by hand"
 
 
 def test_confirm_returns_done_text_when_provided(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -114,7 +155,7 @@ def test_callable_log_description_is_invoked_only_on_confirm(
         log_name="t",
         log_description=_desc,
     )
-    assert out_done == "Done. PREVIEW — x"
+    assert out_done == "CONFIRMED — x"
     assert desc_calls == [1]
     assert logged == [("t", "id=1 | computed lazily")]
 
@@ -266,7 +307,7 @@ def test_post_execute_check_none_does_not_block_success(monkeypatch: pytest.Monk
         log_description="desc",
         post_execute_check=_check,
     )
-    assert out == "Done. PREVIEW — y"
+    assert out == "CONFIRMED — y"
     assert logged == [("tool_y", "desc")]
     assert received == [_ok()]
 

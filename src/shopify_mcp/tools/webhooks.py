@@ -152,7 +152,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             log_description=lambda: (
                 f"id={_numeric_id()} | topic={topic} | endpoint={endpoint_url} | format={message_format}"
             ),
-            done_text=lambda: f"Done. {preview}\n  Subscription ID : {_numeric_id()}",
+            done_text=lambda: (
+                f"{preview.replace('PREVIEW — ', 'CONFIRMED — ', 1)}"
+                f"\n  Subscription ID : {_numeric_id()}"
+            ),
         )
 
     @server.tool()

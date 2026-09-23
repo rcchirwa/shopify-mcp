@@ -297,7 +297,8 @@ def test_update_inventory_confirmed_calls_set_inventory_with_correct_gids():
         quantity=0,
         confirm=True,
     )
-    assert out.startswith("Done.")
+    assert out.startswith("CONFIRMED —")
+    assert "PREVIEW" not in out
     # Second call was the mutation
     mutation_query, mutation_vars = fc.calls[1]
     assert mutation_query == SET_INVENTORY
@@ -351,7 +352,8 @@ def test_update_inventory_accepts_boundary_quantity(quantity):
         quantity=quantity,
         confirm=True,
     )
-    assert out.startswith("Done.")
+    assert out.startswith("CONFIRMED —")
+    assert "PREVIEW" not in out
 
 
 def test_update_inventory_handles_missing_inventory_item_without_crashing():
