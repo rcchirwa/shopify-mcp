@@ -30,14 +30,35 @@ from the Admin API — confirmed live against 2026-01, 2026-09-14, alongside
 `discountCodeBasicCreate`, folds the old two-step price-rule-then-attach-code
 flow into a single mutation: `DiscountCodeBasicInput` carries the code and the
 percentage directly (`customerGets.value.percentage`, a 0-1 fraction — not the
-whole-number `PriceRuleInput.value` the old shape used), and there is no
-`customerSelection` field at all, because a code-based discount is already
-gated by whoever holds the code, not a customer segment.
+whole-number `PriceRuleInput.value` the old shape used). `DiscountCodeBasicInput`
+declares a `customerSelection` field, deprecated in favor of `context` (the
+field this mutation sends, below), and a code-based discount can be
+segment- or customer-gated on top of holding the code: confirmed live against
+2026-01, e.g. `AON_DAY_ONE_VIP` and `VIPFOUNDERS20`, both restricted to the
+"AON Founders VIP List" segment — the gap Story 9.17's read side (below) now
+surfaces.
 
 `DiscountContextInput` (the `context` field) is schema-nullable but
 **business-logic required** — confirmed live, 2026-09-14: omitting it fails
 with "Context can't be blank", a class of requirement introspection cannot
 show (see `tools.discounts` for the `{all: ALL}` value this tool sends).
+
+**GET_CODE_DISCOUNTS also reads eligibility now (Story 9.17).** Before this,
+the read side reported a code's terms (status, usage limit, expiry) but never
+WHO may redeem it, which read a single-customer or segment-gated code as an
+unlimited code open to anyone. The output `context` field (confirmed live
+against 2026-01, 2026-09-23) is a `DiscountContext` union —
+`DiscountBuyerSelectionAll | DiscountCustomerSegments | DiscountCustomers` —
+selected alongside `appliesOncePerCustomer` on all four `Discount` union
+members (see docs/tech-debt.md, Story 9.17, for why all four, not just
+`DiscountCodeBasic`). This is a read-side companion to the `context` INPUT
+field the create mutation already sends above; they are different things with
+the same name — one is what a new code is created with, the other is what an
+existing code turns out to have. Only `customers { id }` is selected, never
+`email` (Customer.email is itself deprecated) — data that is never fetched
+cannot leak. The deprecated `customerSelection` OUTPUT field on
+`DiscountCodeBasic` (distinct from the `DiscountCodeBasicInput.customerSelection`
+input field noted above) is deliberately not selected here in its place.
 """
 
 GET_CODE_DISCOUNTS = """
@@ -52,6 +73,13 @@ query GetCodeDiscounts($first: Int!, $query: String, $codesFirst: Int!) {
           status
           endsAt
           usageLimit
+          appliesOncePerCustomer
+          context {
+            __typename
+            ... on DiscountBuyerSelectionAll { all }
+            ... on DiscountCustomers { customers { id } }
+            ... on DiscountCustomerSegments { segments { id name } }
+          }
           codes(first: $codesFirst) { nodes { code } pageInfo { hasNextPage } }
           customerGets {
             value {
@@ -66,6 +94,13 @@ query GetCodeDiscounts($first: Int!, $query: String, $codesFirst: Int!) {
           status
           endsAt
           usageLimit
+          appliesOncePerCustomer
+          context {
+            __typename
+            ... on DiscountBuyerSelectionAll { all }
+            ... on DiscountCustomers { customers { id } }
+            ... on DiscountCustomerSegments { segments { id name } }
+          }
           codes(first: $codesFirst) { nodes { code } pageInfo { hasNextPage } }
         }
         ... on DiscountCodeFreeShipping {
@@ -73,6 +108,13 @@ query GetCodeDiscounts($first: Int!, $query: String, $codesFirst: Int!) {
           status
           endsAt
           usageLimit
+          appliesOncePerCustomer
+          context {
+            __typename
+            ... on DiscountBuyerSelectionAll { all }
+            ... on DiscountCustomers { customers { id } }
+            ... on DiscountCustomerSegments { segments { id name } }
+          }
           codes(first: $codesFirst) { nodes { code } pageInfo { hasNextPage } }
         }
         ... on DiscountCodeApp {
@@ -80,6 +122,13 @@ query GetCodeDiscounts($first: Int!, $query: String, $codesFirst: Int!) {
           status
           endsAt
           usageLimit
+          appliesOncePerCustomer
+          context {
+            __typename
+            ... on DiscountBuyerSelectionAll { all }
+            ... on DiscountCustomers { customers { id } }
+            ... on DiscountCustomerSegments { segments { id name } }
+          }
           codes(first: $codesFirst) { nodes { code } pageInfo { hasNextPage } }
         }
       }

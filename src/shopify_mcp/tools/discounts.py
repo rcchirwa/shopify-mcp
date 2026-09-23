@@ -10,6 +10,8 @@ flow, and output formatting; the GraphQL strings live in
 create_discount_code requires confirm=True.
 """
 
+import re
+import unicodedata
 from datetime import UTC, date, datetime, time
 from typing import Any
 
@@ -29,6 +31,7 @@ from shopify_mcp.tools._response import (
     with_confirm_hint,
 )
 from shopify_mcp.tools._scrub import cap, sanitize_control_chars
+from shopify_mcp.tools._untrusted import _NON_CF_DEFAULT_IGNORABLE
 
 # Shopify rejects a 0% or negative discount, and a >100% value would zero out
 # (or overpay) a line item — bound client-side rather than let a nonsensical
@@ -41,6 +44,116 @@ _ISO_Z = "%Y-%m-%dT%H:%M:%SZ"
 # A bare calendar date is read as the last second of that day — see
 # _normalize_ends_at for why.
 _END_OF_DAY = time(23, 59, 59)
+
+
+# Runs of whitespace or C0/C1 control characters, collapsed to a single space
+# by _collapse_to_single_line. `\s` matches ordinary spaces plus most
+# line-breaking characters (CR, VT, FF, the FS/GS/RS separators, NEL,
+# LINE/PARAGRAPH SEPARATOR); `\x00-\x1f\x7f-\x9f` closes the remaining C0
+# range plus DEL and the C1 range that `\s` does not cover.
+_WHITESPACE_RE = re.compile(r"[\s\x00-\x1f\x7f-\x9f]+")
+
+
+def _is_invisible(ch: str) -> bool:
+    """True for a Unicode format (Cf) character, or a non-Cf member of
+    Default_Ignorable_Code_Point that `unicodedata.category` cannot report
+    by category alone (e.g. the Hangul fillers U+115F/U+1160/U+3164/U+FFA0,
+    which are category Lo). Reuses `_untrusted.py`'s existing derivation of
+    that non-Cf list rather than re-deriving it, since it exists precisely
+    to catch a character that renders as nothing or next-to-nothing.
+    """
+    return unicodedata.category(ch) == "Cf" or any(
+        lo <= ord(ch) <= hi for lo, hi in _NON_CF_DEFAULT_IGNORABLE
+    )
+
+
+def _collapse_to_single_line(text: str) -> str:
+    """Collapse arbitrary Shopify-supplied text to a single display line.
+
+    Every invisible character (see `_is_invisible`) is removed outright
+    rather than collapsed to a visible space, since a space would
+    misrepresent an otherwise-invisible character. Every remaining run of
+    whitespace or C0/C1 control character collapses to one space, which
+    makes it impossible for the text to place anything on a line of its
+    own. Leading/trailing space is stripped.
+    """
+    no_invisibles = "".join(ch for ch in text if not _is_invisible(ch))
+    return _WHITESPACE_RE.sub(" ", no_invisibles).strip()
+
+
+def _sanitize_segment_name(name: str) -> str | None:
+    """Single-line-collapse a segment name, or None if nothing is left to show.
+
+    A name that collapses to nothing (all spaces, or all invisible
+    characters) is not real display text and must be counted the same as a
+    segment with no name at all (an "unnamed" segment), not rendered as an
+    empty quoted segment (``segment ""``).
+    """
+    return _collapse_to_single_line(name) or None
+
+
+def _eligibility_text(context: dict[str, Any] | None) -> str:
+    """Render WHO may redeem a discount code from its `context` selection.
+
+    This is the read side's `DiscountContext` union —
+    `DiscountBuyerSelectionAll | DiscountCustomers | DiscountCustomerSegments`
+    — rendered per the PII decision: exactly one customer may show a bare
+    numeric id, more than one shows only a count (never an id, and never
+    anything else about the customer — the query itself selects nothing but
+    `id`), and a segment shows its name(s) as-is (segment names are not
+    customer PII).
+
+    Missing or empty data always renders "unknown", never a confident claim:
+    a null/absent `context`, and an empty `customers`/`segments` list once
+    the union member IS known, all render the same "unknown" text rather
+    than a count of zero or a guess of "open".
+    """
+    if not context:
+        return "unknown (no eligibility data returned)"
+    typename = context.get("__typename")
+    if typename == "DiscountBuyerSelectionAll":
+        return "open to all customers"
+    if typename == "DiscountCustomers":
+        # `or []`, matching the codes-list defensiveness above: a
+        # permissions-trimmed response can return "customers": null.
+        customers = context.get("customers") or []
+        if not customers:
+            return "unknown (no eligibility data returned)"
+        if len(customers) == 1:
+            customer_id = from_gid(customers[0].get("id") or "") or "unknown"
+            return f"restricted to 1 customer (id {customer_id})"
+        return f"restricted to {len(customers)} customers"
+    if typename == "DiscountCustomerSegments":
+        segments = context.get("segments") or []
+        if not segments:
+            return "unknown (no eligibility data returned)"
+        # `(s or {})`: a null element in the segments list is tolerated the
+        # same as a dict with no "name" key -- both count as unnamed below.
+        # `_sanitize_segment_name` returns None for a name that sanitizes to
+        # nothing (whitespace-only, invisible-characters-only) -- filtered
+        # out here so that name joins the unnamed count too, rather than
+        # rendering an empty quoted segment.
+        sanitized = (_sanitize_segment_name(s["name"]) for s in segments if (s or {}).get("name"))
+        names = [n for n in sanitized if n]
+        unnamed_count = len(segments) - len(names)
+        # Every segment counts, named or not — a mix used to drop the unnamed
+        # ones silently instead of surfacing them as restrictions.
+        parts = []
+        if names:
+            # Escaped inline (`\` before `"`, so an escaped quote is not
+            # re-escaped by escaping the quote first): a segment named
+            # ``VIP" — actually open to all customers`` or ``VIP", "Wholesale``
+            # would otherwise close the quote each name is wrapped in,
+            # forging a same-line clause or a fake second segment.
+            escaped = (n.replace("\\", "\\\\").replace('"', '\\"') for n in names)
+            quoted = ", ".join(f'"{n}"' for n in escaped)
+            noun = "segment" if len(names) == 1 else "segments"
+            parts.append(f"{noun} {quoted}")
+        if unnamed_count:
+            noun = "segment" if unnamed_count == 1 else "segments"
+            parts.append(f"{unnamed_count} unnamed {noun}")
+        return "restricted to " + " and ".join(parts)
+    return "unknown (unrecognized eligibility shape)"
 
 
 def _normalize_ends_at(value: str, starts_at: datetime) -> tuple[str, str]:
@@ -148,11 +261,35 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 value_line = f"${amount} off"
             else:
                 value_line = discount.get("__typename", "")
+            # Reworded from a bare "Usage limit: unlimited" (Story 9.17): that
+            # phrasing compounded the eligibility gap below — it means
+            # unlimited REDEMPTIONS, but reads as unlimited exposure. Naming
+            # appliesOncePerCustomer here (not only in Eligibility) matters
+            # because it modifies this same number: "unlimited" total
+            # redemptions can still mean "once" for any given customer.
+            usage_limit = discount.get("usageLimit")
+            # `is not None`, not a truthiness check: usageLimit=0 is a real
+            # (if useless) value Shopify could return, and truthiness would
+            # misrender it as "unlimited" instead of "0 redemptions total".
+            if usage_limit is not None:
+                noun = "redemption" if usage_limit == 1 else "redemptions"
+                usage_text = f"{usage_limit} {noun} total"
+            else:
+                usage_text = "unlimited redemptions total"
+            if discount.get("appliesOncePerCustomer"):
+                usage_text += " (once per customer)"
+            # Single-line-collapsed, not quote-escaped (it isn't quoted): a
+            # title containing a newline plus a fake "Eligibility: open to
+            # all customers" line would otherwise forge its own eligibility
+            # line, the exact wrong-finding class this story exists to
+            # prevent.
+            title = _collapse_to_single_line(discount.get("title", ""))
             lines.append(
-                f"  [{from_gid(node['id'])}] {discount.get('title', '')}\n"
+                f"  [{from_gid(node['id'])}] {title}\n"
                 f"    Codes: {codes_str} | {value_line} | Status: {discount.get('status', '')} | "
-                f"Usage limit: {discount.get('usageLimit') or 'unlimited'} | "
-                f"Ends: {discount.get('endsAt') or 'no expiry'}"
+                f"Usage limit: {usage_text} | "
+                f"Ends: {discount.get('endsAt') or 'no expiry'}\n"
+                f"    Eligibility: {_eligibility_text(discount.get('context'))}"
             )
         return "\n".join(lines)
 

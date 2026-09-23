@@ -1,5 +1,5 @@
 # Trimmed Admin GraphQL API schema. GENERATED: do not hand-edit.
-# api_version: 2026-01  captured: 2026-09-16
+# api_version: 2026-01  captured: 2026-09-23
 # Refresh: REFRESH_ADMIN_SCHEMA_SNAPSHOT=1 pytest tests/live/test_admin_schema_snapshot.py
 # (see README, 'Refreshing the Admin API schema snapshot').
 
@@ -420,6 +420,11 @@ enum CropRegion {
   TOP
 }
 
+type Customer implements HasMetafields & Node {
+  id: ID!
+  metafield(namespace: String, key: String!): Metafield
+}
+
 type CustomerJourneySummary {
   firstVisit: CustomerVisit
   lastVisit: CustomerVisit
@@ -451,8 +456,14 @@ enum DiscountBuyerSelection {
   ALL
 }
 
+type DiscountBuyerSelectionAll {
+  all: DiscountBuyerSelection!
+}
+
 type DiscountCodeApp {
+  appliesOncePerCustomer: Boolean!
   codes(first: Int, after: String, last: Int, before: String, reverse: Boolean = false, sortKey: DiscountCodeSortKeys = ID, query: String, savedSearchId: ID): DiscountRedeemCodeConnection!
+  context: DiscountContext!
   endsAt: DateTime
   status: DiscountStatus!
   title: String!
@@ -460,7 +471,9 @@ type DiscountCodeApp {
 }
 
 type DiscountCodeBasic {
+  appliesOncePerCustomer: Boolean!
   codes(first: Int, after: String, last: Int, before: String, reverse: Boolean = false, sortKey: DiscountCodeSortKeys = ID, query: String, savedSearchId: ID): DiscountRedeemCodeConnection!
+  context: DiscountContext!
   customerGets: DiscountCustomerGets!
   endsAt: DateTime
   status: DiscountStatus!
@@ -489,7 +502,9 @@ input DiscountCodeBasicInput {
 }
 
 type DiscountCodeBxgy {
+  appliesOncePerCustomer: Boolean!
   codes(first: Int, after: String, last: Int, before: String, reverse: Boolean = false, sortKey: DiscountCodeSortKeys = ID, query: String, savedSearchId: ID): DiscountRedeemCodeConnection!
+  context: DiscountContext!
   endsAt: DateTime
   status: DiscountStatus!
   title: String!
@@ -497,7 +512,9 @@ type DiscountCodeBxgy {
 }
 
 type DiscountCodeFreeShipping {
+  appliesOncePerCustomer: Boolean!
   codes(first: Int, after: String, last: Int, before: String, reverse: Boolean = false, sortKey: DiscountCodeSortKeys = ID, query: String, savedSearchId: ID): DiscountRedeemCodeConnection!
+  context: DiscountContext!
   endsAt: DateTime
   status: DiscountStatus!
   title: String!
@@ -527,6 +544,8 @@ input DiscountCombinesWithInput {
   shippingDiscounts: Boolean = false
 }
 
+union DiscountContext = DiscountBuyerSelectionAll | DiscountCustomerSegments | DiscountCustomers
+
 input DiscountContextInput {
   all: DiscountBuyerSelection
   customerSegments: DiscountCustomerSegmentsInput
@@ -552,6 +571,10 @@ input DiscountCustomerGetsValueInput {
   percentage: Float
 }
 
+type DiscountCustomerSegments {
+  segments: [Segment!]!
+}
+
 input DiscountCustomerSegmentsInput {
   add: [ID!]
   remove: [ID!]
@@ -561,6 +584,10 @@ input DiscountCustomerSelectionInput {
   all: Boolean
   customerSegments: DiscountCustomerSegmentsInput
   customers: DiscountCustomersInput
+}
+
+type DiscountCustomers {
+  customers: [Customer!]!
 }
 
 input DiscountCustomersInput {
@@ -1513,6 +1540,11 @@ type SEO {
 input SEOInput {
   description: String
   title: String
+}
+
+type Segment implements Node {
+  id: ID!
+  name: String!
 }
 
 type SelectedOption {
