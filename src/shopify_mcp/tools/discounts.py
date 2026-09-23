@@ -44,26 +44,72 @@ _ISO_Z = "%Y-%m-%dT%H:%M:%SZ"
 _END_OF_DAY = time(23, 59, 59)
 
 
-# Whitespace (including CR/LF) and other C0/DEL control characters, collapsed
-# to a single space in a segment name before it ever reaches an f-string —
-# see _sanitize_segment_name.
-_CONTROL_OR_WHITESPACE_RE = re.compile(r"[\s\x00-\x1f\x7f]+")
+# Runs of whitespace or C0/C1 control characters, collapsed to a single space
+# in a segment name before it ever reaches an f-string — see
+# _sanitize_segment_name. `\s` alone already matches CR, VT, FF, the
+# FS/GS/RS separators (\x1c-\x1e), NEL (\x85), and LINE/PARAGRAPH SEPARATOR
+# (U+2028/U+2029) under Python's default Unicode matching — confirmed by a
+# direct character survey during the Story 9.17 round-2 review, which is why
+# a single `\n`-only forgery test previously left every other line-breaking
+# character unpinned even though the implementation already handled them.
+# `\x00-\x1f\x7f-\x9f` closes the remaining C0 range plus DEL and the C1
+# range (\x80-\x9f) that `\s` does not cover.
+_WHITESPACE_RE = re.compile(r"[\s\x00-\x1f\x7f-\x9f]+")
+
+# Zero-width and bidi-control format characters (Unicode category Cf):
+# removed outright rather than collapsed to a visible space, since a space
+# would misrepresent an otherwise-invisible character. Covers the zero-width
+# space/joiners and the BOM/ZWNBSP (U+200B/200C/200D/FEFF) plus the explicit
+# bidi embedding/override/isolate controls (U+202A-202E, U+2066-2069) — the
+# "Trojan Source" class of character, which could otherwise reorder how a
+# forged name reads on screen without changing its underlying bytes.
+# Built from chr() by codepoint, not typed as literal characters or as
+# backslash-u escapes in a string literal: several of these codepoints are
+# themselves invisible or bidi-reordering, so typing them (or their escape
+# text) directly into source risks the exact "characters aren't what they
+# look like" class of mistake this code exists to defend against.
+_ZERO_WIDTH_CODEPOINTS = (0x200B, 0x200C, 0x200D, 0xFEFF)  # ZWSP, ZWNJ, ZWJ, BOM/ZWNBSP
+_BIDI_CONTROL_CODEPOINTS = (0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069)
+_ZERO_WIDTH_RE = re.compile(
+    "[" + "".join(chr(c) for c in _ZERO_WIDTH_CODEPOINTS + _BIDI_CONTROL_CODEPOINTS) + "]+"
+)
 
 
-def _sanitize_segment_name(name: str) -> str:
-    """Collapse whitespace/control characters in a segment name to single spaces.
+def _sanitize_segment_name(name: str) -> str | None:
+    """Sanitize a segment name for display, or None if nothing is left to show.
 
     Story 9.17 review: a segment named e.g. ``x"\\n    Eligibility: open to
     all customers\\n    Note: "y`` rendered its own forged
     ``Eligibility: open to all customers`` line — exactly this story's own
     wrong-finding class, just moved from the bug into the unsanitized fix. A
     segment name is operator-authored Shopify data, not a value this tool
-    controls, so a run of any whitespace or C0/DEL control character
-    collapses to one space, which makes multi-line forgery impossible.
+    controls, so any run of whitespace or C0/C1 control character collapses
+    to one space (making multi-line forgery impossible), and every
+    zero-width/bidi-control character is removed outright.
+
+    Returns ``None`` once that stripping leaves nothing — a name that is only
+    spaces, or only zero-width characters, is not real display text and must
+    be counted the same as a segment with no name at all (an "unnamed"
+    segment), not rendered as an empty quoted segment (``segment ""``).
+
     Discount code TITLES have the same pre-existing gap on this read path;
     left alone here — see docs/tech-debt.md (Story 9.17) for the residual.
     """
-    return _CONTROL_OR_WHITESPACE_RE.sub(" ", name).strip()
+    collapsed = _WHITESPACE_RE.sub(" ", _ZERO_WIDTH_RE.sub("", name)).strip()
+    return collapsed or None
+
+
+def _escape_quotes_for_display(text: str) -> str:
+    """Escape `\\` and `"` so a segment name can't close its own quote.
+
+    Story 9.17 round-2 review: a segment named ``VIP" — actually open to all
+    customers`` or ``VIP", "Wholesale`` would otherwise close the quote this
+    renderer wraps every name in, forging a same-line clause or a fake
+    second segment in the comma-joined list. Standard backslash-escaping
+    (`\\` first, so an escaped quote is not re-escaped by escaping the quote
+    first) keeps the name inside its own quotes.
+    """
+    return text.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _eligibility_text(context: dict[str, Any] | None) -> str:
@@ -106,13 +152,18 @@ def _eligibility_text(context: dict[str, Any] | None) -> str:
         segments = context.get("segments") or []
         if not segments:
             return "unknown (no eligibility data returned)"
-        names = [_sanitize_segment_name(s["name"]) for s in segments if s.get("name")]
+        # `_sanitize_segment_name` returns None for a name that sanitizes to
+        # nothing (whitespace-only, zero-width-only) — filtered out here so
+        # that name joins the unnamed count below rather than rendering an
+        # empty quoted segment.
+        sanitized = (_sanitize_segment_name(s["name"]) for s in segments if s.get("name"))
+        names = [n for n in sanitized if n]
         unnamed_count = len(segments) - len(names)
         # Every segment counts, named or not — a mix used to drop the unnamed
         # ones silently instead of surfacing them as restrictions.
         parts = []
         if names:
-            quoted = ", ".join(f'"{n}"' for n in names)
+            quoted = ", ".join(f'"{_escape_quotes_for_display(n)}"' for n in names)
             noun = "segment" if len(names) == 1 else "segments"
             parts.append(f"{noun} {quoted}")
         if unnamed_count:

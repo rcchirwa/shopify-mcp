@@ -34,35 +34,22 @@ def test_no_shared_fragment_in_discount_queries():
 
 
 # ---------- Story 9.17: eligibility selection, PII guard ----------
-
-
-def _selected_field_names(document_text: str) -> set[str]:
-    """Every field name selected anywhere in a document, found by walking the
-    parsed AST (graphql-core) rather than string-matching or identity-
-    comparing the query text — see feedback_pin_graphql_by_parsing: query
-    assertions must survive the text changing while the suite stays green."""
-    document = parse(document_text)
-    names: set[str] = set()
-
-    def walk(selection_set):
-        if selection_set is None:
-            return
-        for selection in selection_set.selections:
-            if isinstance(selection, FieldNode):
-                names.add(selection.name.value)
-            walk(getattr(selection, "selection_set", None))
-
-    for definition in document.definitions:
-        walk(getattr(definition, "selection_set", None))
-    return names
-
-
-def test_get_code_discounts_query_never_selects_email():
-    """PII guard (Story 9.17): the eligibility selection this story adds must
-    never reach `email` — Customer.email is itself deprecated and this tool
-    must never fetch or print a customer's email. Selecting `customers { id }`
-    only means data that never arrives cannot leak."""
-    assert "email" not in _selected_field_names(q.GET_CODE_DISCOUNTS)
+#
+# Round-1 shipped a field-name denylist here (walk the parsed document,
+# assert "email" is not among the selected field names) and a round-2 review
+# found it insufficient: a selection like
+# `customers { id defaultEmailAddress { emailAddress } }` or
+# `customers { __typename }` both select no field named "email" and so
+# survive it, even though the first leaks an email address and the second
+# leaks nothing useful but is still not what this query is supposed to send.
+# The denylist-of-one-field-name test was REMOVED (not amended in place) once
+# `test_get_code_discounts_customers_selection_is_exactly_id` below fully
+# subsumed it for this query: that test asserts every `customers` selection
+# set is exactly `{ id }`, which bans `email` (and every other field) from
+# ever reaching that selection, structurally rather than by name. There is no
+# other place in GET_CODE_DISCOUNTS an "email" field could plausibly appear,
+# so keeping both was a strictly weaker duplicate rather than independent
+# coverage.
 
 
 def _operation(text: str) -> OperationDefinitionNode:
@@ -112,12 +99,16 @@ def _all_fields_named(document_text: str, name: str) -> list[FieldNode]:
 
 
 def test_get_code_discounts_customers_selection_is_exactly_id():
-    """PII guard, structural (Story 9.17 review): a prior version of this
-    guard only checked that the STRING "email" was absent, which a selection
-    like `customers { id defaultEmailAddress { emailAddress } } }` or
-    `customers { __typename }` both survive. Every `customers` selection set,
-    on every `Discount` union member, must select exactly one field, `id`,
-    with nothing nested under it."""
+    """PII guard, structural (Story 9.17 review). The prior version of this
+    guard (see the comment above) parsed the document correctly and checked
+    field NAMES correctly — its weakness was being a denylist of exactly one
+    name, `email`, which a selection like
+    `customers { id defaultEmailAddress { emailAddress } }` or
+    `customers { __typename }` both survive without ever selecting a field
+    named `email`. This test asserts the SHAPE instead of a name: every
+    `customers` selection set, on every `Discount` union member, must select
+    exactly one field, `id`, with nothing nested under it — which bans
+    `email` (and anything else) categorically rather than by name."""
     customers_fields = _all_fields_named(q.GET_CODE_DISCOUNTS, "customers")
     assert len(customers_fields) == 4, (
         f"expected a customers{{...}} selection on all 4 Discount union members, found "
