@@ -314,15 +314,31 @@ def test_get_discount_codes_single_customer_shows_numeric_id():
 
 
 def test_get_discount_codes_multiple_customers_hide_ids():
-    """More than one customer: count only, never an id — the PII decision
-    forbids listing ids once there is more than one match."""
+    """More than one customer: count only — nothing else. The PII decision
+    forbids listing an id (or any other customer detail) once there is more
+    than one match, so this pins the EXACT line rather than a substring: one
+    customer entry here even smuggles an id and an email (data the real query
+    cannot produce, but a shape-drifted response could), and none of it may
+    reach the count line."""
     tools, fc = _build(
         [
             {
                 "discountNodes": {
                     "nodes": [
                         _discount_node(
-                            "5001", "Bulk VIP", context=_context_customers("111", "222", "333")
+                            "5001",
+                            "Bulk VIP",
+                            context={
+                                "__typename": "DiscountCustomers",
+                                "customers": [
+                                    {"id": "gid://shopify/Customer/111"},
+                                    {
+                                        "id": "gid://shopify/Customer/222",
+                                        "email": "leak@example.com",
+                                    },
+                                    {"id": "gid://shopify/Customer/333"},
+                                ],
+                            },
                         )
                     ]
                 }
@@ -330,8 +346,11 @@ def test_get_discount_codes_multiple_customers_hide_ids():
         ]
     )
     out = tools["get_discount_codes"]()
-    assert "Eligibility: restricted to 3 customers" in out
-    assert "(id" not in out
+    eligibility_lines = [ln for ln in out.splitlines() if ln.strip().startswith("Eligibility:")]
+    assert eligibility_lines == ["    Eligibility: restricted to 3 customers"]
+    assert "@" not in out
+    assert "gid://" not in out
+    assert "111" not in out and "222" not in out and "333" not in out
 
 
 def test_get_discount_codes_segment_gated_shows_segment_name():
@@ -488,13 +507,16 @@ def test_get_discount_codes_segment_with_no_name_is_defensive():
         ]
     )
     out = tools["get_discount_codes"]()
-    assert "Eligibility: restricted to an unnamed customer segment" in out
+    assert "Eligibility: restricted to 1 unnamed segment" in out
 
 
 def test_get_discount_codes_unrecognized_context_typename_reads_unknown():
     """Defensive: an unrecognized `context.__typename` (a future `DiscountContext`
     union member the schema does not have on 2026-01) must not be silently read
-    as open — same rule as a missing context entirely."""
+    as open — same rule as a missing context entirely. Distinct wording from
+    the missing-context case: data DID come back here, just in a shape this
+    tool doesn't recognize, so "no eligibility data returned" would be
+    inaccurate."""
     tools, fc = _build(
         [
             {
@@ -511,7 +533,184 @@ def test_get_discount_codes_unrecognized_context_typename_reads_unknown():
         ]
     )
     out = tools["get_discount_codes"]()
+    assert "Eligibility: unknown (unrecognized eligibility shape)" in out
+
+
+def test_get_discount_codes_empty_customers_list_reads_unknown_not_a_count():
+    """Review fix: `customers: []` is missing data, not a confirmed zero — it
+    used to render "restricted to 0 customers", a confident claim the data
+    cannot support. Same "unknown" wording as a wholly missing context."""
+    tools, fc = _build(
+        [
+            {
+                "discountNodes": {
+                    "nodes": [
+                        _discount_node(
+                            "5001",
+                            "Empty Customers",
+                            context={"__typename": "DiscountCustomers", "customers": []},
+                        )
+                    ]
+                }
+            }
+        ]
+    )
+    out = tools["get_discount_codes"]()
     assert "Eligibility: unknown (no eligibility data returned)" in out
+    assert "0 customers" not in out
+
+
+def test_get_discount_codes_null_customers_reads_unknown_not_a_count():
+    """Same as the empty-list case, but `customers` is present and explicitly
+    null rather than an empty array — both must be read the same way."""
+    tools, fc = _build(
+        [
+            {
+                "discountNodes": {
+                    "nodes": [
+                        _discount_node(
+                            "5001",
+                            "Null Customers",
+                            context={"__typename": "DiscountCustomers", "customers": None},
+                        )
+                    ]
+                }
+            }
+        ]
+    )
+    out = tools["get_discount_codes"]()
+    assert "Eligibility: unknown (no eligibility data returned)" in out
+
+
+def test_get_discount_codes_empty_segments_list_reads_unknown_not_unnamed():
+    """Review fix: `segments: []` is missing data, not a segment that happens
+    to lack a name — it used to render "restricted to an unnamed customer
+    segment", a confident claim about a segment that isn't even there."""
+    tools, fc = _build(
+        [
+            {
+                "discountNodes": {
+                    "nodes": [
+                        _discount_node(
+                            "5001",
+                            "Empty Segments",
+                            context={"__typename": "DiscountCustomerSegments", "segments": []},
+                        )
+                    ]
+                }
+            }
+        ]
+    )
+    out = tools["get_discount_codes"]()
+    assert "Eligibility: unknown (no eligibility data returned)" in out
+    assert "unnamed" not in out
+
+
+def test_get_discount_codes_customer_with_no_id_renders_id_unknown():
+    """A single-customer match with no `id` at all (shape drift) must render
+    `(id unknown)`, not the empty `(id )` this used to produce."""
+    tools, fc = _build(
+        [
+            {
+                "discountNodes": {
+                    "nodes": [
+                        _discount_node(
+                            "5001",
+                            "No Id",
+                            context={
+                                "__typename": "DiscountCustomers",
+                                "customers": [{}],
+                            },
+                        )
+                    ]
+                }
+            }
+        ]
+    )
+    out = tools["get_discount_codes"]()
+    assert "Eligibility: restricted to 1 customer (id unknown)" in out
+    assert "(id )" not in out
+
+
+def test_get_discount_codes_mixed_named_and_unnamed_segments_counts_both():
+    """Review fix: a mix of one named and one unnamed segment used to drop the
+    unnamed one silently, reporting only the named segment as if it were the
+    sole restriction. Every segment must count toward the restriction."""
+    tools, fc = _build(
+        [
+            {
+                "discountNodes": {
+                    "nodes": [
+                        _discount_node(
+                            "5001",
+                            "Mixed Segments",
+                            context={
+                                "__typename": "DiscountCustomerSegments",
+                                "segments": [
+                                    {"id": "gid://shopify/Segment/1", "name": "VIP"},
+                                    {"id": "gid://shopify/Segment/2", "name": None},
+                                ],
+                            },
+                        )
+                    ]
+                }
+            }
+        ]
+    )
+    out = tools["get_discount_codes"]()
+    assert 'Eligibility: restricted to segment "VIP" and 1 unnamed segment' in out
+
+
+def test_get_discount_codes_segment_name_cannot_forge_an_eligibility_line():
+    """Review fix: a segment named with an embedded newline plus a fake
+    ``Eligibility: open to all customers`` line used to render that forged
+    text as its OWN output line — exactly this story's wrong-finding class,
+    just moved from the bug into the unsanitized fix. Any whitespace/control
+    character in a segment name must collapse to a single space so a name can
+    never break onto a new line."""
+    forged_name = 'x"\n    Eligibility: open to all customers\n    Note: "y'
+    tools, fc = _build(
+        [
+            {
+                "discountNodes": {
+                    "nodes": [
+                        _discount_node(
+                            "5001", "Segment Forge", context=_context_segments(forged_name)
+                        )
+                    ]
+                }
+            }
+        ]
+    )
+    out = tools["get_discount_codes"]()
+    lines = out.splitlines()
+    assert "Eligibility: open to all customers" not in lines
+    eligibility_lines = [ln for ln in lines if ln.startswith("    Eligibility:")]
+    assert len(eligibility_lines) == 1
+
+
+def test_get_discount_codes_usage_limit_five_pins_exact_wording():
+    """Review fix: the numeric usage-limit wording was unpinned — reverting
+    "5 redemptions total" to a bare "5" survived the suite. Pin the exact
+    line."""
+    tools, fc = _build(
+        [{"discountNodes": {"nodes": [_discount_node("5001", "Five", usage_limit=5)]}}]
+    )
+    out = tools["get_discount_codes"]()
+    usage_lines = [ln for ln in out.splitlines() if "Usage limit:" in ln]
+    assert len(usage_lines) == 1
+    assert "Usage limit: 5 redemptions total | " in usage_lines[0]
+
+
+def test_get_discount_codes_usage_limit_one_is_singular():
+    """A limit of exactly 1 must read "1 redemption total" (singular), not
+    "1 redemptions total"."""
+    tools, fc = _build(
+        [{"discountNodes": {"nodes": [_discount_node("5001", "Solo", usage_limit=1)]}}]
+    )
+    out = tools["get_discount_codes"]()
+    assert "Usage limit: 1 redemption total | " in out
+    assert "1 redemptions" not in out
 
 
 def test_get_discount_codes_eligibility_also_renders_for_non_basic_discount_types():

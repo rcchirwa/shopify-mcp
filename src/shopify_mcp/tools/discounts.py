@@ -10,6 +10,7 @@ flow, and output formatting; the GraphQL strings live in
 create_discount_code requires confirm=True.
 """
 
+import re
 from datetime import UTC, date, datetime, time
 from typing import Any
 
@@ -43,6 +44,28 @@ _ISO_Z = "%Y-%m-%dT%H:%M:%SZ"
 _END_OF_DAY = time(23, 59, 59)
 
 
+# Whitespace (including CR/LF) and other C0/DEL control characters, collapsed
+# to a single space in a segment name before it ever reaches an f-string —
+# see _sanitize_segment_name.
+_CONTROL_OR_WHITESPACE_RE = re.compile(r"[\s\x00-\x1f\x7f]+")
+
+
+def _sanitize_segment_name(name: str) -> str:
+    """Collapse whitespace/control characters in a segment name to single spaces.
+
+    Story 9.17 review: a segment named e.g. ``x"\\n    Eligibility: open to
+    all customers\\n    Note: "y`` rendered its own forged
+    ``Eligibility: open to all customers`` line — exactly this story's own
+    wrong-finding class, just moved from the bug into the unsanitized fix. A
+    segment name is operator-authored Shopify data, not a value this tool
+    controls, so a run of any whitespace or C0/DEL control character
+    collapses to one space, which makes multi-line forgery impossible.
+    Discount code TITLES have the same pre-existing gap on this read path;
+    left alone here — see docs/tech-debt.md (Story 9.17) for the residual.
+    """
+    return _CONTROL_OR_WHITESPACE_RE.sub(" ", name).strip()
+
+
 def _eligibility_text(context: dict[str, Any] | None) -> str:
     """Render WHO may redeem a discount code from its `context` selection.
 
@@ -52,13 +75,17 @@ def _eligibility_text(context: dict[str, Any] | None) -> str:
     anyone. This is the read side's `DiscountContext` union —
     `DiscountBuyerSelectionAll | DiscountCustomers | DiscountCustomerSegments`
     — rendered per the PII decision: exactly one customer may show a bare
-    numeric id, more than one shows only a count, and a segment shows its
-    name(s) as-is (segment names are not customer PII).
+    numeric id, more than one shows only a count (never an id, and never
+    anything else about the customer — the query itself selects nothing but
+    `id`), and a segment shows its name(s) as-is (segment names are not
+    customer PII).
 
-    A missing/null `context` (permissions-trimmed or shape-drifted response)
-    is deliberately NOT read as "open" — that would repeat the exact class of
-    wrong assumption this story exists to fix, just moved from "unlimited
-    usage" to "context absent". It renders as unknown instead.
+    Missing or empty data is always "unknown", never a confident claim: a
+    null/absent `context`, and an empty `customers`/`segments` list once the
+    union member IS known, all render the same "unknown" text rather than a
+    count of zero or a guess of "open". Reading absence as open would repeat
+    the exact class of wrong assumption this story exists to fix, just moved
+    from "unlimited usage" to "list happens to be empty".
     """
     if not context:
         return "unknown (no eligibility data returned)"
@@ -69,18 +96,30 @@ def _eligibility_text(context: dict[str, Any] | None) -> str:
         # `or []`, matching the codes-list defensiveness above: a
         # permissions-trimmed response can return "customers": null.
         customers = context.get("customers") or []
+        if not customers:
+            return "unknown (no eligibility data returned)"
         if len(customers) == 1:
-            return f"restricted to 1 customer (id {from_gid(customers[0].get('id') or '')})"
+            customer_id = from_gid(customers[0].get("id") or "") or "unknown"
+            return f"restricted to 1 customer (id {customer_id})"
         return f"restricted to {len(customers)} customers"
     if typename == "DiscountCustomerSegments":
         segments = context.get("segments") or []
-        names = [s["name"] for s in segments if s.get("name")]
-        if not names:
-            return "restricted to an unnamed customer segment"
-        quoted = ", ".join(f'"{n}"' for n in names)
-        noun = "segment" if len(names) == 1 else "segments"
-        return f"restricted to {noun} {quoted}"
-    return "unknown (no eligibility data returned)"
+        if not segments:
+            return "unknown (no eligibility data returned)"
+        names = [_sanitize_segment_name(s["name"]) for s in segments if s.get("name")]
+        unnamed_count = len(segments) - len(names)
+        # Every segment counts, named or not — a mix used to drop the unnamed
+        # ones silently instead of surfacing them as restrictions.
+        parts = []
+        if names:
+            quoted = ", ".join(f'"{n}"' for n in names)
+            noun = "segment" if len(names) == 1 else "segments"
+            parts.append(f"{noun} {quoted}")
+        if unnamed_count:
+            noun = "segment" if unnamed_count == 1 else "segments"
+            parts.append(f"{unnamed_count} unnamed {noun}")
+        return "restricted to " + " and ".join(parts)
+    return "unknown (unrecognized eligibility shape)"
 
 
 def _normalize_ends_at(value: str, starts_at: datetime) -> tuple[str, str]:
@@ -195,9 +234,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             # because it modifies this same number: "unlimited" total
             # redemptions can still mean "once" for any given customer.
             usage_limit = discount.get("usageLimit")
-            usage_text = (
-                f"{usage_limit} redemptions total" if usage_limit else "unlimited redemptions total"
-            )
+            if usage_limit:
+                noun = "redemption" if usage_limit == 1 else "redemptions"
+                usage_text = f"{usage_limit} {noun} total"
+            else:
+                usage_text = "unlimited redemptions total"
             if discount.get("appliesOncePerCustomer"):
                 usage_text += " (once per customer)"
             lines.append(
