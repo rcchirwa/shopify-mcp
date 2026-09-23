@@ -523,6 +523,8 @@ import re
 import unicodedata
 from typing import NamedTuple
 
+from shopify_mcp.tools._scrub import REFLECT_MAX_LEN, cap
+
 # .format() does not re-parse substituted text, so curly braces in values are safe.
 _UNTRUSTED = "<UNTRUSTED-DATA>{}</UNTRUSTED-DATA>"
 
@@ -1455,30 +1457,31 @@ def wrap(text: object) -> str:
     return _UNTRUSTED.format(_CLOSE_TAG_PATTERN.sub(_neutralize_close_tag, normalized))
 
 
-# Story 10.95 / SEC-04-redirect-header. The longest a fenced third-party value
-# may be, delimiters included, when it is embedded in a reflected error sentence.
-# The tool layer caps that whole sentence at `_scrub.REFLECT_MAX_LEN` (300), and
-# a cap landing inside the fence would cut off the closing tag, leaving an open
-# fence that is worse than none. 150 leaves room for the longest caller sentence
-# (fetch_bytes' redirect refusal, 100 chars of its own) under that cap.
-_BOUNDED_WRAP_MAX_LEN = 150
-
+# Story 10.95 / SEC-04-redirect-header. What a third-party value becomes when
+# fencing it would still overflow its sentence's budget (see wrap_reflected).
 _WITHHELD = "(value withheld: too long to show safely)"
 
 
-def wrap_bounded(text: object) -> str:
-    """:func:`wrap` whose whole result, delimiters included, is at most 150 chars.
+def wrap_reflected(head: str, value: object, tail: str = "") -> str:
+    """Return ``head + wrap(value) + tail``, at most ``REFLECT_MAX_LEN`` chars.
 
-    For a third-party value embedded in a sentence that is later capped as a
-    whole (``fetch_bytes``' redirect ``Location``, a download's ``Content-Type``).
-    The input is truncated to fit first. That alone does not bound the output:
-    once :func:`wrap` neutralizes a forged closer it returns the NFKC-normalized
-    copy, and NFKC can lengthen text -- Latin-1 ``½``, which an HTTP header can
-    carry, becomes three characters. A result that still overflows is withheld
-    rather than truncated, because truncating a fence is exactly the failure this
-    exists to prevent; only a value carrying a forged closer can get there, so
-    nothing legitimate is lost.
+    For a third-party value embedded in an error sentence that the tool layer
+    later caps as a whole at ``REFLECT_MAX_LEN`` (``fetch_bytes``' redirect
+    ``Location`` and transport errors, a download's ``Content-Type``). A cap
+    landing inside the fence would cut off the closing tag, leaving an open
+    fence that is worse than none, so the whole sentence is sized here: the
+    value is truncated to what is left after ``head``, ``tail`` and the
+    delimiters. ``head`` and ``tail`` are the caller's own text and stay
+    outside the fence.
+
+    Truncating first does not bound the output on its own: once :func:`wrap`
+    neutralizes a forged closer it returns the NFKC-normalized copy, and NFKC
+    can lengthen text -- Latin-1 ``½``, which an HTTP header can carry, becomes
+    three characters. A fence that still overflows is withheld rather than
+    truncated, because truncating a fence is exactly the failure this exists to
+    prevent. Only a value carrying a forged closer can get there, so nothing
+    legitimate is lost.
     """
-    room = _BOUNDED_WRAP_MAX_LEN - len(_UNTRUSTED.format(""))
-    fenced = wrap(str(text)[:room])
-    return fenced if len(fenced) <= _BOUNDED_WRAP_MAX_LEN else _WITHHELD
+    budget = REFLECT_MAX_LEN - len(head) - len(tail)
+    fenced = wrap(cap(str(value), budget - len(_UNTRUSTED.format(""))))
+    return head + (fenced if len(fenced) <= budget else _WITHHELD) + tail

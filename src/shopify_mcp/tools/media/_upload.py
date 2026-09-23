@@ -26,7 +26,7 @@ from shopify_mcp.tools._http import default_headers
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._response import extract_user_errors, with_confirm_hint
 from shopify_mcp.tools._scrub import cap
-from shopify_mcp.tools._untrusted import with_reminder, wrap_bounded
+from shopify_mcp.tools._untrusted import with_reminder, wrap_reflected
 from shopify_mcp.tools.media._common import (
     _as_product_gid,
     _extract_media_user_errors,
@@ -49,6 +49,13 @@ from shopify_mcp.tools.media._graphql import (
 # Maximum length for staged filenames passed to Shopify. Filenames exceeding
 # this length are truncated to prevent unbounded string storage (SEC-25).
 _MAX_STAGED_FILENAME_LEN = 100
+
+# An accepted MIME type must be a plain `image/<subtype>` token. The server's
+# Content-Type flows on to stagedUploadsCreate and into the CONFIRMED block's
+# `Bytes` line unfenced, so a type that merely starts with `image/` could carry
+# prose there (Story 10.95 security review). Anything else takes the fenced
+# reject in _download_image.
+_IMAGE_MIME_TYPE = re.compile(r"image/[a-z0-9.+-]{1,64}")
 
 
 def _format_bytes(n: Any) -> str:
@@ -99,15 +106,15 @@ def _download_image(client: ShopifyClient, url: str) -> tuple[bytes, str, str]:
         url, max_size=_MAX_IMAGE_BYTES, allow_redirects=False
     )
     filename = _filename_from_url(url)
-    content_type = (content_type_raw or "").split(";")[0].strip().lower()
-    if not content_type:
-        guessed, _ = mimetypes.guess_type(filename)
-        content_type = (guessed or "").lower()
-    if not content_type.startswith("image/"):
-        # A non-empty type came from the remote server's Content-Type (or the
-        # URL's own extension), so it is fenced; "(unknown)" is ours (Story 10.95).
-        shown = wrap_bounded(content_type) if content_type else "(unknown)"
-        raise RuntimeError(f"unsupported MIME type: {shown} — v1 accepts images only")
+    server_type = (content_type_raw or "").split(";")[0].strip().lower()
+    content_type = server_type or (mimetypes.guess_type(filename)[0] or "").lower()
+    if not _IMAGE_MIME_TYPE.fullmatch(content_type):
+        head, tail = "unsupported MIME type: ", " — v1 accepts images only"
+        # The server's Content-Type is third-party text, so it is fenced. A type
+        # guessed from the caller's own URL, and "(unknown)", are not (Story 10.95).
+        if server_type:
+            raise RuntimeError(wrap_reflected(head, server_type, tail))
+        raise RuntimeError(f"{head}{content_type or '(unknown)'}{tail}")
     return body, filename, content_type
 
 
@@ -410,8 +417,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             image_bytes, filename, mime_type = _download_image(client, source)
         except Exception as e:
-            # fetch_bytes / _download_image fence third-party header values with
-            # wrap_bounded, sized so this cap() never reaches a closing tag;
+            # fetch_bytes / _download_image fence third-party text with
+            # wrap_reflected, sized so this cap() never reaches a closing tag;
             # with_reminder() adds the reminder only when something was fenced.
             return with_reminder(f"Error at stage=download: {cap(str(e))}")
 
