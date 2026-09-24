@@ -50,7 +50,7 @@ from shopify_mcp.tools._response import (
     with_confirm_hint,
 )
 from shopify_mcp.tools._untrusted import with_reminder, wrap
-from shopify_mcp.tools._write_tool import write_gate
+from shopify_mcp.tools._write_tool import _confirmed_from_preview, write_gate
 from shopify_mcp.validators.naming import format_validation_diff
 from shopify_mcp.validators.seo import SEO_DESCRIPTION_MAX_CHARS, SEO_TITLE_MAX_CHARS
 
@@ -362,7 +362,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 if stripped
                 else ""
             )
-            + preview.replace("PREVIEW — ", "CONFIRMED — ", 1),
+            + _confirmed_from_preview(preview),
         )
 
     @server.tool()

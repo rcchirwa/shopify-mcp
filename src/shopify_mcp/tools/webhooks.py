@@ -20,7 +20,7 @@ from shopify_mcp.settings import idna_normalize
 from shopify_mcp.shopify.operations import webhooks as ops
 from shopify_mcp.shopify.queries.webhooks import CREATE_WEBHOOK, DELETE_WEBHOOK, LIST_WEBHOOKS
 from shopify_mcp.tools._gid import from_gid
-from shopify_mcp.tools._write_tool import write_gate
+from shopify_mcp.tools._write_tool import _confirmed_from_preview, write_gate
 
 # The GraphQL strings now live in shopify.queries.webhooks. They are re-exported
 # here so existing callers/tests (`from tools.webhooks import LIST_WEBHOOKS`) keep
@@ -153,8 +153,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"id={_numeric_id()} | topic={topic} | endpoint={endpoint_url} | format={message_format}"
             ),
             done_text=lambda: (
-                f"{preview.replace('PREVIEW — ', 'CONFIRMED — ', 1)}"
-                f"\n  Subscription ID : {_numeric_id()}"
+                f"{_confirmed_from_preview(preview)}\n  Subscription ID : {_numeric_id()}"
             ),
         )
 

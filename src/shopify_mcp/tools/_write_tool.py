@@ -23,25 +23,16 @@ _CONFIRMED_MARKER = "CONFIRMED — "
 
 
 def _confirmed_from_preview(preview: str) -> str:
-    """Derive the default confirmed-write message from a tool's preview string.
+    """Derive a confirmed-write message from a tool's preview string.
 
-    Replaces the first "PREVIEW — " header with "CONFIRMED — ", preserving
-    whatever precedes it — e.g. update_collection's preview can carry an
-    injection reminder from with_reminder() ahead of the header. Only the
-    four tools that omit done_text (update_product_title, update_collection,
-    update_inventory, delete_webhook) reach this helper; update_product_description
-    and register_webhook supply their own done_text and do the identical
-    `preview.replace("PREVIEW — ", "CONFIRMED — ", 1)` substitution inline
-    (so, e.g., register_webhook's external-domain warning prefix is preserved
-    by that inline call, not by this helper). Before this helper existed, the
-    default done text was `f"Done. {preview}"`, which re-embedded the
-    untouched "PREVIEW — " header inside a "confirmed" response — operators
-    read "Done. PREVIEW — …" as the write not having landed and redid it by
-    hand (Story 9.21).
+    Replaces the FIRST "PREVIEW — " header with "CONFIRMED — ", preserving
+    whatever precedes it (e.g. an injection reminder prefixed ahead of the
+    header) and leaving any later occurrence — e.g. inside caller-supplied
+    data echoed back in the body — untouched.
 
     If `preview` has no "PREVIEW — " header at all, the marker is prefixed
     onto the whole string instead of silently falling back to an unlabelled
-    "Done." — a confirmed write must always read as confirmed.
+    string — a confirmed write must always read as confirmed.
     """
     if _PREVIEW_MARKER in preview:
         return preview.replace(_PREVIEW_MARKER, _CONFIRMED_MARKER, 1)
