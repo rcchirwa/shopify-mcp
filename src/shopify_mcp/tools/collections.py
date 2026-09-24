@@ -34,7 +34,7 @@ from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._response import format_user_errors, with_confirm_hint
 from shopify_mcp.tools._scrub import cap
 from shopify_mcp.tools._untrusted import with_reminder, wrap
-from shopify_mcp.tools._write_tool import write_gate
+from shopify_mcp.tools._write_tool import _confirmed_from_preview, write_gate
 from shopify_mcp.tools.products import slugify_shopify_handle
 
 # The GraphQL strings now live in shopify.queries.collections. They are
@@ -404,7 +404,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"elapsed={elapsed_s:.1f}s",
         )
 
-        body = f"Done. {op['past_verb']} product {op['preposition']} collection.\n{preview}"
+        # Relabel via the shared helper — never re-embed the raw preview,
+        # whose "PREVIEW — " header reads as an unapplied write (Story 9.22).
+        # The past-tense summary line stays ahead of the CONFIRMED block.
+        body = (
+            f"{op['past_verb']} product {op['preposition']} collection.\n"
+            f"{_confirmed_from_preview(preview)}"
+        )
         if job_id:
             numeric = from_gid(job_id)
             if poll_result is None:

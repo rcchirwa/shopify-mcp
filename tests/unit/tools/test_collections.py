@@ -203,13 +203,20 @@ def test_add_product_preview_does_not_mutate():
 
 
 def test_add_product_confirmed_calls_mutation_with_correct_gids():
+    """Story 9.22: a confirmed add_product_to_collection write must read as
+    confirmed, not as an unapplied preview ("Done. ...\\nPREVIEW — …") — that
+    string can lead an operator to redo a successful membership write by
+    hand, reading it as the write never having landed (same hazard as Story
+    9.21, at a different call site)."""
     tools, fc = _build([_manual_collection(), _add_ok(job_id="999")])
     out = tools["add_product_to_collection"](
         handle="vanish",
         product_id="777",
         confirm=True,
     )
-    assert out.startswith("Done.")
+    assert "CONFIRMED —" in out
+    assert "PREVIEW" not in out
+    assert not out.startswith("Done.")
     assert "Added product to collection" in out
     assert "Job        : 999" in out
     mutation_query, mutation_vars = fc.calls[1]
@@ -297,13 +304,18 @@ def test_remove_product_preview_does_not_mutate():
 
 
 def test_remove_product_confirmed_calls_mutation_with_correct_gids():
+    """Story 9.22: mirrors test_add_product_confirmed_calls_mutation_with_correct_gids
+    — remove_product_from_collection shares _membership_mutation with add, and
+    had the same PREVIEW-in-confirmed-output leak."""
     tools, fc = _build([_manual_collection(), _remove_ok(job_id="888")])
     out = tools["remove_product_from_collection"](
         handle="vanish",
         product_id="777",
         confirm=True,
     )
-    assert out.startswith("Done.")
+    assert "CONFIRMED —" in out
+    assert "PREVIEW" not in out
+    assert not out.startswith("Done.")
     assert "Removed product from collection" in out
     assert "Job        : 888" in out
     mutation_query, mutation_vars = fc.calls[1]
@@ -424,6 +436,10 @@ def test_add_product_polls_job_when_initial_done_false_and_flips_true(fake_poll_
     assert len(fc.calls) == 3
     assert fc.calls[2][0] == JOB_STATUS_QUERY
     assert fc.calls[2][1] == {"id": "gid://shopify/Job/999"}
+    # The polls-then-completes branch must read as confirmed too, not just
+    # the no-poll-needed path.
+    assert "CONFIRMED —" in out, out
+    assert "PREVIEW" not in out, out
 
 
 def test_add_product_polling_times_out_when_done_stays_false(fake_poll_clock):
@@ -446,6 +462,10 @@ def test_add_product_polling_times_out_when_done_stays_false(fake_poll_clock):
     assert "verify via get_collection" in out, out
     # At least one poll was issued.
     assert any(c[0] == JOB_STATUS_QUERY for c in fc.calls)
+    # The poll-timeout branch must read as confirmed too — the underlying
+    # write already succeeded.
+    assert "CONFIRMED —" in out, out
+    assert "PREVIEW" not in out, out
 
 
 def test_add_product_polling_transport_error_surfaces_poll_failed_message(fake_poll_clock):
@@ -466,6 +486,10 @@ def test_add_product_polling_transport_error_surfaces_poll_failed_message(fake_p
     )
     assert "poll failed: upstream 503" in out, out
     assert "underlying write succeeded" in out, out
+    # The poll-failed branch must read as confirmed too — the underlying
+    # write already succeeded.
+    assert "CONFIRMED —" in out, out
+    assert "PREVIEW" not in out, out
 
 
 def test_remove_product_polls_and_reports_elapsed_when_job_completes(fake_poll_clock):
@@ -488,6 +512,9 @@ def test_remove_product_polls_and_reports_elapsed_when_job_completes(fake_poll_c
     poll_calls = [c for c in fc.calls if c[0] == JOB_STATUS_QUERY]
     assert len(poll_calls) == 2
     assert all(c[1] == {"id": "gid://shopify/Job/888"} for c in poll_calls)
+    # Mirrors the add-side polls-then-completes assertion.
+    assert "CONFIRMED —" in out, out
+    assert "PREVIEW" not in out, out
 
 
 def test_initial_done_true_does_not_poll():

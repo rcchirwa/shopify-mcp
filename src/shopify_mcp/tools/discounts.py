@@ -32,6 +32,7 @@ from shopify_mcp.tools._response import (
 )
 from shopify_mcp.tools._scrub import cap, sanitize_control_chars
 from shopify_mcp.tools._untrusted import _NON_CF_DEFAULT_IGNORABLE
+from shopify_mcp.tools._write_tool import _confirmed_from_preview
 
 # Shopify rejects a 0% or negative discount, and a >100% value would zero out
 # (or overpay) a line item — bound client-side rather than let a nonsensical
@@ -408,4 +409,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"title={title} code=*** percentage_off={percentage_off}% "
             f"usage_limit={usage_limit} ends_at={ends_at_iso or 'none'}",
         )
-        return f"Done. Discount id={from_gid(node_id)} created.\n{preview}"
+        # Relabel via the shared helper — never re-embed the raw preview,
+        # whose "PREVIEW — " header reads as an unapplied write (Story 9.22).
+        # The discount id is appended after the CONFIRMED block.
+        return _confirmed_from_preview(preview) + f"\n  Discount id   : {from_gid(node_id)}"
