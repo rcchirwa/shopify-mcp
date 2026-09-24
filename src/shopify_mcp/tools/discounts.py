@@ -409,11 +409,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"title={title} code=*** percentage_off={percentage_off}% "
             f"usage_limit={usage_limit} ends_at={ends_at_iso or 'none'}",
         )
-        # Story 9.22: the old `f"Done. Discount id=... created.\n{preview}"`
-        # re-embedded the untouched "PREVIEW — " header inside a confirmed
-        # response — an operator reading "Done. ... PREVIEW — ..." sees the
-        # write as unapplied and redoes it by hand (same hazard 9.21 fixed at
-        # the write_gate level; this tool doesn't use write_gate).
-        # _confirmed_from_preview relabels the header; the discount id is
-        # appended after, mirroring register_webhook's "Subscription ID" line.
+        # Relabel via the shared helper — never re-embed the raw preview,
+        # whose "PREVIEW — " header reads as an unapplied write (Story 9.22).
+        # The discount id is appended after the CONFIRMED block.
         return _confirmed_from_preview(preview) + f"\n  Discount id   : {from_gid(node_id)}"

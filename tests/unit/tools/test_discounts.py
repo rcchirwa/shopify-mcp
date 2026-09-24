@@ -1206,8 +1206,8 @@ def test_create_discount_code_masks_code_in_audit_log(monkeypatch):
 def test_create_discount_code_confirmed_issues_one_mutation():
     """Story 9.22: a confirmed create_discount_code write must read as
     confirmed, not as an unapplied preview ("Done. ...\\nPREVIEW — …") — that
-    string reads to an operator as the write not having landed and caused a
-    successful discount-code creation to be redone by hand (same hazard as
+    string can lead an operator to redo a successful discount-code creation
+    by hand, reading it as the write never having landed (same hazard as
     Story 9.21, at a different call site)."""
     tools, fc = _build([_discount_create_ok("5001")])
     out = tools["create_discount_code"](
@@ -1219,7 +1219,7 @@ def test_create_discount_code_confirmed_issues_one_mutation():
     assert "CONFIRMED —" in out
     assert "PREVIEW" not in out
     assert not out.startswith("Done.")
-    assert "Discount id" in out and "5001" in out
+    assert out.splitlines()[-1] == "  Discount id   : 5001"
     assert len(fc.calls) == 1
     assert fc.calls[0][0] == CREATE_DISCOUNT_CODE_BASIC
 

@@ -205,8 +205,8 @@ def test_add_product_preview_does_not_mutate():
 def test_add_product_confirmed_calls_mutation_with_correct_gids():
     """Story 9.22: a confirmed add_product_to_collection write must read as
     confirmed, not as an unapplied preview ("Done. ...\\nPREVIEW — …") — that
-    string reads to an operator as the write not having landed and caused a
-    successful membership write to be redone by hand (same hazard as Story
+    string can lead an operator to redo a successful membership write by
+    hand, reading it as the write never having landed (same hazard as Story
     9.21, at a different call site)."""
     tools, fc = _build([_manual_collection(), _add_ok(job_id="999")])
     out = tools["add_product_to_collection"](

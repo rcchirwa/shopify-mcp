@@ -22,10 +22,10 @@ Design:
      server (`create_server()` + `list_tools()`) — never hand-listed, so a
      tool added, renamed or removed is picked up automatically. It
      monkeypatches both `shopify_mcp.server._ENV_PATH` and
-     `shopify_mcp.client._ENV_PATH` to a nonexistent path (Story 9.22 round
-     2): without this, `create_server()` / `ShopifyClient()` load the
-     developer's REAL `.env` with `override=True`, silently replacing the
-     synthetic SHOPIFY_ACCESS_TOKEN below with a live one and leaving it in
+     `shopify_mcp.client._ENV_PATH` to a nonexistent path: both modules call
+     `load_dotenv(dotenv_path=_ENV_PATH, override=True)` before reading
+     Settings(), and without this a real `.env` would silently replace the
+     synthetic SHOPIFY_ACCESS_TOKEN below with a live one and leave it in
      `os.environ` for the rest of the process — the same isolation
      tests/unit/test_client.py already uses.
   2. `_TOOL_CHECKS` maps every one of those tool names to a zero-arg
@@ -38,23 +38,23 @@ Design:
      is the one exception: WEBHOOK_ALLOWLIST_HOSTS must be configured on the
      FakeClient's own Settings (not via monkeypatch.setenv, to keep the
      allowlist scoped to this one check and out of every other test's
-     environment) or the tool refuses before ever calling execute() — round
-     2's finding, below.
+     environment), because the tool refuses before ever calling execute()
+     otherwise — see `_check_register_webhook` below.
   3. `test_tool_checks_cover_exactly_the_enumerated_write_tools` asserts the
      enumerated set and `_TOOL_CHECKS`' keys are EXACTLY equal — a tool added
      without a corresponding check (or renamed/removed) fails HERE, loudly,
      rather than the guard below silently iterating over a stale dict.
-  4. `test_all_covered_write_tools_confirmed_output_has_no_preview_leak`
-     drives every one of the 33 confirmed paths and asserts, per tool: the
-     FakeClient actually recorded execute() calls AND consumed every
-     scripted response (proves the check reached and completed the
-     confirmed write, not merely that .execute() was called once before
-     erroring out); the output doesn't start with "Error"; and it contains
-     no "PREVIEW". Round 1's version asserted only the last of these, which
-     passes vacuously on an error path that never touches the mutation —
-     exactly what let register_webhook's broken check (finding above) slip
-     through undetected; only asserting "PREVIEW not in out" against
-     Story 9.22's own targets caught the real leaks, not this guard.
+  4. `test_all_covered_write_tools_confirmed_output_has_no_preview_leak` is
+     parametrized over every one of the 33 confirmed paths (one test id per
+     tool, so a failure in one tool never hides a failure in another) and
+     asserts, per tool: the FakeClient actually recorded execute() calls AND
+     consumed every scripted response (proves the check reached and
+     completed the confirmed write, not merely that .execute() was called
+     once before erroring out); the output doesn't start with "Error"; and
+     it contains no "PREVIEW". Asserting only the last of these would pass
+     vacuously on an error path that never touches the mutation — an error
+     string contains no "PREVIEW" either, so that assertion alone cannot
+     tell a genuine confirmed write from a refusal that stopped short of it.
 """
 
 import asyncio
@@ -185,14 +185,13 @@ def _write_tool_names(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> set[st
 
     Both create_server() (server.py) and ShopifyClient.__init__ (client.py)
     call `load_dotenv(dotenv_path=_ENV_PATH, override=True)` BEFORE reading
-    Settings() — override=True means a real .env at the repo root (as exists
-    in the main checkout, though not in this worktree) silently replaces the
-    synthetic token above with whatever SHOPIFY_ACCESS_TOKEN is actually
-    configured, and leaves it sitting in os.environ afterward. Both modules'
-    `_ENV_PATH` are monkeypatched to a nonexistent path — the same isolation
-    tests/unit/test_client.py already uses — so this guard's result can never
-    depend on the machine it runs on, and never reads or reports the real
-    file.
+    Settings() — override=True means a real .env at the repo root would
+    silently replace the synthetic token above with whatever
+    SHOPIFY_ACCESS_TOKEN is actually configured, and leave it sitting in
+    os.environ afterward. Both modules' `_ENV_PATH` are monkeypatched to a
+    nonexistent path — the same isolation tests/unit/test_client.py already
+    uses — so this guard's result can never depend on the machine it runs
+    on, and never reads or reports the real file.
     """
     monkeypatch.setenv("SHOPIFY_STORE_URL", "test.myshopify.com")
     monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "shpat_test00000000000000000000000")
@@ -363,11 +362,11 @@ def _webhook_allowlist_settings() -> Settings:
     confirm (e.g. its test_register_confirmed_hostname_in_allowlist_proceeds).
 
     Built directly (not via monkeypatch.setenv) so the allowlist is scoped to
-    this one check's own FakeClient/Settings instance — Story 9.22 round 2:
-    with no allowlist configured, register_webhook refuses before calling
-    ops.create_webhook at all (0 execute() calls, the canned response never
-    consumed), so its check never reached the confirmed path and a leak
-    planted in its done_text went undetected."""
+    this one check's own FakeClient/Settings instance. Without it configured,
+    register_webhook refuses before calling ops.create_webhook at all (0
+    execute() calls, the canned response never consumed), so the check would
+    never reach the confirmed path and a leak planted in its done_text would
+    go undetected."""
     return Settings(
         shopify_store_url="test.myshopify.com",
         shopify_access_token=SecretStr("shpat_test00000000000000000000000"),
@@ -816,22 +815,20 @@ def test_tool_checks_cover_exactly_the_enumerated_write_tools(
     )
 
 
-def test_all_covered_write_tools_confirmed_output_has_no_preview_leak() -> None:
-    for name, check in _TOOL_CHECKS.items():
-        out, fc = check()
-        # Proves the check reached and completed the confirmed write, not
-        # merely that SOME execute() call happened before an early return
-        # (Story 9.22 round 2): register_webhook's check returned an "Error:
-        # WEBHOOK_ALLOWLIST_HOSTS is not configured" string with ZERO
-        # execute() calls and its one scripted response left unconsumed — a
-        # leak planted in its done_text was unreachable, so "PREVIEW not in
-        # out" alone passed vacuously. Asserting every scripted response was
-        # consumed (not merely that fc.calls is non-empty) catches a check
-        # that executes SOME calls but stops short of the confirmed return.
-        assert fc.calls, f"{name}: no execute() calls — check never reached the mutation"
-        assert not fc.responses, (
-            f"{name}: {len(fc.responses)} scripted response(s) never consumed — "
-            f"check short-circuited before completing the confirmed write (out={out!r})"
-        )
-        assert not out.startswith("Error"), f"{name}: confirmed check returned an error: {out!r}"
-        assert "PREVIEW" not in out, f"{name}: leaked PREVIEW in confirmed output: {out!r}"
+@pytest.mark.parametrize("name", sorted(_TOOL_CHECKS))
+def test_all_covered_write_tools_confirmed_output_has_no_preview_leak(name: str) -> None:
+    check = _TOOL_CHECKS[name]
+    out, fc = check()
+    # A check that stops before completing its write would otherwise pass
+    # this suite vacuously: an error string contains no "PREVIEW" either, so
+    # that assertion alone cannot distinguish a genuine confirmed write from
+    # a refusal that never reached the mutation. Asserting execute() was
+    # called AND every scripted response was consumed proves the check
+    # actually reached and completed the confirmed write it claims to drive.
+    assert fc.calls, f"{name}: no execute() calls — check never reached the mutation"
+    assert not fc.responses, (
+        f"{name}: {len(fc.responses)} scripted response(s) never consumed — "
+        f"check short-circuited before completing the confirmed write (out={out!r})"
+    )
+    assert not out.startswith("Error"), f"{name}: confirmed check returned an error: {out!r}"
+    assert "PREVIEW" not in out, f"{name}: leaked PREVIEW in confirmed output: {out!r}"

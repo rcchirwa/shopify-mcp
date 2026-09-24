@@ -404,13 +404,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"elapsed={elapsed_s:.1f}s",
         )
 
-        # Story 9.22: the old `f"Done. ... \n{preview}"` re-embedded the
-        # untouched "PREVIEW — " header inside a confirmed response — same
-        # hazard 9.21 fixed at the write_gate level; _membership_mutation
-        # doesn't use write_gate (it has its own job-poll control flow), so
-        # the leak wasn't caught there. _confirmed_from_preview relabels the
-        # header; the past-tense summary line stays ahead of it, matching the
-        # original ordering.
+        # Relabel via the shared helper — never re-embed the raw preview,
+        # whose "PREVIEW — " header reads as an unapplied write (Story 9.22).
+        # The past-tense summary line stays ahead of the CONFIRMED block.
         body = (
             f"{op['past_verb']} product {op['preposition']} collection.\n"
             f"{_confirmed_from_preview(preview)}"
