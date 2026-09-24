@@ -1127,6 +1127,9 @@ def test_delete_media_no_matches_is_no_op():
     assert "no-op" in out
     # Only the read — no delete mutation issued.
     assert len(fc.calls) == 1
+    # Story 9.22 round 2 (V10b): the no-op branch's own preview-derived text
+    # must not leak "PREVIEW" either.
+    assert "PREVIEW" not in out
 
 
 def test_delete_media_user_errors_surfaced():

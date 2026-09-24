@@ -20,29 +20,57 @@ Design:
   1. `_write_tool_names()` enumerates every registered MCP tool whose
      inputSchema declares a `confirm` parameter, from the actual running
      server (`create_server()` + `list_tools()`) — never hand-listed, so a
-     tool added, renamed or removed is picked up automatically.
+     tool added, renamed or removed is picked up automatically. It
+     monkeypatches both `shopify_mcp.server._ENV_PATH` and
+     `shopify_mcp.client._ENV_PATH` to a nonexistent path (Story 9.22 round
+     2): without this, `create_server()` / `ShopifyClient()` load the
+     developer's REAL `.env` with `override=True`, silently replacing the
+     synthetic SHOPIFY_ACCESS_TOKEN below with a live one and leaving it in
+     `os.environ` for the rest of the process — the same isolation
+     tests/unit/test_client.py already uses.
   2. `_TOOL_CHECKS` maps every one of those tool names to a zero-arg
      function that drives its CONFIRMED (confirm=True, success) path and
-     returns the output string. Each check reuses that tool's OWN existing
-     test module's fixture-builder functions (imported, not duplicated) —
-     the same canned FakeClient responses its own passing tests already use
-     — so there is no new, unverified fixture data here.
+     returns `(out, fc)` — the output string AND the scripted FakeClient
+     that served it. Each check reuses that tool's OWN existing test
+     module's fixture-builder functions (imported, not duplicated) — the
+     same canned FakeClient responses its own passing tests already use —
+     so there is no new, unverified fixture data here. `register_webhook`
+     is the one exception: WEBHOOK_ALLOWLIST_HOSTS must be configured on the
+     FakeClient's own Settings (not via monkeypatch.setenv, to keep the
+     allowlist scoped to this one check and out of every other test's
+     environment) or the tool refuses before ever calling execute() — round
+     2's finding, below.
   3. `test_tool_checks_cover_exactly_the_enumerated_write_tools` asserts the
      enumerated set and `_TOOL_CHECKS`' keys are EXACTLY equal — a tool added
      without a corresponding check (or renamed/removed) fails HERE, loudly,
      rather than the guard below silently iterating over a stale dict (M9).
   4. `test_all_covered_write_tools_confirmed_output_has_no_preview_leak`
-     drives every one of the 33 confirmed paths and asserts none contain
-     "PREVIEW".
+     drives every one of the 33 confirmed paths and asserts, per tool: the
+     FakeClient actually recorded execute() calls AND consumed every
+     scripted response (proves the check reached and completed the
+     confirmed write, not merely that .execute() was called once before
+     erroring out); the output doesn't start with "Error"; and it contains
+     no "PREVIEW". Round 1's version asserted only the last of these, which
+     passes vacuously on an error path that never touches the mutation —
+     exactly what let register_webhook's broken check (finding above) slip
+     through undetected; only asserting "PREVIEW not in out" against
+     Story 9.22's own targets caught the real leaks, not this guard.
 """
 
 import asyncio
 from collections.abc import Callable
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from pydantic import SecretStr
 
+import shopify_mcp.client as _client_module
+import shopify_mcp.server as _server_module
 from shopify_mcp.server import create_server
+from shopify_mcp.settings import Settings
+from shopify_mcp.tools import webhooks as _webhooks_module
+from tests.support import CapturingServer, FakeClient
 
 # ---- catalog_hygiene.py ----
 from tests.unit.tools.test_catalog_hygiene import (
@@ -142,31 +170,46 @@ from tests.unit.tools.test_publications import _unpublish_ok as _pub_unpublish_o
 from tests.unit.tools.test_webhooks import _build as _build_webhooks
 
 # ---------------------------------------------------------------------------
-# 1. Enumeration — from the server, never hand-listed.
+# 1. Enumeration — from the server, never hand-listed, and isolated from the
+#    developer's real .env.
 # ---------------------------------------------------------------------------
 
 
-def _write_tool_names(monkeypatch: pytest.MonkeyPatch) -> set[str]:
+def _write_tool_names(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> set[str]:
     """Every registered tool name whose inputSchema declares `confirm`.
 
     create_server() builds a real ShopifyClient, which requires
     SHOPIFY_STORE_URL / SHOPIFY_ACCESS_TOKEN to pass Settings' validators —
     synthetic values are enough: listing tools touches no network (the
     transport is constructed lazily; nothing here calls .execute()).
+
+    Both create_server() (server.py) and ShopifyClient.__init__ (client.py)
+    call `load_dotenv(dotenv_path=_ENV_PATH, override=True)` BEFORE reading
+    Settings() — override=True means a real .env at the repo root (as exists
+    in the main checkout, though not in this worktree) silently replaces the
+    synthetic token above with whatever SHOPIFY_ACCESS_TOKEN is actually
+    configured, and leaves it sitting in os.environ afterward. Both modules'
+    `_ENV_PATH` are monkeypatched to a nonexistent path — the same isolation
+    tests/unit/test_client.py already uses — so this guard's result can never
+    depend on the machine it runs on, and never reads or reports the real
+    file.
     """
     monkeypatch.setenv("SHOPIFY_STORE_URL", "test.myshopify.com")
     monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "shpat_test00000000000000000000000")
+    nonexistent_env = tmp_path / "nonexistent.env"
+    monkeypatch.setattr(_server_module, "_ENV_PATH", nonexistent_env)
+    monkeypatch.setattr(_client_module, "_ENV_PATH", nonexistent_env)
     server = create_server()
     tools = asyncio.run(server.list_tools())
     return {t.name for t in tools if "confirm" in (t.inputSchema.get("properties") or {})}
 
 
 def test_write_tool_enumeration_is_nonempty_and_contains_9_22_targets(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A broken or over-narrow filter must not let the completeness check
     below pass vacuously (empty or short enumeration)."""
-    names = _write_tool_names(monkeypatch)
+    names = _write_tool_names(monkeypatch, tmp_path)
     assert len(names) >= 30, names
     assert {
         "create_discount_code",
@@ -177,25 +220,29 @@ def test_write_tool_enumeration_is_nonempty_and_contains_9_22_targets(
 
 # ---------------------------------------------------------------------------
 # 2. Per-tool CONFIRMED-path checks — each reuses its own test module's
-#    existing fixture-builder functions (imported, not duplicated).
+#    existing fixture-builder functions (imported, not duplicated), and
+#    returns (out, fc) so the guard can prove the write actually executed.
 # ---------------------------------------------------------------------------
 
 
-def _check_create_discount_code() -> str:
-    tools, _fc = _build_discounts([_discount_create_ok("5001")])
-    return tools["create_discount_code"](
+def _check_create_discount_code() -> tuple[str, FakeClient]:
+    tools, fc = _build_discounts([_discount_create_ok("5001")])
+    out = tools["create_discount_code"](
         title="Launch Drop", code="LAUNCH20", percentage_off=20, confirm=True
     )
+    return out, fc
 
 
-def _check_add_product_to_collection() -> str:
-    tools, _fc = _build_collections([_manual_collection(), _collections_add_ok(job_id="999")])
-    return tools["add_product_to_collection"](handle="vanish", product_id="777", confirm=True)
+def _check_add_product_to_collection() -> tuple[str, FakeClient]:
+    tools, fc = _build_collections([_manual_collection(), _collections_add_ok(job_id="999")])
+    out = tools["add_product_to_collection"](handle="vanish", product_id="777", confirm=True)
+    return out, fc
 
 
-def _check_remove_product_from_collection() -> str:
-    tools, _fc = _build_collections([_manual_collection(), _collections_remove_ok(job_id="888")])
-    return tools["remove_product_from_collection"](handle="vanish", product_id="777", confirm=True)
+def _check_remove_product_from_collection() -> tuple[str, FakeClient]:
+    tools, fc = _build_collections([_manual_collection(), _collections_remove_ok(job_id="888")])
+    out = tools["remove_product_from_collection"](handle="vanish", product_id="777", confirm=True)
+    return out, fc
 
 
 def _collections_update_ok() -> dict:
@@ -211,11 +258,12 @@ def _collections_update_ok() -> dict:
     }
 
 
-def _check_update_collection() -> str:
-    tools, _fc = _build_collections(
+def _check_update_collection() -> tuple[str, FakeClient]:
+    tools, fc = _build_collections(
         [_collections_collection("vanish", "Vanish"), _collections_update_ok()]
     )
-    return tools["update_collection"](handle="vanish", new_title="Renamed", confirm=True)
+    out = tools["update_collection"](handle="vanish", new_title="Renamed", confirm=True)
+    return out, fc
 
 
 def _collections_create_ok() -> dict:
@@ -231,79 +279,105 @@ def _collections_create_ok() -> dict:
     }
 
 
-def _check_create_collection() -> str:
-    tools, _fc = _build_collections([{"collectionByHandle": None}, _collections_create_ok()])
-    return tools["create_collection"](title="Grey Casualty", confirm=True)
+def _check_create_collection() -> tuple[str, FakeClient]:
+    tools, fc = _build_collections([{"collectionByHandle": None}, _collections_create_ok()])
+    out = tools["create_collection"](title="Grey Casualty", confirm=True)
+    return out, fc
 
 
-def _check_update_product_title() -> str:
-    tools, _fc = _build_products(
+def _check_update_product_title() -> tuple[str, FakeClient]:
+    tools, fc = _build_products(
         [
             _product_read(_P_PROD_ID, _P_CUR_TITLE, _P_CUR_HANDLE),
             _products_update_ok(pid=_P_PROD_ID),
         ]
     )
-    return tools["update_product_title"](
+    out = tools["update_product_title"](
         product_id=_P_PROD_ID,
         new_title="Totally Different Title",
         change_handle=False,
         confirm=True,
     )
+    return out, fc
 
 
-def _check_update_product_description() -> str:
-    tools, _fc = _build_products(
+def _check_update_product_description() -> tuple[str, FakeClient]:
+    tools, fc = _build_products(
         [
             _product_read(_P_PROD_ID, _P_CUR_TITLE, _P_CUR_HANDLE),
             _products_update_ok(pid=_P_PROD_ID),
         ]
     )
-    return tools["update_product_description"](
+    out = tools["update_product_description"](
         product_id=_P_PROD_ID,
         new_description="<p>New description.</p>",
         confirm=True,
     )
+    return out, fc
 
 
-def _check_update_product_seo() -> str:
-    tools, _fc = _build_products([_seo_read(), _products_update_ok(pid="6803111739545")])
-    return tools["update_product_seo"](
+def _check_update_product_seo() -> tuple[str, FakeClient]:
+    tools, fc = _build_products([_seo_read(), _products_update_ok(pid="6803111739545")])
+    out = tools["update_product_seo"](
         product_id="6803111739545",
         new_seo_title="Vanish Trucker Hat | Streetwear",
         new_seo_description="The signature V, embroidered front and center.",
         confirm=True,
     )
+    return out, fc
 
 
-def _check_update_product_tags() -> str:
-    tools, _fc = _build_products([_tags_update_ok(tags=["vaulted"])])
-    return tools["update_product_tags"](
+def _check_update_product_tags() -> tuple[str, FakeClient]:
+    tools, fc = _build_products([_tags_update_ok(tags=["vaulted"])])
+    out = tools["update_product_tags"](
         product_id="123", new_tags=["vaulted"], mode="replace", confirm=True
     )
+    return out, fc
 
 
-def _check_update_product_status() -> str:
-    tools, _fc = _build_products(
+def _check_update_product_status() -> tuple[str, FakeClient]:
+    tools, fc = _build_products(
         [_product_read("123", "T", "t"), _status_update_ok(status="ARCHIVED")]
     )
-    return tools["update_product_status"](product_id="123", new_status="ARCHIVED", confirm=True)
+    out = tools["update_product_status"](product_id="123", new_status="ARCHIVED", confirm=True)
+    return out, fc
 
 
-def _check_update_variant_inventory_policy() -> str:
+def _check_update_variant_inventory_policy() -> tuple[str, FakeClient]:
     variants = [
         _variant_policy("10", "S", "CONTINUE"),
         _variant_policy("11", "M", "CONTINUE"),
         _variant_policy("12", "L", "CONTINUE"),
     ]
     updated = [{"id": v["id"], "inventoryPolicy": "DENY"} for v in variants]
-    tools, _fc = _build_products([_variants_policy_read(variants), _bulk_policy_ok(updated)])
-    return tools["update_variant_inventory_policy"](
+    tools, fc = _build_products([_variants_policy_read(variants), _bulk_policy_ok(updated)])
+    out = tools["update_variant_inventory_policy"](
         product_id="123", new_policy="DENY", confirm=True
+    )
+    return out, fc
+
+
+def _webhook_allowlist_settings() -> Settings:
+    """Settings with WEBHOOK_ALLOWLIST_HOSTS pre-configured for register_webhook's
+    check, matching test_webhooks.py's own convention for a proceeds-silently
+    confirm (e.g. its test_register_confirmed_hostname_in_allowlist_proceeds).
+
+    Built directly (not via monkeypatch.setenv) so the allowlist is scoped to
+    this one check's own FakeClient/Settings instance — Story 9.22 round 2:
+    with no allowlist configured, register_webhook refuses before calling
+    ops.create_webhook at all (0 execute() calls, the canned response never
+    consumed), so its check never reached the confirmed path and a leak
+    planted in its done_text went undetected."""
+    return Settings(
+        shopify_store_url="test.myshopify.com",
+        shopify_access_token=SecretStr("shpat_test00000000000000000000000"),
+        webhook_allowlist_hosts="example.com",
     )
 
 
-def _check_register_webhook() -> str:
-    tools, _fc = _build_webhooks(
+def _check_register_webhook() -> tuple[str, FakeClient]:
+    srv = CapturingServer()
+    fc = FakeClient(
         [
             {
                 "webhookSubscriptionCreate": {
@@ -311,15 +385,18 @@ def _check_register_webhook() -> str:
                     "userErrors": [],
                 }
             }
-        ]
+        ],
+        settings=_webhook_allowlist_settings(),
     )
-    return tools["register_webhook"](
+    _webhooks_module.register(srv, fc)
+    out = srv.tools["register_webhook"](
         topic="ORDERS_CREATE", endpoint_url="https://example.com/hook", confirm=True
     )
+    return out, fc
 
 
-def _check_delete_webhook() -> str:
-    tools, _fc = _build_webhooks(
+def _check_delete_webhook() -> tuple[str, FakeClient]:
+    tools, fc = _build_webhooks(
         [
             {
                 "webhookSubscriptionDelete": {
@@ -329,11 +406,12 @@ def _check_delete_webhook() -> str:
             }
         ]
     )
-    return tools["delete_webhook"](subscription_id="123", confirm=True)
+    out = tools["delete_webhook"](subscription_id="123", confirm=True)
+    return out, fc
 
 
-def _check_update_inventory() -> str:
-    tools, _fc = _build_inventory(
+def _check_update_inventory() -> tuple[str, FakeClient]:
+    tools, fc = _build_inventory(
         [
             _inventory_item_response(available=5),
             {
@@ -344,63 +422,68 @@ def _check_update_inventory() -> str:
             },
         ]
     )
-    return tools["update_inventory"](
+    out = tools["update_inventory"](
         inventory_item_id="42", location_id="9", quantity=0, confirm=True
     )
+    return out, fc
 
 
-def _check_update_variant_inventory_tracking() -> str:
+def _check_update_variant_inventory_tracking() -> tuple[str, FakeClient]:
     variants = [
         _inv_variant("100", "S", "REEF-S", [], tracked=False),
         _inv_variant("101", "M", "REEF-M", [], tracked=False),
     ]
-    tools, _fc = _build_inventory(
+    tools, fc = _build_inventory(
         [
             _inv_product_with_variants(variants),
             _tracked_update_ok("gid://shopify/InventoryItem/100", True),
             _tracked_update_ok("gid://shopify/InventoryItem/101", True),
         ]
     )
-    return tools["update_variant_inventory_tracking"](product_id="555", tracked=True, confirm=True)
+    out = tools["update_variant_inventory_tracking"](product_id="555", tracked=True, confirm=True)
+    return out, fc
 
 
-def _check_update_variant_inventory_quantity() -> str:
+def _check_update_variant_inventory_quantity() -> tuple[str, FakeClient]:
     variants = [
         _inv_variant("100", "S", "REEF-S", [_inv_level(5, "gid://shopify/Location/9")]),
         _inv_variant("101", "M", "REEF-M", [_inv_level(3, "gid://shopify/Location/9")]),
     ]
-    tools, _fc = _build_inventory([_inv_product_with_variants(variants), _set_inventory_ok()])
-    return tools["update_variant_inventory_quantity"](product_id="555", quantity=0, confirm=True)
+    tools, fc = _build_inventory([_inv_product_with_variants(variants), _set_inventory_ok()])
+    out = tools["update_variant_inventory_quantity"](product_id="555", quantity=0, confirm=True)
+    return out, fc
 
 
-def _check_publish_product_to_channels() -> str:
-    tools, _fc = _build_publications(
+def _check_publish_product_to_channels() -> tuple[str, FakeClient]:
+    tools, fc = _build_publications(
         [
             _pub_channels_response(),
             _pub_product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3]),
             _pub_publish_ok(),
         ]
     )
-    return tools["publish_product_to_channels"](
+    out = tools["publish_product_to_channels"](
         product_id="123", channel_names=["Online Store", "Shop"], confirm=True
     )
+    return out, fc
 
 
-def _check_unpublish_product_from_channels() -> str:
-    tools, _fc = _build_publications(
+def _check_unpublish_product_from_channels() -> tuple[str, FakeClient]:
+    tools, fc = _build_publications(
         [
             _pub_channels_response(),
             _pub_product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3]),
             _pub_unpublish_ok(),
         ]
     )
-    return tools["unpublish_product_from_channels"](
+    out = tools["unpublish_product_from_channels"](
         product_id="123", channel_names=["Online Store", "Shop"], confirm=True
     )
+    return out, fc
 
 
-def _check_set_product_publications() -> str:
-    tools, _fc = _build_publications(
+def _check_set_product_publications() -> tuple[str, FakeClient]:
+    tools, fc = _build_publications(
         [
             _pub_channels_response(),
             _pub_product_pubs(pid="123", published_ids=[1, 4], not_published_ids=[2, 3]),
@@ -408,41 +491,44 @@ def _check_set_product_publications() -> str:
             _pub_unpublish_ok(),
         ]
     )
-    return tools["set_product_publications"](
+    out = tools["set_product_publications"](
         product_id="123",
         channel_names=["Point of Sale", "Google & YouTube"],
         confirm=True,
     )
+    return out, fc
 
 
-def _check_publish_collection_to_channels() -> str:
-    tools, _fc = _build_publications(
+def _check_publish_collection_to_channels() -> tuple[str, FakeClient]:
+    tools, fc = _build_publications(
         [
             _pub_channels_response(),
             _pub_collection_pubs(published_ids=[1], not_published_ids=[2, 3]),
             _pub_publish_ok(),
         ]
     )
-    return tools["publish_collection_to_channels"](
+    out = tools["publish_collection_to_channels"](
         handle="all-copy", channel_names=["Online Store", "Shop"], confirm=True
     )
+    return out, fc
 
 
-def _check_unpublish_collection_from_channels() -> str:
-    tools, _fc = _build_publications(
+def _check_unpublish_collection_from_channels() -> tuple[str, FakeClient]:
+    tools, fc = _build_publications(
         [
             _pub_channels_response(),
             _pub_collection_pubs(published_ids=[1]),
             _pub_unpublish_ok(),
         ]
     )
-    return tools["unpublish_collection_from_channels"](
+    out = tools["unpublish_collection_from_channels"](
         handle="all-copy", channel_names=["Online Store"], confirm=True
     )
+    return out, fc
 
 
-def _check_upload_product_image() -> str:
-    tools, _fc = _build_media(
+def _check_upload_product_image() -> tuple[str, FakeClient]:
+    tools, fc = _build_media(
         [
             _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
             _staged_ok(),
@@ -459,30 +545,32 @@ def _check_upload_product_image() -> str:
         ),
         patch("shopify_mcp.tools.media._upload.time.sleep"),
     ):
-        return tools["upload_product_image"](
+        out = tools["upload_product_image"](
             product_id="123",
             source="https://cdn.example.com/hero.jpg",
             alt="Smoke hero",
             confirm=True,
         )
+    return out, fc
 
 
-def _check_reorder_product_media() -> str:
-    tools, _fc = _build_media(
+def _check_reorder_product_media() -> tuple[str, FakeClient]:
+    tools, fc = _build_media(
         [
             _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B), _media_node(MEDIA_C)]),
             _reorder_ok(done=True),
         ]
     )
-    return tools["reorder_product_media"](
+    out = tools["reorder_product_media"](
         product_id="123",
         moves=[{"id": MEDIA_C, "newPosition": 1}, {"id": MEDIA_A, "newPosition": 3}],
         confirm=True,
     )
+    return out, fc
 
 
-def _check_update_product_media() -> str:
-    tools, _fc = _build_media(
+def _check_update_product_media() -> tuple[str, FakeClient]:
+    tools, fc = _build_media(
         [
             _product_media_read([_media_node(MEDIA_A, alt="")]),
             {
@@ -493,13 +581,12 @@ def _check_update_product_media() -> str:
             },
         ]
     )
-    return tools["update_product_media"](
-        product_id="123", media_id=MEDIA_A, alt="new", confirm=True
-    )
+    out = tools["update_product_media"](product_id="123", media_id=MEDIA_A, alt="new", confirm=True)
+    return out, fc
 
 
-def _check_delete_product_media() -> str:
-    tools, _fc = _build_media(
+def _check_delete_product_media() -> tuple[str, FakeClient]:
+    tools, fc = _build_media(
         [
             _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
             {
@@ -511,11 +598,12 @@ def _check_delete_product_media() -> str:
             },
         ]
     )
-    return tools["delete_product_media"](product_id="123", media_ids=[MEDIA_A], confirm=True)
+    out = tools["delete_product_media"](product_id="123", media_ids=[MEDIA_A], confirm=True)
+    return out, fc
 
 
-def _check_update_product_pricing() -> str:
-    tools, _fc = _build_hygiene(
+def _check_update_product_pricing() -> tuple[str, FakeClient]:
+    tools, fc = _build_hygiene(
         [
             _hygiene_pricing_read_response(),
             _hygiene_pricing_mutation_ok(
@@ -530,15 +618,16 @@ def _check_update_product_pricing() -> str:
             ),
         ]
     )
-    return tools["update_product_pricing"](
+    out = tools["update_product_pricing"](
         "100",
         variants=[{"variantId": "201", "price": "49.99", "compareAtPrice": "65.00"}],
         confirm=True,
     )
+    return out, fc
 
 
-def _check_update_product_category() -> str:
-    tools, _fc = _build_hygiene(
+def _check_update_product_category() -> tuple[str, FakeClient]:
+    tools, fc = _build_hygiene(
         [
             _taxonomy_response(
                 {
@@ -554,34 +643,37 @@ def _check_update_product_category() -> str:
             _product_update_ok(),
         ]
     )
-    return tools["update_product_category"](
+    out = tools["update_product_category"](
         product_id="5234567890", category="crewneck sweatshirt", confirm=True
     )
+    return out, fc
 
 
-def _check_update_product_vendor() -> str:
-    tools, _fc = _build_hygiene(
+def _check_update_product_vendor() -> tuple[str, FakeClient]:
+    tools, fc = _build_hygiene(
         [
             _vendor_read(pid="5234567890", vendor="Nike"),
             _hygiene_vendor_update_ok(pid="5234567890", vendor="Vanish"),
         ]
     )
-    return tools["update_product_vendor"](product_id="5234567890", vendor="Vanish", confirm=True)
+    out = tools["update_product_vendor"](product_id="5234567890", vendor="Vanish", confirm=True)
+    return out, fc
 
 
-def _check_update_product_type() -> str:
-    tools, _fc = _build_hygiene(
+def _check_update_product_type() -> tuple[str, FakeClient]:
+    tools, fc = _build_hygiene(
         [
             _type_read(pid="5234567890", product_type="Old"),
             _type_update_ok(pid="5234567890", product_type="Crewneck Sweatshirt"),
         ]
     )
-    return tools["update_product_type"](
+    out = tools["update_product_type"](
         product_id="5234567890", product_type="Crewneck Sweatshirt", confirm=True
     )
+    return out, fc
 
 
-def _check_update_variant_image_binding() -> str:
+def _check_update_variant_image_binding() -> tuple[str, FakeClient]:
     combined = _s96_combined_response(
         media_ids=[_S96_MEDIA_1, _S96_MEDIA_2],
         variants=[(_S96_VARIANT_A, "SKU-A", [])],
@@ -597,16 +689,17 @@ def _check_update_variant_image_binding() -> str:
             )
         ]
     )
-    tools, _fc = _build_hygiene([combined, mutation])
-    return tools["update_variant_image_binding"](
+    tools, fc = _build_hygiene([combined, mutation])
+    out = tools["update_variant_image_binding"](
         product_id=_S96_PRODUCT_GID,
         variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]}],
         confirm=True,
     )
+    return out, fc
 
 
-def _check_set_product_metafields() -> str:
-    tools, _fc = _build_hygiene(
+def _check_set_product_metafields() -> tuple[str, FakeClient]:
+    tools, fc = _build_hygiene(
         [
             _s97_mutation_response(
                 metafields=[
@@ -622,11 +715,12 @@ def _check_set_product_metafields() -> str:
             )
         ]
     )
-    return tools["set_product_metafields"](metafields=[_s97_entry()], confirm=True)
+    out = tools["set_product_metafields"](metafields=[_s97_entry()], confirm=True)
+    return out, fc
 
 
-def _check_delete_product_metafields() -> str:
-    tools, _fc = _build_hygiene(
+def _check_delete_product_metafields() -> tuple[str, FakeClient]:
+    tools, fc = _build_hygiene(
         [
             _s910_batch_resolve(_s910_gid_alias()),
             _s910_delete_response(
@@ -640,13 +734,14 @@ def _check_delete_product_metafields() -> str:
             ),
         ]
     )
-    return tools["delete_product_metafields"](
+    out = tools["delete_product_metafields"](
         metafields=[{"metafieldId": _S910_METAFIELD_GID}], confirm=True
     )
+    return out, fc
 
 
-def _check_update_product_options() -> str:
-    tools, _fc = _build_hygiene(
+def _check_update_product_options() -> tuple[str, FakeClient]:
+    tools, fc = _build_hygiene(
         [
             _options_read_response(),
             _options_mutation_ok(
@@ -655,15 +750,16 @@ def _check_update_product_options() -> str:
             ),
         ]
     )
-    return tools["update_product_options"](
+    out = tools["update_product_options"](
         product_id="100",
         option={"id": _OPT_GID, "name": "Sizing"},
         option_values_to_update=[{"id": _OV_M, "name": "Medium"}],
         confirm=True,
     )
+    return out, fc
 
 
-_TOOL_CHECKS: dict[str, Callable[[], str]] = {
+_TOOL_CHECKS: dict[str, Callable[[], tuple[str, FakeClient]]] = {
     "create_discount_code": _check_create_discount_code,
     "add_product_to_collection": _check_add_product_to_collection,
     "remove_product_from_collection": _check_remove_product_from_collection,
@@ -706,14 +802,14 @@ _TOOL_CHECKS: dict[str, Callable[[], str]] = {
 
 
 def test_tool_checks_cover_exactly_the_enumerated_write_tools(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Ties `_TOOL_CHECKS` to the server's own enumeration: a write tool added
     without a corresponding check fails HERE, loudly, rather than the guard
     below silently iterating over a stale/incomplete dict. A tool removed or
     renamed fails here too (an orphaned check would otherwise KeyError inside
     the loop below with a confusing traceback)."""
-    enumerated = _write_tool_names(monkeypatch)
+    enumerated = _write_tool_names(monkeypatch, tmp_path)
     covered = set(_TOOL_CHECKS)
     assert covered == enumerated, (
         f"missing checks: {enumerated - covered} | stale checks: {covered - enumerated}"
@@ -722,5 +818,20 @@ def test_tool_checks_cover_exactly_the_enumerated_write_tools(
 
 def test_all_covered_write_tools_confirmed_output_has_no_preview_leak() -> None:
     for name, check in _TOOL_CHECKS.items():
-        out = check()
+        out, fc = check()
+        # Proves the check reached and completed the confirmed write, not
+        # merely that SOME execute() call happened before an early return
+        # (Story 9.22 round 2): register_webhook's check returned an "Error:
+        # WEBHOOK_ALLOWLIST_HOSTS is not configured" string with ZERO
+        # execute() calls and its one scripted response left unconsumed — a
+        # leak planted in its done_text was unreachable, so "PREVIEW not in
+        # out" alone passed vacuously. Asserting every scripted response was
+        # consumed (not merely that fc.calls is non-empty) catches a check
+        # that executes SOME calls but stops short of the confirmed return.
+        assert fc.calls, f"{name}: no execute() calls — check never reached the mutation"
+        assert not fc.responses, (
+            f"{name}: {len(fc.responses)} scripted response(s) never consumed — "
+            f"check short-circuited before completing the confirmed write (out={out!r})"
+        )
+        assert not out.startswith("Error"), f"{name}: confirmed check returned an error: {out!r}"
         assert "PREVIEW" not in out, f"{name}: leaked PREVIEW in confirmed output: {out!r}"
