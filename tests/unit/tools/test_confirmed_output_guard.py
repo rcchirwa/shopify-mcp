@@ -43,7 +43,7 @@ Design:
   3. `test_tool_checks_cover_exactly_the_enumerated_write_tools` asserts the
      enumerated set and `_TOOL_CHECKS`' keys are EXACTLY equal — a tool added
      without a corresponding check (or renamed/removed) fails HERE, loudly,
-     rather than the guard below silently iterating over a stale dict (M9).
+     rather than the guard below silently iterating over a stale dict.
   4. `test_all_covered_write_tools_confirmed_output_has_no_preview_leak`
      drives every one of the 33 confirmed paths and asserts, per tool: the
      FakeClient actually recorded execute() calls AND consumed every

@@ -436,8 +436,8 @@ def test_add_product_polls_job_when_initial_done_false_and_flips_true(fake_poll_
     assert len(fc.calls) == 3
     assert fc.calls[2][0] == JOB_STATUS_QUERY
     assert fc.calls[2][1] == {"id": "gid://shopify/Job/999"}
-    # Story 9.22 round 2 (V10a): the polls-then-completes branch must read as
-    # confirmed too, not just the no-poll-needed path.
+    # The polls-then-completes branch must read as confirmed too, not just
+    # the no-poll-needed path.
     assert "CONFIRMED —" in out, out
     assert "PREVIEW" not in out, out
 
@@ -462,8 +462,8 @@ def test_add_product_polling_times_out_when_done_stays_false(fake_poll_clock):
     assert "verify via get_collection" in out, out
     # At least one poll was issued.
     assert any(c[0] == JOB_STATUS_QUERY for c in fc.calls)
-    # Story 9.22 round 2 (V10a): the poll-timeout branch must read as
-    # confirmed too — the underlying write already succeeded.
+    # The poll-timeout branch must read as confirmed too — the underlying
+    # write already succeeded.
     assert "CONFIRMED —" in out, out
     assert "PREVIEW" not in out, out
 
@@ -486,8 +486,8 @@ def test_add_product_polling_transport_error_surfaces_poll_failed_message(fake_p
     )
     assert "poll failed: upstream 503" in out, out
     assert "underlying write succeeded" in out, out
-    # Story 9.22 round 2 (V10c): the poll-failed branch must read as
-    # confirmed too — the underlying write already succeeded.
+    # The poll-failed branch must read as confirmed too — the underlying
+    # write already succeeded.
     assert "CONFIRMED —" in out, out
     assert "PREVIEW" not in out, out
 
@@ -512,7 +512,7 @@ def test_remove_product_polls_and_reports_elapsed_when_job_completes(fake_poll_c
     poll_calls = [c for c in fc.calls if c[0] == JOB_STATUS_QUERY]
     assert len(poll_calls) == 2
     assert all(c[1] == {"id": "gid://shopify/Job/888"} for c in poll_calls)
-    # Story 9.22 round 2 (V10a): mirrors the add-side polls-then-completes assertion.
+    # Mirrors the add-side polls-then-completes assertion.
     assert "CONFIRMED —" in out, out
     assert "PREVIEW" not in out, out
 
