@@ -34,7 +34,7 @@ from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._response import format_user_errors, with_confirm_hint
 from shopify_mcp.tools._scrub import cap
 from shopify_mcp.tools._untrusted import with_reminder, wrap
-from shopify_mcp.tools._write_tool import write_gate
+from shopify_mcp.tools._write_tool import _confirmed_from_preview, write_gate
 from shopify_mcp.tools.products import slugify_shopify_handle
 
 # The GraphQL strings now live in shopify.queries.collections. They are
@@ -404,7 +404,17 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"elapsed={elapsed_s:.1f}s",
         )
 
-        body = f"Done. {op['past_verb']} product {op['preposition']} collection.\n{preview}"
+        # Story 9.22: the old `f"Done. ... \n{preview}"` re-embedded the
+        # untouched "PREVIEW — " header inside a confirmed response — same
+        # hazard 9.21 fixed at the write_gate level; _membership_mutation
+        # doesn't use write_gate (it has its own job-poll control flow), so
+        # the leak wasn't caught there. _confirmed_from_preview relabels the
+        # header; the past-tense summary line stays ahead of it, matching the
+        # original ordering.
+        body = (
+            f"{op['past_verb']} product {op['preposition']} collection.\n"
+            f"{_confirmed_from_preview(preview)}"
+        )
         if job_id:
             numeric = from_gid(job_id)
             if poll_result is None:

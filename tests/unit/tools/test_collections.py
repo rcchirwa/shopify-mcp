@@ -203,13 +203,20 @@ def test_add_product_preview_does_not_mutate():
 
 
 def test_add_product_confirmed_calls_mutation_with_correct_gids():
+    """Story 9.22: a confirmed add_product_to_collection write must read as
+    confirmed, not as an unapplied preview ("Done. ...\\nPREVIEW — …") — that
+    string reads to an operator as the write not having landed and caused a
+    successful membership write to be redone by hand (same hazard as Story
+    9.21, at a different call site)."""
     tools, fc = _build([_manual_collection(), _add_ok(job_id="999")])
     out = tools["add_product_to_collection"](
         handle="vanish",
         product_id="777",
         confirm=True,
     )
-    assert out.startswith("Done.")
+    assert "CONFIRMED —" in out
+    assert "PREVIEW" not in out
+    assert not out.startswith("Done.")
     assert "Added product to collection" in out
     assert "Job        : 999" in out
     mutation_query, mutation_vars = fc.calls[1]
@@ -297,13 +304,18 @@ def test_remove_product_preview_does_not_mutate():
 
 
 def test_remove_product_confirmed_calls_mutation_with_correct_gids():
+    """Story 9.22: mirrors test_add_product_confirmed_calls_mutation_with_correct_gids
+    — remove_product_from_collection shares _membership_mutation with add, and
+    had the same PREVIEW-in-confirmed-output leak."""
     tools, fc = _build([_manual_collection(), _remove_ok(job_id="888")])
     out = tools["remove_product_from_collection"](
         handle="vanish",
         product_id="777",
         confirm=True,
     )
-    assert out.startswith("Done.")
+    assert "CONFIRMED —" in out
+    assert "PREVIEW" not in out
+    assert not out.startswith("Done.")
     assert "Removed product from collection" in out
     assert "Job        : 888" in out
     mutation_query, mutation_vars = fc.calls[1]
