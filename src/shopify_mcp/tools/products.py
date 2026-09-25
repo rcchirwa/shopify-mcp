@@ -518,7 +518,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
 
     @server.tool()
-    def get_products_by_collection(collection_handle: str) -> str:
+    def get_products_by_collection(collection_handle: str, limit: int = 0) -> str:
         """List the products in a collection by collection handle.
 
         Walks cursor pagination across the collection's products connection
@@ -526,8 +526,16 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         exhausted the output ends with an explicit truncation WARNING and the
         header count reads "shown" rather than "total", so a partial list is
         never presented as the whole collection.
+
+        limit:  optional maximum number of products to return. It can only
+                narrow the built-in page budget, never widen it. 0 means no
+                caller cap; a negative value is rejected.
         """
-        col, product_nodes, capped = ops.read_products_by_collection(client, collection_handle)
+        if limit < 0:
+            return "Error: limit must be zero or greater."
+        col, product_nodes, capped = ops.read_products_by_collection(
+            client, collection_handle, limit=limit
+        )
         if not col:
             return f"No collection found with handle '{collection_handle}'."
 

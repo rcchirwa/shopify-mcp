@@ -1024,8 +1024,12 @@ def test_get_products_by_collection_single_page_renders_byte_identically_to_befo
     """AC8: the conversion is additive for the only case that exists today (a
     collection resolving in one page). Pinned against the exact string rather
     than substrings, so a stray blank line or a reworded header fails here
-    instead of being noticed by a reviewer."""
-    tools, _fc = _build(
+    instead of being noticed by a reviewer.
+
+    Story 10.80: a no-argument call and an explicit `limit=0` call are the
+    same request-for-request (AC3) — extended here rather than duplicated,
+    per the card's step 6."""
+    tools, fc = _build(
         [
             collection_products_page(
                 [
@@ -1035,12 +1039,63 @@ def test_get_products_by_collection_single_page_renders_byte_identically_to_befo
             )
         ]
     )
-    out = tools["get_products_by_collection"](collection_handle="vanish")
-    assert out == (
+    expected = (
         "Products in 'vanish' (2 total):\n\n"
         "  [111] Tee One | handle: tee-one | ACTIVE\n"
         "  [222] Tee Two | handle: tee-two | ACTIVE"
     )
+    out = tools["get_products_by_collection"](collection_handle="vanish")
+    assert out == expected
+    assert fc.calls[0][1] == {"handle": "vanish", "first": 250, "after": None}
+
+    tools2, fc2 = _build(
+        [
+            collection_products_page(
+                [
+                    _product_summary("111", "Tee One", "tee-one"),
+                    _product_summary("222", "Tee Two", "tee-two"),
+                ]
+            )
+        ]
+    )
+    out2 = tools2["get_products_by_collection"](collection_handle="vanish", limit=0)
+    assert out2 == expected
+    assert fc2.calls[0][1] == {"handle": "vanish", "first": 250, "after": None}
+
+
+def test_get_products_by_collection_rejects_a_negative_limit_before_any_network_call():
+    """Story 10.80 AC4: a negative limit is refused at the tool boundary with
+    the same Error: convention get_products uses, proven on the call log so
+    the refusal happens before any request."""
+    tools, fc = _build([collection_products_page([])])
+    out = tools["get_products_by_collection"](collection_handle="vanish", limit=-1)
+    assert out == "Error: limit must be zero or greater."
+    assert fc.calls == []
+
+
+def test_get_products_by_collection_limit_truncates_and_warns():
+    """Story 10.80 AC1/AC3: a limit that truncates appends
+    PRODUCTS_TRUNCATED_WARNING and renders the "(N shown)" header, and bounds
+    the request issued."""
+    tools, fc = _build(
+        [
+            collection_products_page(
+                [
+                    _product_summary("111", "Tee One", "tee-one"),
+                    _product_summary("222", "Tee Two", "tee-two"),
+                    _product_summary("333", "Tee Three", "tee-three"),
+                ],
+                has_next=True,
+                cursor="C1",
+            )
+        ]
+    )
+    out = tools["get_products_by_collection"](collection_handle="vanish", limit=2)
+    assert "[111] Tee One" in out and "[222] Tee Two" in out
+    assert "[333] Tee Three" not in out
+    assert "(2 shown)" in out
+    assert out.endswith(products.PRODUCTS_TRUNCATED_WARNING)
+    assert fc.calls[0][1]["first"] == 2
 
 
 def test_get_products_by_collection_renders_a_product_from_the_second_page():

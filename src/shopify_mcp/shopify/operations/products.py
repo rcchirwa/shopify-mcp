@@ -333,7 +333,7 @@ def read_product_collections(client: GraphQLClient, product_id: str) -> dict[str
 
 
 def read_products_by_collection(
-    client: GraphQLClient, collection_handle: str
+    client: GraphQLClient, collection_handle: str, *, limit: int = 0
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], bool]:
     """Read a collection (by handle) with its products, paginating the nested
     products connection.
@@ -349,14 +349,23 @@ def read_products_by_collection(
     missing handle yields ``None`` for the collection, so "no such collection"
     stays distinguishable from "collection with no products". The returned dict
     carries no ``products`` key — see ``_collection_head``.
+
+    ``limit`` caps how many products are returned (Story 10.80). It can only
+    *narrow* the request budget, never widen it: a small limit costs one small
+    request instead of a full walk, and a limit larger than
+    ``PRODUCTS_PAGE_SIZE * PRODUCTS_MAX_PAGES`` still stops at that ceiling and
+    reports ``capped``. Zero (or negative) means no caller cap — today's
+    behaviour, unchanged.
     """
+    page_size, max_pages = _limit_budget(limit)
     first_page, nodes, capped = client.paginate(
         GET_PRODUCTS_BY_COLLECTION,
         {"handle": collection_handle},
         connection_path=["collectionByHandle", "products"],
-        page_size=PRODUCTS_PAGE_SIZE,
-        max_pages=PRODUCTS_MAX_PAGES,
+        page_size=page_size,
+        max_pages=max_pages,
     )
+    nodes, capped = _apply_limit(nodes, capped, limit)
     return _collection_head(first_page), nodes, capped
 
 
