@@ -197,8 +197,11 @@ def test_execute_wraps_transport_server_error():
     # 400 is a permanent error (not retryable) — raises immediately as ShopifyError.
     err = TransportServerError("400 Bad Request")
     client = _make_client(exc=err)
-    with pytest.raises(ShopifyError, match=r"Shopify HTTP error:.*400"):
+    with pytest.raises(ShopifyError, match=r"Shopify HTTP error:.*400") as exc_info:
         client.execute("query { __typename }")
+    # Pin M8: a non-retryable TransportServerError raises the plain class, not
+    # the ShopifyProtocolError subclass poll_job treats as transient.
+    assert type(exc_info.value) is ShopifyError
 
 
 # ---------- _format_errors helper shapes ----------
@@ -564,10 +567,15 @@ def test_execute_does_not_retry_on_400(no_sleep):
 def test_execute_does_not_retry_on_non_throttle_gql_error(no_sleep):
     err = TransportQueryError("schema", errors=[{"message": "Unknown field 'foo'"}])
     client = _make_scripted([err])
-    with pytest.raises(ShopifyError, match="Shopify GraphQL error: Unknown field 'foo'"):
+    with pytest.raises(
+        ShopifyError, match="Shopify GraphQL error: Unknown field 'foo'"
+    ) as exc_info:
         client.execute("{ __typename }")
     assert no_sleep == []
     assert client._client.calls == 1
+    # Pin M7: a non-THROTTLED TransportQueryError raises the plain class, not
+    # the ShopifyProtocolError subclass poll_job treats as transient.
+    assert type(exc_info.value) is ShopifyError
 
 
 def test_execute_exhausts_retries_on_persistent_throttled(no_sleep):
@@ -1299,6 +1307,29 @@ def test_poll_job_protocol_error_always_loops_to_budget(monkeypatch):
     assert result["done"] is False
     assert result["timed_out"] is True
     assert result["error"] == "Shopify protocol error: WAF blip"
+
+
+def test_poll_job_protocol_error_branch_caps_error_text(monkeypatch):
+    """The ShopifyProtocolError branch must go through the same `cap_text`
+    bound (REFLECT_MAX_LEN) as the fast-fail branch — an oversized message
+    must not reach the caller unbounded. Mutant: `last_error = str(e)` here
+    (dropping `cap_text`) must fail this test."""
+    from shopify_mcp.client import ShopifyProtocolError, poll_job
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
+
+    clock = _SleepTrackingClock()
+    _patch_time(monkeypatch, clock)
+
+    huge = "x" * (REFLECT_MAX_LEN + 5000)
+
+    def _raise(*_a, **_kw):
+        raise ShopifyProtocolError(huge)
+
+    client = _duck_client(_raise)
+    result = poll_job(client, "gid://shopify/Job/1", timeout_s=3)
+
+    assert result["error"] is not None
+    assert len(result["error"]) <= REFLECT_MAX_LEN
 
 
 def test_poll_job_plain_shopify_error_still_fails_fast_despite_protocol_subclass(monkeypatch):

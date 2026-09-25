@@ -22,6 +22,7 @@ from pydantic import SecretStr
 from shopify_mcp.client import ShopifyClient, ShopifyError, TransientShopifyError
 from shopify_mcp.settings import Settings
 from shopify_mcp.tools import media
+from shopify_mcp.tools._response import poll_failed_note
 from shopify_mcp.tools._untrusted import INJECTION_REMINDER
 from shopify_mcp.tools.media._common import _as_product_gid, _fmt_media_user_errors
 from shopify_mcp.tools.media._constants import _MAX_IMAGE_BYTES
@@ -2240,6 +2241,13 @@ def test_upload_reorder_poll_shopify_error_shows_error_not_timed_out():
         # _upload — patched too so a not-yet-fast-failing poll_job can't
         # spin this test out for the length of a real 10s poll budget.
         patch("shopify_mcp.client.time.sleep"),
+        # Pin every `time.monotonic()` read on this path to fixed values so
+        # the exact-line assertion below doesn't depend on real wall-clock
+        # time: `_poll_media_ready`'s start/elapsed (immediately READY, so
+        # both 0.0), then poll_job's start/elapsed for the reorder job poll
+        # (0.0 -> 3.7, i.e. "elapsed=3.7s"). `time` is one shared stdlib
+        # module object, so this one patch covers both call sites.
+        patch("shopify_mcp.client.time.monotonic", side_effect=[0.0, 0.0, 0.0, 3.7]),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -2252,6 +2260,14 @@ def test_upload_reorder_poll_shopify_error_shows_error_not_timed_out():
     assert "poll failed: missing write_products scope" in out
     assert "underlying write succeeded" in out
     assert "(timed out)" not in out
+    # Exact-line pin (Story 10.89 code review round 3, M12): the space before
+    # `poll_failed_note(...)` lives inside `_upload.py`'s `note` local, not in
+    # a shared literal — a dropped space would still pass every substring
+    # check above.
+    assert (
+        "\n  Reorder    : job up2 done=False elapsed=3.7s "
+        f"{poll_failed_note('missing write_products scope')}"
+    ) in out, out
 
 
 def test_upload_reorder_poll_times_out_appends_timed_out_note():
@@ -2413,6 +2429,10 @@ def test_reorder_shopify_error_poll_shows_error_not_still_running():
     assert "missing write_products scope" in out
     assert "still running" not in out
     assert "timed out" not in out
+    # Exact-line pin (Story 10.89 code review round 3, M11): the space
+    # between `{numeric}` and the note is a literal in the f-string — a
+    # dropped space would still pass every substring check above.
+    assert f"\n  Job        : slow2 {poll_failed_note('missing write_products scope')}" in out, out
 
 
 def test_reorder_poll_transient_error_times_out_still_shows_poll_failed():
