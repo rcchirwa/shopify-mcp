@@ -129,6 +129,12 @@ class ShopifyError(RuntimeError):
     schema/permission errors, malformed mutations)."""
 
 
+class ShopifyProtocolError(ShopifyError):
+    """A non-GraphQL response (HTML error page, WAF interstitial, garbage
+    200) that may be transient — still a ShopifyError for every existing
+    caller."""
+
+
 class TransientShopifyError(RuntimeError):
     """Transient Shopify failure — safe to retry (THROTTLED, 429, 5xx).
     Surfaces to callers only after retries are exhausted."""
@@ -356,7 +362,7 @@ class ShopifyClient:
                 # so it was the single largest remaining path for unbounded
                 # upstream text to reach model context. Bounded here, at the
                 # only place that sees it. (Story 10.67 / SEC-27, round 2.)
-                raise ShopifyError(f"Shopify protocol error: {cap_text(str(e))}") from e
+                raise ShopifyProtocolError(f"Shopify protocol error: {cap_text(str(e))}") from e
 
             if not isinstance(result, dict):
                 # Surface the real payload (scope error text, HTML error page, etc.)
@@ -371,7 +377,7 @@ class ShopifyClient:
                 # stripping, so a CR/LF-bearing upstream payload could forge
                 # extra lines wherever this exception message is logged.
                 preview = cap_text(sanitize_control_chars(str(result)))
-                raise ShopifyError(
+                raise ShopifyProtocolError(
                     f"Shopify returned non-dict response (type={type(result).__name__}): {preview}"
                 )
             return result
@@ -601,7 +607,9 @@ def poll_job(
         timed_out=False: a permanent ShopifyError (Story 10.89) fails fast on
         the first poll rather than retrying to budget, since retrying a
         validation/auth/schema error cannot help and reporting it as a
-        timeout hides the real cause.
+        timeout hides the real cause. ShopifyProtocolError (a non-GraphQL
+        response that may be transient) is exempt from the fast-fail and
+        retries to budget like any other unclassified error.
 
     When `interval_s` is None (default), uses capped exponential backoff
     (0.5s, 1s, 2s, 4s, 5s, 5s …). Pass an explicit float to override with
@@ -634,6 +642,15 @@ def poll_job(
             job = (result or {}).get("job") or {}
             last_done = bool(job.get("done"))
             last_error = None
+        except ShopifyProtocolError as e:
+            # Story 10.89 code review (F3): a non-GraphQL response (WAF
+            # interstitial, HTML error page, garbage 200) is often transient,
+            # unlike the permanent failures the broader ShopifyError branch
+            # below fast-fails on. Caught first (it is a ShopifyError
+            # subclass) and treated exactly like the broad except: retry to
+            # budget.
+            last_done = False
+            last_error = cap_text(str(e))
         except ShopifyError as e:
             # Story 10.89: a permanent failure (validation, auth, schema
             # drift) — retrying to budget cannot help, and the broad except

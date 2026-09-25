@@ -5,8 +5,7 @@ from mcp.server.fastmcp import FastMCP
 from shopify_mcp.client import ShopifyClient, poll_job
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
-from shopify_mcp.tools._response import with_confirm_hint
-from shopify_mcp.tools._scrub import cap
+from shopify_mcp.tools._response import poll_failed_note, with_confirm_hint
 from shopify_mcp.tools._untrusted import with_reminder, wrap
 from shopify_mcp.tools.media._common import (
     _as_product_gid,
@@ -129,10 +128,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                     f"\n  Job        : {numeric} (done=True after {poll_result['elapsed_s']:.1f}s)"
                 )
             elif poll_result["error"]:
-                job_line = (
-                    f"\n  Job        : {numeric} (poll failed: {cap(str(poll_result['error']))} — "
-                    f"underlying write succeeded, check server-side for completion)"
-                )
+                job_line = f"\n  Job        : {numeric} {poll_failed_note(poll_result['error'])}"
             elif poll_result["timed_out"]:
                 job_line = (
                     f"\n  Job        : {numeric} (still running after "

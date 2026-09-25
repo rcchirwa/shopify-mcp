@@ -24,7 +24,7 @@ from shopify_mcp.settings import Settings
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._http import default_headers
 from shopify_mcp.tools._log import log_write
-from shopify_mcp.tools._response import extract_user_errors, with_confirm_hint
+from shopify_mcp.tools._response import extract_user_errors, poll_failed_note, with_confirm_hint
 from shopify_mcp.tools._scrub import cap
 from shopify_mcp.tools._untrusted import with_reminder, wrap_reflected
 from shopify_mcp.tools.media._common import (
@@ -342,10 +342,7 @@ def _maybe_reorder_new_media(
     if job_id and not initial_done:
         pr = poll_job(client, job_id)
         if pr["error"]:
-            note = (
-                f" (poll failed: {cap(str(pr['error']))} — underlying write "
-                f"succeeded, check server-side for completion)"
-            )
+            note = f" {poll_failed_note(pr['error'])}"
         elif pr["timed_out"]:
             note = " (timed out)"
         else:
