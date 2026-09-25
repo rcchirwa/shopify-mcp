@@ -50,7 +50,8 @@ def _outcome_header(heading: str, succeeded: int, failed: int) -> str:
     anything at all resolved to a target — never on pre-mutation failures
     such as an unresolved channel name, which belong in the same "Failed:"
     block a caller renders below the header but are not themselves a
-    rejected write. The one exception (round 2 of Story 9.24): when NOTHING
+    rejected write. The one exception (added in round 2 of Story 9.24,
+    re-keyed onto the resolved set in round 3): when NOTHING
     resolved to a target at all, the caller falls back to counting those
     resolve failures as `failed`, so an all-unresolved batch doesn't read
     CONFIRMED over a Failed: block listing every requested item. See

@@ -1380,7 +1380,7 @@ def test_set_empty_list_unpublish_rejected_is_not_confirmed():
 
 
 def test_set_unresolved_only_channel_still_removes_existing_publication_is_partial():
-    """Story 9.24 round 3 (nit — pin current behaviour, not a bug to fix):
+    """Story 9.24 round 4 (nit — pin current behaviour, not a bug to fix):
     the requested channel_names list is a single unresolvable name ('Typo
     Channel'), so nothing resolves (`desired_nodes` stays empty) and the
     "nothing resolved" fallback (round 3) uses `apply_failed` — the resolve
