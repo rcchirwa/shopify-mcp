@@ -57,9 +57,12 @@ def _outcome_header(heading: str, succeeded: int, failed: int) -> str:
     `publications._channel_write` / `set_product_publications` and
     `inventory.update_variant_inventory_tracking` for that fallback.
 
-    That "nothing resolved" fallback is keyed on the REQUESTED names, not on
-    whether a mutation ran: at `set_product_publications`, an empty or
-    entirely-unresolved `channel_names` still leaves a *declarative* empty
+    That "nothing resolved" fallback is keyed on the RESOLVED set —
+    `desired_nodes` in `set_product_publications`, `targets` in
+    `_channel_write` and in `inventory.update_variant_inventory_tracking` —
+    not on the REQUESTED names, and not on whether a mutation ran: at
+    `set_product_publications`, an empty or entirely-unresolved
+    `channel_names` still leaves a *declarative* empty
     (or unchanged) desired state, and a channel the caller never named can
     still get unpublished because it's no longer in that desired set — a
     real leg, attempted and landed independently of the resolve failure.

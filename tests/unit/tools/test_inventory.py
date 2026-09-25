@@ -673,7 +673,7 @@ def test_tracking_all_variant_ids_unresolved_is_not_confirmed():
 
 
 def test_tracking_some_variant_ids_unresolved_success_reads_confirmed():
-    """Story 9.24 round 3 (surviving mutant M5): one requested variant id
+    """Story 9.24 round 4 (surviving mutant M5): one requested variant id
     resolves and its mutation succeeds, while another does not resolve at
     all. `targets` is non-empty (100 resolved), so the mutation-only
     `failed` count applies (round 3's "nothing resolved" fallback must NOT
@@ -697,6 +697,33 @@ def test_tracking_some_variant_ids_unresolved_success_reads_confirmed():
     assert out.split("\n", 1)[0] == "CONFIRMED — Variant inventory tracking update"
     assert "999" in out[out.index("Unresolved variant ids:") :]
     assert len(fc.calls) == 2
+    assert fc.responses == []
+
+
+def test_tracking_unchanged_variant_alongside_unresolved_reads_confirmed():
+    """Story 9.24 round 5 (surviving mutant M18): a requested variant that's
+    already at the target tracked state needs no mutation at all — it lands
+    in `unchanged`, not `to_change` — while a second requested id doesn't
+    resolve. `targets` is non-empty (100 resolved), so the mutation-only
+    `failed_count = len(failed) if targets else len(unresolved)` must read 0
+    and the header must read CONFIRMED. A mutant keying that fallback on
+    `to_change` instead of `targets` would see `to_change` empty here too
+    (nothing needed changing) and wrongly fall back to `len(unresolved) = 1`,
+    reading FAILED even though nothing was rejected. 999 must still be
+    reported in the Unresolved block."""
+    variants = [_variant("100", "S", "REEF-S", [], tracked=True)]
+    tools, fc = _build([_product_with_variants(variants)])
+    out = tools["update_variant_inventory_tracking"](
+        product_id="555",
+        tracked=True,
+        variant_ids=["100", "999"],
+        confirm=True,
+    )
+    assert out.split("\n", 1)[0] == "CONFIRMED — Variant inventory tracking update"
+    assert "999" in out[out.index("Unresolved variant ids:") :]
+    # No mutation was possible or needed (100 already matches) — prove the
+    # read actually ran and nothing else was scripted or left unconsumed.
+    assert len(fc.calls) == 1
     assert fc.responses == []
 
 

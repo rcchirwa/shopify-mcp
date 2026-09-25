@@ -1343,7 +1343,7 @@ def test_set_publish_rejected_unpublish_succeeds_is_partial():
 
 
 def test_set_empty_list_unpublish_rejected_is_not_confirmed():
-    """Story 9.24 round 3 (surviving mutant M6): channel_names=[] means the
+    """Story 9.24 round 4 (surviving mutant M6): channel_names=[] means the
     desired state is "no channels", so a product already published to
     Online Store gets an unpublish leg attempted for it — with no channel
     name requested at all, nothing resolves (`desired_nodes` stays empty)

@@ -409,12 +409,15 @@ def test_transient_error_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
 # all-unresolved batch doesn't read CONFIRMED over a Failed: block listing
 # every requested item — see the call sites, not this helper, for that
 # fallback logic; `_outcome_header` itself only ever sees the final pair.
-# That fallback is keyed on the requested names, not on whether a mutation
-# ran: at `set_product_publications`, a channel the caller never named can
-# still get unpublished (it drops out of the declarative desired set), so
-# an unresolved-name failure and a real, landed mutation's success can share
-# one (succeeded, failed) pair — the header then reads PARTIAL even though
-# nothing was actually rejected (see `test_publications.py`).
+# That fallback is keyed on the RESOLVED set (`desired_nodes` in
+# `set_product_publications`, `targets` in `_channel_write` and in
+# `inventory.update_variant_inventory_tracking`), not on the requested
+# names, and not on whether a mutation ran: at `set_product_publications`, a
+# channel the caller never named can still get unpublished (it drops out of
+# the declarative desired set), so an unresolved-name failure and a real,
+# landed mutation's success can share one (succeeded, failed) pair — the
+# header then reads PARTIAL even though nothing was actually rejected (see
+# `test_publications.py`).
 
 
 def test_outcome_header_all_succeeded_is_byte_identical_confirmed_header() -> None:

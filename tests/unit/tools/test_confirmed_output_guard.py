@@ -1006,7 +1006,7 @@ def _check_update_variant_inventory_tracking_all_unresolved() -> tuple[str, Fake
     return out, fc
 
 
-# ---- Round 3 (surviving mutant M6): channel_names=[] with an existing
+# ---- Round 4 (surviving mutant M6): channel_names=[] with an existing
 # publication — nothing REQUESTED resolves (the list is empty), so the
 # "nothing resolved" fallback applies, but the empty desired state still
 # forces a real unpublish leg to be attempted, and here it's rejected. ----
