@@ -1169,19 +1169,32 @@ def test_get_products_by_collection_docstring_no_longer_promises_all_products():
     assert "paginat" in doc.lower()
 
 
+def _limit_paragraph(doc: str) -> str:
+    """Extract the whole `limit:` paragraph from a tool docstring — the
+    `limit:` line plus every continuation line up to the next blank line —
+    normalising whitespace so indentation differences don't matter."""
+    lines = doc.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip().startswith("limit:"))
+    paragraph_lines = []
+    for line in lines[start:]:
+        if not line.strip():
+            break
+        paragraph_lines.append(line.strip())
+    return " ".join(" ".join(paragraph_lines).split())
+
+
 def test_get_products_by_collection_limit_docstring_matches_get_products():
     """AC7: the docstring's `limit` wording must be pinned, not eyeballed — a
-    revert of get_products_by_collection's limit paragraph shouldn't be able
-    to pass the suite unnoticed, and the two tools' wording must not drift
-    apart."""
+    revert of get_products_by_collection's limit paragraph (including its
+    continuation lines, not just the first) shouldn't be able to pass the
+    suite unnoticed, and the two tools' wording must not drift apart."""
     tools, _fc = _build([collection_products_page([])])
     get_products_doc = tools["get_products"].__doc__ or ""
     collection_doc = tools["get_products_by_collection"].__doc__ or ""
-    limit_paragraph = next(
-        line for line in get_products_doc.splitlines() if line.strip().startswith("limit:")
-    ).strip()
-    assert limit_paragraph, "get_products docstring has no limit: line to compare against"
-    assert limit_paragraph in collection_doc, (
+    get_products_limit_paragraph = _limit_paragraph(get_products_doc)
+    collection_limit_paragraph = _limit_paragraph(collection_doc)
+    assert get_products_limit_paragraph, "get_products docstring has no limit: paragraph"
+    assert collection_limit_paragraph == get_products_limit_paragraph, (
         "get_products_by_collection's limit wording no longer matches get_products'"
     )
 

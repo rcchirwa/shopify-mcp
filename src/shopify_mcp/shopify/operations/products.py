@@ -136,8 +136,9 @@ def _limit_budget(limit: int) -> tuple[int, int]:
     """Translate a caller ``limit`` into ``(page_size, max_pages)`` for paginate().
 
     Shared by every product read that walks an outer connection (Story 10.76 —
-    ``read_products`` and the two description reads), so the guard below exists
-    once rather than in three copies that can drift apart.
+    ``read_products`` and the two description reads; Story 10.80 added
+    ``read_products_by_collection``), so the guard below exists once rather
+    than in copies that can drift apart.
 
     ``limit`` can only *narrow* the request budget, never widen it: a small
     limit costs one small request instead of a full walk, and the ``min()`` on
