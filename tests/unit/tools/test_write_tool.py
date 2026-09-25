@@ -392,32 +392,16 @@ def test_transient_error_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
 
-# ---------- _outcome_header (Story 9.24) ----------
+# ---------- _outcome_header ----------
 #
 # Batch write tools with per-item outcomes (a done list next to a failed
-# list) chose their "CONFIRMED — " header unconditionally, before ever
-# looking at the outcome — so a write where every item was rejected still
-# read as CONFIRMED. `_outcome_header` is the one helper every such site
-# (publications._channel_write, publications.set_product_publications,
-# inventory.update_variant_inventory_tracking) now funnels its header
-# through, keyed on the (succeeded, failed) counts of the mutation(s)
-# actually attempted whenever anything resolved to a target — never on
-# pre-mutation failures like an unresolved channel name, which are rendered
-# in the same "Failed:" block but are not themselves a rejected write.
-# Round 2/3: the one exception is when NOTHING resolved at all, where each
-# call site falls back to counting those resolve failures as `failed`, so an
-# all-unresolved batch doesn't read CONFIRMED over a Failed: block listing
-# every requested item — see the call sites, not this helper, for that
-# fallback logic; `_outcome_header` itself only ever sees the final pair.
-# That fallback is keyed on the RESOLVED set (`desired_nodes` in
-# `set_product_publications`, `targets` in `_channel_write` and in
-# `inventory.update_variant_inventory_tracking`), not on the requested
-# names, and not on whether a mutation ran: at `set_product_publications`, a
-# channel the caller never named can still get unpublished (it drops out of
-# the declarative desired set), so an unresolved-name failure and a real,
-# landed mutation's success can share one (succeeded, failed) pair — the
-# header then reads PARTIAL even though nothing was actually rejected (see
-# `test_publications.py`).
+# list) funnel their CONFIRMED / PARTIAL / FAILED header through this one
+# helper, keyed on (succeeded, failed) mutation counts, so the choice can't
+# drift between call sites (publications._channel_write,
+# publications.set_product_publications,
+# inventory.update_variant_inventory_tracking). `resolved_any=False` covers
+# the case where nothing the caller requested ever resolved to a target, so
+# `failed` is replaced with the `unresolved` count instead.
 
 
 def test_outcome_header_all_succeeded_is_byte_identical_confirmed_header() -> None:
@@ -450,3 +434,31 @@ def test_outcome_header_partial_reports_both_counts() -> None:
     assert out == "PARTIAL — Set product publications (declarative) (1 succeeded, 1 failed)"
     assert "CONFIRMED" not in out
     assert "FAILED" not in out
+
+
+def test_outcome_header_resolved_any_false_replaces_failed_with_unresolved() -> None:
+    """resolved_any=False: `failed` (999, deliberately unreachable) is
+    replaced with `unresolved`, not merged with `succeeded` — pins the exact
+    numbers so a helper that swaps which count gets replaced is caught."""
+    out = _wt._outcome_header(
+        "Publish product to channels", 3, 999, unresolved=5, resolved_any=False
+    )
+    assert out == "PARTIAL — Publish product to channels (3 succeeded, 5 failed)"
+
+
+def test_outcome_header_resolved_any_false_zero_unresolved_is_confirmed() -> None:
+    """resolved_any=False with unresolved=0 is the pure no-op case (nothing
+    requested at all) — still CONFIRMED via the 0/0 rule."""
+    out = _wt._outcome_header(
+        "Publish product to channels", 3, 999, unresolved=0, resolved_any=False
+    )
+    assert out == "CONFIRMED — Publish product to channels"
+
+
+def test_outcome_header_resolved_any_true_ignores_unresolved() -> None:
+    """resolved_any=True (the default) uses `failed` as given, regardless of
+    `unresolved` — at least one requested item resolved, so pre-mutation
+    resolve failures are the caller's to render elsewhere, not this
+    helper's to count."""
+    out = _wt._outcome_header("Publish product to channels", 1, 0, unresolved=5, resolved_any=True)
+    assert out == "CONFIRMED — Publish product to channels"

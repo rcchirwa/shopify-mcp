@@ -352,6 +352,13 @@ def _render_failed(failed: list[dict[str, Any]]) -> str:
     )
 
 
+def _render_unresolved_names(failed: list[dict[str, Any]]) -> str:
+    """Comma-joined, capped channel names for the unresolved-name refusal in
+    `set_product_publications` — distinct from `_render_failed`'s per-line
+    "name: error" rendering, which this message doesn't need."""
+    return cap(", ".join(str(f.get("channel_name", "?")) for f in failed))
+
+
 def _channel_write(
     client: ShopifyClient,
     *,
@@ -429,41 +436,20 @@ def _channel_write(
         f"unchanged={[n['name'] for n in unchanged]} | failed={len(apply_failed)}",
     )
 
-    # Story 9.24: the header is keyed on the mutation actually attempted
-    # (acting → done), never on `apply_failed` as a whole — that list also
-    # carries pre-mutation resolve failures (an unresolved channel name),
-    # which are rendered in the Failed: block below but are not themselves a
-    # rejected write. `done` is only ever `[]` or `acting` (the mutation is
-    # one call for the whole batch), so this is binary per call, not itself
-    # partial — `set_product_publications` below is where a genuine partial
-    # (one leg landed, the other didn't) can occur.
-    #
-    # Round 2 (verifier finding): that rule alone let EVERY requested channel
-    # failing to resolve (`acting` empty, `apply_failed` all resolve
-    # failures) still read CONFIRMED — the exact hazard this story exists to
-    # close, just reached from resolve failure instead of a rejected
-    # mutation. When nothing was attempted at all, fall back to
-    # `apply_failed` so an all-unresolved call reads FAILED instead of
-    # CONFIRMED; a pure idempotent no-op (`apply_failed` also empty) still
-    # reads CONFIRMED via the 0/0 case. This does not touch the case where
-    # `acting` is non-empty and its mutation succeeds — that still reads
-    # CONFIRMED even if an unrelated channel name failed to resolve, exactly
-    # as before.
-    #
-    # Round 3 (verifier finding): keying the fallback on `acting` (empty) was
-    # too broad — `acting` is also empty when every RESOLVED target is
-    # already at the desired state (nothing needs to change), which is not a
-    # rejected write. That let a call like
-    # `channel_names=["Online Store", "Typo Channel"]`, where Online Store is
-    # already published and Typo Channel fails to resolve, read FAILED even
-    # though nothing was rejected — the opposite hazard, and one the round-1
-    # decision never intended (it only meant to cover the truly-nothing-
-    # resolved case). Fixed by keying the fallback on `targets` (the resolved
-    # set, before the acting/unchanged split) instead of `acting`: as long as
-    # at least one requested channel resolved, the mutation-only count is
-    # used, even if that resolved channel needed no action.
-    failed_count = (len(acting) - len(done)) if targets else len(apply_failed)
-    header = _outcome_header(heading, len(done), failed_count)
+    # The header is keyed on the mutation actually attempted (acting → done),
+    # never on `apply_failed` as a whole — that list also carries pre-mutation
+    # resolve failures (an unresolved channel name), rendered in the Failed:
+    # block below but not themselves a rejected write. When NOTHING requested
+    # resolved to a target (`targets` empty), `_outcome_header` falls back to
+    # counting those resolve failures instead, so an all-unresolved call
+    # reads FAILED rather than a trivial CONFIRMED.
+    header = _outcome_header(
+        heading,
+        len(done),
+        len(acting) - len(done),
+        unresolved=len(apply_failed),
+        resolved_any=bool(targets),
+    )
     body = (
         f"{header}\n"
         f"  {meta_line}\n"
@@ -902,7 +888,20 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not confirm:
             return with_confirm_hint(preview)
 
-        apply_failed = list(failed)
+        if failed:
+            # A declarative set with an unresolved channel name must not run
+            # at all: the desired state derived above already excludes that
+            # name (it never made it into `desired_nodes`), so proceeding
+            # would unpublish every channel not named — including channels
+            # the caller never meant to touch. Refuse before either leg.
+            return (
+                "Error: could not resolve channel name(s): "
+                f"{_render_unresolved_names(failed)}. Nothing was changed — "
+                "a declarative set with an unknown name would unpublish "
+                "every channel not named. Correct the names and retry."
+            )
+
+        apply_failed: list[dict[str, Any]] = []
         added_applied = []
         removed_applied = []
 
@@ -923,14 +922,23 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             try:
                 result = ops.unpublish(client, gid, [n["id"] for n in removed_nodes])
             except Exception as e:
-                return f"Error during unpublish: {cap(str(e))}\n{SCOPE_HINT}"
-            user_errors = extract_user_errors(result, "publishableUnpublish")
-            if user_errors:
-                for ue in user_errors:
-                    apply_failed.append(_map_user_error(ue, removed_nodes))
+                if not added_applied:
+                    return f"Error during unpublish: {cap(str(e))}\n{SCOPE_HINT}"
+                # The publish leg already landed, so this can't be a bare
+                # Error return — that would hide the landed publish and skip
+                # log_write. Record every removed node as failed instead and
+                # continue to log_write and the header, which reads PARTIAL.
+                capped = cap(str(e))
+                for n in removed_nodes:
+                    apply_failed.append({"channel_name": n["name"], "error": capped})
             else:
-                _invalidate_channels(client)
-                removed_applied = removed_nodes
+                user_errors = extract_user_errors(result, "publishableUnpublish")
+                if user_errors:
+                    for ue in user_errors:
+                        apply_failed.append(_map_user_error(ue, removed_nodes))
+                else:
+                    _invalidate_channels(client)
+                    removed_applied = removed_nodes
 
         log_write(
             "set_product_publications",
@@ -939,39 +947,19 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"unchanged={[n['name'] for n in unchanged_nodes]} | failed={len(apply_failed)}",
         )
 
-        # Story 9.24: unlike _channel_write, this tool issues two independent
-        # mutations (publish then unpublish), so one leg can land while the
-        # other is rejected — a genuine partial write. Counts span both legs;
-        # pre-mutation resolve failures (an unresolved channel name) are in
-        # `apply_failed` for the Failed: block but not counted here — UNLESS
-        # NOTHING requested resolved at all (round 2 / verifier finding): if
-        # every requested channel name failed to resolve, `desired_nodes` is
-        # empty, so the mutation-only count would be trivially 0 and the
-        # header would read CONFIRMED over a Failed: block listing every
-        # target, the same hazard this story exists to close. When nothing
-        # resolved, `apply_failed` (all resolve failures) is used instead; a
-        # genuine no-op (`apply_failed` also empty) still reads CONFIRMED via
-        # the 0/0 case.
-        #
-        # Round 3 (verifier finding): the round-2 fallback was keyed on
-        # whether either leg was ATTEMPTED (`added_nodes`/`removed_nodes`
-        # non-empty), not on whether anything RESOLVED. That's too broad — a
-        # resolved channel already at the desired state needs no leg
-        # attempted at all, so a call like
-        # `channel_names=["Online Store", "Typo Channel"]`, where Online
-        # Store already matches and Typo Channel fails to resolve, read
-        # FAILED even though nothing was rejected. Fixed by keying the
-        # fallback on `desired_nodes` (the resolved set) instead: as long as
-        # at least one requested channel resolved, the mutation-only count is
-        # used, even if neither leg ends up needing to run. A leg that WAS
-        # attempted and succeeded still reads CONFIRMED even if an unrelated
-        # channel name failed to resolve, exactly as before.
+        # Unlike _channel_write, this tool issues two independent mutations
+        # (publish then unpublish), so one leg can land while the other is
+        # rejected — a genuine partial write. An unresolved channel name is
+        # refused above before either leg runs, so `apply_failed` here only
+        # ever holds real mutation rejections — this is the mutation-only
+        # count, with no "nothing resolved" fallback needed.
         succeeded = len(added_applied) + len(removed_applied)
         mutation_failed = (len(added_nodes) - len(added_applied)) + (
             len(removed_nodes) - len(removed_applied)
         )
-        failed_count = mutation_failed if desired_nodes else len(apply_failed)
-        header = _outcome_header("Set product publications (declarative)", succeeded, failed_count)
+        header = _outcome_header(
+            "Set product publications (declarative)", succeeded, mutation_failed
+        )
         body = (
             f"{header}\n"
             f"  Product: {title} (handle: {prod_handle}, id: {from_gid(gid)})\n"

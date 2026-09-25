@@ -70,6 +70,7 @@ import shopify_mcp.server as _server_module
 from shopify_mcp.server import create_server
 from shopify_mcp.settings import Settings
 from shopify_mcp.tools import webhooks as _webhooks_module
+from shopify_mcp.tools.publications import PUBLISHABLE_PUBLISH, PUBLISHABLE_UNPUBLISH
 from tests.support import CapturingServer, FakeClient
 
 # ---- catalog_hygiene.py ----
@@ -949,24 +950,16 @@ def _check_update_variant_inventory_tracking_all_rejected() -> tuple[str, FakeCl
     return out, fc
 
 
-# ---- Round 2 (verifier finding): all-UNRESOLVED, not just all-rejected. ----
+# ---- All-UNRESOLVED, not just all-rejected. ----
 #
 # Every check above rejects at the MUTATION step (a userErrors response).
-# The verifier found a second, distinct path to the same CONFIRMED-over-a-
-# Failed-block hazard: every requested channel name fails to RESOLVE, so no
-# mutation is ever attempted at all (`acting` / `added_nodes`+`removed_nodes`
-# stay empty). The original fix's mutation-only failed count read 0 for that
-# case — nothing was attempted, so nothing could be "rejected" by that
-# count — and the header still read CONFIRMED.
-#
-# Round 3 (verifier finding): `update_variant_inventory_tracking` DOES share
-# this gap after all — its unresolved ids render in a separate "Unresolved
-# variant ids" block rather than "Failed", but the same 0/0 trivially-
-# CONFIRMED hazard applies when every requested variant id fails to resolve
-# (`targets` empty, so `to_change`/`failed` are both trivially empty too).
-# The round-2 comment's exemption was about which block the ids render in,
-# not about whether the write landed — fixed below with the matching
-# fallback (see docs/tech-debt.md).
+# The other path to the same CONFIRMED-over-a-Failed-block hazard: every
+# requested item fails to RESOLVE, so no mutation is ever attempted at all.
+# `set_product_publications` no longer belongs here — an unresolved channel
+# name is refused before any mutation now (see the dedicated refusal test
+# below) — but `_channel_write` and `update_variant_inventory_tracking`
+# still fall back to counting resolve failures as `failed` when nothing
+# resolved, so this case remains live for both.
 
 
 def _check_publish_product_to_channels_all_unresolved() -> tuple[str, FakeClient]:
@@ -978,20 +971,6 @@ def _check_publish_product_to_channels_all_unresolved() -> tuple[str, FakeClient
         ]
     )
     out = tools["publish_product_to_channels"](
-        product_id="123", channel_names=["Typo Channel"], confirm=True
-    )
-    return out, fc
-
-
-def _check_set_product_publications_all_unresolved() -> tuple[str, FakeClient]:
-    tools, fc = _build_publications(
-        [
-            _pub_channels_response(),
-            _pub_channels_response(),  # refresh on miss
-            _pub_product_pubs(pid="123", published_ids=[], not_published_ids=[1]),
-        ]
-    )
-    out = tools["set_product_publications"](
         product_id="123", channel_names=["Typo Channel"], confirm=True
     )
     return out, fc
@@ -1039,7 +1018,6 @@ _ALL_REJECTED_CHECKS: dict[str, Callable[[], tuple[str, FakeClient]]] = {
     "publish_product_to_channels_all_unresolved": (
         _check_publish_product_to_channels_all_unresolved
     ),
-    "set_product_publications_all_unresolved": _check_set_product_publications_all_unresolved,
     "update_variant_inventory_tracking_all_unresolved": (
         _check_update_variant_inventory_tracking_all_unresolved
     ),
@@ -1064,3 +1042,24 @@ def test_all_rejected_write_is_never_reported_confirmed(name: str) -> None:
     )
     assert not out.startswith("CONFIRMED"), f"{name}: all-rejected write read CONFIRMED: {out!r}"
     assert out.startswith("FAILED —"), f"{name}: all-rejected write did not read FAILED: {out!r}"
+
+
+def test_set_product_publications_all_unresolved_is_refused_before_mutation() -> None:
+    """`set_product_publications` doesn't fit the FAILED-with-a-mutation-
+    attempt shape the guard above proves: an unresolved channel name is
+    refused before any mutation runs at all, so there's no execute() call to
+    prove non-vacuously beyond the resolve/read calls themselves."""
+    tools, fc = _build_publications(
+        [
+            _pub_channels_response(),
+            _pub_channels_response(),  # refresh on miss
+            _pub_product_pubs(pid="123", published_ids=[], not_published_ids=[1]),
+        ]
+    )
+    out = tools["set_product_publications"](
+        product_id="123", channel_names=["Typo Channel"], confirm=True
+    )
+    assert out.startswith("Error: could not resolve channel name(s): Typo Channel")
+    assert "CONFIRMED" not in out
+    assert not fc.responses
+    assert not any(q in (PUBLISHABLE_PUBLISH, PUBLISHABLE_UNPUBLISH) for q, _ in fc.calls)
