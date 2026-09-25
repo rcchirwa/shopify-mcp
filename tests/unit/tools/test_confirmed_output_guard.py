@@ -120,6 +120,7 @@ from tests.unit.tools.test_inventory import _build as _build_inventory
 from tests.unit.tools.test_inventory import (
     _inventory_item_response,
     _set_inventory_ok,
+    _tracked_update_err,
     _tracked_update_ok,
 )
 from tests.unit.tools.test_inventory import _level as _inv_level
@@ -163,6 +164,7 @@ from tests.unit.tools.test_publications import _build as _build_publications
 from tests.unit.tools.test_publications import _channels_response as _pub_channels_response
 from tests.unit.tools.test_publications import _collection_pubs as _pub_collection_pubs
 from tests.unit.tools.test_publications import _product_pubs as _pub_product_pubs
+from tests.unit.tools.test_publications import _publish_err as _pub_publish_err
 from tests.unit.tools.test_publications import _publish_ok as _pub_publish_ok
 from tests.unit.tools.test_publications import _unpublish_ok as _pub_unpublish_ok
 
@@ -832,3 +834,143 @@ def test_all_covered_write_tools_confirmed_output_has_no_preview_leak(name: str)
     )
     assert not out.startswith("Error"), f"{name}: confirmed check returned an error: {out!r}"
     assert "PREVIEW" not in out, f"{name}: leaked PREVIEW in confirmed output: {out!r}"
+
+
+# ---------------------------------------------------------------------------
+# 4. All-rejected regression guard (Story 9.24).
+#
+# Sections 2/3 above drive every write tool's SUCCESSFUL confirmed path and
+# check for a stray "PREVIEW" leak (9.21/9.22's hazard). This section is the
+# reverse: it plants a response where every attempted item is REJECTED, for
+# the six sites 9.24 found sharing an unconditional "CONFIRMED — " header
+# (the four `_channel_write` tools, `set_product_publications`, and
+# `update_variant_inventory_tracking`) and asserts the output can never read
+# CONFIRMED. Each check reuses its own tool's existing test module fixtures,
+# same convention as section 2, and returns (out, fc) so the guard can prove
+# the write actually ran — a check that short-circuits before the mutation
+# would otherwise pass vacuously, since an early refusal reads no more like
+# "CONFIRMED" than a genuine rejection does.
+# ---------------------------------------------------------------------------
+
+
+def _check_publish_product_to_channels_all_rejected() -> tuple[str, FakeClient]:
+    tools, fc = _build_publications(
+        [
+            _pub_channels_response(),
+            _pub_product_pubs(pid="123", published_ids=[], not_published_ids=[1]),
+            _pub_publish_err("publicationId", "not authorized"),
+        ]
+    )
+    out = tools["publish_product_to_channels"](
+        product_id="123", channel_names=["Online Store"], confirm=True
+    )
+    return out, fc
+
+
+def _check_unpublish_product_from_channels_all_rejected() -> tuple[str, FakeClient]:
+    tools, fc = _build_publications(
+        [
+            _pub_channels_response(),
+            _pub_product_pubs(pid="123", published_ids=[1], not_published_ids=[]),
+            {
+                "publishableUnpublish": {
+                    "publishable": None,
+                    "userErrors": [
+                        {"field": ["input", "0", "publicationId"], "message": "not authorized"}
+                    ],
+                }
+            },
+        ]
+    )
+    out = tools["unpublish_product_from_channels"](
+        product_id="123", channel_names=["Online Store"], confirm=True
+    )
+    return out, fc
+
+
+def _check_publish_collection_to_channels_all_rejected() -> tuple[str, FakeClient]:
+    tools, fc = _build_publications(
+        [
+            _pub_channels_response(),
+            _pub_collection_pubs(not_published_ids=[1]),
+            _pub_publish_err("publicationId", "not authorized"),
+        ]
+    )
+    out = tools["publish_collection_to_channels"](
+        handle="all-copy", channel_names=["Online Store"], confirm=True
+    )
+    return out, fc
+
+
+def _check_unpublish_collection_from_channels_all_rejected() -> tuple[str, FakeClient]:
+    tools, fc = _build_publications(
+        [
+            _pub_channels_response(),
+            _pub_collection_pubs(published_ids=[1]),
+            {
+                "publishableUnpublish": {
+                    "publishable": None,
+                    "userErrors": [
+                        {"field": ["input", "0", "publicationId"], "message": "not authorized"}
+                    ],
+                }
+            },
+        ]
+    )
+    out = tools["unpublish_collection_from_channels"](
+        handle="all-copy", channel_names=["Online Store"], confirm=True
+    )
+    return out, fc
+
+
+def _check_set_product_publications_all_rejected() -> tuple[str, FakeClient]:
+    tools, fc = _build_publications(
+        [
+            _pub_channels_response(),
+            _pub_product_pubs(pid="123", published_ids=[], not_published_ids=[1]),
+            _pub_publish_err("publicationId", "not authorized"),
+        ]
+    )
+    out = tools["set_product_publications"](
+        product_id="123", channel_names=["Online Store"], confirm=True
+    )
+    return out, fc
+
+
+def _check_update_variant_inventory_tracking_all_rejected() -> tuple[str, FakeClient]:
+    variants = [_inv_variant("100", "S", "REEF-S", [], tracked=False)]
+    tools, fc = _build_inventory(
+        [
+            _inv_product_with_variants(variants),
+            _tracked_update_err("inventoryItemId", "locked by another process"),
+        ]
+    )
+    out = tools["update_variant_inventory_tracking"](product_id="555", tracked=True, confirm=True)
+    return out, fc
+
+
+_ALL_REJECTED_CHECKS: dict[str, Callable[[], tuple[str, FakeClient]]] = {
+    "publish_product_to_channels": _check_publish_product_to_channels_all_rejected,
+    "unpublish_product_from_channels": _check_unpublish_product_from_channels_all_rejected,
+    "publish_collection_to_channels": _check_publish_collection_to_channels_all_rejected,
+    "unpublish_collection_from_channels": _check_unpublish_collection_from_channels_all_rejected,
+    "set_product_publications": _check_set_product_publications_all_rejected,
+    "update_variant_inventory_tracking": _check_update_variant_inventory_tracking_all_rejected,
+}
+
+
+@pytest.mark.parametrize("name", sorted(_ALL_REJECTED_CHECKS))
+def test_all_rejected_write_is_never_reported_confirmed(name: str) -> None:
+    """Story 9.24: a write where every attempted item is rejected must never
+    read CONFIRMED. Asserts execute() was called AND every scripted response
+    was consumed — the same non-vacuous proof section 3 above requires —
+    so a check that stops before the mutation can't pass by accident."""
+    check = _ALL_REJECTED_CHECKS[name]
+    out, fc = check()
+    assert fc.calls, f"{name}: no execute() calls — check never reached the mutation"
+    assert not fc.responses, (
+        f"{name}: {len(fc.responses)} scripted response(s) never consumed — "
+        f"check short-circuited before completing the write (out={out!r})"
+    )
+    assert not out.startswith("CONFIRMED"), f"{name}: all-rejected write read CONFIRMED: {out!r}"
+    assert out.startswith("FAILED —"), f"{name}: all-rejected write did not read FAILED: {out!r}"

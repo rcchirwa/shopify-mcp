@@ -390,3 +390,49 @@ def test_transient_error_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
             log_name="test_tool",
             log_description="desc",
         )
+
+
+# ---------- _outcome_header (Story 9.24) ----------
+#
+# Batch write tools with per-item outcomes (a done list next to a failed
+# list) chose their "CONFIRMED — " header unconditionally, before ever
+# looking at the outcome — so a write where every item was rejected still
+# read as CONFIRMED. `_outcome_header` is the one helper every such site
+# (publications._channel_write, publications.set_product_publications,
+# inventory.update_variant_inventory_tracking) now funnels its header
+# through, keyed on the (succeeded, failed) counts of the mutation(s)
+# actually attempted — never on pre-mutation failures like an unresolved
+# channel name, which are rendered in the same "Failed:" block but are not
+# a rejected write.
+
+
+def test_outcome_header_all_succeeded_is_byte_identical_confirmed_header() -> None:
+    """failed=0 must render exactly like the pre-9.24 unconditional header —
+    no counts appended — so every all-succeeded (and no-op/idempotent, 0/0)
+    call site's output is unchanged."""
+    assert _wt._outcome_header("Publish product to channels", 3, 0) == (
+        "CONFIRMED — Publish product to channels"
+    )
+
+
+def test_outcome_header_zero_attempted_counts_as_confirmed() -> None:
+    """An idempotent no-op (nothing needed changing, so nothing was attempted)
+    is 0 succeeded / 0 failed — trivially not a rejection."""
+    assert _wt._outcome_header("Publish product to channels", 0, 0) == (
+        "CONFIRMED — Publish product to channels"
+    )
+
+
+def test_outcome_header_none_succeeded_returns_failed_marker() -> None:
+    """succeeded=0 with failed>0 — every attempted item was rejected — must
+    never read CONFIRMED."""
+    out = _wt._outcome_header("Publish product to channels", 0, 2)
+    assert out == "FAILED — Publish product to channels"
+    assert "CONFIRMED" not in out
+
+
+def test_outcome_header_partial_reports_both_counts() -> None:
+    out = _wt._outcome_header("Set product publications (declarative)", 1, 1)
+    assert out == "PARTIAL — Set product publications (declarative) (1 succeeded, 1 failed)"
+    assert "CONFIRMED" not in out
+    assert "FAILED" not in out

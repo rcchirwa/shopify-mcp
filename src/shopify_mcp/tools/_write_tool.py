@@ -20,6 +20,8 @@ from shopify_mcp.tools._response import format_user_errors, with_confirm_hint
 
 _PREVIEW_MARKER = "PREVIEW — "
 _CONFIRMED_MARKER = "CONFIRMED — "
+_PARTIAL_MARKER = "PARTIAL — "
+_FAILED_MARKER = "FAILED — "
 
 
 def _confirmed_from_preview(preview: str) -> str:
@@ -37,6 +39,34 @@ def _confirmed_from_preview(preview: str) -> str:
     if _PREVIEW_MARKER in preview:
         return preview.replace(_PREVIEW_MARKER, _CONFIRMED_MARKER, 1)
     return _CONFIRMED_MARKER + preview
+
+
+def _outcome_header(heading: str, succeeded: int, failed: int) -> str:
+    """Pick the CONFIRMED / PARTIAL / FAILED header for a batch write tool
+    (a per-item mutation with its own done/failed lists) from the counts of
+    the mutation(s) actually ATTEMPTED — never from pre-mutation failures
+    such as an unresolved channel name, which belong in the same "Failed:"
+    block a caller renders below the header but are not a rejected write.
+
+    Story 9.24: `_channel_write`, `set_product_publications` and
+    `update_variant_inventory_tracking` each built their own "CONFIRMED — "
+    header unconditionally, so a write where every attempted item was
+    rejected still read as CONFIRMED — the opposite hazard to 9.21/9.22's
+    PREVIEW leak, and arguably worse, since nobody retries a write that
+    reads as having landed. This is the one helper every such site now
+    funnels its header through, so the rule can't drift between them.
+
+    failed=0  → "CONFIRMED — {heading}", byte-identical to the pre-9.24
+                unconditional header (this also covers the 0/0 case: an
+                idempotent no-op attempted nothing, so nothing was rejected).
+    succeeded=0 and failed>0 → "FAILED — {heading}" — nothing landed.
+    Otherwise → "PARTIAL — {heading} (N succeeded, M failed)".
+    """
+    if failed == 0:
+        return f"{_CONFIRMED_MARKER}{heading}"
+    if succeeded == 0:
+        return f"{_FAILED_MARKER}{heading}"
+    return f"{_PARTIAL_MARKER}{heading} ({succeeded} succeeded, {failed} failed)"
 
 
 def write_gate(

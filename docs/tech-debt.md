@@ -4,7 +4,32 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-09-24.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-09-25.
+
+---
+
+## 2026-09-25 — Story 9.24 (publications and inventory-tracking write tools reported `CONFIRMED —` when every write was rejected)
+
+Reverse of Story 9.21/9.22 (PR #173, #176): a write that did NOT land read as confirmed. Found by 9.22's verifier on 2026-09-24 (planted-userErrors probe U10), filed on Robert's go-ahead the same day, staffed the next day.
+
+**The instances**, all on `acd372d`. Three batch write tools with per-item outcomes (a done list next to a failed list) chose their `"CONFIRMED — "` header unconditionally, before ever looking at the outcome:
+
+- `tools/publications.py` `_channel_write` (shared by `publish_product_to_channels`, `unpublish_product_from_channels`, `publish_collection_to_channels`, `unpublish_collection_from_channels`): when the whole batch's `publishablePublish` / `publishableUnpublish` call returns userErrors, `done` stays empty and every target lands in the `Failed:` block, yet the header still read `CONFIRMED — {heading}`.
+- `tools/publications.py` `set_product_publications`: same shape, across its independent publish and unpublish legs — a genuine partial (one leg lands, the other doesn't) was possible here, unlike `_channel_write`'s single-call batches.
+- `tools/inventory.py` `update_variant_inventory_tracking`: writes one variant at a time; if every attempted variant failed (userErrors, a transport error, or a missing `inventoryItem` id), the header still read `CONFIRMED —`.
+
+**Not affected (confirmed by re-audit, not just the card's claim):** `update_variant_inventory_quantity` (`inventory.py`) issues one all-or-nothing mutation and returns `Error` on userErrors *before* reaching its `CONFIRMED —` header — it never has a per-item `Failed:` block. `catalog_hygiene.py`'s single-item write tools, `media/_upload.py` / `_reorder.py` / `_update.py` / `_delete.py`, and `products.py`'s confirmed sites were re-checked directly (not grepped) for a per-item done/failed collection paired with an unconditional header; none has one.
+
+**Fix — Approach 3 (Robert, 2026-09-25, card comment).** One helper, `_outcome_header(heading, succeeded, failed)`, added in `tools/_write_tool.py` beside `_confirmed_from_preview`: `failed == 0` → `"CONFIRMED — {heading}"` (byte-identical to the old unconditional header, including the 0/0 idempotent-no-op case); `succeeded == 0 and failed > 0` → `"FAILED — {heading}"`; otherwise → `"PARTIAL — {heading} ({N} succeeded, {M} failed)"`. Every site now funnels its header through it. **This is a deliberate operator-facing output change**, not internal-only: the `PARTIAL —` and `FAILED —` headers are new text a caller may already be pattern-matching on.
+
+Each site computes its own (succeeded, failed) pair from the mutation it actually attempted, never from the `Failed:` list as a whole — that list also carries pre-mutation resolve failures (e.g. an unresolved channel name) that were never attempted and so aren't a rejected write:
+- `_channel_write`: `succeeded=len(done)`, `failed=len(acting) - len(done)` (`done` is only ever `[]` or `acting`, so this is binary per call — no partial state is reachable here).
+- `set_product_publications`: `succeeded = len(added_applied) + len(removed_applied)`, `failed` summed the same way across both legs.
+- `update_variant_inventory_tracking`: `succeeded=len(changed)`, `failed=len(failed)` (the pre-existing `failed` list is already scoped to attempted-and-rejected variants, never `unresolved` ones).
+
+**9.22's guard gained a new section.** `tests/unit/tools/test_confirmed_output_guard.py` adds a parametrized `test_all_rejected_write_is_never_reported_confirmed` over the six sites (the four `_channel_write` tools, `set_product_publications`, `update_variant_inventory_tracking`), each planting an all-rejected userErrors response and asserting the write actually ran (`fc.calls` non-empty, `fc.responses` fully consumed — the same non-vacuous proof 9.22's original guard section uses) before asserting the output never starts with `"CONFIRMED"` and does start with `"FAILED —"`.
+
+**Tests.** TDD: RED tests were written first for each site (all-rejected must not read `CONFIRMED —`; partial must carry the `PARTIAL —` label with counts; all-succeeded stays byte-identical `CONFIRMED —`), captured failing, then the helper and its three call sites were implemented. Mutation table (`PYTHONDONTWRITEBYTECODE=1`, `__pycache__` cleared, every restore confirmed by SHA-256): reverting `_channel_write`'s header to the unconditional `f"CONFIRMED — {heading}"` fails 3 of its own tests plus 4 of the guard's new parametrized cases (all four `_channel_write`-backed tools); reverting `set_product_publications`'s header the same way fails 2 of its own tests plus its guard case; reverting `update_variant_inventory_tracking`'s header fails 4 of its own tests (partial and all-rejected shapes) plus its guard case. All three restores verified byte-identical to pre-mutation by SHA-256.
 
 ---
 

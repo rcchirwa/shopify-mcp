@@ -50,6 +50,7 @@ from shopify_mcp.tools._response import (
     with_confirm_hint,
 )
 from shopify_mcp.tools._scrub import cap
+from shopify_mcp.tools._write_tool import _outcome_header
 
 # The GraphQL strings now live in shopify.queries.publications. They are re-exported
 # here so existing callers/tests (`from tools.publications import LIST_PUBLICATIONS`)
@@ -428,8 +429,17 @@ def _channel_write(
         f"unchanged={[n['name'] for n in unchanged]} | failed={len(apply_failed)}",
     )
 
+    # Story 9.24: the header is keyed on the mutation actually attempted
+    # (acting → done), never on `apply_failed` as a whole — that list also
+    # carries pre-mutation resolve failures (an unresolved channel name),
+    # which are rendered in the Failed: block below but are not a rejected
+    # write. `done` is only ever `[]` or `acting` (the mutation is one call
+    # for the whole batch), so this is binary per call, not itself partial —
+    # `set_product_publications` below is where a genuine partial (one leg
+    # landed, the other didn't) can occur.
+    header = _outcome_header(heading, len(done), len(acting) - len(done))
     body = (
-        f"CONFIRMED — {heading}\n"
+        f"{header}\n"
         f"  {meta_line}\n"
         f"  {spec['done_label']}:\n{_render_channel_lines(done)}\n"
         f"  Unchanged:\n{_render_channel_lines(unchanged)}"
@@ -903,8 +913,20 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"unchanged={[n['name'] for n in unchanged_nodes]} | failed={len(apply_failed)}",
         )
 
+        # Story 9.24: unlike _channel_write, this tool issues two independent
+        # mutations (publish then unpublish), so one leg can land while the
+        # other is rejected — a genuine partial write. Counts span both legs;
+        # pre-mutation resolve failures (an unresolved channel name) are in
+        # `apply_failed` for the Failed: block but not counted here.
+        succeeded = len(added_applied) + len(removed_applied)
+        mutation_failed = (len(added_nodes) - len(added_applied)) + (
+            len(removed_nodes) - len(removed_applied)
+        )
+        header = _outcome_header(
+            "Set product publications (declarative)", succeeded, mutation_failed
+        )
         body = (
-            f"CONFIRMED — Set product publications (declarative)\n"
+            f"{header}\n"
             f"  Product: {title} (handle: {prod_handle}, id: {from_gid(gid)})\n"
             f"  Added (published):\n{_render_channel_lines(added_applied)}\n"
             f"  Removed (unpublished):\n{_render_channel_lines(removed_applied)}\n"

@@ -30,7 +30,7 @@ from shopify_mcp.tools._response import (
     with_confirm_hint,
 )
 from shopify_mcp.tools._scrub import cap
-from shopify_mcp.tools._write_tool import write_gate
+from shopify_mcp.tools._write_tool import _outcome_header, write_gate
 
 # The GraphQL strings now live in shopify.queries.inventory. They are re-exported
 # here so existing callers/tests (`from tools.inventory import GET_PRODUCT_INVENTORY`)
@@ -306,8 +306,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"failed={len(failed)} unresolved={len(unresolved)}",
         )
 
+        # Story 9.24: `failed` is only ever populated from `to_change` (an
+        # attempted mutation, a transport error, or a missing inventoryItem
+        # id on a variant that needed changing) — never from an unresolved
+        # variant id (that's `unresolved`, a separate, pre-attempt block) —
+        # so it's the right count for whether the write itself was rejected.
+        header = _outcome_header("Variant inventory tracking update", len(changed), len(failed))
         return (
-            f"CONFIRMED — Variant inventory tracking update\n"
+            f"{header}\n"
             f"  Product : {title} (id: {product_id})\n"
             f"  Target  : tracked={tracked}\n"
             f"  Changed ({len(changed)}):\n{changed_lines}\n"

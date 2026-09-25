@@ -596,12 +596,42 @@ def test_tracking_partial_failure_reports_per_variant():
         tracked=True,
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    # Story 9.24: 1 changed / 1 failed is a partial write, not a confirmed one.
+    assert out.startswith("PARTIAL — Variant inventory tracking update (1 succeeded, 1 failed)")
+    assert "CONFIRMED" not in out
     assert "Changed (1):" in out
     assert "Failed (1):" in out
     # Full 'field: message' shape — locks in format_user_errors_joined output
     # so a regression in the helper surfaces here.
     assert "inventoryItemId: locked by another process" in out
+
+
+def test_tracking_all_rejected_is_not_confirmed():
+    """Story 9.24: every attempted variant is rejected — 0 succeeded, 2 failed
+    — so the header must read FAILED, never CONFIRMED, though the per-variant
+    Failed block is unchanged."""
+    variants = [
+        _variant("100", "S", "REEF-S", [], tracked=False),
+        _variant("101", "M", "REEF-M", [], tracked=False),
+    ]
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            _tracked_update_err("inventoryItemId", "locked by another process"),
+            _tracked_update_err("inventoryItemId", "locked by another process"),
+        ]
+    )
+    out = tools["update_variant_inventory_tracking"](
+        product_id="555",
+        tracked=True,
+        confirm=True,
+    )
+    assert out.startswith("FAILED — Variant inventory tracking update")
+    assert "CONFIRMED" not in out
+    assert "Changed (0):" in out
+    assert "Failed (2):" in out
+    # Prove the write actually ran for both variants, not a vacuous pass.
+    assert len(fc.calls) == 3
 
 
 def test_tracking_preview_only_issues_exactly_one_execute_call():
@@ -665,7 +695,11 @@ def test_tracking_transport_error_mid_loop_does_not_abort_batch():
         tracked=True,
         confirm=True,
     )
-    assert out.startswith("CONFIRMED"), out
+    # Story 9.24: 2 changed / 1 failed is a partial write, not a confirmed one.
+    assert out.startswith("PARTIAL — Variant inventory tracking update (2 succeeded, 1 failed)"), (
+        out
+    )
+    assert "CONFIRMED" not in out
     assert "Changed (2):" in out
     assert "Failed (1):" in out
     assert "transport error" in out and "upstream 502" in out
@@ -770,7 +804,9 @@ def test_tracking_variant_missing_inventory_item_id_is_reported_failed():
         tracked=True,
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    # Story 9.24: 1 changed / 1 failed is a partial write, not a confirmed one.
+    assert out.startswith("PARTIAL — Variant inventory tracking update (1 succeeded, 1 failed)")
+    assert "CONFIRMED" not in out
     assert "Changed (1):" in out
     assert "Failed (1):" in out
     assert "variant has no inventoryItem id" in out

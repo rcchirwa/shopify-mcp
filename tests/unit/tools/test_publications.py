@@ -373,6 +373,30 @@ def test_publish_user_errors_surfaced():
     assert "Failed" in out and "not authorized" in out
 
 
+def test_publish_all_rejected_is_not_confirmed():
+    """Story 9.24: the only target is rejected — the whole write failed, so
+    the header must never read CONFIRMED. Cross-checked against 9.22's own
+    "no PREVIEW leak" concern: a rejected write must not read PREVIEW either,
+    since it did reach and complete a (failed) confirm=True attempt."""
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _product_pubs(pid="123", published_ids=[], not_published_ids=[1]),
+            _publish_err("publicationId", "not authorized"),
+        ]
+    )
+    out = tools["publish_product_to_channels"](
+        product_id="123",
+        channel_names=["Online Store"],
+        confirm=True,
+    )
+    assert out.startswith("FAILED — Publish product to channels")
+    assert "CONFIRMED" not in out
+    assert "PREVIEW" not in out
+    assert "Now published to" in out
+    assert "(none)" in out[out.index("Now published to") : out.index("Unchanged")]
+
+
 def test_publish_requires_channels_or_ids():
     tools, fc = _build([_channels_response()])
     out = tools["publish_product_to_channels"](product_id="123", confirm=True)
@@ -947,6 +971,9 @@ def test_unpublish_mutation_exception_surfaces_hint():
 
 
 def test_unpublish_user_errors_surface_in_confirmed_body():
+    """Story 9.24: the sole target is rejected, so the whole write failed —
+    the header must read FAILED, not CONFIRMED, though the Failed: block is
+    unchanged from before."""
     tools, fc = _build(
         [
             _channels_response(),
@@ -966,7 +993,8 @@ def test_unpublish_user_errors_surface_in_confirmed_body():
         channel_names=["Online Store"],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith("FAILED — Unpublish product from channels")
+    assert "CONFIRMED" not in out
     assert "Failed" in out
     assert "Online Store" in out[out.index("Failed") :]
     assert "not authorized" in out
@@ -1088,6 +1116,9 @@ def test_set_publish_mutation_exception_surfaces_publish_specific_hint():
 
 
 def test_set_publish_user_errors_carry_into_apply_failed():
+    """Story 9.24: the only leg (publish) is entirely rejected and nothing
+    needed removing — 0 succeeded, 1 failed — so the header must read
+    FAILED, not CONFIRMED."""
     tools, fc = _build(
         [
             _channels_response(),
@@ -1100,7 +1131,8 @@ def test_set_publish_user_errors_carry_into_apply_failed():
         channel_names=["Online Store"],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith("FAILED — Set product publications (declarative)")
+    assert "CONFIRMED" not in out
     assert "Failed" in out
     assert "not authorized" in out
 
@@ -1124,6 +1156,9 @@ def test_set_unpublish_mutation_exception_surfaces_unpublish_specific_hint():
 
 
 def test_set_unpublish_user_errors_carry_into_apply_failed():
+    """Story 9.24: the publish leg (add Point of Sale) succeeds but the
+    unpublish leg (remove Online Store) is rejected — 1 succeeded, 1 failed —
+    so the header must read PARTIAL with the counts, not CONFIRMED."""
     tools, fc = _build(
         [
             _channels_response(),
@@ -1144,7 +1179,10 @@ def test_set_unpublish_user_errors_carry_into_apply_failed():
         channel_names=["Point of Sale", "Google & YouTube"],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(
+        "PARTIAL — Set product publications (declarative) (1 succeeded, 1 failed)"
+    )
+    assert "CONFIRMED" not in out
     assert "Failed" in out
     assert "locked" in out
 
@@ -1801,6 +1839,29 @@ def test_publish_collection_user_error_maps_back_to_the_channel_name():
     assert "Online Store: Nope" in out
 
 
+def test_publish_collection_all_rejected_is_not_confirmed():
+    """Story 9.24: the only target is rejected — the header must not read
+    CONFIRMED, though the Failed: block is unchanged."""
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _collection_pubs(not_published_ids=[1]),
+            {
+                "publishablePublish": {
+                    "publishable": None,
+                    "userErrors": [{"field": ["input", "0", "publicationId"], "message": "Nope"}],
+                }
+            },
+        ]
+    )
+    out = tools["publish_collection_to_channels"](
+        handle="all-copy", channel_names=["Online Store"], confirm=True
+    )
+    assert out.startswith("FAILED — Publish collection to channels")
+    assert "CONFIRMED" not in out
+    assert "Online Store: Nope" in out
+
+
 def test_publish_collection_not_found_reports_cleanly_without_mutating():
     tools, fc = _build([_channels_response(), {"collectionByHandle": None}])
     out = tools["publish_collection_to_channels"](
@@ -1901,6 +1962,29 @@ def test_unpublish_collection_already_absent_is_idempotent():
     )
     assert out.startswith("CONFIRMED")
     assert len(fc.calls) == 2
+
+
+def test_unpublish_collection_all_rejected_is_not_confirmed():
+    """Story 9.24: the only target is rejected — the header must not read
+    CONFIRMED, though the Failed: block is unchanged."""
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _collection_pubs(published_ids=[1]),
+            {
+                "publishableUnpublish": {
+                    "publishable": None,
+                    "userErrors": [{"field": ["input", "0", "publicationId"], "message": "Nope"}],
+                }
+            },
+        ]
+    )
+    out = tools["unpublish_collection_from_channels"](
+        handle="all-copy", channel_names=["Online Store"], confirm=True
+    )
+    assert out.startswith("FAILED — Unpublish collection from channels")
+    assert "CONFIRMED" not in out
+    assert "Online Store: Nope" in out
 
 
 def test_unpublish_collection_requires_a_handle_as_the_first_statement():
