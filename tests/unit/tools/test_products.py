@@ -1096,6 +1096,7 @@ def test_get_products_by_collection_limit_truncates_and_warns():
     assert "(2 shown)" in out
     assert out.endswith(products.PRODUCTS_TRUNCATED_WARNING)
     assert fc.calls[0][1]["first"] == 2
+    assert len(fc.calls) == 1
 
 
 def test_get_products_by_collection_renders_a_product_from_the_second_page():
@@ -1168,6 +1169,23 @@ def test_get_products_by_collection_docstring_no_longer_promises_all_products():
     assert "paginat" in doc.lower()
 
 
+def test_get_products_by_collection_limit_docstring_matches_get_products():
+    """AC7: the docstring's `limit` wording must be pinned, not eyeballed — a
+    revert of get_products_by_collection's limit paragraph shouldn't be able
+    to pass the suite unnoticed, and the two tools' wording must not drift
+    apart."""
+    tools, _fc = _build([collection_products_page([])])
+    get_products_doc = tools["get_products"].__doc__ or ""
+    collection_doc = tools["get_products_by_collection"].__doc__ or ""
+    limit_paragraph = next(
+        line for line in get_products_doc.splitlines() if line.strip().startswith("limit:")
+    ).strip()
+    assert limit_paragraph, "get_products docstring has no limit: line to compare against"
+    assert limit_paragraph in collection_doc, (
+        "get_products_by_collection's limit wording no longer matches get_products'"
+    )
+
+
 def test_readme_documents_both_paginated_description_and_collection_tools():
     """AC9: README's tool table is the other half of the public surface, and it
     drifted stale twice before (Story 10.65, Story 10.72). There was no row at
@@ -1183,6 +1201,12 @@ def test_readme_documents_both_paginated_description_and_collection_tools():
     for name, row in rows.items():
         assert "paginat" in row.lower(), f"README row for {name} does not mention pagination"
         assert "WARNING" in row, f"README row for {name} does not mention the truncation WARNING"
+    # Story 10.80: get_products_by_collection's row must document its new
+    # `limit` parameter, and stay pinned so a reverted row fails this test
+    # rather than passing unchanged.
+    assert "`limit`" in rows["`get_products_by_collection`"], (
+        "README row for get_products_by_collection does not mention `limit`"
+    )
 
 
 def test_get_products_with_descriptions_scoped_to_collection():
