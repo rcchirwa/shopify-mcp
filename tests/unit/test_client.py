@@ -1168,6 +1168,30 @@ def test_poll_job_shopify_error_fails_fast_no_retry(monkeypatch):
     assert clock.sleeps == []
 
 
+def test_poll_job_shopify_error_fast_fail_caps_error_text(monkeypatch):
+    """Story 10.89 fix-round: the fast-fail branch's `error` must go through
+    the same `cap_text` bound (SEC-27) as every other reflected-text path —
+    an oversized ShopifyError message must not reach the caller unbounded."""
+    from shopify_mcp.client import ShopifyError, poll_job
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
+    from shopify_mcp.tools._scrub import cap as cap_text
+
+    clock = _SleepTrackingClock()
+    _patch_time(monkeypatch, clock)
+
+    huge = "x" * 5000
+
+    def _raise(*_a, **_kw):
+        raise ShopifyError(huge)
+
+    client = _duck_client(_raise)
+    result = poll_job(client, "gid://shopify/Job/1", timeout_s=10)
+
+    assert result["error"] == cap_text(huge)
+    assert len(result["error"]) == REFLECT_MAX_LEN
+    assert "x" * (REFLECT_MAX_LEN + 1) not in result["error"]
+
+
 def test_poll_job_transient_error_still_loops_to_budget(monkeypatch):
     """A TransientShopifyError must NOT be fast-failed — it keeps polling to
     the budget, exactly like today, and reports timed_out=True."""
