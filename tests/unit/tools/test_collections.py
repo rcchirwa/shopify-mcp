@@ -490,8 +490,11 @@ def test_add_product_polling_transport_error_surfaces_poll_failed_message(fake_p
     # Exact-line pin (Story 10.89 code review round 3, M10): the space between
     # `{numeric}` and the note is a literal in the f-string, not part of
     # `poll_failed_note`'s own text — a dropped space would still pass every
-    # substring check above.
-    assert f"\n  Job        : 999 {poll_failed_note('upstream 503')}" in out, out
+    # substring check above. Splitting into lines and asserting equality
+    # against the matching line (rather than a substring check on the whole
+    # output) also catches extra leading/trailing text on that same line.
+    expected_line = f"  Job        : 999 {poll_failed_note('upstream 503')}"
+    assert expected_line in out.splitlines(), out
     # The poll-failed branch must read as confirmed too — the underlying
     # write already succeeded.
     assert "CONFIRMED —" in out, out

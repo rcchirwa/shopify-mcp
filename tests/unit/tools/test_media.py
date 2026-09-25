@@ -12,6 +12,7 @@ Usage:
   pytest tests/unit/tools/test_media.py -v
 """
 
+import itertools
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -2218,6 +2219,14 @@ def test_upload_reorder_polls_job_when_not_done():
     assert "done=True" in out
 
 
+def _monotonic_reads(values):
+    """Return a callable that yields `values` in order, then holds on the
+    last value for any further read — used as a `time.monotonic` side_effect
+    so an extra read beyond the scripted ones can't raise StopIteration."""
+    it = itertools.chain(values, itertools.repeat(values[-1]))
+    return lambda *_args, **_kwargs: next(it)
+
+
 def test_upload_reorder_poll_shopify_error_shows_error_not_timed_out():
     """Story 10.89: the post-attach reorder's poll must surface a permanent
     ShopifyError, not the bare "(timed out)" suffix that ignored it before."""
@@ -2246,8 +2255,13 @@ def test_upload_reorder_poll_shopify_error_shows_error_not_timed_out():
         # time: `_poll_media_ready`'s start/elapsed (immediately READY, so
         # both 0.0), then poll_job's start/elapsed for the reorder job poll
         # (0.0 -> 3.7, i.e. "elapsed=3.7s"). `time` is one shared stdlib
-        # module object, so this one patch covers both call sites.
-        patch("shopify_mcp.client.time.monotonic", side_effect=[0.0, 0.0, 0.0, 3.7]),
+        # module object, so this one patch covers both call sites. A
+        # callable (rather than a fixed-length side_effect list) means a
+        # read beyond the fourth can't raise StopIteration.
+        patch(
+            "shopify_mcp.client.time.monotonic",
+            side_effect=_monotonic_reads([0.0, 0.0, 0.0, 3.7]),
+        ),
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -2263,11 +2277,14 @@ def test_upload_reorder_poll_shopify_error_shows_error_not_timed_out():
     # Exact-line pin (Story 10.89 code review round 3, M12): the space before
     # `poll_failed_note(...)` lives inside `_upload.py`'s `note` local, not in
     # a shared literal — a dropped space would still pass every substring
-    # check above.
-    assert (
-        "\n  Reorder    : job up2 done=False elapsed=3.7s "
+    # check above. Splitting into lines and asserting equality against the
+    # matching line (rather than a substring check on the whole output) also
+    # catches extra leading/trailing text on that same line.
+    expected_line = (
+        "  Reorder    : job up2 done=False elapsed=3.7s "
         f"{poll_failed_note('missing write_products scope')}"
-    ) in out, out
+    )
+    assert expected_line in out.splitlines(), out
 
 
 def test_upload_reorder_poll_times_out_appends_timed_out_note():
@@ -2431,8 +2448,12 @@ def test_reorder_shopify_error_poll_shows_error_not_still_running():
     assert "timed out" not in out
     # Exact-line pin (Story 10.89 code review round 3, M11): the space
     # between `{numeric}` and the note is a literal in the f-string — a
-    # dropped space would still pass every substring check above.
-    assert f"\n  Job        : slow2 {poll_failed_note('missing write_products scope')}" in out, out
+    # dropped space would still pass every substring check above. Splitting
+    # into lines and asserting equality against the matching line (rather
+    # than a substring check on the whole output) also catches extra
+    # leading/trailing text on that same line.
+    expected_line = f"  Job        : slow2 {poll_failed_note('missing write_products scope')}"
+    assert expected_line in out.splitlines(), out
 
 
 def test_reorder_poll_transient_error_times_out_still_shows_poll_failed():
