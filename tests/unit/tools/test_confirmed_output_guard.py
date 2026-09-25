@@ -1006,6 +1006,29 @@ def _check_update_variant_inventory_tracking_all_unresolved() -> tuple[str, Fake
     return out, fc
 
 
+# ---- Round 3 (surviving mutant M6): channel_names=[] with an existing
+# publication — nothing REQUESTED resolves (the list is empty), so the
+# "nothing resolved" fallback applies, but the empty desired state still
+# forces a real unpublish leg to be attempted, and here it's rejected. ----
+
+
+def _check_set_product_publications_empty_channel_names_rejected() -> tuple[str, FakeClient]:
+    tools, fc = _build_publications(
+        [
+            _pub_channels_response(),
+            _pub_product_pubs(pid="123", published_ids=[1], not_published_ids=[]),
+            {
+                "publishableUnpublish": {
+                    "publishable": None,
+                    "userErrors": [{"field": ["input", "0", "publicationId"], "message": "locked"}],
+                }
+            },
+        ]
+    )
+    out = tools["set_product_publications"](product_id="123", channel_names=[], confirm=True)
+    return out, fc
+
+
 _ALL_REJECTED_CHECKS: dict[str, Callable[[], tuple[str, FakeClient]]] = {
     "publish_product_to_channels": _check_publish_product_to_channels_all_rejected,
     "unpublish_product_from_channels": _check_unpublish_product_from_channels_all_rejected,
@@ -1019,6 +1042,9 @@ _ALL_REJECTED_CHECKS: dict[str, Callable[[], tuple[str, FakeClient]]] = {
     "set_product_publications_all_unresolved": _check_set_product_publications_all_unresolved,
     "update_variant_inventory_tracking_all_unresolved": (
         _check_update_variant_inventory_tracking_all_unresolved
+    ),
+    "set_product_publications_empty_channel_names": (
+        _check_set_product_publications_empty_channel_names_rejected
     ),
 }
 

@@ -672,6 +672,34 @@ def test_tracking_all_variant_ids_unresolved_is_not_confirmed():
     assert fc.responses == []
 
 
+def test_tracking_some_variant_ids_unresolved_success_reads_confirmed():
+    """Story 9.24 round 3 (surviving mutant M5): one requested variant id
+    resolves and its mutation succeeds, while another does not resolve at
+    all. `targets` is non-empty (100 resolved), so the mutation-only
+    `failed` count applies (round 3's "nothing resolved" fallback must NOT
+    fire) — the unresolved id must not inflate the failed count. A mutant
+    that summed `len(failed) + len(unresolved)` instead of the `if targets`
+    branch would read failed_count=1 and PARTIAL instead of CONFIRMED; this
+    must read CONFIRMED, with 999 still reported in the Unresolved block."""
+    variants = [_variant("100", "S", "REEF-S", [], tracked=False)]
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            _tracked_update_ok("gid://shopify/InventoryItem/100", True),
+        ]
+    )
+    out = tools["update_variant_inventory_tracking"](
+        product_id="555",
+        tracked=True,
+        variant_ids=["100", "999"],
+        confirm=True,
+    )
+    assert out.split("\n", 1)[0] == "CONFIRMED — Variant inventory tracking update"
+    assert "999" in out[out.index("Unresolved variant ids:") :]
+    assert len(fc.calls) == 2
+    assert fc.responses == []
+
+
 def test_tracking_preview_only_issues_exactly_one_execute_call():
     """confirm=False must not issue any mutations, even if there are targets."""
     variants = [_variant("100", "S", "REEF-S", [], tracked=False)]

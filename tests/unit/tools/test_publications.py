@@ -1342,6 +1342,79 @@ def test_set_publish_rejected_unpublish_succeeds_is_partial():
     assert fc.responses == []
 
 
+def test_set_empty_list_unpublish_rejected_is_not_confirmed():
+    """Story 9.24 round 3 (surviving mutant M6): channel_names=[] means the
+    desired state is "no channels", so a product already published to
+    Online Store gets an unpublish leg attempted for it — with no channel
+    name requested at all, nothing resolves (`desired_nodes` stays empty)
+    and the round-3 "nothing resolved" fallback uses `apply_failed` for the
+    failed count. Here the unpublish is REJECTED, so `apply_failed` holds
+    the mutation rejection (not a resolve failure) and `succeeded` is 0.
+    A mutant that swaps that fallback's `apply_failed` for the (empty, since
+    nothing was unresolved) `failed` list would read failed_count=0 and the
+    header would wrongly read CONFIRMED; this must read FAILED."""
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3, 4]),
+            {
+                "publishableUnpublish": {
+                    "publishable": None,
+                    "userErrors": [
+                        {"field": ["input", "0", "publicationId"], "message": "locked"},
+                    ],
+                }
+            },
+        ]
+    )
+    out = tools["set_product_publications"](
+        product_id="123",
+        channel_names=[],
+        confirm=True,
+    )
+    assert out.splitlines()[0] == "FAILED — Set product publications (declarative)"
+    assert "CONFIRMED" not in out
+    assert "Online Store" in out[out.index("Failed") :]
+    assert len(fc.calls) == 3
+    assert fc.responses == []
+
+
+def test_set_unresolved_only_channel_still_removes_existing_publication_is_partial():
+    """Story 9.24 round 3 (nit — pin current behaviour, not a bug to fix):
+    the requested channel_names list is a single unresolvable name ('Typo
+    Channel'), so nothing resolves (`desired_nodes` stays empty) and the
+    "nothing resolved" fallback (round 3) uses `apply_failed` — the resolve
+    failure — for the failed count. But the product is currently published
+    to Online Store, which is not in the (empty) desired set, so the
+    declarative diff still attempts, and lands, an unpublish of Online
+    Store. The fallback's failed count (from the unresolved name) and the
+    real mutation's succeeded count (from the landed unpublish) both feed
+    the SAME header: 1 succeeded, 1 failed — PARTIAL, not CONFIRMED, even
+    though nothing Shopify saw was actually rejected. See the
+    `_outcome_header` docstring for how this differs from the
+    all-unresolved case where no leg has anything to attempt."""
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _channels_response(),  # refresh on miss
+            _product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3, 4]),
+            _unpublish_ok(),
+        ]
+    )
+    out = tools["set_product_publications"](
+        product_id="123",
+        channel_names=["Typo Channel"],
+        confirm=True,
+    )
+    assert out.startswith(
+        "PARTIAL — Set product publications (declarative) (1 succeeded, 1 failed)"
+    )
+    assert "Online Store" in out[out.index("Removed (unpublished)") : out.index("Unchanged")]
+    assert "Typo Channel" in out[out.index("Failed") :]
+    assert len(fc.calls) == 4
+    assert fc.responses == []
+
+
 def test_set_confirmed_body_renders_failed_block_for_unknown_channel():
     """set_product_publications must carry resolve-time failures through to
     the CONFIRMED body, not just the preview."""

@@ -57,6 +57,18 @@ def _outcome_header(heading: str, succeeded: int, failed: int) -> str:
     `publications._channel_write` / `set_product_publications` and
     `inventory.update_variant_inventory_tracking` for that fallback.
 
+    That "nothing resolved" fallback is keyed on the REQUESTED names, not on
+    whether a mutation ran: at `set_product_publications`, an empty or
+    entirely-unresolved `channel_names` still leaves a *declarative* empty
+    (or unchanged) desired state, and a channel the caller never named can
+    still get unpublished because it's no longer in that desired set — a
+    real leg, attempted and landed independently of the resolve failure.
+    When that happens, the fallback's resolve-failure count and that leg's
+    real succeeded count land in the SAME (succeeded, failed) pair, so the
+    header can read PARTIAL even though nothing Shopify actually rejected —
+    see `test_set_unresolved_only_channel_still_removes_existing_publication_is_partial`
+    (`test_publications.py`) for the pinned case.
+
     Story 9.24: `_channel_write`, `set_product_publications` and
     `update_variant_inventory_tracking` each built their own "CONFIRMED — "
     header unconditionally, so a write where every attempted item was
