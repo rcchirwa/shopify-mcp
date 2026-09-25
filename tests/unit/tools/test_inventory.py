@@ -472,6 +472,10 @@ def test_tracking_confirm_issues_one_mutation_per_changed_variant():
         confirm=True,
     )
     assert out.startswith("CONFIRMED")
+    # Story 9.24 round 2 (verifier finding): pin the exact first line so a
+    # suffixed header (e.g. " (ok)") — which still satisfies `startswith` —
+    # is caught here.
+    assert out.split("\n", 1)[0] == "CONFIRMED — Variant inventory tracking update"
     assert "Changed (2):" in out
     # First call is the read; mutations come after with the right GIDs.
     mutation_calls = fc.calls[1:]
@@ -609,8 +613,15 @@ def test_tracking_partial_failure_reports_per_variant():
 def test_tracking_all_rejected_is_not_confirmed():
     """Story 9.24: every attempted variant is rejected — 0 succeeded, 2 failed
     — so the header must read FAILED, never CONFIRMED, though the per-variant
-    Failed block is unchanged."""
+    Failed block is unchanged.
+
+    Round 2 (verifier finding): an already-tracked variant is included so a
+    mutant counting `unchanged` variants as `succeeded` is caught — without
+    it, `succeeded = len(changed) + len(unchanged)` would read 1 (the
+    unchanged variant) instead of 0 and the header would read PARTIAL
+    instead of FAILED under that mutant, with no test noticing."""
     variants = [
+        _variant("099", "XS", "REEF-XS", [], tracked=True),  # already at target
         _variant("100", "S", "REEF-S", [], tracked=False),
         _variant("101", "M", "REEF-M", [], tracked=False),
     ]
@@ -629,6 +640,7 @@ def test_tracking_all_rejected_is_not_confirmed():
     assert out.startswith("FAILED — Variant inventory tracking update")
     assert "CONFIRMED" not in out
     assert "Changed (0):" in out
+    assert "Unchanged (1):" in out
     assert "Failed (2):" in out
     # Prove the write actually ran for both variants, not a vacuous pass.
     assert len(fc.calls) == 3

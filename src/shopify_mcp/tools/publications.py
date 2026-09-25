@@ -432,12 +432,25 @@ def _channel_write(
     # Story 9.24: the header is keyed on the mutation actually attempted
     # (acting → done), never on `apply_failed` as a whole — that list also
     # carries pre-mutation resolve failures (an unresolved channel name),
-    # which are rendered in the Failed: block below but are not a rejected
-    # write. `done` is only ever `[]` or `acting` (the mutation is one call
-    # for the whole batch), so this is binary per call, not itself partial —
-    # `set_product_publications` below is where a genuine partial (one leg
-    # landed, the other didn't) can occur.
-    header = _outcome_header(heading, len(done), len(acting) - len(done))
+    # which are rendered in the Failed: block below but are not themselves a
+    # rejected write. `done` is only ever `[]` or `acting` (the mutation is
+    # one call for the whole batch), so this is binary per call, not itself
+    # partial — `set_product_publications` below is where a genuine partial
+    # (one leg landed, the other didn't) can occur.
+    #
+    # Round 2 (verifier finding): that rule alone let EVERY requested channel
+    # failing to resolve (`acting` empty, `apply_failed` all resolve
+    # failures) still read CONFIRMED — the exact hazard this story exists to
+    # close, just reached from resolve failure instead of a rejected
+    # mutation. When nothing was attempted at all, fall back to
+    # `apply_failed` so an all-unresolved call reads FAILED instead of
+    # CONFIRMED; a pure idempotent no-op (`apply_failed` also empty) still
+    # reads CONFIRMED via the 0/0 case. This does not touch the case where
+    # `acting` is non-empty and its mutation succeeds — that still reads
+    # CONFIRMED even if an unrelated channel name failed to resolve, exactly
+    # as before.
+    failed_count = (len(acting) - len(done)) if acting else len(apply_failed)
+    header = _outcome_header(heading, len(done), failed_count)
     body = (
         f"{header}\n"
         f"  {meta_line}\n"
@@ -917,14 +930,24 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # mutations (publish then unpublish), so one leg can land while the
         # other is rejected — a genuine partial write. Counts span both legs;
         # pre-mutation resolve failures (an unresolved channel name) are in
-        # `apply_failed` for the Failed: block but not counted here.
+        # `apply_failed` for the Failed: block but not counted here — UNLESS
+        # neither leg was attempted at all (round 2 / verifier finding): if
+        # every requested channel name failed to resolve, `added_nodes` and
+        # `removed_nodes` are both empty, so `mutation_failed` is trivially 0
+        # and the header would read CONFIRMED over a Failed: block listing
+        # every target, the same hazard this story exists to close. When
+        # nothing was attempted, `apply_failed` (all resolve failures) is
+        # used instead; a genuine no-op (`apply_failed` also empty) still
+        # reads CONFIRMED via the 0/0 case. A leg that WAS attempted and
+        # succeeded still reads CONFIRMED even if an unrelated channel name
+        # failed to resolve, exactly as before.
         succeeded = len(added_applied) + len(removed_applied)
         mutation_failed = (len(added_nodes) - len(added_applied)) + (
             len(removed_nodes) - len(removed_applied)
         )
-        header = _outcome_header(
-            "Set product publications (declarative)", succeeded, mutation_failed
-        )
+        attempted = bool(added_nodes) or bool(removed_nodes)
+        failed_count = mutation_failed if attempted else len(apply_failed)
+        header = _outcome_header("Set product publications (declarative)", succeeded, failed_count)
         body = (
             f"{header}\n"
             f"  Product: {title} (handle: {prod_handle}, id: {from_gid(gid)})\n"

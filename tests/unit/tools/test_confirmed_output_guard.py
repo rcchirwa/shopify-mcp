@@ -949,6 +949,48 @@ def _check_update_variant_inventory_tracking_all_rejected() -> tuple[str, FakeCl
     return out, fc
 
 
+# ---- Round 2 (verifier finding): all-UNRESOLVED, not just all-rejected. ----
+#
+# Every check above rejects at the MUTATION step (a userErrors response).
+# The verifier found a second, distinct path to the same CONFIRMED-over-a-
+# Failed-block hazard: every requested channel name fails to RESOLVE, so no
+# mutation is ever attempted at all (`acting` / `added_nodes`+`removed_nodes`
+# stay empty). The original fix's mutation-only failed count read 0 for that
+# case — nothing was attempted, so nothing could be "rejected" by that
+# count — and the header still read CONFIRMED. `update_variant_inventory_
+# tracking` does not share this gap: its unresolved ids render in a separate
+# "Unresolved variant ids" block, never "Failed", so it has no matching case
+# here (see docs/tech-debt.md).
+
+
+def _check_publish_product_to_channels_all_unresolved() -> tuple[str, FakeClient]:
+    tools, fc = _build_publications(
+        [
+            _pub_channels_response(),
+            _pub_channels_response(),  # refresh on miss
+            _pub_product_pubs(pid="123", published_ids=[], not_published_ids=[1]),
+        ]
+    )
+    out = tools["publish_product_to_channels"](
+        product_id="123", channel_names=["Typo Channel"], confirm=True
+    )
+    return out, fc
+
+
+def _check_set_product_publications_all_unresolved() -> tuple[str, FakeClient]:
+    tools, fc = _build_publications(
+        [
+            _pub_channels_response(),
+            _pub_channels_response(),  # refresh on miss
+            _pub_product_pubs(pid="123", published_ids=[], not_published_ids=[1]),
+        ]
+    )
+    out = tools["set_product_publications"](
+        product_id="123", channel_names=["Typo Channel"], confirm=True
+    )
+    return out, fc
+
+
 _ALL_REJECTED_CHECKS: dict[str, Callable[[], tuple[str, FakeClient]]] = {
     "publish_product_to_channels": _check_publish_product_to_channels_all_rejected,
     "unpublish_product_from_channels": _check_unpublish_product_from_channels_all_rejected,
@@ -956,6 +998,10 @@ _ALL_REJECTED_CHECKS: dict[str, Callable[[], tuple[str, FakeClient]]] = {
     "unpublish_collection_from_channels": _check_unpublish_collection_from_channels_all_rejected,
     "set_product_publications": _check_set_product_publications_all_rejected,
     "update_variant_inventory_tracking": _check_update_variant_inventory_tracking_all_rejected,
+    "publish_product_to_channels_all_unresolved": (
+        _check_publish_product_to_channels_all_unresolved
+    ),
+    "set_product_publications_all_unresolved": _check_set_product_publications_all_unresolved,
 }
 
 
