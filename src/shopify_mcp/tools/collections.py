@@ -417,7 +417,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 body += f"\n  Job        : {numeric} (done=True)"
             elif final_done:
                 body += f"\n  Job        : {numeric} (done=True after {elapsed_s:.1f}s)"
-            elif timed_out and poll_error:
+            elif poll_error:
                 body += (
                     f"\n  Job        : {numeric} (poll failed: {cap(str(poll_error))} — "
                     f"underlying write succeeded, check server-side for completion)"

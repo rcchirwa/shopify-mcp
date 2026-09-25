@@ -2217,6 +2217,88 @@ def test_upload_reorder_polls_job_when_not_done():
     assert "done=True" in out
 
 
+def test_upload_reorder_poll_shopify_error_shows_error_not_timed_out():
+    """Story 10.89: the post-attach reorder's poll must surface a permanent
+    ShopifyError, not the bare "(timed out)" suffix that ignored it before."""
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
+            _staged_ok(),
+            _create_media_ok(mid=MEDIA_C, status="READY"),
+            _node_media_status(MEDIA_C, status="READY"),
+            _reorder_ok(done=False, job_id="gid://shopify/Job/up2"),
+            ShopifyError("missing write_products scope"),
+        ]
+    )
+    with (
+        patch(
+            "shopify_mcp.tools.media._upload.requests.put",
+            return_value=FakeHTTPResponse(status_code=200),
+        ),
+        patch("shopify_mcp.tools.media._upload.time.sleep"),
+        # poll_job's own backoff sleep lives in shopify_mcp.client, not
+        # _upload — patched too so a not-yet-fast-failing poll_job can't
+        # spin this test out for the length of a real 10s poll budget.
+        patch("shopify_mcp.client.time.sleep"),
+    ):
+        out = tools["upload_product_image"](
+            product_id="123",
+            source="https://cdn.example.com/a.jpg",
+            position=1,
+            confirm=True,
+        )
+    assert out.startswith("CONFIRMED —")
+    assert "Reorder    : job up2" in out
+    assert "missing write_products scope" in out
+    assert "(timed out)" not in out
+
+
+def test_upload_reorder_poll_times_out_appends_timed_out_note():
+    """Story 10.89: refactoring the ternary `note` into an if/elif/else
+    split the timed_out branch onto its own line (client.py note-building in
+    _upload.py) — this pins that branch still fires when poll_job exhausts
+    its budget with done=False, same as before the refactor."""
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
+            _staged_ok(),
+            _create_media_ok(mid=MEDIA_C, status="READY"),
+            _node_media_status(MEDIA_C, status="READY"),
+            _reorder_ok(done=False, job_id="gid://shopify/Job/up3"),
+            {"job": {"id": "gid://shopify/Job/up3", "done": False}},
+            {"job": {"id": "gid://shopify/Job/up3", "done": False}},
+            {"job": {"id": "gid://shopify/Job/up3", "done": False}},
+            {"job": {"id": "gid://shopify/Job/up3", "done": False}},
+            {"job": {"id": "gid://shopify/Job/up3", "done": False}},
+            {"job": {"id": "gid://shopify/Job/up3", "done": False}},
+        ]
+    )
+    tick = {"t": 0.0}
+
+    def _fake_monotonic():
+        tick["t"] += 5.0
+        return tick["t"]
+
+    with (
+        patch(
+            "shopify_mcp.tools.media._upload.requests.put",
+            return_value=FakeHTTPResponse(status_code=200),
+        ),
+        patch("shopify_mcp.tools.media._upload.time.sleep"),
+        patch("shopify_mcp.client.time.sleep"),
+        patch("shopify_mcp.client.time.monotonic", side_effect=_fake_monotonic),
+    ):
+        out = tools["upload_product_image"](
+            product_id="123",
+            source="https://cdn.example.com/a.jpg",
+            position=1,
+            confirm=True,
+        )
+    assert out.startswith("CONFIRMED —")
+    assert "Reorder    : job up3" in out
+    assert "(timed out)" in out
+
+
 # ---------- reorder_product_media: job-poll timeout branch ----------
 
 
@@ -2256,6 +2338,30 @@ def test_reorder_job_timeout_surfaces_timeout_hint():
     assert out.startswith("CONFIRMED —")
     assert "still running" in out
     assert "list_product_media" in out
+
+
+def test_reorder_shopify_error_poll_shows_error_not_still_running():
+    """Story 10.89: a permanent ShopifyError from poll_job must surface the
+    error, never the "still running" hint — including now that a permanent
+    error carries timed_out=False (poll_job step 5)."""
+    tools, fc = _build(
+        [
+            _product_media_read([_media_node(MEDIA_A), _media_node(MEDIA_B)]),
+            _reorder_ok(done=False, job_id="gid://shopify/Job/slow2"),
+            ShopifyError("missing write_products scope"),
+        ]
+    )
+    with patch("shopify_mcp.client.time.sleep"):
+        out = tools["reorder_product_media"](
+            product_id="123",
+            moves=[{"id": MEDIA_B, "newPosition": 1}],
+            confirm=True,
+        )
+    assert out.startswith("CONFIRMED —")
+    assert "poll failed" in out
+    assert "missing write_products scope" in out
+    assert "still running" not in out
+    assert "timed out" not in out
 
 
 # ---------- Story 10.63 / SEC-04-descriptions ----------

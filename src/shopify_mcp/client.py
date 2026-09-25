@@ -597,7 +597,11 @@ def poll_job(
       - done: bool         — final observed `done` value (False on timeout)
       - elapsed_s: float   — wall-clock time spent polling
       - timed_out: bool    — True iff the budget was exhausted before done
-      - error: str or None — transport error from the last failed poll
+      - error: str or None — error from the last failed poll. Can be set with
+        timed_out=False: a permanent ShopifyError (Story 10.89) fails fast on
+        the first poll rather than retrying to budget, since retrying a
+        validation/auth/schema error cannot help and reporting it as a
+        timeout hides the real cause.
 
     When `interval_s` is None (default), uses capped exponential backoff
     (0.5s, 1s, 2s, 4s, 5s, 5s …). Pass an explicit float to override with
@@ -630,6 +634,22 @@ def poll_job(
             job = (result or {}).get("job") or {}
             last_done = bool(job.get("done"))
             last_error = None
+        except ShopifyError as e:
+            # Story 10.89: a permanent failure (validation, auth, schema
+            # drift) — retrying to budget cannot help, and the broad except
+            # below used to do exactly that, reporting timed_out=True and
+            # hiding the real cause behind a "still running" story. Fail
+            # fast instead. ShopifyError and TransientShopifyError are
+            # siblings under RuntimeError (see their class docstrings), so
+            # this branch cannot swallow a transient failure — that still
+            # falls through to the broad except and loops to budget.
+            return {
+                "id": job_gid,
+                "done": False,
+                "elapsed_s": time.monotonic() - start,
+                "timed_out": False,
+                "error": cap_text(str(e)),
+            }
         except Exception as e:
             # Reset done on failure so a stale True from a prior iteration
             # can't combine with a later failed poll to misreport success.

@@ -1114,6 +1114,103 @@ def test_poll_job_budget_respects_next_sleep_size(monkeypatch):
     assert clock.sleeps == [0.5, 1.0]
 
 
+# ---------- Story 10.89: permanent errors fast-fail, transient ones still loop ----------
+#
+# poll_job's broad `except Exception` used to treat a permanent ShopifyError
+# (bad scope, schema drift, malformed query) exactly like a transient one —
+# retrying it for the whole poll budget and reporting `timed_out=True`, which
+# hides the real cause behind a "still running" story. ShopifyError (:127) and
+# TransientShopifyError (:132) are SIBLINGS under RuntimeError, not parent and
+# child, so a `except ShopifyError` branch added ahead of the broad one cannot
+# accidentally swallow a transient failure — pinned by the second/third tests
+# below rather than assumed.
+
+
+def _duck_client(execute_fn, settings=None):
+    """A minimal stand-in for ShopifyClient: poll_job only ever calls
+    `client.execute(...)` and reads `client._settings.*` knobs, so a duck-typed
+    object avoids routing through the real `ShopifyClient.execute()` translation
+    layer (Transport* -> Shopify/TransientShopifyError) that a full `_bare_client`
+    would add — irrelevant here since the test raises the already-classified
+    exception `poll_job` itself must react to.
+    """
+
+    class _Duck:
+        def __init__(self):
+            self._settings = settings or _test_settings()
+            self.calls = 0
+
+        def execute(self, *a, **kw):
+            self.calls += 1
+            return execute_fn(*a, **kw)
+
+    return _Duck()
+
+
+def test_poll_job_shopify_error_fails_fast_no_retry(monkeypatch):
+    """A permanent ShopifyError must return immediately: exactly one execute()
+    call, no sleep, timed_out=False, error set."""
+    from shopify_mcp.client import ShopifyError, poll_job
+
+    clock = _SleepTrackingClock()
+    _patch_time(monkeypatch, clock)
+
+    def _raise(*_a, **_kw):
+        raise ShopifyError("permanent failure: missing scope")
+
+    client = _duck_client(_raise)
+    result = poll_job(client, "gid://shopify/Job/1", timeout_s=10)
+
+    assert client.calls == 1
+    assert result["done"] is False
+    assert result["timed_out"] is False
+    assert result["error"] == "permanent failure: missing scope"
+    assert clock.sleeps == []
+
+
+def test_poll_job_transient_error_still_loops_to_budget(monkeypatch):
+    """A TransientShopifyError must NOT be fast-failed — it keeps polling to
+    the budget, exactly like today, and reports timed_out=True."""
+    from shopify_mcp.client import TransientShopifyError, poll_job
+
+    clock = _SleepTrackingClock()
+    _patch_time(monkeypatch, clock)
+
+    def _raise(*_a, **_kw):
+        raise TransientShopifyError("throttled")
+
+    client = _duck_client(_raise)
+    # timeout_s=3 forces the same three-attempt budget as
+    # test_poll_job_budget_respects_next_sleep_size (0.5s, 1.0s sleeps between
+    # calls) — a fast-fail would stop after exactly one call instead.
+    result = poll_job(client, "gid://shopify/Job/1", timeout_s=3)
+
+    assert client.calls > 1
+    assert result["done"] is False
+    assert result["timed_out"] is True
+    assert result["error"] == "throttled"
+
+
+def test_poll_job_generic_exception_still_loops_to_budget(monkeypatch):
+    """A plain, unclassified exception must also keep looping to the budget —
+    the fast-fail path is scoped to ShopifyError alone."""
+    from shopify_mcp.client import poll_job
+
+    clock = _SleepTrackingClock()
+    _patch_time(monkeypatch, clock)
+
+    def _raise(*_a, **_kw):
+        raise RuntimeError("transport blew up")
+
+    client = _duck_client(_raise)
+    result = poll_job(client, "gid://shopify/Job/1", timeout_s=3)
+
+    assert client.calls > 1
+    assert result["done"] is False
+    assert result["timed_out"] is True
+    assert result["error"] == "transport blew up"
+
+
 # ---------- Story 10.67 (SEC-27): bounding at the source ----------
 #
 # The round-1 design capped only at reflection sites and argued no unbounded

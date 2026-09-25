@@ -341,10 +341,18 @@ def _maybe_reorder_new_media(
     initial_done = bool(job.get("done"))
     if job_id and not initial_done:
         pr = poll_job(client, job_id)
+        if pr["error"]:
+            note = (
+                f" (poll failed: {cap(str(pr['error']))} — underlying write "
+                f"succeeded, check server-side for completion)"
+            )
+        elif pr["timed_out"]:
+            note = " (timed out)"
+        else:
+            note = ""
         return (
             f"\n  Reorder    : job {from_gid(job_id)} "
-            f"done={pr['done']} elapsed={pr['elapsed_s']:.1f}s"
-            + (" (timed out)" if pr["timed_out"] else "")
+            f"done={pr['done']} elapsed={pr['elapsed_s']:.1f}s" + note
         )
     return "\n  Reorder    : " + (f"job {from_gid(job_id)} done=True" if job_id else "done inline")
 
