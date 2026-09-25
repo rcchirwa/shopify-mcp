@@ -1335,11 +1335,14 @@ def test_set_publish_rejected_then_unpublish_exception_is_failed(monkeypatch):
     assert "failed=2" in desc
 
 
-def test_set_no_publish_leg_unpublish_exception_returns_error():
+def test_set_no_publish_leg_unpublish_exception_returns_error(monkeypatch):
     """When nothing has landed yet (no publish leg attempted here — Google &
     YouTube is already published, so only the unpublish leg runs) and the
     unpublish mutation raises, the tool still returns the bare
-    'Error during unpublish' — there's nothing landed to hide."""
+    'Error during unpublish' — there's nothing landed to hide, and log_write
+    must not run on this early-return path."""
+    seen = []
+    monkeypatch.setattr(publications, "log_write", lambda *a: seen.append(a))
     tools, fc = _build(
         [
             _channels_response(),
@@ -1356,6 +1359,7 @@ def test_set_no_publish_leg_unpublish_exception_returns_error():
     assert "unpublish 502" in out
     assert len(fc.calls) == 3
     assert fc.responses == []
+    assert seen == []
 
 
 def test_set_unpublish_user_errors_carry_into_apply_failed():
