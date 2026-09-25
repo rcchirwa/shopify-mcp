@@ -429,6 +429,36 @@ def test_publish_all_unresolved_is_not_confirmed():
     assert fc.responses == []
 
 
+def test_publish_unresolved_alongside_already_published_reads_confirmed():
+    """Story 9.24 round 3 (verifier finding): Online Store is already
+    published (resolves, needs no action — `acting` is empty) and Typo
+    Channel fails to resolve. Round 2's fallback was keyed on `acting` being
+    empty, which also covers this case, and wrongly read FAILED even though
+    nothing was rejected — no mutation was ever attempted because nothing
+    needed to change. This must read CONFIRMED, matching pre-9.24 behavior,
+    since at least one requested channel (Online Store) DID resolve."""
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _channels_response(),  # refresh on miss
+            _product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3]),
+        ]
+    )
+    out = tools["publish_product_to_channels"](
+        product_id="123",
+        channel_names=["Online Store", "Typo Channel"],
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED — Publish product to channels")
+    assert "FAILED" not in out
+    assert "Typo Channel" in out[out.index("Failed") :]
+    assert "Online Store" in out[out.index("Unchanged") : out.index("Failed")]
+    # No mutation was possible — nothing needed changing — but the reads and
+    # resolve attempt did run.
+    assert len(fc.calls) == 3
+    assert fc.responses == []
+
+
 def test_publish_requires_channels_or_ids():
     tools, fc = _build([_channels_response()])
     out = tools["publish_product_to_channels"](product_id="123", confirm=True)
@@ -1199,6 +1229,37 @@ def test_set_all_unresolved_is_not_confirmed():
     assert out.startswith("FAILED — Set product publications (declarative)")
     assert "CONFIRMED" not in out
     assert "Typo Channel" in out[out.index("Failed") :]
+    assert len(fc.calls) == 3
+    assert fc.responses == []
+
+
+def test_set_unresolved_alongside_no_change_needed_reads_confirmed():
+    """Story 9.24 round 3 (verifier finding): Online Store is already
+    published and is the only channel_name that resolves to the desired
+    state (`added_nodes`/`removed_nodes` both stay empty — nothing needs to
+    change), while Typo Channel fails to resolve. Round 2's fallback was
+    keyed on whether either leg was ATTEMPTED, which also covers this case,
+    and wrongly read FAILED even though nothing was rejected. This must read
+    CONFIRMED, matching pre-9.24 behavior, since at least one requested
+    channel (Online Store) DID resolve."""
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _channels_response(),  # refresh on miss
+            _product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3]),
+        ]
+    )
+    out = tools["set_product_publications"](
+        product_id="123",
+        channel_names=["Online Store", "Typo Channel"],
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED — Set product publications (declarative)")
+    assert "FAILED" not in out
+    assert "Typo Channel" in out[out.index("Failed") :]
+    assert "Online Store" in out[out.index("Unchanged") : out.index("Failed")]
+    # No mutation was possible — nothing needed changing — but the reads and
+    # resolve attempt did run.
     assert len(fc.calls) == 3
     assert fc.responses == []
 

@@ -646,6 +646,32 @@ def test_tracking_all_rejected_is_not_confirmed():
     assert len(fc.calls) == 3
 
 
+def test_tracking_all_variant_ids_unresolved_is_not_confirmed():
+    """Story 9.24 round 3 (verifier finding): every requested variant id
+    fails to RESOLVE, not just to mutate — `targets` is empty, so no
+    mutation is ever attempted and `failed` (scoped to attempted-and-
+    rejected variants) stays empty too. The original fix's mutation-only
+    failed count read 0 for this case, so the header still read CONFIRMED
+    over an "Unresolved variant ids:" block listing every id the caller
+    asked for — the same hazard round 2 closed for publications. Nothing
+    resolved, so this must read FAILED."""
+    variants = [_variant("100", "S", "REEF-S", [], tracked=False)]
+    tools, fc = _build([_product_with_variants(variants)])
+    out = tools["update_variant_inventory_tracking"](
+        product_id="555",
+        tracked=True,
+        variant_ids=["999"],
+        confirm=True,
+    )
+    assert out.startswith("FAILED — Variant inventory tracking update")
+    assert "CONFIRMED" not in out
+    assert "Changed (0):" in out
+    assert "999" in out[out.index("Unresolved variant ids:") :]
+    # No mutation was possible — nothing resolved — but the product read did run.
+    assert len(fc.calls) == 1
+    assert fc.responses == []
+
+
 def test_tracking_preview_only_issues_exactly_one_execute_call():
     """confirm=False must not issue any mutations, even if there are targets."""
     variants = [_variant("100", "S", "REEF-S", [], tracked=False)]

@@ -310,8 +310,22 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # attempted mutation, a transport error, or a missing inventoryItem
         # id on a variant that needed changing) — never from an unresolved
         # variant id (that's `unresolved`, a separate, pre-attempt block) —
-        # so it's the right count for whether the write itself was rejected.
-        header = _outcome_header("Variant inventory tracking update", len(changed), len(failed))
+        # so it's the right count for whether the write itself was rejected,
+        # as long as at least one requested variant id resolved (`targets`
+        # non-empty).
+        #
+        # Round 3 (verifier finding): when `variant_ids` is supplied and
+        # NONE of them resolve, `targets` is empty, so `to_change` and
+        # `failed` are both trivially empty too — the 0/0 case reads
+        # CONFIRMED over an "Unresolved variant ids:" block listing every id
+        # the caller asked for, the same hazard round 2 closed for
+        # publications. Mirror that fix here: fall back to counting
+        # `unresolved` as `failed` only when NOTHING resolved at all
+        # (`targets` empty). `variant_ids` omitted (targets = every variant
+        # on the product) or a product with zero variants both still read
+        # CONFIRMED via the 0/0 case, since `unresolved` is empty in both.
+        failed_count = len(failed) if targets else len(unresolved)
+        header = _outcome_header("Variant inventory tracking update", len(changed), failed_count)
         return (
             f"{header}\n"
             f"  Product : {title} (id: {product_id})\n"

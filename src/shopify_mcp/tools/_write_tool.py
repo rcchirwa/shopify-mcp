@@ -43,10 +43,19 @@ def _confirmed_from_preview(preview: str) -> str:
 
 def _outcome_header(heading: str, succeeded: int, failed: int) -> str:
     """Pick the CONFIRMED / PARTIAL / FAILED header for a batch write tool
-    (a per-item mutation with its own done/failed lists) from the counts of
-    the mutation(s) actually ATTEMPTED — never from pre-mutation failures
+    (a per-item mutation with its own done/failed lists) from a (succeeded,
+    failed) pair the caller computes.
+
+    That pair is keyed on the mutation(s) actually ATTEMPTED whenever
+    anything at all resolved to a target — never on pre-mutation failures
     such as an unresolved channel name, which belong in the same "Failed:"
-    block a caller renders below the header but are not a rejected write.
+    block a caller renders below the header but are not themselves a
+    rejected write. The one exception (round 2 of Story 9.24): when NOTHING
+    resolved to a target at all, the caller falls back to counting those
+    resolve failures as `failed`, so an all-unresolved batch doesn't read
+    CONFIRMED over a Failed: block listing every requested item. See
+    `publications._channel_write` / `set_product_publications` and
+    `inventory.update_variant_inventory_tracking` for that fallback.
 
     Story 9.24: `_channel_write`, `set_product_publications` and
     `update_variant_inventory_tracking` each built their own "CONFIRMED — "

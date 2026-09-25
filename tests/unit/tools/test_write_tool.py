@@ -401,9 +401,14 @@ def test_transient_error_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
 # (publications._channel_write, publications.set_product_publications,
 # inventory.update_variant_inventory_tracking) now funnels its header
 # through, keyed on the (succeeded, failed) counts of the mutation(s)
-# actually attempted — never on pre-mutation failures like an unresolved
-# channel name, which are rendered in the same "Failed:" block but are not
-# a rejected write.
+# actually attempted whenever anything resolved to a target — never on
+# pre-mutation failures like an unresolved channel name, which are rendered
+# in the same "Failed:" block but are not themselves a rejected write.
+# Round 2/3: the one exception is when NOTHING resolved at all, where each
+# call site falls back to counting those resolve failures as `failed`, so an
+# all-unresolved batch doesn't read CONFIRMED over a Failed: block listing
+# every requested item — see the call sites, not this helper, for that
+# fallback logic; `_outcome_header` itself only ever sees the final pair.
 
 
 def test_outcome_header_all_succeeded_is_byte_identical_confirmed_header() -> None:

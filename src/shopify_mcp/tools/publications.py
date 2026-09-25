@@ -449,7 +449,20 @@ def _channel_write(
     # `acting` is non-empty and its mutation succeeds — that still reads
     # CONFIRMED even if an unrelated channel name failed to resolve, exactly
     # as before.
-    failed_count = (len(acting) - len(done)) if acting else len(apply_failed)
+    #
+    # Round 3 (verifier finding): keying the fallback on `acting` (empty) was
+    # too broad — `acting` is also empty when every RESOLVED target is
+    # already at the desired state (nothing needs to change), which is not a
+    # rejected write. That let a call like
+    # `channel_names=["Online Store", "Typo Channel"]`, where Online Store is
+    # already published and Typo Channel fails to resolve, read FAILED even
+    # though nothing was rejected — the opposite hazard, and one the round-1
+    # decision never intended (it only meant to cover the truly-nothing-
+    # resolved case). Fixed by keying the fallback on `targets` (the resolved
+    # set, before the acting/unchanged split) instead of `acting`: as long as
+    # at least one requested channel resolved, the mutation-only count is
+    # used, even if that resolved channel needed no action.
+    failed_count = (len(acting) - len(done)) if targets else len(apply_failed)
     header = _outcome_header(heading, len(done), failed_count)
     body = (
         f"{header}\n"
@@ -931,22 +944,33 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # other is rejected — a genuine partial write. Counts span both legs;
         # pre-mutation resolve failures (an unresolved channel name) are in
         # `apply_failed` for the Failed: block but not counted here — UNLESS
-        # neither leg was attempted at all (round 2 / verifier finding): if
-        # every requested channel name failed to resolve, `added_nodes` and
-        # `removed_nodes` are both empty, so `mutation_failed` is trivially 0
-        # and the header would read CONFIRMED over a Failed: block listing
-        # every target, the same hazard this story exists to close. When
-        # nothing was attempted, `apply_failed` (all resolve failures) is
-        # used instead; a genuine no-op (`apply_failed` also empty) still
-        # reads CONFIRMED via the 0/0 case. A leg that WAS attempted and
-        # succeeded still reads CONFIRMED even if an unrelated channel name
-        # failed to resolve, exactly as before.
+        # NOTHING requested resolved at all (round 2 / verifier finding): if
+        # every requested channel name failed to resolve, `desired_nodes` is
+        # empty, so the mutation-only count would be trivially 0 and the
+        # header would read CONFIRMED over a Failed: block listing every
+        # target, the same hazard this story exists to close. When nothing
+        # resolved, `apply_failed` (all resolve failures) is used instead; a
+        # genuine no-op (`apply_failed` also empty) still reads CONFIRMED via
+        # the 0/0 case.
+        #
+        # Round 3 (verifier finding): the round-2 fallback was keyed on
+        # whether either leg was ATTEMPTED (`added_nodes`/`removed_nodes`
+        # non-empty), not on whether anything RESOLVED. That's too broad — a
+        # resolved channel already at the desired state needs no leg
+        # attempted at all, so a call like
+        # `channel_names=["Online Store", "Typo Channel"]`, where Online
+        # Store already matches and Typo Channel fails to resolve, read
+        # FAILED even though nothing was rejected. Fixed by keying the
+        # fallback on `desired_nodes` (the resolved set) instead: as long as
+        # at least one requested channel resolved, the mutation-only count is
+        # used, even if neither leg ends up needing to run. A leg that WAS
+        # attempted and succeeded still reads CONFIRMED even if an unrelated
+        # channel name failed to resolve, exactly as before.
         succeeded = len(added_applied) + len(removed_applied)
         mutation_failed = (len(added_nodes) - len(added_applied)) + (
             len(removed_nodes) - len(removed_applied)
         )
-        attempted = bool(added_nodes) or bool(removed_nodes)
-        failed_count = mutation_failed if attempted else len(apply_failed)
+        failed_count = mutation_failed if desired_nodes else len(apply_failed)
         header = _outcome_header("Set product publications (declarative)", succeeded, failed_count)
         body = (
             f"{header}\n"
