@@ -831,6 +831,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         on. Publishes to missing channels, unpublishes from extras. Returns a
         preview unless confirm=True.
 
+        With confirm=True, any channel name in channel_names that fails to
+        resolve refuses the whole call before any change is made; the
+        preview (confirm=False) still lists the failed names alongside what
+        it would change.
+
         Supply exactly one of product_id / handle. **Supplying both is refused
         before either mutation** rather than resolved by `product_id` with the
         `handle` silently discarded — on a write tool that precedence could
@@ -922,12 +927,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             try:
                 result = ops.unpublish(client, gid, [n["id"] for n in removed_nodes])
             except Exception as e:
-                if not added_applied:
+                if not added_nodes:
                     return f"Error during unpublish: {cap(str(e))}\n{SCOPE_HINT}"
-                # The publish leg already landed, so this can't be a bare
-                # Error return — that would hide the landed publish and skip
-                # log_write. Record every removed node as failed instead and
-                # continue to log_write and the header, which reads PARTIAL.
+                # A publish leg was attempted (whether it landed or was
+                # rejected), so this can't be a bare Error return — that
+                # would hide the publish outcome and skip log_write. Record
+                # every removed node as failed instead and continue to
+                # log_write and the header, which reads PARTIAL if the
+                # publish landed or FAILED if it was rejected too.
                 capped = cap(str(e))
                 for n in removed_nodes:
                     apply_failed.append({"channel_name": n["name"], "error": capped})

@@ -1258,12 +1258,14 @@ def test_set_unresolved_alongside_resolved_channel_is_refused_before_mutation():
     assert not any(q in (PUBLISHABLE_PUBLISH, PUBLISHABLE_UNPUBLISH) for q, _ in fc.calls)
 
 
-def test_set_publish_lands_then_unpublish_exception_is_partial():
+def test_set_publish_lands_then_unpublish_exception_is_partial(monkeypatch):
     """The publish leg (add Point of Sale) lands before the unpublish leg
     (remove Online Store) raises. A bare 'Error during unpublish' return
     would hide the landed publish and skip log_write, so the raised
     exception must instead be recorded as a failed removal and the header
     must read PARTIAL, with the publish visible under Added."""
+    seen = []
+    monkeypatch.setattr(publications, "log_write", lambda *a: seen.append(a))
     tools, fc = _build(
         [
             _channels_response(),
@@ -1286,6 +1288,51 @@ def test_set_publish_lands_then_unpublish_exception_is_partial():
     assert "Error during unpublish" not in out
     assert len(fc.calls) == 4
     assert fc.responses == []
+    assert len(seen) == 1
+    name, desc = seen[0]
+    assert name == "set_product_publications"
+    assert "added=['Point of Sale']" in desc
+    assert "failed=1" in desc
+
+
+def test_set_publish_rejected_then_unpublish_exception_is_failed(monkeypatch):
+    """Orchestrator decision (Story 9.24 F2 continuation): the publish leg
+    (add Point of Sale) is REJECTED (a userError, not an exception) and the
+    unpublish leg (remove Online Store) then raises. A publish leg was
+    still ATTEMPTED (added_nodes non-empty), so the guard must not fall
+    back to a bare 'Error during unpublish' — that would hide the publish's
+    userError and skip log_write. Both failures land in the Failed block
+    and, since nothing landed on either leg, the header reads FAILED."""
+    seen = []
+    monkeypatch.setattr(publications, "log_write", lambda *a: seen.append(a))
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _product_pubs(pid="123", published_ids=[1, 4], not_published_ids=[2, 3]),
+            _publish_err("publicationId", "not authorized"),  # add (publish) rejected
+            RuntimeError("unpublish 502"),  # remove (unpublish) raises
+        ]
+    )
+    out = tools["set_product_publications"](
+        product_id="123",
+        channel_names=["Point of Sale", "Google & YouTube"],
+        confirm=True,
+    )
+    assert out.startswith("FAILED — Set product publications (declarative)")
+    assert "CONFIRMED" not in out
+    assert "PARTIAL" not in out
+    failed_block = out[out.index("Failed") :]
+    assert "not authorized" in failed_block
+    assert "unpublish 502" in failed_block
+    assert "Online Store" in failed_block
+    assert "Error during unpublish" not in out
+    assert len(fc.calls) == 4
+    assert fc.responses == []
+    assert len(seen) == 1
+    name, desc = seen[0]
+    assert name == "set_product_publications"
+    assert "added=[]" in desc
+    assert "failed=2" in desc
 
 
 def test_set_no_publish_leg_unpublish_exception_returns_error():
@@ -1446,6 +1493,37 @@ def test_set_unresolved_only_channel_is_refused_without_touching_existing_public
     assert out.startswith("Error: could not resolve channel name(s): Typo Channel")
     assert "Nothing was changed" in out
     assert "PARTIAL" not in out
+    assert len(fc.calls) == 3
+    assert fc.responses == []
+    assert not any(q in (PUBLISHABLE_PUBLISH, PUBLISHABLE_UNPUBLISH) for q, _ in fc.calls)
+
+
+def test_set_unresolved_name_refusal_is_capped():
+    """F1: an unresolved channel name long enough to matter is echoed back
+    in the refusal message bounded by REFLECT_MAX_LEN, not in full — an
+    attacker-controlled name must not flood the response. No mutation call
+    may be made either way."""
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _channels_response(),  # refresh on miss
+            _product_pubs(pid="123", published_ids=[], not_published_ids=[1]),
+        ]
+    )
+    huge_name = "Z" * (REFLECT_MAX_LEN + 5000)
+    out = tools["set_product_publications"](
+        product_id="123",
+        channel_names=[huge_name],
+        confirm=True,
+    )
+    prefix = "Error: could not resolve channel name(s): "
+    assert out.startswith(prefix)
+    names_portion = out[len(prefix) :].split(". Nothing was changed", 1)[0]
+    assert len(names_portion) <= REFLECT_MAX_LEN
+    assert len(out) <= len(prefix) + REFLECT_MAX_LEN + len(
+        ". Nothing was changed — a declarative set with an unknown name would "
+        "unpublish every channel not named. Correct the names and retry."
+    )
     assert len(fc.calls) == 3
     assert fc.responses == []
     assert not any(q in (PUBLISHABLE_PUBLISH, PUBLISHABLE_UNPUBLISH) for q, _ in fc.calls)
