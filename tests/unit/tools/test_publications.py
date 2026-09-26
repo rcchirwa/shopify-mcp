@@ -38,9 +38,20 @@ def _short_ttl_settings(channels_ttl: int = 600) -> Settings:
     )
 
 
+class _ProductRead(list):
+    """The product read is two requests (Story 10.99): the v1 page, then the
+    V2 page by product id. ``_build`` splices both into the script in order."""
+
+
 def _build(responses):
     srv = CapturingServer()
-    fc = FakeClient(responses)
+    script = []
+    for r in responses:
+        if isinstance(r, _ProductRead):
+            script.extend(r)
+        else:
+            script.append(r)
+    fc = FakeClient(script)
     publications.register(srv, fc)
     return srv.tools, fc
 
@@ -85,43 +96,55 @@ def _product_pubs(
     has_next=False,
     end_cursor=None,
 ):
-    """One page of the product read, shaped like resourcePublicationsV2(onlyPublished: false).
+    """The product read (Story 10.99): the v1 page, then the V2 page by id.
 
-    That connection lists a live channel (isPublished true) and a DRAFT's
-    assigned channel (isPublished false); a channel the product is not on is
-    absent. So `not_published_ids` emits no record — it only names the rest of
-    the roster at the call site — and `assigned_ids` emits the isPublished:false
-    records (Story 10.99)."""
-    published_ids = published_ids or []
-    assigned_ids = assigned_ids or []
-    nodes = []
-    for i in published_ids:
-        nodes.append(
-            {
-                "publication": {"id": f"gid://shopify/Publication/{i}", "name": _name_for(i)},
-                "publishDate": "2026-04-20T10:00:00Z",
-                "isPublished": True,
-            }
-        )
-    for i in assigned_ids:
-        nodes.append(
-            {
-                "publication": {"id": f"gid://shopify/Publication/{i}", "name": _name_for(i)},
-                "publishDate": None,
-                "isPublished": False,
-            }
-        )
-    return {
+    v1 ``resourcePublications`` lists the live channels (isPublished true).
+    ``resourcePublicationsV2(onlyPublished: false)`` lists those too, plus a
+    DRAFT's assigned channels (isPublished false). A channel the product is not
+    on is absent from both, so `not_published_ids` emits no record — it only
+    names the rest of the roster at the call site. `has_next`/`end_cursor`
+    apply to the v1 page."""
+    published = [_rp(i, True) for i in published_ids or []]
+    assigned = [_rp(i, False) for i in assigned_ids or []]
+    v1 = {
         "product": {
             "id": f"gid://shopify/Product/{pid}",
             "title": title,
             "handle": handle,
-            "resourcePublicationsV2": {
-                "nodes": nodes,
+            "resourcePublications": {
+                "nodes": published,
                 "pageInfo": {"hasNextPage": has_next, "endCursor": end_cursor},
             },
         }
     }
+    return _ProductRead([v1, _v2_page(published + assigned)])
+
+
+def _rp(i, is_published):
+    return {
+        "publication": {"id": f"gid://shopify/Publication/{i}", "name": _name_for(i)},
+        "publishDate": "2026-04-20T10:00:00Z" if is_published else None,
+        "isPublished": is_published,
+    }
+
+
+def _v2_page(nodes, has_next=False, end_cursor=None):
+    """One page of the V2 read (GET_PRODUCT_ASSIGNED_PUBLICATIONS)."""
+    return {
+        "product": {
+            "resourcePublicationsV2": {
+                "nodes": list(nodes),
+                "pageInfo": {"hasNextPage": has_next, "endCursor": end_cursor},
+            }
+        }
+    }
+
+
+# The V2 read the tools send for product 123, right after the v1 read.
+_V2_READ_123 = (
+    publications.GET_PRODUCT_ASSIGNED_PUBLICATIONS,
+    {"id": "gid://shopify/Product/123", "first": 50, "after": None},
+)
 
 
 def _name_for(i):
@@ -242,13 +265,20 @@ def test_get_product_publications_by_handle_uses_handle_query():
                     "id": "gid://shopify/Product/999",
                     "title": "Handle tee",
                     "handle": "handle-tee",
-                    "resourcePublicationsV2": {"nodes": []},
+                    "resourcePublications": {"nodes": []},
                 }
             },
+            _v2_page([]),
         ]
     )
     tools["get_product_publications"](handle="handle-tee")
     assert fc.calls[1][0] == GET_PRODUCT_PUBLICATIONS_BY_HANDLE
+    # The V2 read goes by the resolved product's id, not the handle.
+    assert fc.calls[2] == (
+        publications.GET_PRODUCT_ASSIGNED_PUBLICATIONS,
+        {"id": "gid://shopify/Product/999", "first": 50, "after": None},
+    )
+    assert fc.responses == []
 
 
 def test_get_product_publications_requires_id_or_handle():
@@ -284,7 +314,7 @@ def test_publish_preview_splits_to_publish_vs_unchanged():
     assert "Shop" in would_section
     assert "Online Store" in unchanged_section  # already published → unchanged
     # No mutation in preview
-    assert len(fc.calls) == 2
+    assert len(fc.calls) == 3
 
 
 def test_publish_confirmed_only_mutates_needed_channels():
@@ -306,10 +336,11 @@ def test_publish_confirmed_only_mutates_needed_channels():
     # pin the exact first line so that mutant is caught here.
     assert out.split("\n", 1)[0] == "CONFIRMED — Publish product to channels"
     # Only Shop is actually submitted (Online Store already published)
-    _, vars_put = fc.calls[2]
+    _, vars_put = fc.calls[3]
     assert vars_put["id"] == "gid://shopify/Product/123"
     assert vars_put["input"] == [{"publicationId": SHOP["id"]}]
-    assert fc.calls[2][0] == PUBLISHABLE_PUBLISH
+    assert fc.calls[3][0] == PUBLISHABLE_PUBLISH
+    assert fc.calls[2] == _V2_READ_123
 
 
 def test_publish_idempotent_all_already_published_skips_mutation():
@@ -326,7 +357,7 @@ def test_publish_idempotent_all_already_published_skips_mutation():
     )
     assert out.startswith("CONFIRMED")
     # No PUBLISHABLE_PUBLISH call — everything already published.
-    assert len(fc.calls) == 2
+    assert len(fc.calls) == 3
     assert "Unchanged" in out and "Online Store" in out and "Shop" in out
 
 
@@ -344,7 +375,7 @@ def test_publish_case_insensitive_name_match():
         confirm=True,
     )
     assert out.startswith("CONFIRMED")
-    _, vars_put = fc.calls[2]
+    _, vars_put = fc.calls[3]
     assert vars_put["input"] == [{"publicationId": ONLINE["id"]}]
 
 
@@ -364,8 +395,8 @@ def test_publish_unknown_channel_reported_in_failed_no_mutation_for_it():
     )
     # Online Store is submitted; TikTok Shop goes to failed.
     assert "TikTok Shop" in out and "channel not found" in out
-    # Calls: initial list, refresh on miss, product read, publish mutation
-    _, vars_put = fc.calls[3]
+    # Calls: initial list, refresh on miss, product reads (v1, V2), publish mutation
+    _, vars_put = fc.calls[4]
     assert vars_put["input"] == [{"publicationId": ONLINE["id"]}]
 
 
@@ -433,7 +464,7 @@ def test_publish_all_unresolved_is_not_confirmed():
     assert "Typo Channel" in out[out.index("Failed") :]
     # Prove the write actually ran (no mutation was possible, but the reads
     # and resolve attempts did) rather than short-circuiting vacuously.
-    assert len(fc.calls) == 3
+    assert len(fc.calls) == 4
     assert fc.responses == []
 
 
@@ -463,7 +494,7 @@ def test_publish_unresolved_alongside_already_published_reads_confirmed():
     assert "Online Store" in out[out.index("Unchanged") : out.index("Failed")]
     # No mutation was possible — nothing needed changing — but the reads and
     # resolve attempt did run.
-    assert len(fc.calls) == 3
+    assert len(fc.calls) == 4
     assert fc.responses == []
 
 
@@ -489,7 +520,7 @@ def test_publish_unknown_publication_id_goes_to_failed_no_mutation():
         confirm=True,
     )
     # Known id gets published; unknown id lands in failed.
-    _, vars_put = fc.calls[2]
+    _, vars_put = fc.calls[3]
     assert vars_put["input"] == [{"publicationId": ONLINE["id"]}]
     assert "99999" in out and "not found" in out
 
@@ -575,9 +606,10 @@ def test_unpublish_confirmed_only_mutates_currently_published():
     # suffixed header (e.g. " (ok)") — which still satisfies `startswith` —
     # is caught here.
     assert out.split("\n", 1)[0] == "CONFIRMED — Unpublish product from channels"
-    _, vars_put = fc.calls[2]
+    _, vars_put = fc.calls[3]
     assert vars_put["input"] == [{"publicationId": ONLINE["id"]}]
-    assert fc.calls[2][0] == PUBLISHABLE_UNPUBLISH
+    assert fc.calls[3][0] == PUBLISHABLE_UNPUBLISH
+    assert fc.calls[2] == _V2_READ_123
 
 
 def test_unpublish_idempotent_when_already_unpublished():
@@ -593,7 +625,7 @@ def test_unpublish_idempotent_when_already_unpublished():
         confirm=True,
     )
     assert out.startswith("CONFIRMED")
-    assert len(fc.calls) == 2  # no mutation
+    assert len(fc.calls) == 3  # no mutation
     assert "Unchanged" in out and "Online Store" in out
 
 
@@ -631,8 +663,9 @@ def test_set_declarative_computes_diff():
     assert "Google & YouTube" in unchanged_section
 
     # Verify mutation payloads: publish POS, unpublish Online Store
-    publish_vars = fc.calls[2][1]
-    unpublish_vars = fc.calls[3][1]
+    assert fc.calls[2] == _V2_READ_123
+    publish_vars = fc.calls[3][1]
+    unpublish_vars = fc.calls[4][1]
     assert publish_vars["input"] == [{"publicationId": POS["id"]}]
     assert unpublish_vars["input"] == [{"publicationId": ONLINE["id"]}]
 
@@ -650,7 +683,7 @@ def test_set_declarative_no_ops_when_desired_matches_current():
         confirm=True,
     )
     assert out.startswith("CONFIRMED")
-    assert len(fc.calls) == 2  # no publish, no unpublish
+    assert len(fc.calls) == 3  # no publish, no unpublish
 
 
 def test_set_declarative_preview_does_not_mutate():
@@ -666,7 +699,7 @@ def test_set_declarative_preview_does_not_mutate():
         confirm=False,
     )
     assert "PREVIEW" in out and "confirm=True" in out
-    assert len(fc.calls) == 2
+    assert len(fc.calls) == 3
 
 
 def test_set_declarative_requires_channel_names():
@@ -696,7 +729,7 @@ def test_publish_accepts_numeric_publication_id():
     )
     assert out.startswith("CONFIRMED")
     # The mutation must receive the full GID, not the bare numeric.
-    _, vars_put = fc.calls[2]
+    _, vars_put = fc.calls[3]
     assert vars_put["input"] == [{"publicationId": ONLINE["id"]}]
 
 
@@ -714,7 +747,7 @@ def test_unpublish_accepts_numeric_publication_id():
         confirm=True,
     )
     assert out.startswith("CONFIRMED")
-    _, vars_put = fc.calls[2]
+    _, vars_put = fc.calls[3]
     assert vars_put["input"] == [{"publicationId": ONLINE["id"]}]
 
 
@@ -732,7 +765,7 @@ def test_unpublish_accepts_mixed_gid_and_numeric_ids():
         confirm=True,
     )
     assert out.startswith("CONFIRMED")
-    _, vars_put = fc.calls[2]
+    _, vars_put = fc.calls[3]
     submitted_ids = {i["publicationId"] for i in vars_put["input"]}
     assert submitted_ids == {ONLINE["id"], POS["id"]}
 
@@ -753,7 +786,7 @@ def test_unknown_numeric_publication_id_reports_raw_input_in_failure():
         confirm=True,
     )
     # Known id gets published; unknown numeric id lands in failed with its raw form.
-    _, vars_put = fc.calls[2]
+    _, vars_put = fc.calls[3]
     assert vars_put["input"] == [{"publicationId": ONLINE["id"]}]
     assert "99999" in out and "not found" in out
 
@@ -1235,7 +1268,7 @@ def test_set_all_unresolved_is_refused_before_mutation():
     assert "Nothing was changed" in out
     assert "CONFIRMED" not in out
     # The resolve attempt and product read ran; no mutation call was made.
-    assert len(fc.calls) == 3
+    assert len(fc.calls) == 4
     assert fc.responses == []
     assert not any(q in (PUBLISHABLE_PUBLISH, PUBLISHABLE_UNPUBLISH) for q, _ in fc.calls)
 
@@ -1261,7 +1294,7 @@ def test_set_unresolved_alongside_resolved_channel_is_refused_before_mutation():
     assert "CONFIRMED" not in out
     assert "FAILED" not in out
     # The resolve attempt and product read ran; no mutation call was made.
-    assert len(fc.calls) == 3
+    assert len(fc.calls) == 4
     assert fc.responses == []
     assert not any(q in (PUBLISHABLE_PUBLISH, PUBLISHABLE_UNPUBLISH) for q, _ in fc.calls)
 
@@ -1294,7 +1327,7 @@ def test_set_publish_lands_then_unpublish_exception_is_partial(monkeypatch):
     assert "Online Store" in out[out.index("Failed") :]
     assert "unpublish 502" in out
     assert "Error during unpublish" not in out
-    assert len(fc.calls) == 4
+    assert len(fc.calls) == 5
     assert fc.responses == []
     assert len(seen) == 1
     name, desc = seen[0]
@@ -1334,7 +1367,7 @@ def test_set_publish_rejected_then_unpublish_exception_is_failed(monkeypatch):
     assert "unpublish 502" in failed_block
     assert "Online Store" in failed_block
     assert "Error during unpublish" not in out
-    assert len(fc.calls) == 4
+    assert len(fc.calls) == 5
     assert fc.responses == []
     assert len(seen) == 1
     name, desc = seen[0]
@@ -1365,7 +1398,7 @@ def test_set_no_publish_leg_unpublish_exception_returns_error(monkeypatch):
     )
     assert out.startswith("Error during unpublish")
     assert "unpublish 502" in out
-    assert len(fc.calls) == 3
+    assert len(fc.calls) == 4
     assert fc.responses == []
     assert seen == []
 
@@ -1426,7 +1459,7 @@ def test_set_publish_rejected_unpublish_succeeds_is_partial():
         "PARTIAL — Set product publications (declarative) (1 succeeded, 1 failed)"
     )
     assert "Online Store" in out[out.index("Removed (unpublished)") : out.index("Unchanged")]
-    assert len(fc.calls) == 4
+    assert len(fc.calls) == 5
     assert fc.responses == []
 
 
@@ -1449,7 +1482,7 @@ def test_set_empty_list_unpublishes_all_when_it_lands():
     )
     assert out.startswith("CONFIRMED — Set product publications (declarative)")
     assert "Online Store" in out[out.index("Removed (unpublished)") : out.index("Unchanged")]
-    assert len(fc.calls) == 3
+    assert len(fc.calls) == 4
     assert fc.responses == []
 
 
@@ -1480,7 +1513,7 @@ def test_set_empty_list_unpublish_rejected_is_not_confirmed():
     assert out.splitlines()[0] == "FAILED — Set product publications (declarative)"
     assert "CONFIRMED" not in out
     assert "Online Store" in out[out.index("Failed") :]
-    assert len(fc.calls) == 3
+    assert len(fc.calls) == 4
     assert fc.responses == []
 
 
@@ -1505,7 +1538,7 @@ def test_set_unresolved_only_channel_is_refused_without_touching_existing_public
     assert out.startswith("Error: could not resolve channel name(s): Typo Channel")
     assert "Nothing was changed" in out
     assert "PARTIAL" not in out
-    assert len(fc.calls) == 3
+    assert len(fc.calls) == 4
     assert fc.responses == []
     assert not any(q in (PUBLISHABLE_PUBLISH, PUBLISHABLE_UNPUBLISH) for q, _ in fc.calls)
 
@@ -1536,7 +1569,7 @@ def test_set_unresolved_name_refusal_is_capped():
         ". Nothing was changed — a declarative set with an unknown name would "
         "unpublish every channel not named. Correct the names and retry."
     )
-    assert len(fc.calls) == 3
+    assert len(fc.calls) == 4
     assert fc.responses == []
     assert not any(q in (PUBLISHABLE_PUBLISH, PUBLISHABLE_UNPUBLISH) for q, _ in fc.calls)
 
@@ -1562,7 +1595,7 @@ def test_set_unresolved_channel_among_resolved_is_refused_before_mutation():
     assert out.startswith("Error: could not resolve channel name(s): TikTok Shop")
     assert "Nothing was changed" in out
     assert "CONFIRMED" not in out
-    assert len(fc.calls) == 3
+    assert len(fc.calls) == 4
     assert fc.responses == []
     assert not any(q in (PUBLISHABLE_PUBLISH, PUBLISHABLE_UNPUBLISH) for q, _ in fc.calls)
 
@@ -1607,7 +1640,7 @@ def test_resolve_product_publications_paginates_resource_publications():
             "id": "gid://shopify/Product/123",
             "title": "Tee",
             "handle": "tee",
-            "resourcePublicationsV2": {
+            "resourcePublications": {
                 "nodes": [pub_node_p0],
                 "pageInfo": {"hasNextPage": True, "endCursor": "rp_cursor"},
             },
@@ -1618,14 +1651,14 @@ def test_resolve_product_publications_paginates_resource_publications():
             "id": "gid://shopify/Product/123",
             "title": "Tee",
             "handle": "tee",
-            "resourcePublicationsV2": {
+            "resourcePublications": {
                 "nodes": [pub_node_p1],
                 "pageInfo": {"hasNextPage": False, "endCursor": None},
             },
         }
     }
 
-    fc = FakeClient([page0, page1])
+    fc = FakeClient([page0, page1, _v2_page([])])
     gid, title, handle, rps = _resolve_product_gid_and_meta(fc, "123", "")
     assert gid == "gid://shopify/Product/123"
     assert len(rps) == 2
@@ -1633,12 +1666,14 @@ def test_resolve_product_publications_paginates_resource_publications():
     assert rps[1]["isPublished"] is False
     # Second call must carry the page-0 cursor
     assert fc.calls[1][1]["after"] == "rp_cursor"
+    # The V2 read follows both v1 pages.
+    assert fc.calls[2] == _V2_READ_123
 
 
 def test_resolve_product_publications_single_page_not_capped():
     """Single page: rps is returned with correct vars (first=50, after=None)."""
-    page0 = _product_pubs(pid="456", published_ids=[1], not_published_ids=[])
-    fc = FakeClient([page0])
+    page0, v2 = _product_pubs(pid="456", published_ids=[1], not_published_ids=[])
+    fc = FakeClient([page0, v2])
     gid, title, handle, rps = _resolve_product_gid_and_meta(fc, "456", "")
     assert gid is not None
     assert len(rps) == 1
@@ -1647,6 +1682,8 @@ def test_resolve_product_publications_single_page_not_capped():
         "first": 50,
         "after": None,
     }
+    assert fc.calls[1][0] == publications.GET_PRODUCT_ASSIGNED_PUBLICATIONS
+    assert fc.calls[1][1] == fc.calls[0][1]
 
 
 # ---- cross-call channels TTL cache (Story 10.32 / A8) ----
@@ -1710,8 +1747,8 @@ def test_publish_invalidates_channels_cache_forcing_refetch():
     )
     out = tools["list_sales_channels"]()  # cache invalidated by publish → re-fetch
     assert "Online Store" in out
-    assert len(fc.calls) == 4
-    assert fc.calls[3][0] == LIST_PUBLICATIONS
+    assert len(fc.calls) == 5
+    assert fc.calls[4][0] == LIST_PUBLICATIONS
 
 
 def test_unpublish_invalidates_channels_cache_forcing_refetch():
@@ -1727,8 +1764,8 @@ def test_unpublish_invalidates_channels_cache_forcing_refetch():
         product_id="123", channel_names=["Online Store"], confirm=True
     )
     tools["list_sales_channels"]()
-    assert len(fc.calls) == 4
-    assert fc.calls[3][0] == LIST_PUBLICATIONS
+    assert len(fc.calls) == 5
+    assert fc.calls[4][0] == LIST_PUBLICATIONS
 
 
 def test_set_publications_invalidates_channels_cache_forcing_refetch():
@@ -1749,8 +1786,8 @@ def test_set_publications_invalidates_channels_cache_forcing_refetch():
         confirm=True,
     )
     tools["list_sales_channels"]()
-    assert len(fc.calls) == 5
-    assert fc.calls[4][0] == LIST_PUBLICATIONS
+    assert len(fc.calls) == 6
+    assert fc.calls[5][0] == LIST_PUBLICATIONS
 
 
 def test_unconfirmed_publish_preview_does_not_invalidate_channels_cache():
@@ -1764,7 +1801,7 @@ def test_unconfirmed_publish_preview_does_not_invalidate_channels_cache():
     )
     tools["publish_product_to_channels"](product_id="123", channel_names=["Shop"], confirm=False)
     tools["list_sales_channels"]()  # cache still warm → no extra read
-    assert len(fc.calls) == 2
+    assert len(fc.calls) == 3
 
 
 def test_force_refresh_on_name_miss_bypasses_warm_cross_call_cache():
@@ -1781,8 +1818,8 @@ def test_force_refresh_on_name_miss_bypasses_warm_cross_call_cache():
         [
             _channels_response(),  # 1: warm the cross-call cache (roster without TikTok)
             _channels_response([*ALL_CHANNELS, tiktok]),  # 2: force-refresh sees the new channel
-            _product_pubs(pid="123", published_ids=[], not_published_ids=[1, 2, 3]),  # 3: product
-            _publish_ok(),  # 4: publish mutation
+            _product_pubs(pid="123", published_ids=[], not_published_ids=[1, 2, 3]),  # 3-4: product
+            _publish_ok(),  # 5: publish mutation
         ]
     )
     tools["list_sales_channels"]()  # warms the cache with the 4-channel roster
@@ -1791,12 +1828,12 @@ def test_force_refresh_on_name_miss_bypasses_warm_cross_call_cache():
     )
     assert out.startswith("CONFIRMED")
     assert "TikTok Shop" in out
-    # 4 round-trips: warm-read, force-refresh re-read (bypassing the warm cache),
-    # product read, publish. Without force=True the miss would serve the stale
+    # 5 round-trips: warm-read, force-refresh re-read (bypassing the warm cache),
+    # product reads (v1, V2), publish. Without force=True the miss would serve the stale
     # warm roster and never find TikTok.
-    assert len(fc.calls) == 4
+    assert len(fc.calls) == 5
     assert fc.calls[1][0] == LIST_PUBLICATIONS
-    _, vars_put = fc.calls[3]
+    _, vars_put = fc.calls[4]
     assert vars_put["input"] == [{"publicationId": tiktok["id"]}]
 
 
@@ -1911,8 +1948,8 @@ def test_s1068_product_id_alone_still_resolves_by_id():
 def test_s1068_handle_alone_still_resolves_by_handle():
     """Regression guard, `handle` channel: unchanged by-handle resolution, and
     the handle is never wrapped into a Product GID."""
-    resp = _product_pubs(pid="222", handle=_S1068_HANDLE, published_ids=[1])
-    tools, fc = _build([_channels_response(), {"productByHandle": resp["product"]}])
+    resp, v2 = _product_pubs(pid="222", handle=_S1068_HANDLE, published_ids=[1])
+    tools, fc = _build([_channels_response(), {"productByHandle": resp["product"]}, v2])
     out = tools["get_product_publications"](handle=_S1068_HANDLE)
     assert "Online Store" in out
     assert fc.calls[1][0] == GET_PRODUCT_PUBLICATIONS_BY_HANDLE
@@ -2658,6 +2695,81 @@ def test_a_padded_handle_is_trimmed_for_the_read_tool_too():
 # declarative set must remove an assigned channel; publish leaves it unchanged.
 
 
+# Live, 2026-09-26 (API 2026-01), ACTIVE product 6803111739545: v1 listed five
+# published channels, V2 only three. V2 omitted Meta and Microsoft Copilot
+# under every catalogType. Neither is in the publications roster, so the report
+# names them from the record. v1 stays the published source for this reason.
+META = {"id": "gid://shopify/Publication/194888106137", "name": "Meta"}
+
+
+def _v1_with_meta(**kwargs):
+    """The product read with an off-roster Meta record that V2 omits."""
+    v1, v2 = _product_pubs(**kwargs)
+    v1["product"]["resourcePublications"]["nodes"].append(
+        {"publication": META, "publishDate": "2026-05-01T09:00:00Z", "isPublished": True}
+    )
+    return v1, v2
+
+
+def test_s1099_an_off_roster_published_channel_that_v2_omits_is_still_listed():
+    v1, v2 = _v1_with_meta(published_ids=[1])
+    tools, fc = _build([_channels_response(), v1, v2])
+    out = tools["get_product_publications"](product_id="123")
+    assert out == (
+        "Product: Tee\n"
+        "Handle: tee\n"
+        "ID: 123\n"
+        "\n"
+        "Published to (2):\n"
+        "  • Meta (id: 194888106137) — publishDate: 2026-05-01T09:00:00Z\n"
+        "  • Online Store (id: 1) — publishDate: 2026-04-20T10:00:00Z\n"
+        "\n"
+        "Not published to (3):\n"
+        "  • Google & YouTube (id: 4)\n"
+        "  • Point of Sale (id: 2)\n"
+        "  • Shop (id: 3)"
+    )
+    assert fc.responses == []
+
+
+def test_s1099_a_paginated_v2_read_adds_its_assigned_records_beside_v1():
+    v1, _ = _v1_with_meta(published_ids=[1])
+    page0 = _v2_page([_rp(1, True)], has_next=True, end_cursor="v2_cursor")
+    page1 = _v2_page([_rp(4, False)])
+    tools, fc = _build([_channels_response(), v1, page0, page1])
+    out = tools["get_product_publications"](product_id="123")
+    assert out == (
+        "Product: Tee\n"
+        "Handle: tee\n"
+        "ID: 123\n"
+        "\n"
+        "Published to (2):\n"
+        "  • Meta (id: 194888106137) — publishDate: 2026-05-01T09:00:00Z\n"
+        "  • Online Store (id: 1) — publishDate: 2026-04-20T10:00:00Z\n"
+        "\n"
+        "Assigned (goes live when the product is ACTIVE) (1):\n"
+        "  • Google & YouTube (id: 4)\n"
+        "\n"
+        "Not published to (2):\n"
+        "  • Point of Sale (id: 2)\n"
+        "  • Shop (id: 3)"
+    )
+    assert fc.calls[2] == (
+        publications.GET_PRODUCT_ASSIGNED_PUBLICATIONS,
+        {"id": "gid://shopify/Product/123", "first": 50, "after": None},
+    )
+    assert fc.calls[3][1] == {"id": "gid://shopify/Product/123", "first": 50, "after": "v2_cursor"}
+    assert fc.responses == []
+
+
+def test_s1099_an_unresolved_product_makes_no_second_read():
+    tools, fc = _build([_channels_response(), {"product": None}])
+    out = tools["get_product_publications"](product_id="123")
+    assert out == "No product found."
+    assert len(fc.calls) == 2
+    assert fc.responses == []
+
+
 def test_s1099_get_product_publications_lists_assigned_channels_in_their_own_section():
     tools, fc = _build([_channels_response(), _product_pubs(assigned_ids=[4, 3])])
     out = tools["get_product_publications"](product_id="123")
@@ -2707,8 +2819,9 @@ def test_s1099_unpublish_removes_an_assigned_channel_and_sends_the_mutation():
     out = tools["unpublish_product_from_channels"](
         product_id="123", channel_names=["Google & YouTube"], confirm=True
     )
-    assert fc.calls[2][0] == PUBLISHABLE_UNPUBLISH
-    assert fc.calls[2][1] == {
+    assert fc.calls[2] == _V2_READ_123
+    assert fc.calls[3][0] == PUBLISHABLE_UNPUBLISH
+    assert fc.calls[3][1] == {
         "id": "gid://shopify/Product/123",
         "input": [{"publicationId": GOOGLE["id"]}],
     }
@@ -2731,8 +2844,8 @@ def test_s1099_unpublish_sends_published_and_assigned_but_not_absent_channels():
         channel_names=["Online Store", "Google & YouTube", "Point of Sale"],
         confirm=True,
     )
-    assert len(fc.calls) == 3
-    assert fc.calls[2][1]["input"] == [
+    assert len(fc.calls) == 4
+    assert fc.calls[3][1]["input"] == [
         {"publicationId": ONLINE["id"]},
         {"publicationId": GOOGLE["id"]},
     ]
@@ -2752,7 +2865,7 @@ def test_s1099_unpublish_preview_marks_an_assigned_channel():
     out = tools["unpublish_product_from_channels"](
         product_id="123", channel_names=["Google & YouTube", "Shop"], confirm=False
     )
-    assert len(fc.calls) == 2
+    assert len(fc.calls) == 3
     assert out == (
         "PREVIEW — Unpublish product from channels\n"
         "  Product: Tee (handle: tee, id: 123)\n"
@@ -2770,7 +2883,7 @@ def test_s1099_unpublish_of_a_channel_a_draft_is_not_on_sends_nothing():
     out = tools["unpublish_product_from_channels"](
         product_id="123", channel_names=["Point of Sale"], confirm=True
     )
-    assert len(fc.calls) == 2
+    assert len(fc.calls) == 3
     assert out.split("\n", 1)[0] == "CONFIRMED — Unpublish product from channels"
     assert "  Unchanged:\n  • Point of Sale (id: 2)" in out
 
@@ -2805,7 +2918,7 @@ def test_s1099_publish_leaves_an_assigned_channel_unchanged_without_a_mutation()
     out = tools["publish_product_to_channels"](
         product_id="123", channel_names=["Google & YouTube"], confirm=True
     )
-    assert len(fc.calls) == 2
+    assert len(fc.calls) == 3
     assert out == (
         "CONFIRMED — Publish product to channels\n"
         "  Product: Tee (handle: tee, id: 123)\n"
@@ -2835,17 +2948,17 @@ def test_s1099_publish_sends_only_the_channels_that_are_not_assigned():
     tools["publish_product_to_channels"](
         product_id="123", channel_names=["Google & YouTube", "Point of Sale"], confirm=True
     )
-    assert fc.calls[2][0] == PUBLISHABLE_PUBLISH
-    assert fc.calls[2][1]["input"] == [{"publicationId": POS["id"]}]
+    assert fc.calls[3][0] == PUBLISHABLE_PUBLISH
+    assert fc.calls[3][1]["input"] == [{"publicationId": POS["id"]}]
 
 
 def test_s1099_set_removes_an_undesired_assigned_channel_and_keeps_a_desired_one():
     tools, fc = _build([_channels_response(), _product_pubs(assigned_ids=[3, 4]), _unpublish_ok()])
     out = tools["set_product_publications"](product_id="123", channel_names=["Shop"], confirm=True)
     # Only the unpublish leg runs: Shop is already assigned, so nothing is added.
-    assert len(fc.calls) == 3
-    assert fc.calls[2][0] == PUBLISHABLE_UNPUBLISH
-    assert fc.calls[2][1]["input"] == [{"publicationId": GOOGLE["id"]}]
+    assert len(fc.calls) == 4
+    assert fc.calls[3][0] == PUBLISHABLE_UNPUBLISH
+    assert fc.calls[3][1]["input"] == [{"publicationId": GOOGLE["id"]}]
     assert out == (
         "CONFIRMED — Set product publications (declarative)\n"
         "  Product: Tee (handle: tee, id: 123)\n"
@@ -2861,7 +2974,7 @@ def test_s1099_set_removes_an_undesired_assigned_channel_and_keeps_a_desired_one
 def test_s1099_set_preview_marks_assigned_channels():
     tools, fc = _build([_channels_response(), _product_pubs(assigned_ids=[3, 4])])
     out = tools["set_product_publications"](product_id="123", channel_names=["Shop"], confirm=False)
-    assert len(fc.calls) == 2
+    assert len(fc.calls) == 3
     assert out == (
         "PREVIEW — Set product publications (declarative)\n"
         "  Product: Tee (handle: tee, id: 123)\n"
@@ -2879,8 +2992,8 @@ def test_s1099_set_preview_marks_assigned_channels():
 def test_s1099_set_empty_list_removes_an_assigned_channel():
     tools, fc = _build([_channels_response(), _product_pubs(assigned_ids=[4]), _unpublish_ok()])
     out = tools["set_product_publications"](product_id="123", channel_names=[], confirm=True)
-    assert fc.calls[2][0] == PUBLISHABLE_UNPUBLISH
-    assert fc.calls[2][1]["input"] == [{"publicationId": GOOGLE["id"]}]
+    assert fc.calls[3][0] == PUBLISHABLE_UNPUBLISH
+    assert fc.calls[3][1]["input"] == [{"publicationId": GOOGLE["id"]}]
     assert out.split("\n", 1)[0] == "CONFIRMED — Set product publications (declarative)"
 
 
@@ -2896,10 +3009,10 @@ def test_s1099_set_adds_and_removes_across_published_and_assigned():
     out = tools["set_product_publications"](
         product_id="123", channel_names=["Point of Sale"], confirm=True
     )
-    assert fc.calls[2][0] == PUBLISHABLE_PUBLISH
-    assert fc.calls[2][1]["input"] == [{"publicationId": POS["id"]}]
-    assert fc.calls[3][0] == PUBLISHABLE_UNPUBLISH
-    assert {i["publicationId"] for i in fc.calls[3][1]["input"]} == {ONLINE["id"], GOOGLE["id"]}
+    assert fc.calls[3][0] == PUBLISHABLE_PUBLISH
+    assert fc.calls[3][1]["input"] == [{"publicationId": POS["id"]}]
+    assert fc.calls[4][0] == PUBLISHABLE_UNPUBLISH
+    assert {i["publicationId"] for i in fc.calls[4][1]["input"]} == {ONLINE["id"], GOOGLE["id"]}
     removed = out[out.index("Removed (unpublished)") : out.index("Unchanged")]
     assert "  • Online Store (id: 1)\n" in removed
     assert "  • Google & YouTube (id: 4) (was assigned, not live)\n" in removed
@@ -2910,7 +3023,7 @@ def test_s1099_set_when_desired_matches_the_assignment_sends_nothing():
     out = tools["set_product_publications"](
         product_id="123", channel_names=["Google & YouTube"], confirm=True
     )
-    assert len(fc.calls) == 2
+    assert len(fc.calls) == 3
     assert out.split("\n", 1)[0] == "CONFIRMED — Set product publications (declarative)"
 
 

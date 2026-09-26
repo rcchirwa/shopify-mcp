@@ -35,6 +35,7 @@ from shopify_mcp.shopify._identifiers import is_supplied
 from shopify_mcp.shopify.operations import publications as ops
 from shopify_mcp.shopify.queries.publications import (
     GET_COLLECTION_PUBLICATIONS_BY_HANDLE,
+    GET_PRODUCT_ASSIGNED_PUBLICATIONS,
     GET_PRODUCT_PUBLICATIONS_BY_HANDLE,
     GET_PRODUCT_PUBLICATIONS_BY_ID,
     LIST_PUBLICATIONS,
@@ -57,6 +58,7 @@ from shopify_mcp.tools._write_tool import _outcome_header
 # keep resolving to the same objects the operations layer executes.
 __all__ = [
     "GET_COLLECTION_PUBLICATIONS_BY_HANDLE",
+    "GET_PRODUCT_ASSIGNED_PUBLICATIONS",
     "GET_PRODUCT_PUBLICATIONS_BY_HANDLE",
     "GET_PRODUCT_PUBLICATIONS_BY_ID",
     "LIST_PUBLICATIONS",
@@ -273,10 +275,10 @@ def _render_publications_report(
     The not-published set is a **derived complement**, never read off the
     response: a channel the resource is not on has no record at all.
 
-    ``with_assigned`` is the product path (Story 10.99). The product read is
-    ``resourcePublicationsV2(onlyPublished: false)``, where a record with
-    ``isPublished: false`` is a DRAFT product's assigned channel, which goes
-    live on activation. Those get their own section, emitted only when
+    ``with_assigned`` is the product path (Story 10.99). The product read adds
+    ``resourcePublicationsV2(onlyPublished: false)`` records to the v1 ones,
+    and a record with ``isPublished: false`` is a DRAFT product's assigned
+    channel, which goes live on activation. Those get their own section, emitted only when
     non-empty, and are left out of "Not published to". With none assigned the
     output is unchanged. Collections read ``resourcePublications``, which lists
     only the channels the collection is on (live-confirmed 2026-09-05), so they

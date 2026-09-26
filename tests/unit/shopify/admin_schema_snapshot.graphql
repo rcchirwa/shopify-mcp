@@ -1181,6 +1181,7 @@ type Product implements HasMetafields & Node & Publishable {
   options(first: Int): [ProductOption!]!
   productType: String!
   publicationCount(onlyPublished: Boolean = true): Int! @deprecated(reason: "Use `resourcePublicationsCount` instead.")
+  resourcePublications(onlyPublished: Boolean = true, first: Int, after: String, last: Int, before: String, reverse: Boolean = false): ResourcePublicationConnection!
   resourcePublicationsV2(onlyPublished: Boolean = true, catalogType: CatalogType, first: Int, after: String, last: Int, before: String, reverse: Boolean = false): ResourcePublicationV2Connection!
   seo: SEO!
   status: ProductStatus!

@@ -16,6 +16,7 @@ from shopify_mcp.shopify._identifiers import is_supplied, reject_both_identifier
 from shopify_mcp.shopify._ids import to_gid
 from shopify_mcp.shopify.queries.publications import (
     GET_COLLECTION_PUBLICATIONS_BY_HANDLE,
+    GET_PRODUCT_ASSIGNED_PUBLICATIONS,
     GET_PRODUCT_PUBLICATIONS_BY_HANDLE,
     GET_PRODUCT_PUBLICATIONS_BY_ID,
     LIST_PUBLICATIONS,
@@ -45,13 +46,19 @@ def read_publications(client: GraphQLClient) -> list[dict[str, Any]]:
 def read_product_publications(
     client: GraphQLClient, product_id: str, handle: str
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], bool]:
-    """Read a product and all its resourcePublicationsV2 records, paginated.
+    """Read a product and all its publication records, paginated.
 
-    The read passes ``onlyPublished: false``, so each channel is in one of three
-    states: published (a record with ``isPublished: true``), assigned but not
-    live (a record with ``isPublished: false``: a DRAFT product's channel, which
-    goes live when the product is activated), or not on the channel (no record).
-    Story 10.99, live-verified 2026-09-26.
+    Each channel is in one of three states: published (a record with
+    ``isPublished: true``), assigned but not live (a record with
+    ``isPublished: false``: a DRAFT product's channel, which goes live when the
+    product is activated), or not on the channel (no record). Two reads cover
+    them (Story 10.99, live-verified 2026-09-26). v1 ``resourcePublications``
+    is the published source. It hides a DRAFT's assigned channel, so a second
+    read, ``resourcePublicationsV2(onlyPublished: false)`` by the resolved
+    product's id, adds its ``isPublished: false`` records. V2 is not the
+    published source because it omits published channels that are not in the
+    ``publications`` roster (Meta, Microsoft Copilot), which v1 returns. See
+    :func:`_add_assigned`.
 
     Resolves by ``product_id`` (coerced to a Product GID) when given, else by
     ``handle``. **Supplying both raises ``ValueError`` before any network
@@ -72,26 +79,55 @@ def read_product_publications(
     when neither identifier is supplied or Shopify returns a null product
     (deleted / wrong id / unknown handle) — the neither-supplied case keeps
     returning rather than raising, deliberately unchanged by 10.68. ``capped``
-    is True when the walk stopped short of the end — see
+    is True when either walk stopped short of the end — see
     ``ShopifyClient.paginate`` for the three ways that can happen."""
     reject_both_identifiers(product_id, handle)
     if product_id:
         data, rps, capped = client.paginate(
             GET_PRODUCT_PUBLICATIONS_BY_ID,
             {"id": to_gid("Product", product_id)},
-            connection_path=["product", "resourcePublicationsV2"],
+            connection_path=["product", "resourcePublications"],
             page_size=PUBLICATIONS_PAGE_SIZE,
         )
-        return data.get("product"), rps, capped
+        return _add_assigned(client, data.get("product"), rps, capped)
     if handle:
         data, rps, capped = client.paginate(
             GET_PRODUCT_PUBLICATIONS_BY_HANDLE,
             {"handle": handle},
-            connection_path=["productByHandle", "resourcePublicationsV2"],
+            connection_path=["productByHandle", "resourcePublications"],
             page_size=PUBLICATIONS_PAGE_SIZE,
         )
-        return data.get("productByHandle"), rps, capped
+        return _add_assigned(client, data.get("productByHandle"), rps, capped)
     return None, [], False
+
+
+def _add_assigned(
+    client: GraphQLClient,
+    product: dict[str, Any] | None,
+    rps: list[dict[str, Any]],
+    capped: bool,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], bool]:
+    """Append the V2 read's assigned records to a resolved product's v1 records.
+
+    Adds only V2 records with ``isPublished: false`` whose publication is not
+    already a v1 record; V2's published records are ignored, because v1 is
+    authoritative for published. ``capped`` is True when either walk stopped
+    short. No product resolved means no second read."""
+    if not product:
+        return product, rps, capped
+    v1_ids = {(rp.get("publication") or {}).get("id") for rp in rps}
+    _data, v2_rps, capped_v2 = client.paginate(
+        GET_PRODUCT_ASSIGNED_PUBLICATIONS,
+        {"id": product["id"]},
+        connection_path=["product", "resourcePublicationsV2"],
+        page_size=PUBLICATIONS_PAGE_SIZE,
+    )
+    assigned = [
+        rp
+        for rp in v2_rps
+        if not rp.get("isPublished") and (rp.get("publication") or {}).get("id") not in v1_ids
+    ]
+    return product, rps + assigned, capped or capped_v2
 
 
 def read_collection_publications(

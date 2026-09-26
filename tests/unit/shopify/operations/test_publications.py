@@ -73,7 +73,7 @@ def _product_pubs_response(root_key: str, pid: str = "123") -> dict:
             "id": f"gid://shopify/Product/{pid}",
             "title": "Tee",
             "handle": "tee",
-            "resourcePublicationsV2": {
+            "resourcePublications": {
                 "nodes": [
                     {
                         "publication": {
@@ -90,26 +90,118 @@ def _product_pubs_response(root_key: str, pid: str = "123") -> dict:
     }
 
 
+def _v2_response(nodes: list, has_next: bool = False, end_cursor: str | None = None) -> dict:
+    """One page of GET_PRODUCT_ASSIGNED_PUBLICATIONS (Story 10.99)."""
+    return {
+        "product": {
+            "resourcePublicationsV2": {
+                "nodes": nodes,
+                "pageInfo": {"hasNextPage": has_next, "endCursor": end_cursor},
+            }
+        }
+    }
+
+
+def _rp(pid: str, is_published: bool) -> dict:
+    return {
+        "publication": {"id": f"gid://shopify/Publication/{pid}", "name": f"Channel {pid}"},
+        "isPublished": is_published,
+        "publishDate": "2026-01-01" if is_published else None,
+    }
+
+
 def test_read_product_publications_by_id_coerces_gid_and_returns_product_and_rps():
     resp = _product_pubs_response("product", pid="123")
-    fc = FakeClient([resp])
+    fc = FakeClient([resp, _v2_response([])])
     product, rps, capped = ops.read_product_publications(fc, "123", "")
     assert product == resp["product"]
-    assert rps == resp["product"]["resourcePublicationsV2"]["nodes"]
+    assert rps == resp["product"]["resourcePublications"]["nodes"]
     assert capped is False
     assert fc.calls[0][0] == q.GET_PRODUCT_PUBLICATIONS_BY_ID
     assert fc.calls[0][1] == {"id": "gid://shopify/Product/123", "first": 50, "after": None}
+    assert fc.calls[1][0] == q.GET_PRODUCT_ASSIGNED_PUBLICATIONS
+    assert fc.calls[1][1] == {"id": "gid://shopify/Product/123", "first": 50, "after": None}
 
 
 def test_read_product_publications_by_handle_passes_handle_var():
     resp = _product_pubs_response("productByHandle", pid="456")
-    fc = FakeClient([resp])
+    fc = FakeClient([resp, _v2_response([])])
     product, rps, capped = ops.read_product_publications(fc, "", "tee")
     assert product == resp["productByHandle"]
-    assert rps == resp["productByHandle"]["resourcePublicationsV2"]["nodes"]
+    assert rps == resp["productByHandle"]["resourcePublications"]["nodes"]
     assert capped is False
     assert fc.calls[0][0] == q.GET_PRODUCT_PUBLICATIONS_BY_HANDLE
     assert fc.calls[0][1] == {"handle": "tee", "first": 50, "after": None}
+    # The V2 read goes by the resolved product's id, not the handle.
+    assert fc.calls[1][0] == q.GET_PRODUCT_ASSIGNED_PUBLICATIONS
+    assert fc.calls[1][1] == {"id": "gid://shopify/Product/456", "first": 50, "after": None}
+
+
+# ---------- Story 10.99: v1 is the published source, V2 adds assigned records ----
+
+
+def test_s1099_merge_adds_only_v2_assigned_records_that_v1_lacks():
+    """v1 is authoritative for published: V2's isPublished:true records are
+    ignored even when v1 lacks them, and a V2 record for a channel v1 already
+    lists is not added twice. Only V2's isPublished:false records for channels
+    v1 lacks are appended, after the v1 records."""
+    v1 = _product_pubs_response("product")  # Publication/1, published
+    v1_nodes = v1["product"]["resourcePublications"]["nodes"]
+    v2 = _v2_response(
+        [
+            _rp("1", False),  # v1 lists it: v1 wins, not added
+            _rp("5", True),  # published per V2 only: ignored
+            _rp("4", False),  # assigned: added
+        ]
+    )
+    fc = FakeClient([v1, v2])
+    product, rps, capped = ops.read_product_publications(fc, "123", "")
+    assert product == v1["product"]
+    assert rps == [*v1_nodes, _rp("4", False)]
+    assert capped is False
+    assert fc.responses == []
+
+
+def test_s1099_merge_walks_every_v2_page():
+    v1 = _product_pubs_response("product")
+    page0 = _v2_response([_rp("3", False)], has_next=True, end_cursor="v2c")
+    page1 = _v2_response([_rp("4", False)])
+    fc = FakeClient([v1, page0, page1])
+    _product, rps, capped = ops.read_product_publications(fc, "123", "")
+    assert [rp["publication"]["id"] for rp in rps] == [
+        "gid://shopify/Publication/1",
+        "gid://shopify/Publication/3",
+        "gid://shopify/Publication/4",
+    ]
+    assert capped is False
+    assert fc.calls[2][1] == {"id": "gid://shopify/Product/123", "first": 50, "after": "v2c"}
+
+
+def test_s1099_capped_is_true_when_only_the_v2_walk_stops_short():
+    """hasNextPage with a null endCursor stops the V2 walk short; the v1 walk
+    completed, so only V2 can make capped True here."""
+    v1 = _product_pubs_response("product")
+    fc = FakeClient([v1, _v2_response([_rp("4", False)], has_next=True, end_cursor=None)])
+    _product, rps, capped = ops.read_product_publications(fc, "123", "")
+    assert capped is True
+    assert len(rps) == 2
+
+
+def test_s1099_capped_is_true_when_only_the_v1_walk_stops_short():
+    v1 = _product_pubs_response("product")
+    v1["product"]["resourcePublications"]["pageInfo"] = {"hasNextPage": True, "endCursor": None}
+    fc = FakeClient([v1, _v2_response([])])
+    _product, _rps, capped = ops.read_product_publications(fc, "123", "")
+    assert capped is True
+
+
+@pytest.mark.parametrize(
+    ("product_id", "handle", "root_key"), [("999", "", "product"), ("", "gone", "productByHandle")]
+)
+def test_s1099_an_unresolved_product_makes_no_v2_read(product_id, handle, root_key):
+    fc = FakeClient([{root_key: None}])
+    assert ops.read_product_publications(fc, product_id, handle) == (None, [], False)
+    assert len(fc.calls) == 1
 
 
 # Story 10.68 (T-10.65-refuse-both-fanout). This replaces
@@ -378,12 +470,26 @@ def test_publications_walker_rejects_an_aliased_field():
         _field(operation.selection_set, "resourcePublications")
 
 
-def test_product_publications_fragment_reads_v2_including_unpublished_records():
+def test_product_publications_fragment_reads_v1_resource_publications():
+    """Story 10.99: v1 stays the published source. resourcePublicationsV2
+    omits published channels that are not in the publications roster (Meta,
+    Microsoft Copilot), which v1 returns (live, 2026-09-26, API 2026-01)."""
+    (fragment,) = graphql.parse(q.PRODUCT_PUBLICATIONS_FIELDS).definitions
+    connection = _field(fragment.selection_set, "resourcePublications")
+    assert {a.name.value for a in connection.arguments} == {"first", "after"}
+    names = {s.name.value for s in fragment.selection_set.selections}
+    assert "resourcePublicationsV2" not in names
+
+
+def test_assigned_publications_query_reads_v2_including_unpublished_records():
     """Story 10.99: only resourcePublicationsV2(onlyPublished: false) shows a
     DRAFT product's assigned channel (isPublished false). resourcePublications
-    hides it whatever onlyPublished is set to (live, 2026-09-26, API 2026-01)."""
-    (fragment,) = graphql.parse(q.PRODUCT_PUBLICATIONS_FIELDS).definitions
-    connection = _field(fragment.selection_set, "resourcePublicationsV2")
+    hides it whatever onlyPublished is set to (live, 2026-09-26, API 2026-01).
+    Walked down the connection_path the operation passes to paginate()."""
+    (operation,) = graphql.parse(q.GET_PRODUCT_ASSIGNED_PUBLICATIONS).definitions
+    root = _field(operation.selection_set, "product")
+    assert {a.name.value: a.value.name.value for a in root.arguments} == {"id": "id"}
+    connection = _field(root.selection_set, "resourcePublicationsV2")
 
     args = {a.name.value: a.value for a in connection.arguments}
     assert set(args) == {"first", "after", "onlyPublished"}
