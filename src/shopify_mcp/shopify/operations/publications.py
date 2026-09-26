@@ -9,13 +9,18 @@ channel-name/-id resolution cache, the publish/unpublish/declarative-set diff, t
 preview/confirm flow, userError mapping, and string formatting on top.
 """
 
+import logging
 from typing import Any
 
+import requests
+
+from shopify_mcp.client import ShopifyError, TransientShopifyError
 from shopify_mcp.shopify._client import GraphQLClient
 from shopify_mcp.shopify._identifiers import is_supplied, reject_both_identifiers
 from shopify_mcp.shopify._ids import to_gid
 from shopify_mcp.shopify.queries.publications import (
     GET_COLLECTION_PUBLICATIONS_BY_HANDLE,
+    GET_PRODUCT_ASSIGNED_PUBLICATIONS,
     GET_PRODUCT_PUBLICATIONS_BY_HANDLE,
     GET_PRODUCT_PUBLICATIONS_BY_ID,
     LIST_PUBLICATIONS,
@@ -23,10 +28,22 @@ from shopify_mcp.shopify.queries.publications import (
     PUBLISHABLE_UNPUBLISH,
 )
 
-# Page size for the paginated reads (the publications list and a product's
-# resourcePublications) via ``client.paginate()`` — how many nodes are fetched per
-# Shopify request.
+# Page size for the paginated reads (the publications list, a product's
+# resourcePublications, and a DRAFT product's resourcePublicationsV2 walk for
+# its assigned records) via ``client.paginate()`` — how many nodes are fetched
+# per Shopify request.
 PUBLICATIONS_PAGE_SIZE = 50
+
+# What ``ShopifyClient.execute`` (and so ``paginate``) raises for a failed
+# request: ShopifyError (permanent API errors, and ShopifyProtocolError for a
+# non-GraphQL response), TransientShopifyError (throttling / 429 / 5xx after
+# the retries), and requests.RequestException (connection errors and timeouts,
+# which gql's requests transport lets through unwrapped). A failed V2
+# assigned-records read degrades to the v1 records; anything else, such as a
+# programming error, still propagates.
+_READ_FAILURES = (ShopifyError, TransientShopifyError, requests.RequestException)
+
+logger = logging.getLogger(__name__)
 
 
 # ---------- reads ----------
@@ -44,8 +61,21 @@ def read_publications(client: GraphQLClient) -> list[dict[str, Any]]:
 
 def read_product_publications(
     client: GraphQLClient, product_id: str, handle: str
-) -> tuple[dict[str, Any] | None, list[dict[str, Any]], bool]:
-    """Read a product and all its resourcePublications, paginated.
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], bool, bool]:
+    """Read a product and all its publication records, paginated.
+
+    Each channel is in one of three states: published (a record with
+    ``isPublished: true``), assigned but not live (a record with
+    ``isPublished: false``: a DRAFT product's channel, which goes live when the
+    product is activated), or not on the channel (no record). v1
+    ``resourcePublications`` is the published source (Story 10.99,
+    live-verified 2026-09-26). It hides a DRAFT's assigned channel, so for a
+    DRAFT product only, a second read, ``resourcePublicationsV2(onlyPublished:
+    false)`` by the resolved product's id, adds its ``isPublished: false``
+    records. Every other product (ACTIVE, ARCHIVED, no ``status``) gets the v1
+    read alone, as before this story. V2 is not the published source because
+    it omits published channels that are not in the ``publications`` roster
+    (Meta, Microsoft Copilot), which v1 returns. See :func:`_add_assigned`.
 
     Resolves by ``product_id`` (coerced to a Product GID) when given, else by
     ``handle``. **Supplying both raises ``ValueError`` before any network
@@ -61,13 +91,16 @@ def read_product_publications(
     inherited from here would arrive a round-trip late and be rendered with a
     misleading scope hint. See ``tools/_product_resolver.identifier_error``.
 
-    Returns ``(product_or_None, resource_publication_nodes, capped)``.
+    Returns ``(product_or_None, resource_publication_nodes, capped,
+    assigned_incomplete)``.
     ``product_or_None`` is the product node (``id title handle ...``) or None
     when neither identifier is supplied or Shopify returns a null product
     (deleted / wrong id / unknown handle) — the neither-supplied case keeps
     returning rather than raising, deliberately unchanged by 10.68. ``capped``
-    is True when the walk stopped short of the end — see
-    ``ShopifyClient.paginate`` for the three ways that can happen."""
+    is True when either walk stopped short of the end — see
+    ``ShopifyClient.paginate`` for the three ways that can happen.
+    ``assigned_incomplete`` is True when a DRAFT's V2 read failed or stopped
+    short, so some assigned records may be missing."""
     reject_both_identifiers(product_id, handle)
     if product_id:
         data, rps, capped = client.paginate(
@@ -76,7 +109,7 @@ def read_product_publications(
             connection_path=["product", "resourcePublications"],
             page_size=PUBLICATIONS_PAGE_SIZE,
         )
-        return data.get("product"), rps, capped
+        return _add_assigned(client, data.get("product"), rps, capped)
     if handle:
         data, rps, capped = client.paginate(
             GET_PRODUCT_PUBLICATIONS_BY_HANDLE,
@@ -84,8 +117,48 @@ def read_product_publications(
             connection_path=["productByHandle", "resourcePublications"],
             page_size=PUBLICATIONS_PAGE_SIZE,
         )
-        return data.get("productByHandle"), rps, capped
-    return None, [], False
+        return _add_assigned(client, data.get("productByHandle"), rps, capped)
+    return None, [], False, False
+
+
+def _add_assigned(
+    client: GraphQLClient,
+    product: dict[str, Any] | None,
+    rps: list[dict[str, Any]],
+    capped: bool,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], bool, bool]:
+    """Append a DRAFT product's V2 assigned records to its v1 records.
+
+    Only a DRAFT product gets the second read. For any other status, or no
+    product, the v1 result is returned untouched: an ACTIVE product's
+    future-scheduled ``isPublished: false`` record would otherwise be labelled
+    assigned, and every live-product call would pay a second request.
+
+    Adds only V2 records with ``isPublished: false`` whose publication is not
+    already a v1 record; V2's published records are ignored, because v1 is
+    authoritative for published. ``capped`` is True when either walk stopped
+    short. The last element, ``assigned_incomplete``, is True when the V2 walk
+    stopped short or raised one of ``_READ_FAILURES``; on a raise the v1
+    records are returned alone."""
+    if not product or product.get("status") != "DRAFT":
+        return product, rps, capped, False
+    v1_ids = {(rp.get("publication") or {}).get("id") for rp in rps}
+    try:
+        _data, v2_rps, capped_v2 = client.paginate(
+            GET_PRODUCT_ASSIGNED_PUBLICATIONS,
+            {"id": product["id"]},
+            connection_path=["product", "resourcePublicationsV2"],
+            page_size=PUBLICATIONS_PAGE_SIZE,
+        )
+    except _READ_FAILURES as e:
+        logger.warning("assigned-records read failed (%s); returning v1 records", type(e).__name__)
+        return product, rps, capped, True
+    assigned = [
+        rp
+        for rp in v2_rps
+        if not rp.get("isPublished") and (rp.get("publication") or {}).get("id") not in v1_ids
+    ]
+    return product, rps + assigned, capped or capped_v2, capped_v2
 
 
 def read_collection_publications(

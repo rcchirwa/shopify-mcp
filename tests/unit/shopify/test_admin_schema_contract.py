@@ -125,7 +125,7 @@ _DEPRECATED_USAGE_CEILINGS = {
     "The field Mutation.productUpdateMedia": 1,
     "The field Product.bodyHtml": 6,
     "The field ProductReorderMediaPayload.userErrors": 1,
-    "The field Publication.name": 4,
+    "The field Publication.name": 5,  # 5th: GET_PRODUCT_ASSIGNED_PUBLICATIONS (Story 10.99)
     "The field QueryRoot.collectionByHandle": 4,
     "The field QueryRoot.productByHandle": 7,
     "The field WebhookSubscription.endpoint": 2,

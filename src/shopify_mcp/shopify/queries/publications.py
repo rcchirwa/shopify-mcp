@@ -8,12 +8,13 @@ inventory / orders migrations). Pure strings — no imports from
 **Shared fragment applies.** The two product reads — ``GET_PRODUCT_PUBLICATIONS_BY_ID``
 and ``GET_PRODUCT_PUBLICATIONS_BY_HANDLE`` — differ only in their root field
 (``product(id:)`` vs ``productByHandle(handle:)``); the entire ``Product`` selection
-they wrap (``id title handle`` + the paginated ``resourcePublications`` connection)
+they wrap (``id title handle status`` + the paginated ``resourcePublications`` connection)
 is byte-identical, so it is factored into the ``ProductPublicationsFields`` fragment
 both queries spread (Story 10.30 / A5, AC3 — the fragment-dedup win the card calls
 out). The fragment references the operations' ``$first``/``$after`` pagination
 variables, which both ``GetProductPublicationsById`` and
-``GetProductPublicationsByHandle`` declare. The list read (``LIST_PUBLICATIONS``)
+``GetProductPublicationsByHandle`` declare. The list read (``LIST_PUBLICATIONS``),
+the assigned-records read (``GET_PRODUCT_ASSIGNED_PUBLICATIONS``, Story 10.99)
 and the two mutations select different shapes, so the fragment is scoped to the pair.
 """
 
@@ -33,12 +34,15 @@ query ListPublications($first: Int!, $after: String) {
 # Shared Product selection for the by-id/by-handle resourcePublications reads.
 # `resourcePublications(first: $first, after: $after)` carries the pagination
 # variables the two operations declare, so the fragment is usable only inside an
-# operation that defines `$first`/`$after` — both reads below do.
+# operation that defines `$first`/`$after` — both reads below do. `status` lets
+# the tools mark a channel newly published to a DRAFT product as assigned, not
+# live (Story 10.99).
 PRODUCT_PUBLICATIONS_FIELDS = """
 fragment ProductPublicationsFields on Product {
   id
   title
   handle
+  status
   resourcePublications(first: $first, after: $after) {
     nodes {
       publication { id name }
@@ -72,16 +76,43 @@ query GetProductPublicationsByHandle($handle: String!, $first: Int!, $after: Str
 """
 )
 
+# Story 10.99. A second product read, by id, made only for a DRAFT product,
+# that adds its assigned records. `resourcePublicationsV2(onlyPublished: false)`
+# is the only read that shows a DRAFT product's assigned channel (a record with
+# `isPublished: false`, which goes live when the product is activated). It is
+# not a superset of the v1 read above: it omits published channels that are
+# not in the `publications` roster (Meta, Microsoft Copilot), which v1 returns.
+# So v1 stays the published source and only this read's `isPublished: false`
+# records are used (live, 2026-09-26, API 2026-01). Other products skip it, so
+# an ACTIVE product's future-scheduled record is not labelled assigned.
+GET_PRODUCT_ASSIGNED_PUBLICATIONS = """
+query ProductAssignedPublications($id: ID!, $first: Int!, $after: String) {
+  product(id: $id) {
+    resourcePublicationsV2(first: $first, after: $after, onlyPublished: false) {
+      nodes {
+        publication { id name }
+        publishDate
+        isPublished
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+
 # Story 10.83 (T-collection-publish). Collections has only a by-handle read —
 # `_resolve_collection` in tools/collections.py is handle-only and no by-id
 # collection query exists anywhere in the tree — so unlike the product pair
 # there is no by-id twin to share a fragment with. The selection is inlined
 # rather than factored, matching the reasoning in queries/collections.py.
 #
-# The selection is byte-identical in shape to ProductPublicationsFields, which
-# is not an assumption: the 2026-09-05 live probe read a manual and a smart
-# collection and both returned `publication { id name }`, `publishDate` and
-# `isPublished` with the same pageInfo.
+# The resourcePublications node selection matches ProductPublicationsFields,
+# which is not an assumption: the 2026-09-05 live probe read a manual and a
+# smart collection and both returned `publication { id name }`, `publishDate`
+# and `isPublished` with the same pageInfo. The product side differs since
+# Story 10.99: its fragment also selects `status`, and a DRAFT product is
+# paired with the GET_PRODUCT_ASSIGNED_PUBLICATIONS read. Collections have
+# neither.
 #
 # `ruleSet` is selected because `get_collection_publications` renders a
 # "Type: smart|manual" line from it, classifying the same way
