@@ -13,8 +13,9 @@ Usage:
 
 import pytest
 
-from shopify_mcp.client import JOB_STATUS_QUERY
+from shopify_mcp.client import JOB_STATUS_QUERY, ShopifyError
 from shopify_mcp.tools import collections
+from shopify_mcp.tools._response import poll_failed_note
 from shopify_mcp.tools._untrusted import INJECTION_REMINDER
 from shopify_mcp.tools.collections import (
     ADD_PRODUCTS_TO_COLLECTION,
@@ -486,6 +487,14 @@ def test_add_product_polling_transport_error_surfaces_poll_failed_message(fake_p
     )
     assert "poll failed: upstream 503" in out, out
     assert "underlying write succeeded" in out, out
+    # Exact-line pin (Story 10.89 code review round 3, M10): the space between
+    # `{numeric}` and the note is a literal in the f-string, not part of
+    # `poll_failed_note`'s own text — a dropped space would still pass every
+    # substring check above. Splitting into lines and asserting equality
+    # against the matching line (rather than a substring check on the whole
+    # output) also catches extra leading/trailing text on that same line.
+    expected_line = f"  Job        : 999 {poll_failed_note('upstream 503')}"
+    assert expected_line in out.splitlines(), out
     # The poll-failed branch must read as confirmed too — the underlying
     # write already succeeded.
     assert "CONFIRMED —" in out, out
@@ -515,6 +524,38 @@ def test_remove_product_polls_and_reports_elapsed_when_job_completes(fake_poll_c
     # Mirrors the add-side polls-then-completes assertion.
     assert "CONFIRMED —" in out, out
     assert "PREVIEW" not in out, out
+
+
+def test_add_product_polling_shopify_error_surfaces_poll_failed_despite_no_timeout(fake_poll_clock):
+    """Regression guard for the Story 10.89 step 5/6 sequencing trap: a
+    permanent ShopifyError poll must still show the poll-failed line even
+    though `timed_out` is now False for that case (Story 10.89 step 5). Ship
+    step 5 (poll_job fast-fails ShopifyError with timed_out=False) without
+    step 6 (collections.py gating on poll_error alone, not
+    `timed_out and poll_error`) and this line silently disappears — a
+    regression dressed as a fix."""
+    srv = CapturingServer()
+    fc = RaisingFakeClient(
+        [
+            _manual_collection(),
+            _add_ok(job_id="999", done=False),
+            ShopifyError("missing read_products scope"),
+        ]
+    )
+    collections.register(srv, fc)
+    out = srv.tools["add_product_to_collection"](
+        handle="vanish",
+        product_id="777",
+        confirm=True,
+    )
+    assert "poll failed: missing read_products scope" in out, out
+    assert "underlying write succeeded" in out, out
+    assert "still running" not in out, out
+    assert "CONFIRMED —" in out, out
+    # Fast-fail: exactly one poll call — a retry-to-budget here would mean
+    # the ShopifyError branch in poll_job did not short-circuit.
+    poll_calls = [c for c in fc.calls if c[0] == JOB_STATUS_QUERY]
+    assert len(poll_calls) == 1
 
 
 def test_initial_done_true_does_not_poll():

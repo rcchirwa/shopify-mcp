@@ -11,6 +11,20 @@ response bodies.
 
 from typing import Any
 
+from shopify_mcp.tools._scrub import cap
+
+
+def poll_failed_note(error: object) -> str:
+    """Render the shared 'poll failed' note used by every write tool whose
+    mutation succeeded but the follow-up job poll did not.
+
+    Bounds `error` through `cap` (SEC-27) before embedding it — was
+    hand-inlined at three call sites (`tools/collections.py`,
+    `tools/media/_reorder.py`, `tools/media/_upload.py`); Story 10.89 code
+    review (F7) moved it here so all three stay byte-identical.
+    """
+    return f"(poll failed: {cap(str(error))} — underlying write succeeded, check server-side for completion)"
+
 
 def format_field_path(error: dict[str, Any]) -> str:
     """
