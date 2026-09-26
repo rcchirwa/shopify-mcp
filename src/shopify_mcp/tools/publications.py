@@ -184,27 +184,30 @@ def _map_user_error(user_error: dict, targets: list) -> dict:
 
 def _resolve_product_gid_and_meta(
     client: ShopifyClient, product_id: str, handle: str
-) -> tuple[str | None, str | None, str | None, list[dict[str, Any]], str | None]:
-    """Returns (gid, title, handle, rps, status); gid, title, handle and status
-    are None when no product was resolved, rps is always a list. rps holds
-    published and assigned records (see ``_split_current``). status is the
-    product's ``status`` (e.g. ``"DRAFT"``), None when the response lacks it.
+) -> tuple[str | None, str | None, str | None, list[dict[str, Any]], str | None, bool]:
+    """Returns (gid, title, handle, rps, status, assigned_incomplete); gid,
+    title, handle and status are None when no product was resolved, rps is
+    always a list. rps holds published and assigned records (see
+    ``_split_current``). status is the product's ``status`` (e.g.
+    ``"DRAFT"``), None when the response lacks it. assigned_incomplete is True
+    when a DRAFT's assigned-records read failed or stopped short; the tools
+    then end their output with ``_ASSIGNED_INCOMPLETE_NOTE``.
 
     Delegates the by-id/by-handle paginated read to
     ``shopify.operations.publications.read_product_publications`` and reshapes its
-    ``(product_or_None, rps, capped)`` result into the 5-tuple the tool formatting
-    uses; the pagination cap is not surfaced for publications, so ``capped`` is
-    dropped here exactly as before the migration.
+    ``(product_or_None, rps, capped, assigned_incomplete)`` result into the
+    6-tuple the tool formatting uses; the pagination cap is not surfaced for
+    publications, so ``capped`` is dropped here exactly as before the migration.
 
     Raises ``ValueError`` when both identifiers are supplied — the refusal is
     enforced in the operations layer (Story 10.68), so all four tools inherit it
     through this one funnel without a per-tool check. Each already wraps this
     call in ``try/except`` and renders the message through its structured error
     path, which is also where the reflection bound (``cap``) is applied."""
-    p, rps, _capped = ops.read_product_publications(client, product_id, handle)
+    p, rps, _capped, assigned_incomplete = ops.read_product_publications(client, product_id, handle)
     if not p:
-        return None, None, None, [], None
-    return p["id"], p["title"], p["handle"], rps, p.get("status")
+        return None, None, None, [], None, False
+    return p["id"], p["title"], p["handle"], rps, p.get("status"), assigned_incomplete
 
 
 def _split_current(rps: list[dict[str, Any]]) -> tuple[set[str], set[str]]:
@@ -335,6 +338,18 @@ def _render_publications_report(
 _ASSIGNED_NOTE = " (assigned, not live)"
 _WAS_ASSIGNED_NOTE = " (was assigned, not live)"
 
+# Ends a product tool's output when a DRAFT's assigned-records read failed or
+# stopped short (Story 10.99). Placed before a preview's confirm hint.
+_ASSIGNED_INCOMPLETE_NOTE = (
+    "Note: this DRAFT product's assigned (not yet live) channels could not be "
+    "fully read, so some may be missing above."
+)
+
+
+def _with_incomplete_note(text: str, assigned_incomplete: bool) -> str:
+    """Append ``_ASSIGNED_INCOMPLETE_NOTE`` to ``text`` when the read was incomplete."""
+    return f"{text}\n\n{_ASSIGNED_INCOMPLETE_NOTE}" if assigned_incomplete else text
+
 
 # Direction table for the shared publish/unpublish body below. Single source of
 # truth — the verb, the preposition, every section label, the operation, the
@@ -343,7 +358,9 @@ _WAS_ASSIGNED_NOTE = " (was assigned, not live)"
 #
 # `acts_on_published` is the membership predicate: publish acts on targets the
 # resource is NOT yet on, unpublish acts on the ones it IS on. For a product,
-# "on" means published or assigned (Story 10.99).
+# "on" means published or assigned (Story 10.99). `done_mark` suffixes a
+# not-live channel in the done list: one publish only assigned (a DRAFT), or one
+# unpublish removed while it was assigned.
 _CHANNEL_WRITE_OPS: dict[str, dict[str, Any]] = {
     "publish": {
         "verb": "Publish",
@@ -355,6 +372,7 @@ _CHANNEL_WRITE_OPS: dict[str, dict[str, Any]] = {
         "op_name": "publish",
         "result_key": "publishablePublish",
         "acts_on_published": False,
+        "done_mark": _ASSIGNED_NOTE,
     },
     "unpublish": {
         "verb": "Unpublish",
@@ -366,6 +384,7 @@ _CHANNEL_WRITE_OPS: dict[str, dict[str, Any]] = {
         "op_name": "unpublish",
         "result_key": "publishableUnpublish",
         "acts_on_published": True,
+        "done_mark": _WAS_ASSIGNED_NOTE,
     },
 }
 
@@ -405,6 +424,7 @@ def _channel_write(
     log_name: str,
     with_assigned: bool = False,
     draft: bool = False,
+    assigned_incomplete: bool = False,
 ) -> str:
     """Shared preview → confirm → mutate → map-userErrors → log → render flow for
     every channel write. `direction` and `resource_label` are the only variable
@@ -425,9 +445,13 @@ def _channel_write(
     ``resourcePublications``, which lists only published channels, and keep
     the published-only rule.
 
-    ``draft`` is True for a DRAFT product. Publishing to it only assigns the
-    channel (live-found 2026-09-26), so a publish marks its acting channels as
-    not live in the preview and in the done list. Unpublish ignores it."""
+    ``draft`` is True when publishing to a DRAFT product; only the publish
+    tool passes it. Publishing to a DRAFT only assigns the channel (live-found
+    2026-09-26), so its acting channels are marked as not live in the preview
+    and in the done list.
+
+    ``assigned_incomplete`` ends the preview (before the confirm hint) and the
+    result with ``_ASSIGNED_INCOMPLETE_NOTE``."""
     spec = _CHANNEL_WRITE_OPS[direction]
     published_ids, not_live_ids = _split_current(rps)
     assigned_ids = not_live_ids if with_assigned else set()
@@ -441,8 +465,7 @@ def _channel_write(
     acts_on_published: bool = spec["acts_on_published"]
     acting = [t for t in targets if (t["id"] in on_ids) == acts_on_published]
     unchanged = [t for t in targets if (t["id"] in on_ids) != acts_on_published]
-    newly_assigned = {t["id"] for t in acting} if draft and not acts_on_published else set()
-    done_mark = _ASSIGNED_NOTE if newly_assigned else _WAS_ASSIGNED_NOTE
+    newly_assigned = {t["id"] for t in acting} if draft else set()
 
     heading = f"{spec['verb']} {resource_label} {spec['preposition']} channels"
     preview = (
@@ -457,7 +480,7 @@ def _channel_write(
         preview += "\n  Failed to resolve:\n" + _render_failed(failed)
 
     if not confirm:
-        return with_confirm_hint(preview)
+        return with_confirm_hint(_with_incomplete_note(preview, assigned_incomplete))
 
     done: list[dict[str, Any]] = []
     apply_failed = list(failed)
@@ -506,13 +529,13 @@ def _channel_write(
         f"{header}\n"
         f"  {meta_line}\n"
         f"  {spec['done_label']}:\n"
-        f"{_render_channel_lines(done, marked=assigned_ids | newly_assigned, mark=done_mark)}\n"
+        f"{_render_channel_lines(done, marked=assigned_ids | newly_assigned, mark=spec['done_mark'])}\n"
         f"  Unchanged:\n"
         f"{_render_channel_lines(unchanged, marked=assigned_ids, mark=_ASSIGNED_NOTE)}"
     )
     if apply_failed:
         body += "\n  Failed:\n" + _render_failed(apply_failed)
-    return body
+    return _with_incomplete_note(body, assigned_incomplete)
 
 
 def _render_channel_lines(
@@ -580,8 +603,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return f"Error loading sales channels: {cap(str(e))}\n{SCOPE_HINT}"
 
         try:
-            gid, title, prod_handle, rps, _status = _resolve_product_gid_and_meta(
-                client, product_id, handle
+            gid, title, prod_handle, rps, _status, assigned_incomplete = (
+                _resolve_product_gid_and_meta(client, product_id, handle)
             )
         except Exception as e:
             return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
@@ -589,7 +612,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not gid:
             return "No product found."
 
-        return _render_publications_report(
+        report = _render_publications_report(
             resource_label="Product",
             title=title,
             handle=prod_handle,
@@ -598,6 +621,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             cache=channel_cache,
             with_assigned=True,
         )
+        return _with_incomplete_note(report, assigned_incomplete)
 
     def _resolve_target_nodes(
         channel_names: list[str], publication_ids: list[str]
@@ -649,8 +673,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return "Error: " + "; ".join(f.get("error", "") for f in failed)
 
         try:
-            gid, title, prod_handle, rps, status = _resolve_product_gid_and_meta(
-                client, product_id, handle
+            gid, title, prod_handle, rps, status, assigned_incomplete = (
+                _resolve_product_gid_and_meta(client, product_id, handle)
             )
         except Exception as e:
             return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
@@ -670,6 +694,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             log_name="publish_product_to_channels",
             with_assigned=True,
             draft=status == "DRAFT",
+            assigned_incomplete=assigned_incomplete,
         )
 
     @server.tool()
@@ -710,8 +735,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return "Error: " + "; ".join(f.get("error", "") for f in failed)
 
         try:
-            gid, title, prod_handle, rps, status = _resolve_product_gid_and_meta(
-                client, product_id, handle
+            gid, title, prod_handle, rps, _status, assigned_incomplete = (
+                _resolve_product_gid_and_meta(client, product_id, handle)
             )
         except Exception as e:
             return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
@@ -730,7 +755,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             confirm=confirm,
             log_name="unpublish_product_from_channels",
             with_assigned=True,
-            draft=status == "DRAFT",
+            assigned_incomplete=assigned_incomplete,
         )
 
     # ---- collection publications (Story 10.83 / T-collection-publish) ----
@@ -933,8 +958,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return f"Error resolving channels: {cap(str(e))}\n{SCOPE_HINT}"
 
         try:
-            gid, title, prod_handle, rps, status = _resolve_product_gid_and_meta(
-                client, product_id, handle
+            gid, title, prod_handle, rps, status, assigned_incomplete = (
+                _resolve_product_gid_and_meta(client, product_id, handle)
             )
         except Exception as e:
             return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
@@ -976,7 +1001,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             preview += "\n  Failed to resolve:\n" + _render_failed(failed)
 
         if not confirm:
-            return with_confirm_hint(preview)
+            return with_confirm_hint(_with_incomplete_note(preview, assigned_incomplete))
 
         if failed:
             # A declarative set with an unresolved channel name must not run
@@ -1066,4 +1091,4 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
         if apply_failed:
             body += "\n  Failed:\n" + _render_failed(apply_failed)
-        return body
+        return _with_incomplete_note(body, assigned_incomplete)

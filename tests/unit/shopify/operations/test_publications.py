@@ -17,7 +17,9 @@ Usage:
 
 import graphql
 import pytest
+import requests
 
+from shopify_mcp.client import ShopifyError, ShopifyProtocolError, TransientShopifyError
 from shopify_mcp.shopify.operations import publications as ops
 from shopify_mcp.shopify.queries import publications as q
 from tests.support import FakeClient
@@ -67,8 +69,10 @@ def test_read_publications_empty_returns_empty_list():
 # ---------- read_product_publications (by id / by handle / neither / null) ------
 
 
-def _product_pubs_response(root_key: str, pid: str = "123") -> dict:
-    return {
+def _product_pubs_response(root_key: str, pid: str = "123", status: str | None = None) -> dict:
+    """The v1 page. ``status`` is set on the product only when given; only a
+    DRAFT product gets the second (V2) read (Story 10.99)."""
+    resp = {
         root_key: {
             "id": f"gid://shopify/Product/{pid}",
             "title": "Tee",
@@ -88,6 +92,9 @@ def _product_pubs_response(root_key: str, pid: str = "123") -> dict:
             },
         }
     }
+    if status is not None:
+        resp[root_key]["status"] = status
+    return resp
 
 
 def _v2_response(nodes: list, has_next: bool = False, end_cursor: str | None = None) -> dict:
@@ -111,12 +118,13 @@ def _rp(pid: str, is_published: bool) -> dict:
 
 
 def test_read_product_publications_by_id_coerces_gid_and_returns_product_and_rps():
-    resp = _product_pubs_response("product", pid="123")
+    resp = _product_pubs_response("product", pid="123", status="DRAFT")
     fc = FakeClient([resp, _v2_response([])])
-    product, rps, capped = ops.read_product_publications(fc, "123", "")
+    product, rps, capped, incomplete = ops.read_product_publications(fc, "123", "")
     assert product == resp["product"]
     assert rps == resp["product"]["resourcePublications"]["nodes"]
     assert capped is False
+    assert incomplete is False
     assert fc.calls[0][0] == q.GET_PRODUCT_PUBLICATIONS_BY_ID
     assert fc.calls[0][1] == {"id": "gid://shopify/Product/123", "first": 50, "after": None}
     assert fc.calls[1][0] == q.GET_PRODUCT_ASSIGNED_PUBLICATIONS
@@ -124,9 +132,9 @@ def test_read_product_publications_by_id_coerces_gid_and_returns_product_and_rps
 
 
 def test_read_product_publications_by_handle_passes_handle_var():
-    resp = _product_pubs_response("productByHandle", pid="456")
+    resp = _product_pubs_response("productByHandle", pid="456", status="DRAFT")
     fc = FakeClient([resp, _v2_response([])])
-    product, rps, capped = ops.read_product_publications(fc, "", "tee")
+    product, rps, capped, _incomplete = ops.read_product_publications(fc, "", "tee")
     assert product == resp["productByHandle"]
     assert rps == resp["productByHandle"]["resourcePublications"]["nodes"]
     assert capped is False
@@ -145,7 +153,7 @@ def test_s1099_merge_adds_only_v2_assigned_records_that_v1_lacks():
     ignored even when v1 lacks them, and a V2 record for a channel v1 already
     lists is not added twice. Only V2's isPublished:false records for channels
     v1 lacks are appended, after the v1 records."""
-    v1 = _product_pubs_response("product")  # Publication/1, published
+    v1 = _product_pubs_response("product", status="DRAFT")  # Publication/1, published
     v1_nodes = v1["product"]["resourcePublications"]["nodes"]
     v2 = _v2_response(
         [
@@ -155,19 +163,21 @@ def test_s1099_merge_adds_only_v2_assigned_records_that_v1_lacks():
         ]
     )
     fc = FakeClient([v1, v2])
-    product, rps, capped = ops.read_product_publications(fc, "123", "")
+    product, rps, capped, incomplete = ops.read_product_publications(fc, "123", "")
     assert product == v1["product"]
     assert rps == [*v1_nodes, _rp("4", False)]
     assert capped is False
+    # A V2 read that reached the end is complete: no note in the tools.
+    assert incomplete is False
     assert fc.responses == []
 
 
 def test_s1099_merge_walks_every_v2_page():
-    v1 = _product_pubs_response("product")
+    v1 = _product_pubs_response("product", status="DRAFT")
     page0 = _v2_response([_rp("3", False)], has_next=True, end_cursor="v2c")
     page1 = _v2_response([_rp("4", False)])
     fc = FakeClient([v1, page0, page1])
-    _product, rps, capped = ops.read_product_publications(fc, "123", "")
+    _product, rps, capped, _incomplete = ops.read_product_publications(fc, "123", "")
     assert [rp["publication"]["id"] for rp in rps] == [
         "gid://shopify/Publication/1",
         "gid://shopify/Publication/3",
@@ -179,20 +189,83 @@ def test_s1099_merge_walks_every_v2_page():
 
 def test_s1099_capped_is_true_when_only_the_v2_walk_stops_short():
     """hasNextPage with a null endCursor stops the V2 walk short; the v1 walk
-    completed, so only V2 can make capped True here."""
-    v1 = _product_pubs_response("product")
+    completed, so only V2 can make capped True here. The assigned records may
+    be incomplete, so that is flagged too."""
+    v1 = _product_pubs_response("product", status="DRAFT")
     fc = FakeClient([v1, _v2_response([_rp("4", False)], has_next=True, end_cursor=None)])
-    _product, rps, capped = ops.read_product_publications(fc, "123", "")
+    _product, rps, capped, incomplete = ops.read_product_publications(fc, "123", "")
     assert capped is True
+    assert incomplete is True
     assert len(rps) == 2
 
 
 def test_s1099_capped_is_true_when_only_the_v1_walk_stops_short():
-    v1 = _product_pubs_response("product")
+    """A short v1 walk is not an incomplete assigned read."""
+    v1 = _product_pubs_response("product", status="DRAFT")
     v1["product"]["resourcePublications"]["pageInfo"] = {"hasNextPage": True, "endCursor": None}
     fc = FakeClient([v1, _v2_response([])])
-    _product, _rps, capped = ops.read_product_publications(fc, "123", "")
+    _product, _rps, capped, incomplete = ops.read_product_publications(fc, "123", "")
     assert capped is True
+    assert incomplete is False
+
+
+@pytest.mark.parametrize("status", ["ACTIVE", "ARCHIVED", None])
+@pytest.mark.parametrize(
+    ("product_id", "handle", "root_key"), [("123", "", "product"), ("", "tee", "productByHandle")]
+)
+def test_s1099_a_non_draft_product_makes_exactly_one_read(status, product_id, handle, root_key):
+    """Only a DRAFT product gets the V2 read. An ACTIVE product's
+    future-scheduled record would otherwise be labelled assigned, and every
+    live-product call would pay a second request. No status key reads as not
+    DRAFT."""
+    v1 = _product_pubs_response(root_key, status=status)
+    fc = FakeClient([v1])
+    product, rps, capped, incomplete = ops.read_product_publications(fc, product_id, handle)
+    assert product == v1[root_key]
+    assert rps == v1[root_key]["resourcePublications"]["nodes"]
+    assert (capped, incomplete) == (False, False)
+    assert len(fc.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("product_id", "handle", "root_key"), [("123", "", "product"), ("", "tee", "productByHandle")]
+)
+def test_s1099_a_draft_product_makes_exactly_two_reads(product_id, handle, root_key):
+    fc = FakeClient([_product_pubs_response(root_key, status="DRAFT"), _v2_response([])])
+    ops.read_product_publications(fc, product_id, handle)
+    assert len(fc.calls) == 2
+    assert fc.calls[1][0] == q.GET_PRODUCT_ASSIGNED_PUBLICATIONS
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ShopifyError("Shopify GraphQL error: boom"),
+        ShopifyProtocolError("Shopify protocol error: <html>"),
+        TransientShopifyError("Shopify HTTP error: 503 after 4 attempts"),
+        requests.ConnectionError("connection reset"),
+    ],
+    ids=["api", "protocol", "transient", "transport"],
+)
+def test_s1099_a_failed_v2_read_returns_the_v1_records_flagged_incomplete(error):
+    """The V2 read only adds assigned records, so its failure must not cost the
+    v1 read: the v1 records come back and the gap is flagged for the tools."""
+    v1 = _product_pubs_response("product", status="DRAFT")
+    fc = FakeClient([v1, error])
+    product, rps, capped, incomplete = ops.read_product_publications(fc, "123", "")
+    assert product == v1["product"]
+    assert rps == v1["product"]["resourcePublications"]["nodes"]
+    assert capped is False
+    assert incomplete is True
+    assert len(fc.calls) == 2
+
+
+def test_s1099_a_programming_error_in_the_v2_read_still_propagates():
+    """Only API, protocol and transport failures degrade. A bug must not be
+    hidden behind the incomplete-read note."""
+    fc = FakeClient([_product_pubs_response("product", status="DRAFT"), TypeError("bug")])
+    with pytest.raises(TypeError, match="bug"):
+        ops.read_product_publications(fc, "123", "")
 
 
 @pytest.mark.parametrize(
@@ -200,7 +273,7 @@ def test_s1099_capped_is_true_when_only_the_v1_walk_stops_short():
 )
 def test_s1099_an_unresolved_product_makes_no_v2_read(product_id, handle, root_key):
     fc = FakeClient([{root_key: None}])
-    assert ops.read_product_publications(fc, product_id, handle) == (None, [], False)
+    assert ops.read_product_publications(fc, product_id, handle) == (None, [], False, False)
     assert len(fc.calls) == 1
 
 
@@ -233,19 +306,20 @@ def test_s1068_both_supplied_never_reads_the_product_id_twin():
 
 
 def test_read_product_publications_neither_id_nor_handle_skips_client():
-    """No identifier → (None, [], False) without ever calling the client."""
+    """No identifier → (None, [], False, False) without ever calling the client."""
     fc = FakeClient([])
-    assert ops.read_product_publications(fc, "", "") == (None, [], False)
+    assert ops.read_product_publications(fc, "", "") == (None, [], False, False)
     assert fc.calls == []
 
 
 def test_read_product_publications_null_product_returns_none():
-    """A deleted / wrong id (Shopify returns {"product": null}) → (None, [], False)."""
+    """A deleted / wrong id (Shopify returns {"product": null}) → (None, [], False, False)."""
     fc = FakeClient([{"product": None}])
-    product, rps, capped = ops.read_product_publications(fc, "999", "")
+    product, rps, capped, incomplete = ops.read_product_publications(fc, "999", "")
     assert product is None
     assert rps == []
     assert capped is False
+    assert incomplete is False
 
 
 # ---------- writes: publish / unpublish build PublicationInput + execute --------

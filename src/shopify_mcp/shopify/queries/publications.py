@@ -76,14 +76,15 @@ query GetProductPublicationsByHandle($handle: String!, $first: Int!, $after: Str
 """
 )
 
-# Story 10.99. A second product read, by id, that adds the assigned records.
-# `resourcePublicationsV2(onlyPublished: false)` is the only read that shows a
-# DRAFT product's assigned channel (a record with `isPublished: false`, which
-# goes live when the product is activated). It is not a superset of the v1
-# read above: it omits published channels that are not in the `publications`
-# roster (Meta, Microsoft Copilot), which v1 returns. So v1 stays the published
-# source and only this read's `isPublished: false` records are used (live,
-# 2026-09-26, API 2026-01).
+# Story 10.99. A second product read, by id, made only for a DRAFT product,
+# that adds its assigned records. `resourcePublicationsV2(onlyPublished: false)`
+# is the only read that shows a DRAFT product's assigned channel (a record with
+# `isPublished: false`, which goes live when the product is activated). It is
+# not a superset of the v1 read above: it omits published channels that are
+# not in the `publications` roster (Meta, Microsoft Copilot), which v1 returns.
+# So v1 stays the published source and only this read's `isPublished: false`
+# records are used (live, 2026-09-26, API 2026-01). Other products skip it, so
+# an ACTIVE product's future-scheduled record is not labelled assigned.
 GET_PRODUCT_ASSIGNED_PUBLICATIONS = """
 query ProductAssignedPublications($id: ID!, $first: Int!, $after: String) {
   product(id: $id) {
@@ -105,10 +106,13 @@ query ProductAssignedPublications($id: ID!, $first: Int!, $after: String) {
 # there is no by-id twin to share a fragment with. The selection is inlined
 # rather than factored, matching the reasoning in queries/collections.py.
 #
-# The selection is byte-identical in shape to ProductPublicationsFields, which
-# is not an assumption: the 2026-09-05 live probe read a manual and a smart
-# collection and both returned `publication { id name }`, `publishDate` and
-# `isPublished` with the same pageInfo.
+# The resourcePublications node selection matches ProductPublicationsFields,
+# which is not an assumption: the 2026-09-05 live probe read a manual and a
+# smart collection and both returned `publication { id name }`, `publishDate`
+# and `isPublished` with the same pageInfo. The product side differs since
+# Story 10.99: its fragment also selects `status`, and a DRAFT product is
+# paired with the GET_PRODUCT_ASSIGNED_PUBLICATIONS read. Collections have
+# neither.
 #
 # `ruleSet` is selected because `get_collection_publications` renders a
 # "Type: smart|manual" line from it, classifying the same way
