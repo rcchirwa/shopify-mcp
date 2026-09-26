@@ -4,7 +4,23 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-09-25.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-09-26.
+
+---
+
+## 2026-09-26 — Story 9.26 (live probe: `publishablePublish` / `publishableUnpublish` are all-or-nothing across publication ids)
+
+This closes the open question from Story 9.24's code review (finding 4, skipped there and recorded in PR #177's description). 9.24's outcome header assumes that a multi-id `publishablePublish` or `publishableUnpublish` which returns any userError applied **none** of its ids. `_channel_write` sets `done = acting` only when there are no userErrors, and each `set_product_publications` leg sets `added_applied` / `removed_applied` the same way. If Shopify applied the other ids, `FAILED —` with `(none)` would be a false "nothing landed".
+
+**Live evidence (2026-09-26, main checkout, API `2026-01` requested and served).** Target: the DRAFT "MCP Test Product" `gid://shopify/Product/8743953137817` and nothing else, starting and ending with no publication records (verified). The ids were Inbox (valid) and `gid://shopify/Publication/1` (non-existent), sent in both orders through the repo's own `PUBLISHABLE_PUBLISH` / `PUBLISHABLE_UNPUBLISH`:
+- **Publish** [Inbox, bogus] and [bogus, Inbox] returned the userError `["input","N","publicationId"]` "Publication does not exist or is not publishable", and nothing was added.
+- **Unpublish** [Inbox, bogus] and [bogus, Inbox], with Inbox already assigned, returned the same userError, and Inbox stayed.
+
+The userError's `field` indexes the input list. The raw responses and read-backs are on the 9.26 card (https://trello.com/c/PY3lLEM3).
+
+**Result:** the existing code matches Shopify's behaviour, so there is no behaviour change. A short contract comment now sits at `_channel_write`'s userErrors branch and at both `set_product_publications` legs. **Scope of the claim:** verified for the non-existent-id rejection only. Other rejection classes, such as a channel refusing an ACTIVE product on eligibility, are untested.
+
+**Read-back trap (why the first probe run proved nothing).** `resourcePublications`, whether with its default `onlyPublished: true` or with `onlyPublished: false`, and `publishedOnPublication` do not show a DRAFT product's publication records at all. Only `resourcePublicationsV2(onlyPublished: false)` shows them (`isPublished: false`). The repo's own reads use `resourcePublications`, so the tools can't see a draft's channel assignments. That is filed as Story 10.99 (https://trello.com/c/Sj5k2EvB), not fixed here.
 
 ---
 
