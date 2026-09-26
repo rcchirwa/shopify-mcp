@@ -50,6 +50,7 @@ from shopify_mcp.tools._response import (
     with_confirm_hint,
 )
 from shopify_mcp.tools._scrub import cap
+from shopify_mcp.tools._write_tool import _outcome_header
 
 # The GraphQL strings now live in shopify.queries.publications. They are re-exported
 # here so existing callers/tests (`from tools.publications import LIST_PUBLICATIONS`)
@@ -351,6 +352,13 @@ def _render_failed(failed: list[dict[str, Any]]) -> str:
     )
 
 
+def _render_unresolved_names(failed: list[dict[str, Any]]) -> str:
+    """Comma-joined, capped channel names for the unresolved-name refusal in
+    `set_product_publications` — distinct from `_render_failed`'s per-line
+    "name: error" rendering, which this message doesn't need."""
+    return cap(", ".join(str(f.get("channel_name", "?")) for f in failed))
+
+
 def _channel_write(
     client: ShopifyClient,
     *,
@@ -428,8 +436,22 @@ def _channel_write(
         f"unchanged={[n['name'] for n in unchanged]} | failed={len(apply_failed)}",
     )
 
+    # The header is keyed on the mutation actually attempted (acting → done),
+    # never on `apply_failed` as a whole — that list also carries pre-mutation
+    # resolve failures (an unresolved channel name), rendered in the Failed:
+    # block below but not themselves a rejected write. When NOTHING requested
+    # resolved to a target (`targets` empty), `_outcome_header` falls back to
+    # counting those resolve failures instead, so an all-unresolved call
+    # reads FAILED rather than a trivial CONFIRMED.
+    header = _outcome_header(
+        heading,
+        len(done),
+        len(acting) - len(done),
+        unresolved=len(apply_failed),
+        resolved_any=bool(targets),
+    )
     body = (
-        f"CONFIRMED — {heading}\n"
+        f"{header}\n"
         f"  {meta_line}\n"
         f"  {spec['done_label']}:\n{_render_channel_lines(done)}\n"
         f"  Unchanged:\n{_render_channel_lines(unchanged)}"
@@ -809,6 +831,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         on. Publishes to missing channels, unpublishes from extras. Returns a
         preview unless confirm=True.
 
+        With confirm=True, any channel name in channel_names that fails to
+        resolve refuses the whole call before any change is made; the
+        preview (confirm=False) still lists the failed names alongside what
+        it would change.
+
         Supply exactly one of product_id / handle. **Supplying both is refused
         before either mutation** rather than resolved by `product_id` with the
         `handle` silently discarded — on a write tool that precedence could
@@ -866,7 +893,20 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not confirm:
             return with_confirm_hint(preview)
 
-        apply_failed = list(failed)
+        if failed:
+            # A declarative set with an unresolved channel name must not run
+            # at all: the desired state derived above already excludes that
+            # name (it never made it into `desired_nodes`), so proceeding
+            # would unpublish every channel not named — including channels
+            # the caller never meant to touch. Refuse before either leg.
+            return (
+                "Error: could not resolve channel name(s): "
+                f"{_render_unresolved_names(failed)}. Nothing was changed — "
+                "a declarative set with an unknown name would unpublish "
+                "every channel not named. Correct the names and retry."
+            )
+
+        apply_failed: list[dict[str, Any]] = []
         added_applied = []
         removed_applied = []
 
@@ -887,14 +927,25 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             try:
                 result = ops.unpublish(client, gid, [n["id"] for n in removed_nodes])
             except Exception as e:
-                return f"Error during unpublish: {cap(str(e))}\n{SCOPE_HINT}"
-            user_errors = extract_user_errors(result, "publishableUnpublish")
-            if user_errors:
-                for ue in user_errors:
-                    apply_failed.append(_map_user_error(ue, removed_nodes))
+                if not added_nodes:
+                    return f"Error during unpublish: {cap(str(e))}\n{SCOPE_HINT}"
+                # A publish leg was attempted (whether it landed or was
+                # rejected), so this can't be a bare Error return — that
+                # would hide the publish outcome and skip log_write. Record
+                # every removed node as failed instead and continue to
+                # log_write and the header, which reads PARTIAL if the
+                # publish landed or FAILED if it was rejected too.
+                capped = cap(str(e))
+                for n in removed_nodes:
+                    apply_failed.append({"channel_name": n["name"], "error": capped})
             else:
-                _invalidate_channels(client)
-                removed_applied = removed_nodes
+                user_errors = extract_user_errors(result, "publishableUnpublish")
+                if user_errors:
+                    for ue in user_errors:
+                        apply_failed.append(_map_user_error(ue, removed_nodes))
+                else:
+                    _invalidate_channels(client)
+                    removed_applied = removed_nodes
 
         log_write(
             "set_product_publications",
@@ -903,8 +954,21 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"unchanged={[n['name'] for n in unchanged_nodes]} | failed={len(apply_failed)}",
         )
 
+        # Unlike _channel_write, this tool issues two independent mutations
+        # (publish then unpublish), so one leg can land while the other is
+        # rejected — a genuine partial write. An unresolved channel name is
+        # refused above before either leg runs, so `apply_failed` here only
+        # ever holds real mutation rejections — this is the mutation-only
+        # count, with no "nothing resolved" fallback needed.
+        succeeded = len(added_applied) + len(removed_applied)
+        mutation_failed = (len(added_nodes) - len(added_applied)) + (
+            len(removed_nodes) - len(removed_applied)
+        )
+        header = _outcome_header(
+            "Set product publications (declarative)", succeeded, mutation_failed
+        )
         body = (
-            f"CONFIRMED — Set product publications (declarative)\n"
+            f"{header}\n"
             f"  Product: {title} (handle: {prod_handle}, id: {from_gid(gid)})\n"
             f"  Added (published):\n{_render_channel_lines(added_applied)}\n"
             f"  Removed (unpublished):\n{_render_channel_lines(removed_applied)}\n"

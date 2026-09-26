@@ -20,6 +20,8 @@ from shopify_mcp.tools._response import format_user_errors, with_confirm_hint
 
 _PREVIEW_MARKER = "PREVIEW — "
 _CONFIRMED_MARKER = "CONFIRMED — "
+_PARTIAL_MARKER = "PARTIAL — "
+_FAILED_MARKER = "FAILED — "
 
 
 def _confirmed_from_preview(preview: str) -> str:
@@ -37,6 +39,38 @@ def _confirmed_from_preview(preview: str) -> str:
     if _PREVIEW_MARKER in preview:
         return preview.replace(_PREVIEW_MARKER, _CONFIRMED_MARKER, 1)
     return _CONFIRMED_MARKER + preview
+
+
+def _outcome_header(
+    heading: str,
+    succeeded: int,
+    failed: int,
+    *,
+    unresolved: int = 0,
+    resolved_any: bool = True,
+) -> str:
+    """Pick the CONFIRMED / PARTIAL / FAILED header for a batch write tool
+    (a per-item mutation with its own done/failed lists) from its
+    (succeeded, failed) mutation counts.
+
+    failed=0 → "CONFIRMED — {heading}" (also covers the 0/0 no-op case).
+    succeeded=0 and failed>0 → "FAILED — {heading}" — nothing landed.
+    Otherwise → "PARTIAL — {heading} (N succeeded, M failed)".
+
+    resolved_any=False means nothing the caller requested ever resolved to a
+    target, so no mutation could be attempted at all — `failed` is replaced
+    with `unresolved` (the resolve-failure count) so an all-unresolved batch
+    reads FAILED over its Failed:/Unresolved: block instead of a trivial
+    CONFIRMED. See `publications._channel_write` and
+    `inventory.update_variant_inventory_tracking` for callers of this.
+    """
+    if not resolved_any:
+        failed = unresolved
+    if failed == 0:
+        return f"{_CONFIRMED_MARKER}{heading}"
+    if succeeded == 0:
+        return f"{_FAILED_MARKER}{heading}"
+    return f"{_PARTIAL_MARKER}{heading} ({succeeded} succeeded, {failed} failed)"
 
 
 def write_gate(

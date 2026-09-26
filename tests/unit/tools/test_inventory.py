@@ -472,6 +472,10 @@ def test_tracking_confirm_issues_one_mutation_per_changed_variant():
         confirm=True,
     )
     assert out.startswith("CONFIRMED")
+    # Story 9.24 round 2 (verifier finding): pin the exact first line so a
+    # suffixed header (e.g. " (ok)") — which still satisfies `startswith` —
+    # is caught here.
+    assert out.split("\n", 1)[0] == "CONFIRMED — Variant inventory tracking update"
     assert "Changed (2):" in out
     # First call is the read; mutations come after with the right GIDs.
     mutation_calls = fc.calls[1:]
@@ -596,12 +600,131 @@ def test_tracking_partial_failure_reports_per_variant():
         tracked=True,
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    # Story 9.24: 1 changed / 1 failed is a partial write, not a confirmed one.
+    assert out.startswith("PARTIAL — Variant inventory tracking update (1 succeeded, 1 failed)")
+    assert "CONFIRMED" not in out
     assert "Changed (1):" in out
     assert "Failed (1):" in out
     # Full 'field: message' shape — locks in format_user_errors_joined output
     # so a regression in the helper surfaces here.
     assert "inventoryItemId: locked by another process" in out
+
+
+def test_tracking_all_rejected_is_not_confirmed():
+    """Story 9.24: every attempted variant is rejected — 0 succeeded, 2 failed
+    — so the header must read FAILED, never CONFIRMED, though the per-variant
+    Failed block is unchanged.
+
+    Round 2 (verifier finding): an already-tracked variant is included so a
+    mutant counting `unchanged` variants as `succeeded` is caught — without
+    it, `succeeded = len(changed) + len(unchanged)` would read 1 (the
+    unchanged variant) instead of 0 and the header would read PARTIAL
+    instead of FAILED under that mutant, with no test noticing."""
+    variants = [
+        _variant("099", "XS", "REEF-XS", [], tracked=True),  # already at target
+        _variant("100", "S", "REEF-S", [], tracked=False),
+        _variant("101", "M", "REEF-M", [], tracked=False),
+    ]
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            _tracked_update_err("inventoryItemId", "locked by another process"),
+            _tracked_update_err("inventoryItemId", "locked by another process"),
+        ]
+    )
+    out = tools["update_variant_inventory_tracking"](
+        product_id="555",
+        tracked=True,
+        confirm=True,
+    )
+    assert out.startswith("FAILED — Variant inventory tracking update")
+    assert "CONFIRMED" not in out
+    assert "Changed (0):" in out
+    assert "Unchanged (1):" in out
+    assert "Failed (2):" in out
+    # Prove the write actually ran for both variants, not a vacuous pass.
+    assert len(fc.calls) == 3
+
+
+def test_tracking_all_variant_ids_unresolved_is_not_confirmed():
+    """Story 9.24 round 3 (verifier finding): every requested variant id
+    fails to RESOLVE, not just to mutate — `targets` is empty, so no
+    mutation is ever attempted and `failed` (scoped to attempted-and-
+    rejected variants) stays empty too. The original fix's mutation-only
+    failed count read 0 for this case, so the header still read CONFIRMED
+    over an "Unresolved variant ids:" block listing every id the caller
+    asked for — the same hazard round 2 closed for publications. Nothing
+    resolved, so this must read FAILED."""
+    variants = [_variant("100", "S", "REEF-S", [], tracked=False)]
+    tools, fc = _build([_product_with_variants(variants)])
+    out = tools["update_variant_inventory_tracking"](
+        product_id="555",
+        tracked=True,
+        variant_ids=["999"],
+        confirm=True,
+    )
+    assert out.startswith("FAILED — Variant inventory tracking update")
+    assert "CONFIRMED" not in out
+    assert "Changed (0):" in out
+    assert "999" in out[out.index("Unresolved variant ids:") :]
+    # No mutation was possible — nothing resolved — but the product read did run.
+    assert len(fc.calls) == 1
+    assert fc.responses == []
+
+
+def test_tracking_some_variant_ids_unresolved_success_reads_confirmed():
+    """Story 9.24 round 4 (surviving mutant M5): one requested variant id
+    resolves and its mutation succeeds, while another does not resolve at
+    all. `targets` is non-empty (100 resolved), so the mutation-only
+    `failed` count applies (round 3's "nothing resolved" fallback must NOT
+    fire) — the unresolved id must not inflate the failed count. A mutant
+    that summed `len(failed) + len(unresolved)` instead of the `if targets`
+    branch would read failed_count=1 and PARTIAL instead of CONFIRMED; this
+    must read CONFIRMED, with 999 still reported in the Unresolved block."""
+    variants = [_variant("100", "S", "REEF-S", [], tracked=False)]
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            _tracked_update_ok("gid://shopify/InventoryItem/100", True),
+        ]
+    )
+    out = tools["update_variant_inventory_tracking"](
+        product_id="555",
+        tracked=True,
+        variant_ids=["100", "999"],
+        confirm=True,
+    )
+    assert out.split("\n", 1)[0] == "CONFIRMED — Variant inventory tracking update"
+    assert "999" in out[out.index("Unresolved variant ids:") :]
+    assert len(fc.calls) == 2
+    assert fc.responses == []
+
+
+def test_tracking_unchanged_variant_alongside_unresolved_reads_confirmed():
+    """Story 9.24 round 5 (surviving mutant M18): a requested variant that's
+    already at the target tracked state needs no mutation at all — it lands
+    in `unchanged`, not `to_change` — while a second requested id doesn't
+    resolve. `targets` is non-empty (100 resolved), so the mutation-only
+    `failed_count = len(failed) if targets else len(unresolved)` must read 0
+    and the header must read CONFIRMED. A mutant keying that fallback on
+    `to_change` instead of `targets` would see `to_change` empty here too
+    (nothing needed changing) and wrongly fall back to `len(unresolved) = 1`,
+    reading FAILED even though nothing was rejected. 999 must still be
+    reported in the Unresolved block."""
+    variants = [_variant("100", "S", "REEF-S", [], tracked=True)]
+    tools, fc = _build([_product_with_variants(variants)])
+    out = tools["update_variant_inventory_tracking"](
+        product_id="555",
+        tracked=True,
+        variant_ids=["100", "999"],
+        confirm=True,
+    )
+    assert out.split("\n", 1)[0] == "CONFIRMED — Variant inventory tracking update"
+    assert "999" in out[out.index("Unresolved variant ids:") :]
+    # No mutation was possible or needed (100 already matches) — prove the
+    # read actually ran and nothing else was scripted or left unconsumed.
+    assert len(fc.calls) == 1
+    assert fc.responses == []
 
 
 def test_tracking_preview_only_issues_exactly_one_execute_call():
@@ -665,7 +788,11 @@ def test_tracking_transport_error_mid_loop_does_not_abort_batch():
         tracked=True,
         confirm=True,
     )
-    assert out.startswith("CONFIRMED"), out
+    # Story 9.24: 2 changed / 1 failed is a partial write, not a confirmed one.
+    assert out.startswith("PARTIAL — Variant inventory tracking update (2 succeeded, 1 failed)"), (
+        out
+    )
+    assert "CONFIRMED" not in out
     assert "Changed (2):" in out
     assert "Failed (1):" in out
     assert "transport error" in out and "upstream 502" in out
@@ -770,7 +897,9 @@ def test_tracking_variant_missing_inventory_item_id_is_reported_failed():
         tracked=True,
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    # Story 9.24: 1 changed / 1 failed is a partial write, not a confirmed one.
+    assert out.startswith("PARTIAL — Variant inventory tracking update (1 succeeded, 1 failed)")
+    assert "CONFIRMED" not in out
     assert "Changed (1):" in out
     assert "Failed (1):" in out
     assert "variant has no inventoryItem id" in out

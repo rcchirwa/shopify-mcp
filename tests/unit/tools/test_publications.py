@@ -293,6 +293,10 @@ def test_publish_confirmed_only_mutates_needed_channels():
         confirm=True,
     )
     assert out.startswith("CONFIRMED")
+    # Story 9.24 round 2 (verifier finding): a site whose success header
+    # gained a suffix (e.g. " (ok)") still satisfies a `startswith` check —
+    # pin the exact first line so that mutant is caught here.
+    assert out.split("\n", 1)[0] == "CONFIRMED — Publish product to channels"
     # Only Shop is actually submitted (Online Store already published)
     _, vars_put = fc.calls[2]
     assert vars_put["id"] == "gid://shopify/Product/123"
@@ -371,6 +375,88 @@ def test_publish_user_errors_surfaced():
         confirm=True,
     )
     assert "Failed" in out and "not authorized" in out
+
+
+def test_publish_all_rejected_is_not_confirmed():
+    """Story 9.24: the only target is rejected — the whole write failed, so
+    the header must never read CONFIRMED. Cross-checked against 9.22's own
+    "no PREVIEW leak" concern: a rejected write must not read PREVIEW either,
+    since it did reach and complete a (failed) confirm=True attempt."""
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _product_pubs(pid="123", published_ids=[], not_published_ids=[1]),
+            _publish_err("publicationId", "not authorized"),
+        ]
+    )
+    out = tools["publish_product_to_channels"](
+        product_id="123",
+        channel_names=["Online Store"],
+        confirm=True,
+    )
+    assert out.startswith("FAILED — Publish product to channels")
+    assert "CONFIRMED" not in out
+    assert "PREVIEW" not in out
+    assert "Now published to" in out
+    assert "(none)" in out[out.index("Now published to") : out.index("Unchanged")]
+
+
+def test_publish_all_unresolved_is_not_confirmed():
+    """Story 9.24 round 2 (verifier finding): every requested channel fails
+    to RESOLVE, not just to mutate — `acting` is empty, so no mutation is
+    ever attempted. The original fix's mutation-only failed count read 0 for
+    this case, so the header still said CONFIRMED over a Failed: block
+    listing every target. Nothing succeeded, so this must read FAILED."""
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _channels_response(),  # refresh on miss
+            _product_pubs(pid="123", published_ids=[], not_published_ids=[1]),
+        ]
+    )
+    out = tools["publish_product_to_channels"](
+        product_id="123",
+        channel_names=["Typo Channel"],
+        confirm=True,
+    )
+    assert out.startswith("FAILED — Publish product to channels")
+    assert "CONFIRMED" not in out
+    assert "PREVIEW" not in out
+    assert "Typo Channel" in out[out.index("Failed") :]
+    # Prove the write actually ran (no mutation was possible, but the reads
+    # and resolve attempts did) rather than short-circuiting vacuously.
+    assert len(fc.calls) == 3
+    assert fc.responses == []
+
+
+def test_publish_unresolved_alongside_already_published_reads_confirmed():
+    """Story 9.24 round 3 (verifier finding): Online Store is already
+    published (resolves, needs no action — `acting` is empty) and Typo
+    Channel fails to resolve. Round 2's fallback was keyed on `acting` being
+    empty, which also covers this case, and wrongly read FAILED even though
+    nothing was rejected — no mutation was ever attempted because nothing
+    needed to change. This must read CONFIRMED, matching pre-9.24 behavior,
+    since at least one requested channel (Online Store) DID resolve."""
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _channels_response(),  # refresh on miss
+            _product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3]),
+        ]
+    )
+    out = tools["publish_product_to_channels"](
+        product_id="123",
+        channel_names=["Online Store", "Typo Channel"],
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED — Publish product to channels")
+    assert "FAILED" not in out
+    assert "Typo Channel" in out[out.index("Failed") :]
+    assert "Online Store" in out[out.index("Unchanged") : out.index("Failed")]
+    # No mutation was possible — nothing needed changing — but the reads and
+    # resolve attempt did run.
+    assert len(fc.calls) == 3
+    assert fc.responses == []
 
 
 def test_publish_requires_channels_or_ids():
@@ -477,6 +563,10 @@ def test_unpublish_confirmed_only_mutates_currently_published():
         confirm=True,
     )
     assert out.startswith("CONFIRMED")
+    # Story 9.24 round 2 (verifier finding): pin the exact first line so a
+    # suffixed header (e.g. " (ok)") — which still satisfies `startswith` —
+    # is caught here.
+    assert out.split("\n", 1)[0] == "CONFIRMED — Unpublish product from channels"
     _, vars_put = fc.calls[2]
     assert vars_put["input"] == [{"publicationId": ONLINE["id"]}]
     assert fc.calls[2][0] == PUBLISHABLE_UNPUBLISH
@@ -521,6 +611,10 @@ def test_set_declarative_computes_diff():
         confirm=True,
     )
     assert out.startswith("CONFIRMED")
+    # Story 9.24 round 2 (verifier finding): pin the exact first line so a
+    # suffixed header (e.g. " (ok)") — which still satisfies `startswith` —
+    # is caught here.
+    assert out.split("\n", 1)[0] == "CONFIRMED — Set product publications (declarative)"
     added_section = out[out.index("Added (published)") : out.index("Removed (unpublished)")]
     removed_section = out[out.index("Removed (unpublished)") : out.index("Unchanged")]
     unchanged_section = out[out.index("Unchanged") :]
@@ -947,6 +1041,9 @@ def test_unpublish_mutation_exception_surfaces_hint():
 
 
 def test_unpublish_user_errors_surface_in_confirmed_body():
+    """Story 9.24: the sole target is rejected, so the whole write failed —
+    the header must read FAILED, not CONFIRMED, though the Failed: block is
+    unchanged from before."""
     tools, fc = _build(
         [
             _channels_response(),
@@ -966,7 +1063,8 @@ def test_unpublish_user_errors_surface_in_confirmed_body():
         channel_names=["Online Store"],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith("FAILED — Unpublish product from channels")
+    assert "CONFIRMED" not in out
     assert "Failed" in out
     assert "Online Store" in out[out.index("Failed") :]
     assert "not authorized" in out
@@ -1088,6 +1186,9 @@ def test_set_publish_mutation_exception_surfaces_publish_specific_hint():
 
 
 def test_set_publish_user_errors_carry_into_apply_failed():
+    """Story 9.24: the only leg (publish) is entirely rejected and nothing
+    needed removing — 0 succeeded, 1 failed — so the header must read
+    FAILED, not CONFIRMED."""
     tools, fc = _build(
         [
             _channels_response(),
@@ -1100,18 +1201,77 @@ def test_set_publish_user_errors_carry_into_apply_failed():
         channel_names=["Online Store"],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith("FAILED — Set product publications (declarative)")
+    assert "CONFIRMED" not in out
     assert "Failed" in out
     assert "not authorized" in out
 
 
-def test_set_unpublish_mutation_exception_surfaces_unpublish_specific_hint():
+def test_set_all_unresolved_is_refused_before_mutation():
+    """A declarative set is refused, not attempted, when a requested channel
+    name fails to resolve — proceeding would unpublish every channel not
+    named. Here every name is unresolved."""
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _channels_response(),  # refresh on miss
+            _product_pubs(pid="123", published_ids=[], not_published_ids=[1]),
+        ]
+    )
+    out = tools["set_product_publications"](
+        product_id="123",
+        channel_names=["Typo Channel"],
+        confirm=True,
+    )
+    assert out.startswith("Error: could not resolve channel name(s): Typo Channel")
+    assert "Nothing was changed" in out
+    assert "CONFIRMED" not in out
+    # The resolve attempt and product read ran; no mutation call was made.
+    assert len(fc.calls) == 3
+    assert fc.responses == []
+    assert not any(q in (PUBLISHABLE_PUBLISH, PUBLISHABLE_UNPUBLISH) for q, _ in fc.calls)
+
+
+def test_set_unresolved_alongside_resolved_channel_is_refused_before_mutation():
+    """One requested channel name (Online Store) resolves and needs no
+    change; the other (Typo Channel) doesn't resolve. The refusal fires on
+    ANY unresolved name, regardless of what the resolved ones would do."""
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _channels_response(),  # refresh on miss
+            _product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3]),
+        ]
+    )
+    out = tools["set_product_publications"](
+        product_id="123",
+        channel_names=["Online Store", "Typo Channel"],
+        confirm=True,
+    )
+    assert out.startswith("Error: could not resolve channel name(s): Typo Channel")
+    assert "Nothing was changed" in out
+    assert "CONFIRMED" not in out
+    assert "FAILED" not in out
+    # The resolve attempt and product read ran; no mutation call was made.
+    assert len(fc.calls) == 3
+    assert fc.responses == []
+    assert not any(q in (PUBLISHABLE_PUBLISH, PUBLISHABLE_UNPUBLISH) for q, _ in fc.calls)
+
+
+def test_set_publish_lands_then_unpublish_exception_is_partial(monkeypatch):
+    """The publish leg (add Point of Sale) lands before the unpublish leg
+    (remove Online Store) raises. A bare 'Error during unpublish' return
+    would hide the landed publish and skip log_write, so the raised
+    exception must instead be recorded as a failed removal and the header
+    must read PARTIAL, with the publish visible under Added."""
+    seen = []
+    monkeypatch.setattr(publications, "log_write", lambda *a: seen.append(a))
     tools, fc = _build(
         [
             _channels_response(),
             _product_pubs(pid="123", published_ids=[1, 4], not_published_ids=[2, 3]),
             _publish_ok(),  # add (publish) succeeds
-            RuntimeError("unpublish 502"),  # remove (unpublish) fails
+            RuntimeError("unpublish 502"),  # remove (unpublish) raises
         ]
     )
     out = tools["set_product_publications"](
@@ -1119,11 +1279,93 @@ def test_set_unpublish_mutation_exception_surfaces_unpublish_specific_hint():
         channel_names=["Point of Sale", "Google & YouTube"],
         confirm=True,
     )
-    assert "Error during unpublish" in out
+    assert out.startswith(
+        "PARTIAL — Set product publications (declarative) (1 succeeded, 1 failed)"
+    )
+    assert "Point of Sale" in out[out.index("Added (published)") : out.index("Removed")]
+    assert "Online Store" in out[out.index("Failed") :]
     assert "unpublish 502" in out
+    assert "Error during unpublish" not in out
+    assert len(fc.calls) == 4
+    assert fc.responses == []
+    assert len(seen) == 1
+    name, desc = seen[0]
+    assert name == "set_product_publications"
+    assert "added=['Point of Sale']" in desc
+    assert "failed=1" in desc
+
+
+def test_set_publish_rejected_then_unpublish_exception_is_failed(monkeypatch):
+    """Orchestrator decision (Story 9.24 F2 continuation): the publish leg
+    (add Point of Sale) is REJECTED (a userError, not an exception) and the
+    unpublish leg (remove Online Store) then raises. A publish leg was
+    still ATTEMPTED (added_nodes non-empty), so the guard must not fall
+    back to a bare 'Error during unpublish' — that would hide the publish's
+    userError and skip log_write. Both failures land in the Failed block
+    and, since nothing landed on either leg, the header reads FAILED."""
+    seen = []
+    monkeypatch.setattr(publications, "log_write", lambda *a: seen.append(a))
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _product_pubs(pid="123", published_ids=[1, 4], not_published_ids=[2, 3]),
+            _publish_err("publicationId", "not authorized"),  # add (publish) rejected
+            RuntimeError("unpublish 502"),  # remove (unpublish) raises
+        ]
+    )
+    out = tools["set_product_publications"](
+        product_id="123",
+        channel_names=["Point of Sale", "Google & YouTube"],
+        confirm=True,
+    )
+    assert out.startswith("FAILED — Set product publications (declarative)")
+    assert "CONFIRMED" not in out
+    assert "PARTIAL" not in out
+    failed_block = out[out.index("Failed") :]
+    assert "not authorized" in failed_block
+    assert "unpublish 502" in failed_block
+    assert "Online Store" in failed_block
+    assert "Error during unpublish" not in out
+    assert len(fc.calls) == 4
+    assert fc.responses == []
+    assert len(seen) == 1
+    name, desc = seen[0]
+    assert name == "set_product_publications"
+    assert "added=[]" in desc
+    assert "failed=2" in desc
+
+
+def test_set_no_publish_leg_unpublish_exception_returns_error(monkeypatch):
+    """When nothing has landed yet (no publish leg attempted here — Google &
+    YouTube is already published, so only the unpublish leg runs) and the
+    unpublish mutation raises, the tool still returns the bare
+    'Error during unpublish' — there's nothing landed to hide, and log_write
+    must not run on this early-return path."""
+    seen = []
+    monkeypatch.setattr(publications, "log_write", lambda *a: seen.append(a))
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _product_pubs(pid="123", published_ids=[1, 4], not_published_ids=[2, 3]),
+            RuntimeError("unpublish 502"),  # remove (unpublish) raises
+        ]
+    )
+    out = tools["set_product_publications"](
+        product_id="123",
+        channel_names=["Google & YouTube"],
+        confirm=True,
+    )
+    assert out.startswith("Error during unpublish")
+    assert "unpublish 502" in out
+    assert len(fc.calls) == 3
+    assert fc.responses == []
+    assert seen == []
 
 
 def test_set_unpublish_user_errors_carry_into_apply_failed():
+    """Story 9.24: the publish leg (add Point of Sale) succeeds but the
+    unpublish leg (remove Online Store) is rejected — 1 succeeded, 1 failed —
+    so the header must read PARTIAL with the counts, not CONFIRMED."""
     tools, fc = _build(
         [
             _channels_response(),
@@ -1144,20 +1386,164 @@ def test_set_unpublish_user_errors_carry_into_apply_failed():
         channel_names=["Point of Sale", "Google & YouTube"],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(
+        "PARTIAL — Set product publications (declarative) (1 succeeded, 1 failed)"
+    )
+    assert "CONFIRMED" not in out
     assert "Failed" in out
     assert "locked" in out
 
 
-def test_set_confirmed_body_renders_failed_block_for_unknown_channel():
-    """set_product_publications must carry resolve-time failures through to
-    the CONFIRMED body, not just the preview."""
+def test_set_publish_rejected_unpublish_succeeds_is_partial():
+    """Story 9.24 round 2 (verifier finding): the OPPOSITE leg ordering from
+    the test above — the publish leg (add Point of Sale) is rejected but the
+    unpublish leg (remove Online Store) lands. A mutant that dropped
+    `removed_applied` from `succeeded` survived the original suite because
+    only the publish-succeeds/unpublish-fails ordering was covered; this
+    pins the reverse so a landed unpublish is never mislabelled FAILED."""
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _product_pubs(pid="123", published_ids=[1, 4], not_published_ids=[2, 3]),
+            _publish_err("publicationId", "not authorized"),
+            _unpublish_ok(),
+        ]
+    )
+    out = tools["set_product_publications"](
+        product_id="123",
+        channel_names=["Point of Sale", "Google & YouTube"],
+        confirm=True,
+    )
+    assert out.startswith(
+        "PARTIAL — Set product publications (declarative) (1 succeeded, 1 failed)"
+    )
+    assert "Online Store" in out[out.index("Removed (unpublished)") : out.index("Unchanged")]
+    assert len(fc.calls) == 4
+    assert fc.responses == []
+
+
+def test_set_empty_list_unpublishes_all_when_it_lands():
+    """channel_names=[] deliberately means "no channels" — the desired state
+    is empty, with no resolve failure involved, so it must still run: the
+    unpublish leg for every currently-published channel is attempted and,
+    here, lands."""
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3, 4]),
+            _unpublish_ok(),
+        ]
+    )
+    out = tools["set_product_publications"](
+        product_id="123",
+        channel_names=[],
+        confirm=True,
+    )
+    assert out.startswith("CONFIRMED — Set product publications (declarative)")
+    assert "Online Store" in out[out.index("Removed (unpublished)") : out.index("Unchanged")]
+    assert len(fc.calls) == 3
+    assert fc.responses == []
+
+
+def test_set_empty_list_unpublish_rejected_is_not_confirmed():
+    """channel_names=[] deliberately means "no channels" — the desired state
+    is empty, with no resolve failure involved, so it must still run: here
+    the unpublish it attempts for the currently-published Online Store is
+    REJECTED, so this must read FAILED, not CONFIRMED."""
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3, 4]),
+            {
+                "publishableUnpublish": {
+                    "publishable": None,
+                    "userErrors": [
+                        {"field": ["input", "0", "publicationId"], "message": "locked"},
+                    ],
+                }
+            },
+        ]
+    )
+    out = tools["set_product_publications"](
+        product_id="123",
+        channel_names=[],
+        confirm=True,
+    )
+    assert out.splitlines()[0] == "FAILED — Set product publications (declarative)"
+    assert "CONFIRMED" not in out
+    assert "Online Store" in out[out.index("Failed") :]
+    assert len(fc.calls) == 3
+    assert fc.responses == []
+
+
+def test_set_unresolved_only_channel_is_refused_without_touching_existing_publication():
+    """The requested channel_names list is a single unresolvable name ('Typo
+    Channel'). Before F1's fix, the (empty) desired state this produced
+    still unpublished every channel not named — here, Online Store — and
+    the write landed with only a PARTIAL header to show for it. It must now
+    be refused before any mutation, leaving Online Store untouched."""
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _channels_response(),  # refresh on miss
+            _product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3, 4]),
+        ]
+    )
+    out = tools["set_product_publications"](
+        product_id="123",
+        channel_names=["Typo Channel"],
+        confirm=True,
+    )
+    assert out.startswith("Error: could not resolve channel name(s): Typo Channel")
+    assert "Nothing was changed" in out
+    assert "PARTIAL" not in out
+    assert len(fc.calls) == 3
+    assert fc.responses == []
+    assert not any(q in (PUBLISHABLE_PUBLISH, PUBLISHABLE_UNPUBLISH) for q, _ in fc.calls)
+
+
+def test_set_unresolved_name_refusal_is_capped():
+    """F1: an unresolved channel name long enough to matter is echoed back
+    in the refusal message bounded by REFLECT_MAX_LEN, not in full — an
+    attacker-controlled name must not flood the response. No mutation call
+    may be made either way."""
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _channels_response(),  # refresh on miss
+            _product_pubs(pid="123", published_ids=[], not_published_ids=[1]),
+        ]
+    )
+    huge_name = "Z" * (REFLECT_MAX_LEN + 5000)
+    out = tools["set_product_publications"](
+        product_id="123",
+        channel_names=[huge_name],
+        confirm=True,
+    )
+    prefix = "Error: could not resolve channel name(s): "
+    assert out.startswith(prefix)
+    names_portion = out[len(prefix) :].split(". Nothing was changed", 1)[0]
+    assert len(names_portion) <= REFLECT_MAX_LEN
+    assert len(out) <= len(prefix) + REFLECT_MAX_LEN + len(
+        ". Nothing was changed — a declarative set with an unknown name would "
+        "unpublish every channel not named. Correct the names and retry."
+    )
+    assert len(fc.calls) == 3
+    assert fc.responses == []
+    assert not any(q in (PUBLISHABLE_PUBLISH, PUBLISHABLE_UNPUBLISH) for q, _ in fc.calls)
+
+
+def test_set_unresolved_channel_among_resolved_is_refused_before_mutation():
+    """A mix of resolved (Online Store, Shop) and unresolved (TikTok Shop)
+    channel names is refused before either leg runs — an unresolved name
+    can't be told apart from one that was simply never a member, so letting
+    the resolved names' mutation proceed would unpublish every channel not
+    named without the caller's intent being resolvable."""
     tools, fc = _build(
         [
             _channels_response(),
             _channels_response(),  # refresh on miss
             _product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3]),
-            _publish_ok(),
         ]
     )
     out = tools["set_product_publications"](
@@ -1165,9 +1551,12 @@ def test_set_confirmed_body_renders_failed_block_for_unknown_channel():
         channel_names=["Online Store", "Shop", "TikTok Shop"],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
-    assert "Failed" in out
-    assert "TikTok Shop" in out[out.index("Failed") :]
+    assert out.startswith("Error: could not resolve channel name(s): TikTok Shop")
+    assert "Nothing was changed" in out
+    assert "CONFIRMED" not in out
+    assert len(fc.calls) == 3
+    assert fc.responses == []
+    assert not any(q in (PUBLISHABLE_PUBLISH, PUBLISHABLE_UNPUBLISH) for q, _ in fc.calls)
 
 
 # ---- pagination tests ----
@@ -1730,7 +2119,9 @@ def test_publish_collection_confirmed_mutates_only_missing_channels():
     out = tools["publish_collection_to_channels"](
         handle="all-copy", channel_names=["Online Store", "Shop"], confirm=True
     )
-    assert out.startswith("CONFIRMED — Publish collection to channels")
+    # Story 9.24 round 2 (verifier finding): exact first-line match, not
+    # `startswith`, so a suffixed header (e.g. " (ok)") is caught here.
+    assert out.split("\n", 1)[0] == "CONFIRMED — Publish collection to channels"
     query, vars_ = fc.calls[2]
     assert query == PUBLISHABLE_PUBLISH
     assert vars_["id"] == "gid://shopify/Collection/900"
@@ -1798,6 +2189,29 @@ def test_publish_collection_user_error_maps_back_to_the_channel_name():
     out = tools["publish_collection_to_channels"](
         handle="all-copy", channel_names=["Online Store"], confirm=True
     )
+    assert "Online Store: Nope" in out
+
+
+def test_publish_collection_all_rejected_is_not_confirmed():
+    """Story 9.24: the only target is rejected — the header must not read
+    CONFIRMED, though the Failed: block is unchanged."""
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _collection_pubs(not_published_ids=[1]),
+            {
+                "publishablePublish": {
+                    "publishable": None,
+                    "userErrors": [{"field": ["input", "0", "publicationId"], "message": "Nope"}],
+                }
+            },
+        ]
+    )
+    out = tools["publish_collection_to_channels"](
+        handle="all-copy", channel_names=["Online Store"], confirm=True
+    )
+    assert out.startswith("FAILED — Publish collection to channels")
+    assert "CONFIRMED" not in out
     assert "Online Store: Nope" in out
 
 
@@ -1887,7 +2301,9 @@ def test_unpublish_collection_confirmed_mutates_only_published_channels():
     out = tools["unpublish_collection_from_channels"](
         handle="all-copy", channel_names=["Online Store", "Shop"], confirm=True
     )
-    assert out.startswith("CONFIRMED — Unpublish collection from channels")
+    # Story 9.24 round 2 (verifier finding): exact first-line match, not
+    # `startswith`, so a suffixed header (e.g. " (ok)") is caught here.
+    assert out.split("\n", 1)[0] == "CONFIRMED — Unpublish collection from channels"
     query, vars_ = fc.calls[2]
     assert query == PUBLISHABLE_UNPUBLISH
     assert vars_["id"] == "gid://shopify/Collection/900"
@@ -1901,6 +2317,29 @@ def test_unpublish_collection_already_absent_is_idempotent():
     )
     assert out.startswith("CONFIRMED")
     assert len(fc.calls) == 2
+
+
+def test_unpublish_collection_all_rejected_is_not_confirmed():
+    """Story 9.24: the only target is rejected — the header must not read
+    CONFIRMED, though the Failed: block is unchanged."""
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _collection_pubs(published_ids=[1]),
+            {
+                "publishableUnpublish": {
+                    "publishable": None,
+                    "userErrors": [{"field": ["input", "0", "publicationId"], "message": "Nope"}],
+                }
+            },
+        ]
+    )
+    out = tools["unpublish_collection_from_channels"](
+        handle="all-copy", channel_names=["Online Store"], confirm=True
+    )
+    assert out.startswith("FAILED — Unpublish collection from channels")
+    assert "CONFIRMED" not in out
+    assert "Online Store: Nope" in out
 
 
 def test_unpublish_collection_requires_a_handle_as_the_first_statement():

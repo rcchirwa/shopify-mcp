@@ -390,3 +390,75 @@ def test_transient_error_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
             log_name="test_tool",
             log_description="desc",
         )
+
+
+# ---------- _outcome_header ----------
+#
+# Batch write tools with per-item outcomes (a done list next to a failed
+# list) funnel their CONFIRMED / PARTIAL / FAILED header through this one
+# helper, keyed on (succeeded, failed) mutation counts, so the choice can't
+# drift between call sites (publications._channel_write,
+# publications.set_product_publications,
+# inventory.update_variant_inventory_tracking). `resolved_any=False` covers
+# the case where nothing the caller requested ever resolved to a target, so
+# `failed` is replaced with the `unresolved` count instead.
+
+
+def test_outcome_header_all_succeeded_is_byte_identical_confirmed_header() -> None:
+    """failed=0 must render exactly like the pre-9.24 unconditional header —
+    no counts appended — so every all-succeeded (and no-op/idempotent, 0/0)
+    call site's output is unchanged."""
+    assert _wt._outcome_header("Publish product to channels", 3, 0) == (
+        "CONFIRMED — Publish product to channels"
+    )
+
+
+def test_outcome_header_zero_attempted_counts_as_confirmed() -> None:
+    """An idempotent no-op (nothing needed changing, so nothing was attempted)
+    is 0 succeeded / 0 failed — trivially not a rejection."""
+    assert _wt._outcome_header("Publish product to channels", 0, 0) == (
+        "CONFIRMED — Publish product to channels"
+    )
+
+
+def test_outcome_header_none_succeeded_returns_failed_marker() -> None:
+    """succeeded=0 with failed>0 — every attempted item was rejected — must
+    never read CONFIRMED."""
+    out = _wt._outcome_header("Publish product to channels", 0, 2)
+    assert out == "FAILED — Publish product to channels"
+    assert "CONFIRMED" not in out
+
+
+def test_outcome_header_partial_reports_both_counts() -> None:
+    out = _wt._outcome_header("Set product publications (declarative)", 1, 1)
+    assert out == "PARTIAL — Set product publications (declarative) (1 succeeded, 1 failed)"
+    assert "CONFIRMED" not in out
+    assert "FAILED" not in out
+
+
+def test_outcome_header_resolved_any_false_replaces_failed_with_unresolved() -> None:
+    """resolved_any=False: `failed` (999, deliberately unreachable) is
+    replaced with `unresolved`, not merged with `succeeded` — pins the exact
+    numbers so a helper that swaps which count gets replaced is caught."""
+    out = _wt._outcome_header(
+        "Publish product to channels", 3, 999, unresolved=5, resolved_any=False
+    )
+    assert out == "PARTIAL — Publish product to channels (3 succeeded, 5 failed)"
+
+
+def test_outcome_header_resolved_any_false_zero_unresolved_is_confirmed() -> None:
+    """resolved_any=False with unresolved=0 is the pure no-op case (nothing
+    requested at all) — still CONFIRMED via the 0/0 rule."""
+    out = _wt._outcome_header(
+        "Publish product to channels", 3, 999, unresolved=0, resolved_any=False
+    )
+    assert out == "CONFIRMED — Publish product to channels"
+
+
+def test_outcome_header_resolved_any_true_ignores_unresolved() -> None:
+    """resolved_any=True (the default) uses `failed` as given, regardless of
+    `unresolved` — at least one requested item resolved, so pre-mutation
+    resolve failures are the caller's to render elsewhere, not this
+    helper's to count."""
+    out = _wt._outcome_header("Publish product to channels", 1, 0, unresolved=5, resolved_any=True)
+    assert out == "CONFIRMED — Publish product to channels"
