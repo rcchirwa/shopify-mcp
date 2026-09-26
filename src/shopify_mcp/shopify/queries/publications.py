@@ -8,7 +8,7 @@ inventory / orders migrations). Pure strings — no imports from
 **Shared fragment applies.** The two product reads — ``GET_PRODUCT_PUBLICATIONS_BY_ID``
 and ``GET_PRODUCT_PUBLICATIONS_BY_HANDLE`` — differ only in their root field
 (``product(id:)`` vs ``productByHandle(handle:)``); the entire ``Product`` selection
-they wrap (``id title handle`` + the paginated ``resourcePublications`` connection)
+they wrap (``id title handle status`` + the paginated ``resourcePublications`` connection)
 is byte-identical, so it is factored into the ``ProductPublicationsFields`` fragment
 both queries spread (Story 10.30 / A5, AC3 — the fragment-dedup win the card calls
 out). The fragment references the operations' ``$first``/``$after`` pagination
@@ -34,12 +34,15 @@ query ListPublications($first: Int!, $after: String) {
 # Shared Product selection for the by-id/by-handle resourcePublications reads.
 # `resourcePublications(first: $first, after: $after)` carries the pagination
 # variables the two operations declare, so the fragment is usable only inside an
-# operation that defines `$first`/`$after` — both reads below do.
+# operation that defines `$first`/`$after` — both reads below do. `status` lets
+# the tools mark a channel newly published to a DRAFT product as assigned, not
+# live (Story 10.99).
 PRODUCT_PUBLICATIONS_FIELDS = """
 fragment ProductPublicationsFields on Product {
   id
   title
   handle
+  status
   resourcePublications(first: $first, after: $after) {
     nodes {
       publication { id name }

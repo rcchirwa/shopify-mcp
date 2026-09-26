@@ -95,6 +95,7 @@ def _product_pubs(
     assigned_ids=None,
     has_next=False,
     end_cursor=None,
+    status=None,
 ):
     """The product read (Story 10.99): the v1 page, then the V2 page by id.
 
@@ -103,7 +104,8 @@ def _product_pubs(
     DRAFT's assigned channels (isPublished false). A channel the product is not
     on is absent from both, so `not_published_ids` emits no record — it only
     names the rest of the roster at the call site. `has_next`/`end_cursor`
-    apply to the v1 page."""
+    apply to the v1 page. `status` is added to the v1 product only when given,
+    so the older fixtures keep their shape (no status: nothing is marked)."""
     published = [_rp(i, True) for i in published_ids or []]
     assigned = [_rp(i, False) for i in assigned_ids or []]
     v1 = {
@@ -117,6 +119,8 @@ def _product_pubs(
             },
         }
     }
+    if status is not None:
+        v1["product"]["status"] = status
     return _ProductRead([v1, _v2_page(published + assigned)])
 
 
@@ -856,7 +860,7 @@ def test_resolve_product_meta_returns_all_none_when_neither_id_nor_handle():
     # Client will never be called because neither branch is taken.
     fc = FakeClient([])
     result = _resolve_product_gid_and_meta(fc, "", "")
-    assert result == (None, None, None, [])
+    assert result == (None, None, None, [], None)
     assert fc.calls == []
 
 
@@ -1659,7 +1663,7 @@ def test_resolve_product_publications_paginates_resource_publications():
     }
 
     fc = FakeClient([page0, page1, _v2_page([])])
-    gid, title, handle, rps = _resolve_product_gid_and_meta(fc, "123", "")
+    gid, title, handle, rps, _status = _resolve_product_gid_and_meta(fc, "123", "")
     assert gid == "gid://shopify/Product/123"
     assert len(rps) == 2
     assert rps[0]["isPublished"] is True
@@ -1674,7 +1678,7 @@ def test_resolve_product_publications_single_page_not_capped():
     """Single page: rps is returned with correct vars (first=50, after=None)."""
     page0, v2 = _product_pubs(pid="456", published_ids=[1], not_published_ids=[])
     fc = FakeClient([page0, v2])
-    gid, title, handle, rps = _resolve_product_gid_and_meta(fc, "456", "")
+    gid, title, handle, rps, _status = _resolve_product_gid_and_meta(fc, "456", "")
     assert gid is not None
     assert len(rps) == 1
     assert fc.calls[0][1] == {
@@ -3027,6 +3031,127 @@ def test_s1099_set_when_desired_matches_the_assignment_sends_nothing():
     assert out.split("\n", 1)[0] == "CONFIRMED — Set product publications (declarative)"
 
 
+# ---- Story 10.99: a channel newly published to a DRAFT product is assigned ----
+#
+# Live-found 2026-09-26: publish_product_to_channels on the DRAFT test product
+# printed "Now published to: • Inbox" with no mark, and a V2 read-back showed
+# Inbox isPublished: false; it goes live only when the product is ACTIVE. So a
+# DRAFT product's newly published channel carries the assigned mark too. Only
+# DRAFT was verified live, so no other status is marked.
+
+
+def test_s1099_publish_preview_to_a_draft_marks_the_new_channel_assigned():
+    tools, fc = _build([_channels_response(), _product_pubs(assigned_ids=[4], status="DRAFT")])
+    out = tools["publish_product_to_channels"](
+        product_id="123", channel_names=["Google & YouTube", "Point of Sale"], confirm=False
+    )
+    assert len(fc.calls) == 3
+    assert out == (
+        "PREVIEW — Publish product to channels\n"
+        "  Product: Tee (handle: tee, id: 123)\n"
+        "  Would publish to:\n"
+        "  • Point of Sale (id: 2) (assigned, not live)\n"
+        "  Already published (unchanged):\n"
+        "  • Google & YouTube (id: 4) (assigned, not live)\n"
+        "\n"
+        "To apply, call again with confirm=True."
+    )
+
+
+def test_s1099_publish_confirmed_to_a_draft_marks_the_new_channel_assigned():
+    tools, fc = _build([_channels_response(), _product_pubs(status="DRAFT"), _publish_ok()])
+    out = tools["publish_product_to_channels"](
+        product_id="123", channel_names=["Google & YouTube"], confirm=True
+    )
+    assert fc.calls[3] == (
+        PUBLISHABLE_PUBLISH,
+        {"id": "gid://shopify/Product/123", "input": [{"publicationId": GOOGLE["id"]}]},
+    )
+    assert fc.responses == []
+    assert out == (
+        "CONFIRMED — Publish product to channels\n"
+        "  Product: Tee (handle: tee, id: 123)\n"
+        "  Now published to:\n"
+        "  • Google & YouTube (id: 4) (assigned, not live)\n"
+        "  Unchanged:\n"
+        "  (none)"
+    )
+
+
+def test_s1099_unpublish_from_a_draft_is_unchanged():
+    tools, fc = _build(
+        [_channels_response(), _product_pubs(assigned_ids=[4], status="DRAFT"), _unpublish_ok()]
+    )
+    out = tools["unpublish_product_from_channels"](
+        product_id="123", channel_names=["Google & YouTube", "Point of Sale"], confirm=True
+    )
+    assert fc.calls[3] == (
+        PUBLISHABLE_UNPUBLISH,
+        {"id": "gid://shopify/Product/123", "input": [{"publicationId": GOOGLE["id"]}]},
+    )
+    assert out == (
+        "CONFIRMED — Unpublish product from channels\n"
+        "  Product: Tee (handle: tee, id: 123)\n"
+        "  Now unpublished from:\n"
+        "  • Google & YouTube (id: 4) (was assigned, not live)\n"
+        "  Unchanged:\n"
+        "  • Point of Sale (id: 2)"
+    )
+
+
+def test_s1099_set_preview_on_a_draft_marks_the_added_channel_assigned():
+    tools, fc = _build([_channels_response(), _product_pubs(assigned_ids=[4], status="DRAFT")])
+    out = tools["set_product_publications"](
+        product_id="123", channel_names=["Point of Sale"], confirm=False
+    )
+    assert len(fc.calls) == 3
+    assert out == (
+        "PREVIEW — Set product publications (declarative)\n"
+        "  Product: Tee (handle: tee, id: 123)\n"
+        "  Would add (publish):\n"
+        "  • Point of Sale (id: 2) (assigned, not live)\n"
+        "  Would remove (unpublish):\n"
+        "  • Google & YouTube (id: 4) (assigned, not live)\n"
+        "  Unchanged:\n"
+        "  (none)\n"
+        "\n"
+        "To apply, call again with confirm=True."
+    )
+
+
+def test_s1099_set_confirmed_on_a_draft_marks_the_added_channel_assigned():
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _product_pubs(assigned_ids=[4], status="DRAFT"),
+            _publish_ok(),
+            _unpublish_ok(),
+        ]
+    )
+    out = tools["set_product_publications"](
+        product_id="123", channel_names=["Point of Sale"], confirm=True
+    )
+    assert fc.calls[3] == (
+        PUBLISHABLE_PUBLISH,
+        {"id": "gid://shopify/Product/123", "input": [{"publicationId": POS["id"]}]},
+    )
+    assert fc.calls[4] == (
+        PUBLISHABLE_UNPUBLISH,
+        {"id": "gid://shopify/Product/123", "input": [{"publicationId": GOOGLE["id"]}]},
+    )
+    assert fc.responses == []
+    assert out == (
+        "CONFIRMED — Set product publications (declarative)\n"
+        "  Product: Tee (handle: tee, id: 123)\n"
+        "  Added (published):\n"
+        "  • Point of Sale (id: 2) (assigned, not live)\n"
+        "  Removed (unpublished):\n"
+        "  • Google & YouTube (id: 4) (was assigned, not live)\n"
+        "  Unchanged:\n"
+        "  (none)"
+    )
+
+
 # ---- Story 10.99: byte-identity for live products and for collections ----
 #
 # Captured from the tools BEFORE Story 10.99, with the same store state. A
@@ -3227,4 +3352,24 @@ def test_s1099_live_product_and_collection_output_is_byte_identical(
     tools, fc = _build([_channels_response(), state, *writes])
     assert tools[tool_name](**kwargs) == expected
     # Every scripted write response was consumed: the mutations still went out.
+    assert fc.responses == []
+
+
+_S1099_PRODUCT_CASES = [c for c in _S1099_BYTE_IDENTICAL if "collection" not in c[0]]
+
+
+@pytest.mark.parametrize("status", ["ACTIVE", "ARCHIVED"])
+@pytest.mark.parametrize(
+    ("tool_name", "kwargs", "writes", "expected"),
+    _S1099_PRODUCT_CASES,
+    ids=[f"{c[0]}-{'confirm' if c[1].get('confirm') else 'read'}" for c in _S1099_PRODUCT_CASES],
+)
+def test_s1099_a_non_draft_product_is_never_marked(tool_name, kwargs, writes, expected, status):
+    """Only DRAFT was verified live to leave a newly published channel
+    assigned, so an ACTIVE product (and ARCHIVED, unverified) renders the
+    pinned strings byte-for-byte, with the mutations still sent."""
+    tools, fc = _build(
+        [_channels_response(), _product_pubs(**_S1099_LIVE_PRODUCT, status=status), *writes]
+    )
+    assert tools[tool_name](**kwargs) == expected
     assert fc.responses == []

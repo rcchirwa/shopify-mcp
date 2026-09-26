@@ -535,3 +535,10 @@ def test_collection_publications_query_parses_and_has_the_shape_paginate_walks()
     # The connection must carry the pagination arguments, not hardcode a count.
     args = {a.name.value for a in connection.arguments}
     assert args == {"first", "after"}
+
+
+def test_product_publications_fragment_selects_the_product_status():
+    """Story 10.99: publishing to a DRAFT product only assigns the channel, so
+    the tools need the status to mark it (live-found 2026-09-26)."""
+    (fragment,) = graphql.parse(q.PRODUCT_PUBLICATIONS_FIELDS).definitions
+    assert "status" in _field_names(fragment.selection_set, "ProductPublicationsFields")

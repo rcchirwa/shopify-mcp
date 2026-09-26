@@ -184,14 +184,15 @@ def _map_user_error(user_error: dict, targets: list) -> dict:
 
 def _resolve_product_gid_and_meta(
     client: ShopifyClient, product_id: str, handle: str
-) -> tuple[str | None, str | None, str | None, list[dict[str, Any]]]:
-    """Returns (gid, title, handle, rps); first three are None when no product
-    was resolved, rps is always a list. rps holds published and assigned
-    records (see ``_split_current``).
+) -> tuple[str | None, str | None, str | None, list[dict[str, Any]], str | None]:
+    """Returns (gid, title, handle, rps, status); gid, title, handle and status
+    are None when no product was resolved, rps is always a list. rps holds
+    published and assigned records (see ``_split_current``). status is the
+    product's ``status`` (e.g. ``"DRAFT"``), None when the response lacks it.
 
     Delegates the by-id/by-handle paginated read to
     ``shopify.operations.publications.read_product_publications`` and reshapes its
-    ``(product_or_None, rps, capped)`` result into the 4-tuple the tool formatting
+    ``(product_or_None, rps, capped)`` result into the 5-tuple the tool formatting
     uses; the pagination cap is not surfaced for publications, so ``capped`` is
     dropped here exactly as before the migration.
 
@@ -202,8 +203,8 @@ def _resolve_product_gid_and_meta(
     path, which is also where the reflection bound (``cap``) is applied."""
     p, rps, _capped = ops.read_product_publications(client, product_id, handle)
     if not p:
-        return None, None, None, []
-    return p["id"], p["title"], p["handle"], rps
+        return None, None, None, [], None
+    return p["id"], p["title"], p["handle"], rps, p.get("status")
 
 
 def _split_current(rps: list[dict[str, Any]]) -> tuple[set[str], set[str]]:
@@ -403,6 +404,7 @@ def _channel_write(
     confirm: bool,
     log_name: str,
     with_assigned: bool = False,
+    draft: bool = False,
 ) -> str:
     """Shared preview → confirm → mutate → map-userErrors → log → render flow for
     every channel write. `direction` and `resource_label` are the only variable
@@ -421,7 +423,11 @@ def _channel_write(
     unpublish removes it (the mutation is sent) and publish leaves it
     unchanged; either way it is marked as not live. Collections read
     ``resourcePublications``, which lists only published channels, and keep
-    the published-only rule."""
+    the published-only rule.
+
+    ``draft`` is True for a DRAFT product. Publishing to it only assigns the
+    channel (live-found 2026-09-26), so a publish marks its acting channels as
+    not live in the preview and in the done list. Unpublish ignores it."""
     spec = _CHANNEL_WRITE_OPS[direction]
     published_ids, not_live_ids = _split_current(rps)
     assigned_ids = not_live_ids if with_assigned else set()
@@ -435,13 +441,15 @@ def _channel_write(
     acts_on_published: bool = spec["acts_on_published"]
     acting = [t for t in targets if (t["id"] in on_ids) == acts_on_published]
     unchanged = [t for t in targets if (t["id"] in on_ids) != acts_on_published]
+    newly_assigned = {t["id"] for t in acting} if draft and not acts_on_published else set()
+    done_mark = _ASSIGNED_NOTE if newly_assigned else _WAS_ASSIGNED_NOTE
 
     heading = f"{spec['verb']} {resource_label} {spec['preposition']} channels"
     preview = (
         f"PREVIEW — {heading}\n"
         f"  {meta_line}\n"
         f"  {spec['would_label']}:\n"
-        f"{_render_channel_lines(acting, marked=assigned_ids, mark=_ASSIGNED_NOTE)}\n"
+        f"{_render_channel_lines(acting, marked=assigned_ids | newly_assigned, mark=_ASSIGNED_NOTE)}\n"
         f"  {spec['unchanged_label']}:\n"
         f"{_render_channel_lines(unchanged, marked=assigned_ids, mark=_ASSIGNED_NOTE)}"
     )
@@ -498,7 +506,7 @@ def _channel_write(
         f"{header}\n"
         f"  {meta_line}\n"
         f"  {spec['done_label']}:\n"
-        f"{_render_channel_lines(done, marked=assigned_ids, mark=_WAS_ASSIGNED_NOTE)}\n"
+        f"{_render_channel_lines(done, marked=assigned_ids | newly_assigned, mark=done_mark)}\n"
         f"  Unchanged:\n"
         f"{_render_channel_lines(unchanged, marked=assigned_ids, mark=_ASSIGNED_NOTE)}"
     )
@@ -572,7 +580,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return f"Error loading sales channels: {cap(str(e))}\n{SCOPE_HINT}"
 
         try:
-            gid, title, prod_handle, rps = _resolve_product_gid_and_meta(client, product_id, handle)
+            gid, title, prod_handle, rps, _status = _resolve_product_gid_and_meta(
+                client, product_id, handle
+            )
         except Exception as e:
             return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
 
@@ -639,7 +649,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return "Error: " + "; ".join(f.get("error", "") for f in failed)
 
         try:
-            gid, title, prod_handle, rps = _resolve_product_gid_and_meta(client, product_id, handle)
+            gid, title, prod_handle, rps, status = _resolve_product_gid_and_meta(
+                client, product_id, handle
+            )
         except Exception as e:
             return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
         if not gid:
@@ -657,6 +669,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             confirm=confirm,
             log_name="publish_product_to_channels",
             with_assigned=True,
+            draft=status == "DRAFT",
         )
 
     @server.tool()
@@ -697,7 +710,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return "Error: " + "; ".join(f.get("error", "") for f in failed)
 
         try:
-            gid, title, prod_handle, rps = _resolve_product_gid_and_meta(client, product_id, handle)
+            gid, title, prod_handle, rps, status = _resolve_product_gid_and_meta(
+                client, product_id, handle
+            )
         except Exception as e:
             return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
         if not gid:
@@ -715,6 +730,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             confirm=confirm,
             log_name="unpublish_product_from_channels",
             with_assigned=True,
+            draft=status == "DRAFT",
         )
 
     # ---- collection publications (Story 10.83 / T-collection-publish) ----
@@ -917,7 +933,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return f"Error resolving channels: {cap(str(e))}\n{SCOPE_HINT}"
 
         try:
-            gid, title, prod_handle, rps = _resolve_product_gid_and_meta(client, product_id, handle)
+            gid, title, prod_handle, rps, status = _resolve_product_gid_and_meta(
+                client, product_id, handle
+            )
         except Exception as e:
             return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
         if not gid:
@@ -933,6 +951,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         add_ids = desired_ids - current_ids
         remove_ids = current_ids - desired_ids
         unchanged_ids = desired_ids & current_ids
+        # Publishing to a DRAFT product only assigns the channel (live-found
+        # 2026-09-26), so the add leg is marked as not live.
+        newly_assigned = add_ids if status == "DRAFT" else set()
 
         def _nodes_for(ids: Iterable[str]) -> list[dict[str, Any]]:
             return [channel_cache["by_id"][i] for i in ids if i in channel_cache["by_id"]]
@@ -944,7 +965,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         preview = (
             f"PREVIEW — Set product publications (declarative)\n"
             f"  Product: {title} (handle: {prod_handle}, id: {from_gid(gid)})\n"
-            f"  Would add (publish):\n{_render_channel_lines(added_nodes)}\n"
+            f"  Would add (publish):\n"
+            f"{_render_channel_lines(added_nodes, marked=newly_assigned, mark=_ASSIGNED_NOTE)}\n"
             f"  Would remove (unpublish):\n"
             f"{_render_channel_lines(removed_nodes, marked=assigned_ids, mark=_ASSIGNED_NOTE)}\n"
             f"  Unchanged:\n"
@@ -1035,7 +1057,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         body = (
             f"{header}\n"
             f"  Product: {title} (handle: {prod_handle}, id: {from_gid(gid)})\n"
-            f"  Added (published):\n{_render_channel_lines(added_applied)}\n"
+            f"  Added (published):\n"
+            f"{_render_channel_lines(added_applied, marked=newly_assigned, mark=_ASSIGNED_NOTE)}\n"
             f"  Removed (unpublished):\n"
             f"{_render_channel_lines(removed_applied, marked=assigned_ids, mark=_WAS_ASSIGNED_NOTE)}\n"
             f"  Unchanged:\n"
