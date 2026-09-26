@@ -24,7 +24,7 @@ live in ``shopify.queries.publications`` and the data access in
 ``shopify.operations.publications``.
 """
 
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -183,8 +183,9 @@ def _map_user_error(user_error: dict, targets: list) -> dict:
 def _resolve_product_gid_and_meta(
     client: ShopifyClient, product_id: str, handle: str
 ) -> tuple[str | None, str | None, str | None, list[dict[str, Any]]]:
-    """Returns (gid, title, handle, current_published_nodes); first three
-    are None when no product was resolved, rps is always a list.
+    """Returns (gid, title, handle, rps); first three are None when no product
+    was resolved, rps is always a list. rps holds published and assigned
+    records (see ``_split_current``).
 
     Delegates the by-id/by-handle paginated read to
     ``shopify.operations.publications.read_product_publications`` and reshapes its
@@ -204,9 +205,13 @@ def _resolve_product_gid_and_meta(
 
 
 def _split_current(rps: list[dict[str, Any]]) -> tuple[set[str], set[str]]:
-    """Split resourcePublications into (published_set, unpublished_set) of publication_ids."""
+    """Split publication records into (published, assigned) sets of publication ids.
+
+    For a product, a record with ``isPublished: false`` is a channel the DRAFT
+    product is assigned to; it goes live when the product is activated (Story
+    10.99). Collection callers ignore the second set."""
     published = set()
-    not_published = set()
+    assigned = set()
     for rp in rps:
         pid = (rp.get("publication") or {}).get("id")
         if not pid:
@@ -214,8 +219,8 @@ def _split_current(rps: list[dict[str, Any]]) -> tuple[set[str], set[str]]:
         if rp.get("isPublished"):
             published.add(pid)
         else:
-            not_published.add(pid)
-    return published, not_published
+            assigned.add(pid)
+    return published, assigned
 
 
 def _resolve_collection_gid_and_meta(
@@ -249,6 +254,7 @@ def _render_publications_report(
     rps: list[dict[str, Any]],
     cache: dict,
     extra_meta: tuple[str, ...] = (),
+    with_assigned: bool = False,
 ) -> str:
     """Render the "published to / not published to" report for a resource.
 
@@ -265,12 +271,18 @@ def _render_publications_report(
     empty on the product path.
 
     The not-published set is a **derived complement**, never read off the
-    response. Shopify's ``resourcePublications`` defaults to
-    ``onlyPublished: true``, so a channel the resource is not on is absent
-    rather than present with ``isPublished: false`` (live-confirmed
-    2026-09-05); reading it off the nodes would report every resource as
-    published everywhere it appears and nowhere it does not."""
-    published_ids, _ = _split_current(rps)
+    response: a channel the resource is not on has no record at all.
+
+    ``with_assigned`` is the product path (Story 10.99). The product read is
+    ``resourcePublicationsV2(onlyPublished: false)``, where a record with
+    ``isPublished: false`` is a DRAFT product's assigned channel, which goes
+    live on activation. Those get their own section, emitted only when
+    non-empty, and are left out of "Not published to". With none assigned the
+    output is unchanged. Collections read ``resourcePublications``, which lists
+    only the channels the collection is on (live-confirmed 2026-09-05), so they
+    keep the two-section report."""
+    published_ids, not_live_ids = _split_current(rps)
+    assigned_ids = not_live_ids if with_assigned else set()
     by_id = {(rp.get("publication") or {}).get("id"): rp for rp in rps}
 
     # Both sections are built from sets, so they must be sorted before render or
@@ -289,7 +301,17 @@ def _render_publications_report(
             {"id": pub.get("id"), "name": pub.get("name"), "publishDate": rp.get("publishDate")}
         )
 
-    not_published_ids = set(cache["by_id"].keys()) - published_ids
+    assigned_nodes = [
+        {"id": pid, "name": _name_of(pid)} for pid in sorted(assigned_ids, key=_name_of)
+    ]
+    assigned_section = ""
+    if assigned_nodes:
+        assigned_section = (
+            f"Assigned (goes live when the product is ACTIVE) ({len(assigned_nodes)}):\n"
+            f"{_render_channel_lines(assigned_nodes)}\n\n"
+        )
+
+    not_published_ids = set(cache["by_id"].keys()) - published_ids - assigned_ids
     not_published_nodes = [
         {"id": pid, "name": cache["by_id"][pid]["name"]}
         for pid in sorted(not_published_ids, key=lambda p: cache["by_id"][p]["name"])
@@ -300,9 +322,15 @@ def _render_publications_report(
         "\n".join(meta) + "\n\n"
         f"Published to ({len(published_nodes)}):\n"
         f"{_render_channel_lines(published_nodes, 'publishDate')}\n\n"
+        f"{assigned_section}"
         f"Not published to ({len(not_published_nodes)}):\n"
         f"{_render_channel_lines(not_published_nodes)}"
     )
+
+
+# Suffixes for a product's assigned-but-not-live channel (Story 10.99).
+_ASSIGNED_NOTE = " (assigned, not live)"
+_WAS_ASSIGNED_NOTE = " (was assigned, not live)"
 
 
 # Direction table for the shared publish/unpublish body below. Single source of
@@ -311,7 +339,8 @@ def _render_publications_report(
 # paths cannot drift. Same shape as `tools/collections.py::_MEMBERSHIP_OPS`.
 #
 # `acts_on_published` is the membership predicate: publish acts on targets the
-# resource is NOT yet on, unpublish acts on the ones it IS on.
+# resource is NOT yet on, unpublish acts on the ones it IS on. For a product,
+# "on" means published or assigned (Story 10.99).
 _CHANNEL_WRITE_OPS: dict[str, dict[str, Any]] = {
     "publish": {
         "verb": "Publish",
@@ -371,6 +400,7 @@ def _channel_write(
     failed: list[dict[str, Any]],
     confirm: bool,
     log_name: str,
+    with_assigned: bool = False,
 ) -> str:
     """Shared preview → confirm → mutate → map-userErrors → log → render flow for
     every channel write. `direction` and `resource_label` are the only variable
@@ -382,12 +412,18 @@ def _channel_write(
     tools' output is byte-identical to what they emitted before, which their
     unmodified tests pin.
 
-    Only the published set is consulted. Shopify's ``resourcePublications``
-    omits channels the resource is not on rather than listing them with
-    ``isPublished: false``, so the not-published side is always derived as the
-    complement over the resolved targets — never read off the response."""
+    A channel with no record is not on the resource; the not-on side is the
+    complement over the resolved targets. ``with_assigned`` is the product path
+    (Story 10.99): a record with ``isPublished: false`` is a DRAFT product's
+    assigned channel, which goes live on activation. It counts as "on", so
+    unpublish removes it (the mutation is sent) and publish leaves it
+    unchanged; either way it is marked as not live. Collections read
+    ``resourcePublications``, which lists only published channels, and keep
+    the published-only rule."""
     spec = _CHANNEL_WRITE_OPS[direction]
-    published_ids, _ = _split_current(rps)
+    published_ids, not_live_ids = _split_current(rps)
+    assigned_ids = not_live_ids if with_assigned else set()
+    on_ids = published_ids | assigned_ids
     # Bound to a typed local and compared with ==, not `is`. The table is
     # dict[str, Any], so mypy cannot check the value's type, and an identity
     # test against a bool is only correct while every entry is a real interned
@@ -395,15 +431,17 @@ def _channel_write(
     # for every target and invert the acting/unchanged split on a write path,
     # with no type error and no test failure.
     acts_on_published: bool = spec["acts_on_published"]
-    acting = [t for t in targets if (t["id"] in published_ids) == acts_on_published]
-    unchanged = [t for t in targets if (t["id"] in published_ids) != acts_on_published]
+    acting = [t for t in targets if (t["id"] in on_ids) == acts_on_published]
+    unchanged = [t for t in targets if (t["id"] in on_ids) != acts_on_published]
 
     heading = f"{spec['verb']} {resource_label} {spec['preposition']} channels"
     preview = (
         f"PREVIEW — {heading}\n"
         f"  {meta_line}\n"
-        f"  {spec['would_label']}:\n{_render_channel_lines(acting)}\n"
-        f"  {spec['unchanged_label']}:\n{_render_channel_lines(unchanged)}"
+        f"  {spec['would_label']}:\n"
+        f"{_render_channel_lines(acting, marked=assigned_ids, mark=_ASSIGNED_NOTE)}\n"
+        f"  {spec['unchanged_label']}:\n"
+        f"{_render_channel_lines(unchanged, marked=assigned_ids, mark=_ASSIGNED_NOTE)}"
     )
     if failed:
         preview += "\n  Failed to resolve:\n" + _render_failed(failed)
@@ -457,15 +495,24 @@ def _channel_write(
     body = (
         f"{header}\n"
         f"  {meta_line}\n"
-        f"  {spec['done_label']}:\n{_render_channel_lines(done)}\n"
-        f"  Unchanged:\n{_render_channel_lines(unchanged)}"
+        f"  {spec['done_label']}:\n"
+        f"{_render_channel_lines(done, marked=assigned_ids, mark=_WAS_ASSIGNED_NOTE)}\n"
+        f"  Unchanged:\n"
+        f"{_render_channel_lines(unchanged, marked=assigned_ids, mark=_ASSIGNED_NOTE)}"
     )
     if apply_failed:
         body += "\n  Failed:\n" + _render_failed(apply_failed)
     return body
 
 
-def _render_channel_lines(nodes: list, extra_key: str | None = None) -> str:
+def _render_channel_lines(
+    nodes: list,
+    extra_key: str | None = None,
+    *,
+    marked: Collection[str] = (),
+    mark: str = "",
+) -> str:
+    """One line per channel; a node whose id is in ``marked`` ends with ``mark``."""
     if not nodes:
         return "  (none)"
     lines = []
@@ -473,6 +520,8 @@ def _render_channel_lines(nodes: list, extra_key: str | None = None) -> str:
         suffix = ""
         if extra_key and n.get(extra_key):
             suffix = f" — {extra_key}: {n[extra_key]}"
+        if n["id"] in marked:
+            suffix += mark
         lines.append(f"  • {n['name']} (id: {from_gid(n['id'])}){suffix}")
     return "\n".join(lines)
 
@@ -535,6 +584,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             gid=gid,
             rps=rps,
             cache=channel_cache,
+            with_assigned=True,
         )
 
     def _resolve_target_nodes(
@@ -604,6 +654,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             failed=failed,
             confirm=confirm,
             log_name="publish_product_to_channels",
+            with_assigned=True,
         )
 
     @server.tool()
@@ -661,6 +712,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             failed=failed,
             confirm=confirm,
             log_name="unpublish_product_from_channels",
+            with_assigned=True,
         )
 
     # ---- collection publications (Story 10.83 / T-collection-publish) ----
@@ -871,11 +923,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         _ensure_channels(client, channel_cache)
         desired_ids = {n["id"] for n in desired_nodes}
-        published_ids, _ = _split_current(rps)
+        # A product is "on" a channel when published or assigned (Story 10.99):
+        # an assigned channel not desired is removed, and one desired is unchanged.
+        published_ids, assigned_ids = _split_current(rps)
+        current_ids = published_ids | assigned_ids
 
-        add_ids = desired_ids - published_ids
-        remove_ids = published_ids - desired_ids
-        unchanged_ids = desired_ids & published_ids
+        add_ids = desired_ids - current_ids
+        remove_ids = current_ids - desired_ids
+        unchanged_ids = desired_ids & current_ids
 
         def _nodes_for(ids: Iterable[str]) -> list[dict[str, Any]]:
             return [channel_cache["by_id"][i] for i in ids if i in channel_cache["by_id"]]
@@ -888,8 +943,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"PREVIEW — Set product publications (declarative)\n"
             f"  Product: {title} (handle: {prod_handle}, id: {from_gid(gid)})\n"
             f"  Would add (publish):\n{_render_channel_lines(added_nodes)}\n"
-            f"  Would remove (unpublish):\n{_render_channel_lines(removed_nodes)}\n"
-            f"  Unchanged:\n{_render_channel_lines(unchanged_nodes)}"
+            f"  Would remove (unpublish):\n"
+            f"{_render_channel_lines(removed_nodes, marked=assigned_ids, mark=_ASSIGNED_NOTE)}\n"
+            f"  Unchanged:\n"
+            f"{_render_channel_lines(unchanged_nodes, marked=assigned_ids, mark=_ASSIGNED_NOTE)}"
         )
         if failed:
             preview += "\n  Failed to resolve:\n" + _render_failed(failed)
@@ -977,8 +1034,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"{header}\n"
             f"  Product: {title} (handle: {prod_handle}, id: {from_gid(gid)})\n"
             f"  Added (published):\n{_render_channel_lines(added_applied)}\n"
-            f"  Removed (unpublished):\n{_render_channel_lines(removed_applied)}\n"
-            f"  Unchanged:\n{_render_channel_lines(unchanged_nodes)}"
+            f"  Removed (unpublished):\n"
+            f"{_render_channel_lines(removed_applied, marked=assigned_ids, mark=_WAS_ASSIGNED_NOTE)}\n"
+            f"  Unchanged:\n"
+            f"{_render_channel_lines(unchanged_nodes, marked=assigned_ids, mark=_ASSIGNED_NOTE)}"
         )
         if apply_failed:
             body += "\n  Failed:\n" + _render_failed(apply_failed)

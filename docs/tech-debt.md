@@ -8,6 +8,27 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-09-26 — Story 10.99 (a DRAFT product's channel assignments: read with `resourcePublicationsV2`, and three states per channel)
+
+Trello: https://trello.com/c/Sj5k2EvB (Story 10.99, Epic 10). A side finding of Story 9.26's probe (entry below).
+
+**Live evidence (2026-09-26, main checkout, API `2026-01` requested and served; full table on the card).** Target: the DRAFT "MCP Test Product" `gid://shopify/Product/8743953137817`, channel Inbox only. After a clean `publishablePublish` to Inbox, `resourcePublications` (default or `onlyPublished: false`) returned `[]`, `publishedOnPublication(Inbox)` was false, and the repo's `read_product_publications` returned `[]`. Only `resourcePublicationsV2(onlyPublished: false)` showed the record: `Inbox, isPublished: false, publishDate: null`. **The premise is confirmed:** setting the product ACTIVE made that assignment live at once (`isPublished: true`, `publishDate` stamped at activation, `publishedOnPublication(Inbox)` true). The product was restored to DRAFT with no assignments, verified by a V2 read-back. So before this story, `unpublish_product_from_channels` and `set_product_publications` on a draft's assigned channel reported a `CONFIRMED —` no-op, and the product then went live there on activation.
+
+**Decisions (Robert, 2026-09-26): approach 1.**
+- The product read (the shared `ProductPublicationsFields` fragment) uses `resourcePublicationsV2(first: $first, after: $after, onlyPublished: false)`, and `read_product_publications` walks `resourcePublicationsV2` on both the by-id and by-handle branches.
+- A product channel has three states: published (`isPublished: true`), assigned but not live (a record with `isPublished: false`), or not on the channel (no record). `_split_current` returns `(published, assigned)`.
+- `get_product_publications` adds a section, `Assigned (goes live when the product is ACTIVE) (N):`, emitted only when non-empty. Those channels are not listed under "Not published to".
+- `unpublish_product_from_channels` acts on published and assigned targets. The mutation is sent, and a removed assigned channel is listed with ` (was assigned, not live)`.
+- `set_product_publications` treats current as published plus assigned. An undesired assigned channel is removed (mutation sent, same suffix), and a desired one is unchanged.
+- **Publish (the choice this story had to make):** an assigned target counts as unchanged, and no mutation is sent. It is already queued to go live, and re-publishing would leave it assigned. It is listed with ` (assigned, not live)` so "Already published (unchanged)" does not claim it is live. The same suffix marks assigned channels in previews and in `set_product_publications`' Unchanged list.
+- A product with only live records renders and behaves byte-identically for every tool. The expected strings were captured from the pre-change tools, and `test_s1099_live_product_and_collection_output_is_byte_identical` pins them.
+
+**Collections are out of scope, on evidence.** Collections have no `status`. Across all 16 live collections, `resourcePublications` and `resourcePublicationsV2` returned identical records. `GET_COLLECTION_PUBLICATIONS_BY_HANDLE` and its paths are unchanged. The shared renderer and `_channel_write` take the assigned state only through `with_assigned=True`, which only the product tools pass. So a collection's `isPublished: false` record keeps its old meaning, and the byte-identity test pins that too.
+
+**Schema snapshot.** `tests/unit/shopify/admin_schema_snapshot.graphql` was regenerated offline from the captured 2026-01 introspection (proven to reproduce the committed snapshot with unchanged documents). The diff adds `Product.resourcePublicationsV2`, `ResourcePublicationV2` and its connection, and drops `Product.resourcePublications`, which no document reads any more.
+
+---
+
 ## 2026-09-26 — Story 9.26 (live probe: `publishablePublish` / `publishableUnpublish` are all-or-nothing across publication ids)
 
 This narrows, but does not close, the open question from Story 9.24's code review (finding 4, skipped there and recorded in PR #177's description). 9.24's outcome header assumes that a multi-id `publishablePublish` or `publishableUnpublish` which returns any userError applied **none** of its ids. `_channel_write` sets `done = acting` only when there are no userErrors, and each `set_product_publications` leg sets `added_applied` / `removed_applied` the same way. If Shopify applied the other ids, `FAILED —` with `(none)` would be a false "nothing landed".

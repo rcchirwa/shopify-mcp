@@ -45,7 +45,13 @@ def read_publications(client: GraphQLClient) -> list[dict[str, Any]]:
 def read_product_publications(
     client: GraphQLClient, product_id: str, handle: str
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], bool]:
-    """Read a product and all its resourcePublications, paginated.
+    """Read a product and all its resourcePublicationsV2 records, paginated.
+
+    The read passes ``onlyPublished: false``, so each channel is in one of three
+    states: published (a record with ``isPublished: true``), assigned but not
+    live (a record with ``isPublished: false``: a DRAFT product's channel, which
+    goes live when the product is activated), or not on the channel (no record).
+    Story 10.99, live-verified 2026-09-26.
 
     Resolves by ``product_id`` (coerced to a Product GID) when given, else by
     ``handle``. **Supplying both raises ``ValueError`` before any network
@@ -73,7 +79,7 @@ def read_product_publications(
         data, rps, capped = client.paginate(
             GET_PRODUCT_PUBLICATIONS_BY_ID,
             {"id": to_gid("Product", product_id)},
-            connection_path=["product", "resourcePublications"],
+            connection_path=["product", "resourcePublicationsV2"],
             page_size=PUBLICATIONS_PAGE_SIZE,
         )
         return data.get("product"), rps, capped
@@ -81,7 +87,7 @@ def read_product_publications(
         data, rps, capped = client.paginate(
             GET_PRODUCT_PUBLICATIONS_BY_HANDLE,
             {"handle": handle},
-            connection_path=["productByHandle", "resourcePublications"],
+            connection_path=["productByHandle", "resourcePublicationsV2"],
             page_size=PUBLICATIONS_PAGE_SIZE,
         )
         return data.get("productByHandle"), rps, capped

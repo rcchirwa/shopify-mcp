@@ -73,7 +73,7 @@ def _product_pubs_response(root_key: str, pid: str = "123") -> dict:
             "id": f"gid://shopify/Product/{pid}",
             "title": "Tee",
             "handle": "tee",
-            "resourcePublications": {
+            "resourcePublicationsV2": {
                 "nodes": [
                     {
                         "publication": {
@@ -95,7 +95,7 @@ def test_read_product_publications_by_id_coerces_gid_and_returns_product_and_rps
     fc = FakeClient([resp])
     product, rps, capped = ops.read_product_publications(fc, "123", "")
     assert product == resp["product"]
-    assert rps == resp["product"]["resourcePublications"]["nodes"]
+    assert rps == resp["product"]["resourcePublicationsV2"]["nodes"]
     assert capped is False
     assert fc.calls[0][0] == q.GET_PRODUCT_PUBLICATIONS_BY_ID
     assert fc.calls[0][1] == {"id": "gid://shopify/Product/123", "first": 50, "after": None}
@@ -106,7 +106,7 @@ def test_read_product_publications_by_handle_passes_handle_var():
     fc = FakeClient([resp])
     product, rps, capped = ops.read_product_publications(fc, "", "tee")
     assert product == resp["productByHandle"]
-    assert rps == resp["productByHandle"]["resourcePublications"]["nodes"]
+    assert rps == resp["productByHandle"]["resourcePublicationsV2"]["nodes"]
     assert capped is False
     assert fc.calls[0][0] == q.GET_PRODUCT_PUBLICATIONS_BY_HANDLE
     assert fc.calls[0][1] == {"handle": "tee", "first": 50, "after": None}
@@ -376,6 +376,27 @@ def test_publications_walker_rejects_an_aliased_field():
     (operation,) = graphql.parse(aliased).definitions
     with pytest.raises(AssertionError, match="aliased"):
         _field(operation.selection_set, "resourcePublications")
+
+
+def test_product_publications_fragment_reads_v2_including_unpublished_records():
+    """Story 10.99: only resourcePublicationsV2(onlyPublished: false) shows a
+    DRAFT product's assigned channel (isPublished false). resourcePublications
+    hides it whatever onlyPublished is set to (live, 2026-09-26, API 2026-01)."""
+    (fragment,) = graphql.parse(q.PRODUCT_PUBLICATIONS_FIELDS).definitions
+    connection = _field(fragment.selection_set, "resourcePublicationsV2")
+
+    args = {a.name.value: a.value for a in connection.arguments}
+    assert set(args) == {"first", "after", "onlyPublished"}
+    assert isinstance(args["onlyPublished"], graphql.BooleanValueNode)
+    assert args["onlyPublished"].value is False
+    assert isinstance(args["first"], graphql.VariableNode) and args["first"].name.value == "first"
+    assert isinstance(args["after"], graphql.VariableNode) and args["after"].name.value == "after"
+
+    page_info = _field(connection.selection_set, "pageInfo")
+    assert {"hasNextPage", "endCursor"} <= _field_names(page_info.selection_set, "pageInfo")
+    nodes = _field(connection.selection_set, "nodes")
+    node_names = _field_names(nodes.selection_set, "nodes")
+    assert {"publication", "publishDate", "isPublished"} <= node_names
 
 
 def test_collection_publications_query_parses_and_has_the_shape_paginate_walks():

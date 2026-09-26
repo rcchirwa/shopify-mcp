@@ -81,11 +81,19 @@ def _product_pubs(
     handle="tee",
     published_ids=None,
     not_published_ids=None,
+    assigned_ids=None,
     has_next=False,
     end_cursor=None,
 ):
+    """One page of the product read, shaped like resourcePublicationsV2(onlyPublished: false).
+
+    That connection lists a live channel (isPublished true) and a DRAFT's
+    assigned channel (isPublished false); a channel the product is not on is
+    absent. So `not_published_ids` emits no record — it only names the rest of
+    the roster at the call site — and `assigned_ids` emits the isPublished:false
+    records (Story 10.99)."""
     published_ids = published_ids or []
-    not_published_ids = not_published_ids or []
+    assigned_ids = assigned_ids or []
     nodes = []
     for i in published_ids:
         nodes.append(
@@ -95,7 +103,7 @@ def _product_pubs(
                 "isPublished": True,
             }
         )
-    for i in not_published_ids:
+    for i in assigned_ids:
         nodes.append(
             {
                 "publication": {"id": f"gid://shopify/Publication/{i}", "name": _name_for(i)},
@@ -108,7 +116,7 @@ def _product_pubs(
             "id": f"gid://shopify/Product/{pid}",
             "title": title,
             "handle": handle,
-            "resourcePublications": {
+            "resourcePublicationsV2": {
                 "nodes": nodes,
                 "pageInfo": {"hasNextPage": has_next, "endCursor": end_cursor},
             },
@@ -234,7 +242,7 @@ def test_get_product_publications_by_handle_uses_handle_query():
                     "id": "gid://shopify/Product/999",
                     "title": "Handle tee",
                     "handle": "handle-tee",
-                    "resourcePublications": {"nodes": []},
+                    "resourcePublicationsV2": {"nodes": []},
                 }
             },
         ]
@@ -1599,7 +1607,7 @@ def test_resolve_product_publications_paginates_resource_publications():
             "id": "gid://shopify/Product/123",
             "title": "Tee",
             "handle": "tee",
-            "resourcePublications": {
+            "resourcePublicationsV2": {
                 "nodes": [pub_node_p0],
                 "pageInfo": {"hasNextPage": True, "endCursor": "rp_cursor"},
             },
@@ -1610,7 +1618,7 @@ def test_resolve_product_publications_paginates_resource_publications():
             "id": "gid://shopify/Product/123",
             "title": "Tee",
             "handle": "tee",
-            "resourcePublications": {
+            "resourcePublicationsV2": {
                 "nodes": [pub_node_p1],
                 "pageInfo": {"hasNextPage": False, "endCursor": None},
             },
@@ -2638,3 +2646,472 @@ def test_a_padded_handle_is_trimmed_for_the_read_tool_too():
     tools, fc = _build([_channels_response(), _collection_pubs(published_ids=[1])])
     tools["get_collection_publications"](handle="  all-copy  ")
     assert fc.calls[1][1]["handle"] == "all-copy"
+
+
+# ---------- Story 10.99: a DRAFT product's assigned-but-not-live channels ----------
+#
+# Live, 2026-09-26 (API 2026-01): a DRAFT product assigned to a channel has a
+# publication record with isPublished:false, visible only through
+# resourcePublicationsV2(onlyPublished: false). On activation it goes live at
+# once. So a product channel has three states: published, assigned (record
+# present, isPublished false), or not on it (absent). Unpublish and the
+# declarative set must remove an assigned channel; publish leaves it unchanged.
+
+
+def test_s1099_get_product_publications_lists_assigned_channels_in_their_own_section():
+    tools, fc = _build([_channels_response(), _product_pubs(assigned_ids=[4, 3])])
+    out = tools["get_product_publications"](product_id="123")
+    assert out == (
+        "Product: Tee\n"
+        "Handle: tee\n"
+        "ID: 123\n"
+        "\n"
+        "Published to (0):\n"
+        "  (none)\n"
+        "\n"
+        "Assigned (goes live when the product is ACTIVE) (2):\n"
+        "  • Google & YouTube (id: 4)\n"
+        "  • Shop (id: 3)\n"
+        "\n"
+        "Not published to (2):\n"
+        "  • Online Store (id: 1)\n"
+        "  • Point of Sale (id: 2)"
+    )
+
+
+def test_s1099_not_published_excludes_both_published_and_assigned_channels():
+    tools, fc = _build([_channels_response(), _product_pubs(published_ids=[1], assigned_ids=[4])])
+    out = tools["get_product_publications"](product_id="123")
+    assert out == (
+        "Product: Tee\n"
+        "Handle: tee\n"
+        "ID: 123\n"
+        "\n"
+        "Published to (1):\n"
+        "  • Online Store (id: 1) — publishDate: 2026-04-20T10:00:00Z\n"
+        "\n"
+        "Assigned (goes live when the product is ACTIVE) (1):\n"
+        "  • Google & YouTube (id: 4)\n"
+        "\n"
+        "Not published to (2):\n"
+        "  • Point of Sale (id: 2)\n"
+        "  • Shop (id: 3)"
+    )
+
+
+def test_s1099_unpublish_removes_an_assigned_channel_and_sends_the_mutation():
+    """The hazard the story closes: this used to read CONFIRMED with the
+    channel under Unchanged and no mutation, and the product then went live
+    there on activation."""
+    tools, fc = _build([_channels_response(), _product_pubs(assigned_ids=[4]), _unpublish_ok()])
+    out = tools["unpublish_product_from_channels"](
+        product_id="123", channel_names=["Google & YouTube"], confirm=True
+    )
+    assert fc.calls[2][0] == PUBLISHABLE_UNPUBLISH
+    assert fc.calls[2][1] == {
+        "id": "gid://shopify/Product/123",
+        "input": [{"publicationId": GOOGLE["id"]}],
+    }
+    assert out == (
+        "CONFIRMED — Unpublish product from channels\n"
+        "  Product: Tee (handle: tee, id: 123)\n"
+        "  Now unpublished from:\n"
+        "  • Google & YouTube (id: 4) (was assigned, not live)\n"
+        "  Unchanged:\n"
+        "  (none)"
+    )
+
+
+def test_s1099_unpublish_sends_published_and_assigned_but_not_absent_channels():
+    tools, fc = _build(
+        [_channels_response(), _product_pubs(published_ids=[1], assigned_ids=[4]), _unpublish_ok()]
+    )
+    out = tools["unpublish_product_from_channels"](
+        product_id="123",
+        channel_names=["Online Store", "Google & YouTube", "Point of Sale"],
+        confirm=True,
+    )
+    assert len(fc.calls) == 3
+    assert fc.calls[2][1]["input"] == [
+        {"publicationId": ONLINE["id"]},
+        {"publicationId": GOOGLE["id"]},
+    ]
+    assert out == (
+        "CONFIRMED — Unpublish product from channels\n"
+        "  Product: Tee (handle: tee, id: 123)\n"
+        "  Now unpublished from:\n"
+        "  • Online Store (id: 1)\n"
+        "  • Google & YouTube (id: 4) (was assigned, not live)\n"
+        "  Unchanged:\n"
+        "  • Point of Sale (id: 2)"
+    )
+
+
+def test_s1099_unpublish_preview_marks_an_assigned_channel():
+    tools, fc = _build([_channels_response(), _product_pubs(assigned_ids=[4])])
+    out = tools["unpublish_product_from_channels"](
+        product_id="123", channel_names=["Google & YouTube", "Shop"], confirm=False
+    )
+    assert len(fc.calls) == 2
+    assert out == (
+        "PREVIEW — Unpublish product from channels\n"
+        "  Product: Tee (handle: tee, id: 123)\n"
+        "  Would unpublish from:\n"
+        "  • Google & YouTube (id: 4) (assigned, not live)\n"
+        "  Not currently published (unchanged):\n"
+        "  • Shop (id: 3)\n"
+        "\n"
+        "To apply, call again with confirm=True."
+    )
+
+
+def test_s1099_unpublish_of_a_channel_a_draft_is_not_on_sends_nothing():
+    tools, fc = _build([_channels_response(), _product_pubs(assigned_ids=[4])])
+    out = tools["unpublish_product_from_channels"](
+        product_id="123", channel_names=["Point of Sale"], confirm=True
+    )
+    assert len(fc.calls) == 2
+    assert out.split("\n", 1)[0] == "CONFIRMED — Unpublish product from channels"
+    assert "  Unchanged:\n  • Point of Sale (id: 2)" in out
+
+
+def test_s1099_unpublish_rejected_for_an_assigned_channel_is_failed():
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _product_pubs(assigned_ids=[4]),
+            {
+                "publishableUnpublish": {
+                    "publishable": None,
+                    "userErrors": [
+                        {"field": ["input", "0", "publicationId"], "message": "not authorized"}
+                    ],
+                }
+            },
+        ]
+    )
+    out = tools["unpublish_product_from_channels"](
+        product_id="123", channel_names=["Google & YouTube"], confirm=True
+    )
+    assert out.split("\n", 1)[0] == "FAILED — Unpublish product from channels"
+    assert "  Now unpublished from:\n  (none)" in out
+    assert "  • Google & YouTube: not authorized" in out
+
+
+def test_s1099_publish_leaves_an_assigned_channel_unchanged_without_a_mutation():
+    """Decision: an assigned channel is already queued to go live, so publish
+    counts it unchanged and sends nothing. The suffix says it is not live."""
+    tools, fc = _build([_channels_response(), _product_pubs(assigned_ids=[4])])
+    out = tools["publish_product_to_channels"](
+        product_id="123", channel_names=["Google & YouTube"], confirm=True
+    )
+    assert len(fc.calls) == 2
+    assert out == (
+        "CONFIRMED — Publish product to channels\n"
+        "  Product: Tee (handle: tee, id: 123)\n"
+        "  Now published to:\n"
+        "  (none)\n"
+        "  Unchanged:\n"
+        "  • Google & YouTube (id: 4) (assigned, not live)"
+    )
+
+
+def test_s1099_publish_sends_only_the_channels_that_are_not_assigned():
+    tools, fc = _build([_channels_response(), _product_pubs(assigned_ids=[4]), _publish_ok()])
+    out = tools["publish_product_to_channels"](
+        product_id="123", channel_names=["Google & YouTube", "Point of Sale"], confirm=False
+    )
+    assert out == (
+        "PREVIEW — Publish product to channels\n"
+        "  Product: Tee (handle: tee, id: 123)\n"
+        "  Would publish to:\n"
+        "  • Point of Sale (id: 2)\n"
+        "  Already published (unchanged):\n"
+        "  • Google & YouTube (id: 4) (assigned, not live)\n"
+        "\n"
+        "To apply, call again with confirm=True."
+    )
+    tools, fc = _build([_channels_response(), _product_pubs(assigned_ids=[4]), _publish_ok()])
+    tools["publish_product_to_channels"](
+        product_id="123", channel_names=["Google & YouTube", "Point of Sale"], confirm=True
+    )
+    assert fc.calls[2][0] == PUBLISHABLE_PUBLISH
+    assert fc.calls[2][1]["input"] == [{"publicationId": POS["id"]}]
+
+
+def test_s1099_set_removes_an_undesired_assigned_channel_and_keeps_a_desired_one():
+    tools, fc = _build([_channels_response(), _product_pubs(assigned_ids=[3, 4]), _unpublish_ok()])
+    out = tools["set_product_publications"](product_id="123", channel_names=["Shop"], confirm=True)
+    # Only the unpublish leg runs: Shop is already assigned, so nothing is added.
+    assert len(fc.calls) == 3
+    assert fc.calls[2][0] == PUBLISHABLE_UNPUBLISH
+    assert fc.calls[2][1]["input"] == [{"publicationId": GOOGLE["id"]}]
+    assert out == (
+        "CONFIRMED — Set product publications (declarative)\n"
+        "  Product: Tee (handle: tee, id: 123)\n"
+        "  Added (published):\n"
+        "  (none)\n"
+        "  Removed (unpublished):\n"
+        "  • Google & YouTube (id: 4) (was assigned, not live)\n"
+        "  Unchanged:\n"
+        "  • Shop (id: 3) (assigned, not live)"
+    )
+
+
+def test_s1099_set_preview_marks_assigned_channels():
+    tools, fc = _build([_channels_response(), _product_pubs(assigned_ids=[3, 4])])
+    out = tools["set_product_publications"](product_id="123", channel_names=["Shop"], confirm=False)
+    assert len(fc.calls) == 2
+    assert out == (
+        "PREVIEW — Set product publications (declarative)\n"
+        "  Product: Tee (handle: tee, id: 123)\n"
+        "  Would add (publish):\n"
+        "  (none)\n"
+        "  Would remove (unpublish):\n"
+        "  • Google & YouTube (id: 4) (assigned, not live)\n"
+        "  Unchanged:\n"
+        "  • Shop (id: 3) (assigned, not live)\n"
+        "\n"
+        "To apply, call again with confirm=True."
+    )
+
+
+def test_s1099_set_empty_list_removes_an_assigned_channel():
+    tools, fc = _build([_channels_response(), _product_pubs(assigned_ids=[4]), _unpublish_ok()])
+    out = tools["set_product_publications"](product_id="123", channel_names=[], confirm=True)
+    assert fc.calls[2][0] == PUBLISHABLE_UNPUBLISH
+    assert fc.calls[2][1]["input"] == [{"publicationId": GOOGLE["id"]}]
+    assert out.split("\n", 1)[0] == "CONFIRMED — Set product publications (declarative)"
+
+
+def test_s1099_set_adds_and_removes_across_published_and_assigned():
+    tools, fc = _build(
+        [
+            _channels_response(),
+            _product_pubs(published_ids=[1], assigned_ids=[4]),
+            _publish_ok(),
+            _unpublish_ok(),
+        ]
+    )
+    out = tools["set_product_publications"](
+        product_id="123", channel_names=["Point of Sale"], confirm=True
+    )
+    assert fc.calls[2][0] == PUBLISHABLE_PUBLISH
+    assert fc.calls[2][1]["input"] == [{"publicationId": POS["id"]}]
+    assert fc.calls[3][0] == PUBLISHABLE_UNPUBLISH
+    assert {i["publicationId"] for i in fc.calls[3][1]["input"]} == {ONLINE["id"], GOOGLE["id"]}
+    removed = out[out.index("Removed (unpublished)") : out.index("Unchanged")]
+    assert "  • Online Store (id: 1)\n" in removed
+    assert "  • Google & YouTube (id: 4) (was assigned, not live)\n" in removed
+
+
+def test_s1099_set_when_desired_matches_the_assignment_sends_nothing():
+    tools, fc = _build([_channels_response(), _product_pubs(assigned_ids=[4])])
+    out = tools["set_product_publications"](
+        product_id="123", channel_names=["Google & YouTube"], confirm=True
+    )
+    assert len(fc.calls) == 2
+    assert out.split("\n", 1)[0] == "CONFIRMED — Set product publications (declarative)"
+
+
+# ---- Story 10.99: byte-identity for live products and for collections ----
+#
+# Captured from the tools BEFORE Story 10.99, with the same store state. A
+# product with only live (isPublished true) records must render exactly as it
+# did. Collections read resourcePublications unchanged and never get the
+# assigned state, so their isPublished:false record (Google & YouTube) keeps
+# its old meaning: publish acts on it and unpublish leaves it unchanged.
+
+_S1099_LIVE_PRODUCT = {"pid": "123", "published_ids": [1, 3]}
+_S1099_COLLECTION = {"published_ids": [1], "not_published_ids": [4]}
+
+_S1099_BYTE_IDENTICAL = [
+    (
+        "get_product_publications",
+        {"product_id": "123"},
+        [],
+        "Product: Tee\n"
+        "Handle: tee\n"
+        "ID: 123\n"
+        "\n"
+        "Published to (2):\n"
+        "  • Online Store (id: 1) — publishDate: 2026-04-20T10:00:00Z\n"
+        "  • Shop (id: 3) — publishDate: 2026-04-20T10:00:00Z\n"
+        "\n"
+        "Not published to (2):\n"
+        "  • Google & YouTube (id: 4)\n"
+        "  • Point of Sale (id: 2)",
+    ),
+    (
+        "publish_product_to_channels",
+        {"product_id": "123", "channel_names": ["Online Store", "Point of Sale"]},
+        [],
+        "PREVIEW — Publish product to channels\n"
+        "  Product: Tee (handle: tee, id: 123)\n"
+        "  Would publish to:\n"
+        "  • Point of Sale (id: 2)\n"
+        "  Already published (unchanged):\n"
+        "  • Online Store (id: 1)\n"
+        "\n"
+        "To apply, call again with confirm=True.",
+    ),
+    (
+        "publish_product_to_channels",
+        {"product_id": "123", "channel_names": ["Online Store", "Point of Sale"], "confirm": True},
+        [_publish_ok()],
+        "CONFIRMED — Publish product to channels\n"
+        "  Product: Tee (handle: tee, id: 123)\n"
+        "  Now published to:\n"
+        "  • Point of Sale (id: 2)\n"
+        "  Unchanged:\n"
+        "  • Online Store (id: 1)",
+    ),
+    (
+        "unpublish_product_from_channels",
+        {"product_id": "123", "channel_names": ["Shop", "Google & YouTube"]},
+        [],
+        "PREVIEW — Unpublish product from channels\n"
+        "  Product: Tee (handle: tee, id: 123)\n"
+        "  Would unpublish from:\n"
+        "  • Shop (id: 3)\n"
+        "  Not currently published (unchanged):\n"
+        "  • Google & YouTube (id: 4)\n"
+        "\n"
+        "To apply, call again with confirm=True.",
+    ),
+    (
+        "unpublish_product_from_channels",
+        {"product_id": "123", "channel_names": ["Shop", "Google & YouTube"], "confirm": True},
+        [_unpublish_ok()],
+        "CONFIRMED — Unpublish product from channels\n"
+        "  Product: Tee (handle: tee, id: 123)\n"
+        "  Now unpublished from:\n"
+        "  • Shop (id: 3)\n"
+        "  Unchanged:\n"
+        "  • Google & YouTube (id: 4)",
+    ),
+    (
+        "set_product_publications",
+        {"product_id": "123", "channel_names": ["Online Store", "Point of Sale"]},
+        [],
+        "PREVIEW — Set product publications (declarative)\n"
+        "  Product: Tee (handle: tee, id: 123)\n"
+        "  Would add (publish):\n"
+        "  • Point of Sale (id: 2)\n"
+        "  Would remove (unpublish):\n"
+        "  • Shop (id: 3)\n"
+        "  Unchanged:\n"
+        "  • Online Store (id: 1)\n"
+        "\n"
+        "To apply, call again with confirm=True.",
+    ),
+    (
+        "set_product_publications",
+        {
+            "product_id": "123",
+            "channel_names": ["Online Store", "Point of Sale"],
+            "confirm": True,
+        },
+        [_publish_ok(), _unpublish_ok()],
+        "CONFIRMED — Set product publications (declarative)\n"
+        "  Product: Tee (handle: tee, id: 123)\n"
+        "  Added (published):\n"
+        "  • Point of Sale (id: 2)\n"
+        "  Removed (unpublished):\n"
+        "  • Shop (id: 3)\n"
+        "  Unchanged:\n"
+        "  • Online Store (id: 1)",
+    ),
+    (
+        "get_collection_publications",
+        {"handle": "all-copy"},
+        [],
+        "Collection: All (BACKUP)\n"
+        "Handle: all-copy\n"
+        "ID: 900\n"
+        "Type: manual\n"
+        "\n"
+        "Published to (1):\n"
+        "  • Online Store (id: 1) — publishDate: 2026-04-20T10:00:00Z\n"
+        "\n"
+        "Not published to (3):\n"
+        "  • Google & YouTube (id: 4)\n"
+        "  • Point of Sale (id: 2)\n"
+        "  • Shop (id: 3)",
+    ),
+    (
+        "publish_collection_to_channels",
+        {"handle": "all-copy", "channel_names": ["Google & YouTube", "Online Store"]},
+        [],
+        "PREVIEW — Publish collection to channels\n"
+        "  Collection: All (BACKUP) (handle: all-copy, id: 900)\n"
+        "  Would publish to:\n"
+        "  • Google & YouTube (id: 4)\n"
+        "  Already published (unchanged):\n"
+        "  • Online Store (id: 1)\n"
+        "\n"
+        "To apply, call again with confirm=True.",
+    ),
+    (
+        "publish_collection_to_channels",
+        {
+            "handle": "all-copy",
+            "channel_names": ["Google & YouTube", "Online Store"],
+            "confirm": True,
+        },
+        [_collection_publish_ok()],
+        "CONFIRMED — Publish collection to channels\n"
+        "  Collection: All (BACKUP) (handle: all-copy, id: 900)\n"
+        "  Now published to:\n"
+        "  • Google & YouTube (id: 4)\n"
+        "  Unchanged:\n"
+        "  • Online Store (id: 1)",
+    ),
+    (
+        "unpublish_collection_from_channels",
+        {"handle": "all-copy", "channel_names": ["Online Store", "Google & YouTube"]},
+        [],
+        "PREVIEW — Unpublish collection from channels\n"
+        "  Collection: All (BACKUP) (handle: all-copy, id: 900)\n"
+        "  Would unpublish from:\n"
+        "  • Online Store (id: 1)\n"
+        "  Not currently published (unchanged):\n"
+        "  • Google & YouTube (id: 4)\n"
+        "\n"
+        "To apply, call again with confirm=True.",
+    ),
+    (
+        "unpublish_collection_from_channels",
+        {
+            "handle": "all-copy",
+            "channel_names": ["Online Store", "Google & YouTube"],
+            "confirm": True,
+        },
+        [_collection_unpublish_ok()],
+        "CONFIRMED — Unpublish collection from channels\n"
+        "  Collection: All (BACKUP) (handle: all-copy, id: 900)\n"
+        "  Now unpublished from:\n"
+        "  • Online Store (id: 1)\n"
+        "  Unchanged:\n"
+        "  • Google & YouTube (id: 4)",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "kwargs", "writes", "expected"),
+    _S1099_BYTE_IDENTICAL,
+    ids=[f"{c[0]}-{'confirm' if c[1].get('confirm') else 'read'}" for c in _S1099_BYTE_IDENTICAL],
+)
+def test_s1099_live_product_and_collection_output_is_byte_identical(
+    tool_name, kwargs, writes, expected
+):
+    state = (
+        _collection_pubs(**_S1099_COLLECTION)
+        if "collection" in tool_name
+        else _product_pubs(**_S1099_LIVE_PRODUCT)
+    )
+    tools, fc = _build([_channels_response(), state, *writes])
+    assert tools[tool_name](**kwargs) == expected
+    # Every scripted write response was consumed: the mutations still went out.
+    assert fc.responses == []

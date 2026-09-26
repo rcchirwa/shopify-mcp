@@ -1,5 +1,5 @@
 # Trimmed Admin GraphQL API schema. GENERATED: do not hand-edit.
-# api_version: 2026-01  captured: 2026-09-23
+# api_version: 2026-01  captured: 2026-09-26
 # Refresh: REFRESH_ADMIN_SCHEMA_SNAPSHOT=1 pytest tests/live/test_admin_schema_snapshot.py
 # (see README, 'Refreshing the Admin API schema snapshot').
 
@@ -1181,7 +1181,7 @@ type Product implements HasMetafields & Node & Publishable {
   options(first: Int): [ProductOption!]!
   productType: String!
   publicationCount(onlyPublished: Boolean = true): Int! @deprecated(reason: "Use `resourcePublicationsCount` instead.")
-  resourcePublications(onlyPublished: Boolean = true, first: Int, after: String, last: Int, before: String, reverse: Boolean = false): ResourcePublicationConnection!
+  resourcePublicationsV2(onlyPublished: Boolean = true, catalogType: CatalogType, first: Int, after: String, last: Int, before: String, reverse: Boolean = false): ResourcePublicationV2Connection!
   seo: SEO!
   status: ProductStatus!
   tags: [String!]!
@@ -1529,6 +1529,17 @@ type ResourcePublication {
 
 type ResourcePublicationConnection {
   nodes: [ResourcePublication!]!
+  pageInfo: PageInfo!
+}
+
+type ResourcePublicationV2 {
+  isPublished: Boolean!
+  publication: Publication!
+  publishDate: DateTime
+}
+
+type ResourcePublicationV2Connection {
+  nodes: [ResourcePublicationV2!]!
   pageInfo: PageInfo!
 }
 
