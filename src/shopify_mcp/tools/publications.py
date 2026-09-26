@@ -423,6 +423,10 @@ def _channel_write(
         except Exception as e:
             return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
         user_errors = extract_user_errors(result, spec["result_key"])
+        # Treated as all-or-nothing: any userError means none of `acting` applied.
+        # Live-verified only for a non-existent publication id (2026-09-26, API
+        # 2026-01, Story 9.26), which this tool reaches only via a stale channel
+        # cache; eligibility-type rejections on an ACTIVE product are unverified.
         if user_errors:
             for ue in user_errors:
                 apply_failed.append(_map_user_error(ue, acting))
@@ -916,6 +920,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             except Exception as e:
                 return f"Error during publish: {cap(str(e))}\n{SCOPE_HINT}"
             user_errors = extract_user_errors(result, "publishablePublish")
+            # Same all-or-nothing assumption and verified scope as _channel_write.
             if user_errors:
                 for ue in user_errors:
                     apply_failed.append(_map_user_error(ue, added_nodes))
@@ -940,6 +945,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                     apply_failed.append({"channel_name": n["name"], "error": capped})
             else:
                 user_errors = extract_user_errors(result, "publishableUnpublish")
+                # Same all-or-nothing assumption and verified scope as _channel_write.
                 if user_errors:
                     for ue in user_errors:
                         apply_failed.append(_map_user_error(ue, removed_nodes))
