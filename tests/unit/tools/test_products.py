@@ -1024,8 +1024,12 @@ def test_get_products_by_collection_single_page_renders_byte_identically_to_befo
     """AC8: the conversion is additive for the only case that exists today (a
     collection resolving in one page). Pinned against the exact string rather
     than substrings, so a stray blank line or a reworded header fails here
-    instead of being noticed by a reviewer."""
-    tools, _fc = _build(
+    instead of being noticed by a reviewer.
+
+    Story 10.80: a no-argument call and an explicit `limit=0` call are the
+    same request-for-request (AC3) — extended here rather than duplicated,
+    per the card's step 6."""
+    tools, fc = _build(
         [
             collection_products_page(
                 [
@@ -1035,12 +1039,64 @@ def test_get_products_by_collection_single_page_renders_byte_identically_to_befo
             )
         ]
     )
-    out = tools["get_products_by_collection"](collection_handle="vanish")
-    assert out == (
+    expected = (
         "Products in 'vanish' (2 total):\n\n"
         "  [111] Tee One | handle: tee-one | ACTIVE\n"
         "  [222] Tee Two | handle: tee-two | ACTIVE"
     )
+    out = tools["get_products_by_collection"](collection_handle="vanish")
+    assert out == expected
+    assert fc.calls[0][1] == {"handle": "vanish", "first": 250, "after": None}
+
+    tools2, fc2 = _build(
+        [
+            collection_products_page(
+                [
+                    _product_summary("111", "Tee One", "tee-one"),
+                    _product_summary("222", "Tee Two", "tee-two"),
+                ]
+            )
+        ]
+    )
+    out2 = tools2["get_products_by_collection"](collection_handle="vanish", limit=0)
+    assert out2 == expected
+    assert fc2.calls[0][1] == {"handle": "vanish", "first": 250, "after": None}
+
+
+def test_get_products_by_collection_rejects_a_negative_limit_before_any_network_call():
+    """Story 10.80 AC4: a negative limit is refused at the tool boundary with
+    the same Error: convention get_products uses, proven on the call log so
+    the refusal happens before any request."""
+    tools, fc = _build([collection_products_page([])])
+    out = tools["get_products_by_collection"](collection_handle="vanish", limit=-1)
+    assert out == "Error: limit must be zero or greater."
+    assert fc.calls == []
+
+
+def test_get_products_by_collection_limit_truncates_and_warns():
+    """Story 10.80 AC1/AC3: a limit that truncates appends
+    PRODUCTS_TRUNCATED_WARNING and renders the "(N shown)" header, and bounds
+    the request issued."""
+    tools, fc = _build(
+        [
+            collection_products_page(
+                [
+                    _product_summary("111", "Tee One", "tee-one"),
+                    _product_summary("222", "Tee Two", "tee-two"),
+                    _product_summary("333", "Tee Three", "tee-three"),
+                ],
+                has_next=True,
+                cursor="C1",
+            )
+        ]
+    )
+    out = tools["get_products_by_collection"](collection_handle="vanish", limit=2)
+    assert "[111] Tee One" in out and "[222] Tee Two" in out
+    assert "[333] Tee Three" not in out
+    assert "(2 shown)" in out
+    assert out.endswith(products.PRODUCTS_TRUNCATED_WARNING)
+    assert fc.calls[0][1]["first"] == 2
+    assert len(fc.calls) == 1
 
 
 def test_get_products_by_collection_renders_a_product_from_the_second_page():
@@ -1113,6 +1169,36 @@ def test_get_products_by_collection_docstring_no_longer_promises_all_products():
     assert "paginat" in doc.lower()
 
 
+def _limit_paragraph(doc: str) -> str:
+    """Extract the whole `limit:` paragraph from a tool docstring — the
+    `limit:` line plus every continuation line up to the next blank line —
+    normalising whitespace so indentation differences don't matter."""
+    lines = doc.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip().startswith("limit:"))
+    paragraph_lines = []
+    for line in lines[start:]:
+        if not line.strip():
+            break
+        paragraph_lines.append(line.strip())
+    return " ".join(" ".join(paragraph_lines).split())
+
+
+def test_get_products_by_collection_limit_docstring_matches_get_products():
+    """AC7: the docstring's `limit` wording must be pinned, not eyeballed — a
+    revert of get_products_by_collection's limit paragraph (including its
+    continuation lines, not just the first) shouldn't be able to pass the
+    suite unnoticed, and the two tools' wording must not drift apart."""
+    tools, _fc = _build([collection_products_page([])])
+    get_products_doc = tools["get_products"].__doc__ or ""
+    collection_doc = tools["get_products_by_collection"].__doc__ or ""
+    get_products_limit_paragraph = _limit_paragraph(get_products_doc)
+    collection_limit_paragraph = _limit_paragraph(collection_doc)
+    assert get_products_limit_paragraph, "get_products docstring has no limit: paragraph"
+    assert collection_limit_paragraph == get_products_limit_paragraph, (
+        "get_products_by_collection's limit wording no longer matches get_products'"
+    )
+
+
 def test_readme_documents_both_paginated_description_and_collection_tools():
     """AC9: README's tool table is the other half of the public surface, and it
     drifted stale twice before (Story 10.65, Story 10.72). There was no row at
@@ -1128,6 +1214,12 @@ def test_readme_documents_both_paginated_description_and_collection_tools():
     for name, row in rows.items():
         assert "paginat" in row.lower(), f"README row for {name} does not mention pagination"
         assert "WARNING" in row, f"README row for {name} does not mention the truncation WARNING"
+    # Story 10.80: get_products_by_collection's row must document its new
+    # `limit` parameter, and stay pinned so a reverted row fails this test
+    # rather than passing unchanged.
+    assert "`limit`" in rows["`get_products_by_collection`"], (
+        "README row for get_products_by_collection does not mention `limit`"
+    )
 
 
 def test_get_products_with_descriptions_scoped_to_collection():

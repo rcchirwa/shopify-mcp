@@ -633,6 +633,67 @@ def test_read_products_by_collection():
     assert fc.calls[0][1] == {"handle": "vanish", "first": 250, "after": None}
 
 
+def test_read_products_by_collection_limit_zero_is_unchanged():
+    """Story 10.80 AC3: limit=0 (the default) behaves exactly as before the
+    parameter existed — same request, same budget."""
+    fc = FakeClient([collection_products_page([], collection_id="c")])
+    col, nodes, capped = ops.read_products_by_collection(fc, "vanish", limit=0)
+    assert col["id"] == "c"
+    assert nodes == []
+    assert capped is False
+    assert fc.calls[0][1] == {"handle": "vanish", "first": 250, "after": None}
+
+
+def test_read_products_by_collection_limit_bounds_nodes_and_request_count():
+    """Story 10.80 AC1: a limit smaller than one page costs exactly one
+    request and bounds the returned nodes, proven on the FakeClient call log."""
+    fc = FakeClient(
+        [collection_products_page([{"id": f"p{i}"} for i in range(3)], has_next=True, cursor="C1")]
+    )
+    _col, nodes, capped = ops.read_products_by_collection(fc, "vanish", limit=3)
+    assert len(nodes) == 3
+    assert capped is True
+    assert len(fc.calls) == 1
+    assert fc.calls[0][1]["first"] == 3
+
+
+def test_read_products_by_collection_limit_above_page_size_trims_the_overshoot():
+    """A limit that is not a whole number of pages still returns exactly the
+    limit, and reports capped because the trimmed overshoot proves more
+    exist."""
+    page = collection_products_page(
+        [{"id": f"p{i}"} for i in range(ops.PRODUCTS_PAGE_SIZE)],
+        has_next=True,
+        cursor="C1",
+    )
+    tail = collection_products_page([{"id": "p-tail"}] * 2)
+    fc = FakeClient([page, tail])
+    limit = ops.PRODUCTS_PAGE_SIZE + 1
+    _col, nodes, capped = ops.read_products_by_collection(fc, "vanish", limit=limit)
+    assert len(nodes) == limit
+    assert capped is True
+    assert len(fc.calls) == 2
+
+
+def test_read_products_by_collection_limit_cannot_widen_the_request_budget():
+    """Story 10.80 AC2: limit narrows the page budget but must never widen it.
+    Without the min() clamp a model-supplied limit sets max_pages directly, so
+    limit=10**9 would authorise four million sequential requests. Copied from
+    test_read_products_limit_cannot_widen_the_request_budget (Story 10.72) for
+    this read, per the card's step 8."""
+    pages = [
+        collection_products_page(
+            [{"id": f"p{i}"}] * ops.PRODUCTS_PAGE_SIZE, has_next=True, cursor=f"C{i}"
+        )
+        for i in range(ops.PRODUCTS_MAX_PAGES)
+    ]
+    fc = FakeClient(pages)
+    _col, nodes, capped = ops.read_products_by_collection(fc, "vanish", limit=10**9)
+    assert len(fc.calls) == ops.PRODUCTS_MAX_PAGES, "limit must not buy extra requests"
+    assert len(nodes) == ops.PRODUCTS_PAGE_SIZE * ops.PRODUCTS_MAX_PAGES
+    assert capped is True
+
+
 def test_read_products_by_collection_follows_cursor_across_pages():
     """AC3: a first page reporting hasNextPage=True yields the SECOND page's
     products too, and the second request carries the first page's endCursor."""
