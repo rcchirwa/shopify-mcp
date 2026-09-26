@@ -15,6 +15,7 @@ from shopify_mcp.tools._response import (
     format_path_user_errors,
     format_user_errors,
     format_user_errors_joined,
+    poll_failed_note,
     with_confirm_hint,
 )
 
@@ -265,3 +266,36 @@ def test_format_path_user_errors_empty_list_returns_empty_string() -> None:
     # Callers guard on the error list being non-empty before formatting, so
     # this is the degenerate case rather than a None-returning signal.
     assert format_path_user_errors([]) == ""
+
+
+# ---------- poll_failed_note (code review F7, Story 10.89) ----------
+#
+# Shared by tools/collections.py, tools/media/_reorder.py and
+# tools/media/_upload.py, which previously hand-inlined this exact sentence.
+
+
+def test_poll_failed_note_renders_exact_sentence() -> None:
+    assert poll_failed_note("upstream 503") == (
+        "(poll failed: upstream 503 — underlying write succeeded, check server-side for completion)"
+    )
+
+
+def test_poll_failed_note_caps_long_error_text() -> None:
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
+    from shopify_mcp.tools._scrub import cap as cap_text
+
+    huge = "x" * 5000
+    out = poll_failed_note(huge)
+    assert cap_text(huge) in out
+    assert huge not in out
+    assert len(out) < len(huge)
+    assert ("x" * REFLECT_MAX_LEN) in out
+
+
+def test_poll_failed_note_stringifies_non_string_error() -> None:
+    # Call sites pass exception objects and dict['error'] values through
+    # str() before this helper existed — matches that behavior.
+    err = RuntimeError("boom")
+    assert poll_failed_note(err) == (
+        "(poll failed: boom — underlying write succeeded, check server-side for completion)"
+    )

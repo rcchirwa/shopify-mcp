@@ -197,8 +197,11 @@ def test_execute_wraps_transport_server_error():
     # 400 is a permanent error (not retryable) — raises immediately as ShopifyError.
     err = TransportServerError("400 Bad Request")
     client = _make_client(exc=err)
-    with pytest.raises(ShopifyError, match=r"Shopify HTTP error:.*400"):
+    with pytest.raises(ShopifyError, match=r"Shopify HTTP error:.*400") as exc_info:
         client.execute("query { __typename }")
+    # Pin M8: a non-retryable TransportServerError raises the plain class, not
+    # the ShopifyProtocolError subclass poll_job treats as transient.
+    assert type(exc_info.value) is ShopifyError
 
 
 # ---------- _format_errors helper shapes ----------
@@ -564,10 +567,15 @@ def test_execute_does_not_retry_on_400(no_sleep):
 def test_execute_does_not_retry_on_non_throttle_gql_error(no_sleep):
     err = TransportQueryError("schema", errors=[{"message": "Unknown field 'foo'"}])
     client = _make_scripted([err])
-    with pytest.raises(ShopifyError, match="Shopify GraphQL error: Unknown field 'foo'"):
+    with pytest.raises(
+        ShopifyError, match="Shopify GraphQL error: Unknown field 'foo'"
+    ) as exc_info:
         client.execute("{ __typename }")
     assert no_sleep == []
     assert client._client.calls == 1
+    # Pin M7: a non-THROTTLED TransportQueryError raises the plain class, not
+    # the ShopifyProtocolError subclass poll_job treats as transient.
+    assert type(exc_info.value) is ShopifyError
 
 
 def test_execute_exhausts_retries_on_persistent_throttled(no_sleep):
@@ -620,6 +628,18 @@ def test_execute_non_dict_raises_shopify_error_no_retry(no_sleep):
         client.execute("{ __typename }")
     assert no_sleep == []
     assert client._client.calls == 1
+
+
+def test_execute_non_dict_raises_shopify_protocol_error(no_sleep):
+    """Code review F3 (Story 10.89): a non-dict result is a non-GraphQL
+    response — the same protocol-error category as a WAF interstitial — so it
+    must raise the ShopifyProtocolError subclass poll_job treats as
+    transient, not a plain (fast-failed) ShopifyError."""
+    from shopify_mcp.client import ShopifyProtocolError
+
+    client = _make_scripted(["unauthorized"])
+    with pytest.raises(ShopifyProtocolError, match=r"non-dict response.*type=str"):
+        client.execute("{ __typename }")
 
 
 # ===========================================================================
@@ -1114,6 +1134,225 @@ def test_poll_job_budget_respects_next_sleep_size(monkeypatch):
     assert clock.sleeps == [0.5, 1.0]
 
 
+# ---------- Story 10.89: permanent errors fast-fail, transient ones still loop ----------
+#
+# poll_job's broad `except Exception` used to treat a permanent ShopifyError
+# (bad scope, schema drift, malformed query) exactly like a transient one —
+# retrying it for the whole poll budget and reporting `timed_out=True`, which
+# hides the real cause behind a "still running" story. ShopifyError (:127) and
+# TransientShopifyError (:132) are SIBLINGS under RuntimeError, not parent and
+# child, so a `except ShopifyError` branch added ahead of the broad one cannot
+# accidentally swallow a transient failure — pinned by the second/third tests
+# below rather than assumed.
+
+
+def _duck_client(execute_fn, settings=None):
+    """A minimal stand-in for ShopifyClient: poll_job only ever calls
+    `client.execute(...)` and reads `client._settings.*` knobs, so a duck-typed
+    object avoids routing through the real `ShopifyClient.execute()` translation
+    layer (Transport* -> Shopify/TransientShopifyError) that a full `_bare_client`
+    would add — irrelevant here since the test raises the already-classified
+    exception `poll_job` itself must react to.
+    """
+
+    class _Duck:
+        def __init__(self):
+            self._settings = settings or _test_settings()
+            self.calls = 0
+
+        def execute(self, *a, **kw):
+            self.calls += 1
+            return execute_fn(*a, **kw)
+
+    return _Duck()
+
+
+def test_poll_job_shopify_error_fails_fast_no_retry(monkeypatch):
+    """A permanent ShopifyError must return immediately: exactly one execute()
+    call, no sleep, timed_out=False, error set."""
+    from shopify_mcp.client import ShopifyError, poll_job
+
+    clock = _SleepTrackingClock()
+    _patch_time(monkeypatch, clock)
+
+    def _raise(*_a, **_kw):
+        raise ShopifyError("permanent failure: missing scope")
+
+    client = _duck_client(_raise)
+    result = poll_job(client, "gid://shopify/Job/1", timeout_s=10)
+
+    assert client.calls == 1
+    assert result["done"] is False
+    assert result["timed_out"] is False
+    assert result["error"] == "permanent failure: missing scope"
+    assert clock.sleeps == []
+
+
+def test_poll_job_shopify_error_fast_fail_caps_error_text(monkeypatch):
+    """Story 10.89 fix-round: the fast-fail branch's `error` must go through
+    the same `cap_text` bound (SEC-27) as every other reflected-text path —
+    an oversized ShopifyError message must not reach the caller unbounded."""
+    from shopify_mcp.client import ShopifyError, poll_job
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
+    from shopify_mcp.tools._scrub import cap as cap_text
+
+    clock = _SleepTrackingClock()
+    _patch_time(monkeypatch, clock)
+
+    huge = "x" * 5000
+
+    def _raise(*_a, **_kw):
+        raise ShopifyError(huge)
+
+    client = _duck_client(_raise)
+    result = poll_job(client, "gid://shopify/Job/1", timeout_s=10)
+
+    assert result["error"] == cap_text(huge)
+    assert len(result["error"]) == REFLECT_MAX_LEN
+    assert "x" * (REFLECT_MAX_LEN + 1) not in result["error"]
+
+
+def test_poll_job_transient_error_still_loops_to_budget(monkeypatch):
+    """A TransientShopifyError must NOT be fast-failed — it keeps polling to
+    the budget, exactly like today, and reports timed_out=True."""
+    from shopify_mcp.client import TransientShopifyError, poll_job
+
+    clock = _SleepTrackingClock()
+    _patch_time(monkeypatch, clock)
+
+    def _raise(*_a, **_kw):
+        raise TransientShopifyError("throttled")
+
+    client = _duck_client(_raise)
+    # timeout_s=3 forces the same three-attempt budget as
+    # test_poll_job_budget_respects_next_sleep_size (0.5s, 1.0s sleeps between
+    # calls) — a fast-fail would stop after exactly one call instead.
+    result = poll_job(client, "gid://shopify/Job/1", timeout_s=3)
+
+    assert client.calls > 1
+    assert result["done"] is False
+    assert result["timed_out"] is True
+    assert result["error"] == "throttled"
+
+
+def test_poll_job_generic_exception_still_loops_to_budget(monkeypatch):
+    """A plain, unclassified exception must also keep looping to the budget —
+    the fast-fail path is scoped to ShopifyError alone."""
+    from shopify_mcp.client import poll_job
+
+    clock = _SleepTrackingClock()
+    _patch_time(monkeypatch, clock)
+
+    def _raise(*_a, **_kw):
+        raise RuntimeError("transport blew up")
+
+    client = _duck_client(_raise)
+    result = poll_job(client, "gid://shopify/Job/1", timeout_s=3)
+
+    assert client.calls > 1
+    assert result["done"] is False
+    assert result["timed_out"] is True
+    assert result["error"] == "transport blew up"
+
+
+# ---------- Code review F3 (Story 10.89): ShopifyProtocolError is transient ----------
+#
+# execute() also raises plain ShopifyError for TransportProtocolError (an HTML
+# error page, a WAF interstitial, a 200 with garbage) and for a non-dict
+# result — both are often transient. Before this fix the new fast-fail branch
+# above ended the poll on the first WAF blip instead of retrying it like the
+# broad except used to. ShopifyProtocolError is a ShopifyError subclass caught
+# ahead of the fast-fail branch and treated like the broad except.
+
+
+def test_poll_job_protocol_error_once_then_done(monkeypatch):
+    """A single transient ShopifyProtocolError must not fast-fail: the next
+    poll can still observe done=True."""
+    from shopify_mcp.client import ShopifyProtocolError, poll_job
+
+    clock = _SleepTrackingClock()
+    _patch_time(monkeypatch, clock)
+
+    calls = {"n": 0}
+
+    def _flaky(*_a, **_kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ShopifyProtocolError("Shopify protocol error: WAF blip")
+        return {"job": {"done": True}}
+
+    client = _duck_client(_flaky)
+    result = poll_job(client, "gid://shopify/Job/1", timeout_s=10)
+
+    assert calls["n"] > 1
+    assert result["done"] is True
+    assert result["timed_out"] is False
+
+
+def test_poll_job_protocol_error_always_loops_to_budget(monkeypatch):
+    """A ShopifyProtocolError on every poll must loop to the budget — exactly
+    like the broad except — and report timed_out=True with the error set."""
+    from shopify_mcp.client import ShopifyProtocolError, poll_job
+
+    clock = _SleepTrackingClock()
+    _patch_time(monkeypatch, clock)
+
+    def _raise(*_a, **_kw):
+        raise ShopifyProtocolError("Shopify protocol error: WAF blip")
+
+    client = _duck_client(_raise)
+    result = poll_job(client, "gid://shopify/Job/1", timeout_s=3)
+
+    assert client.calls > 1
+    assert result["done"] is False
+    assert result["timed_out"] is True
+    assert result["error"] == "Shopify protocol error: WAF blip"
+
+
+def test_poll_job_protocol_error_branch_caps_error_text(monkeypatch):
+    """The ShopifyProtocolError branch must go through the same `cap_text`
+    bound (REFLECT_MAX_LEN) as the fast-fail branch — an oversized message
+    must not reach the caller unbounded. Mutant: `last_error = str(e)` here
+    (dropping `cap_text`) must fail this test."""
+    from shopify_mcp.client import ShopifyProtocolError, poll_job
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
+
+    clock = _SleepTrackingClock()
+    _patch_time(monkeypatch, clock)
+
+    huge = "x" * (REFLECT_MAX_LEN + 5000)
+
+    def _raise(*_a, **_kw):
+        raise ShopifyProtocolError(huge)
+
+    client = _duck_client(_raise)
+    result = poll_job(client, "gid://shopify/Job/1", timeout_s=3)
+
+    assert result["error"] is not None
+    assert len(result["error"]) <= REFLECT_MAX_LEN
+
+
+def test_poll_job_plain_shopify_error_still_fails_fast_despite_protocol_subclass(monkeypatch):
+    """A plain ShopifyError (validation, auth, schema drift) must still fail
+    fast after one call — only the ShopifyProtocolError subclass is treated as
+    transient."""
+    from shopify_mcp.client import ShopifyError, poll_job
+
+    clock = _SleepTrackingClock()
+    _patch_time(monkeypatch, clock)
+
+    def _raise(*_a, **_kw):
+        raise ShopifyError("permanent failure: missing scope")
+
+    client = _duck_client(_raise)
+    result = poll_job(client, "gid://shopify/Job/1", timeout_s=10)
+
+    assert client.calls == 1
+    assert result["timed_out"] is False
+    assert result["error"] == "permanent failure: missing scope"
+    assert clock.sleeps == []
+
+
 # ---------- Story 10.67 (SEC-27): bounding at the source ----------
 #
 # The round-1 design capped only at reflection sites and argued no unbounded
@@ -1194,6 +1433,24 @@ def test_s1067_transport_protocol_error_is_caught_and_bounded():
     assert "protocol error" in msg
     assert "Q" * REFLECT_MAX_LEN not in msg or len(msg) < len(body)
     assert body[: REFLECT_MAX_LEN + 1] not in msg
+
+
+def test_transport_protocol_error_raises_shopify_protocol_error_subclass():
+    """Code review F3 (Story 10.89): TransportProtocolError (an HTML error
+    page, a WAF interstitial, a 200 with garbage) is often transient, so it
+    must raise ShopifyProtocolError — a ShopifyError subclass poll_job
+    retries to budget instead of fast-failing on — with byte-identical
+    message text to before this fix."""
+    from gql.transport.exceptions import TransportProtocolError
+
+    from shopify_mcp.client import ShopifyProtocolError
+
+    body = "<html>WAF blocked</html>"
+    client = _make_client(exc=TransportProtocolError(body))
+    with pytest.raises(ShopifyProtocolError) as exc_info:
+        client.execute("query { __typename }")
+    assert isinstance(exc_info.value, ShopifyError)
+    assert str(exc_info.value) == f"Shopify protocol error: {body}"
 
 
 # ---------- Story 9.13: served vs. requested Admin API version ----------
