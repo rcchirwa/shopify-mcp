@@ -610,10 +610,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         (Story 10.63 / SEC-04-descriptions). Strip the delimiters before
         writing any of it back.
         """
-        # The ceiling stays at 250 (Story 10.76 step-2 decision (b)); raising it
-        # toward PRODUCTS_PAGE_SIZE * PRODUCTS_MAX_PAGES is deferred behind a
-        # live response-volume probe. With it in place every reachable limit
-        # still resolves in a single request, exactly as before this story.
+        # The ceiling stays at 250 (Story 10.76 step-2 decision (b), confirmed by
+        # Story 10.81's live probe, 2026-09-27). 250 is the per-request maximum,
+        # so every reachable limit resolves in a single request and the walk
+        # beneath stays unreachable. Raising it would only make each response
+        # larger: on the store measured then, output averaged ~864 bytes per
+        # product, so 2500 products would be ~2.2 MB. Even 250 is large for a
+        # big catalogue; that residual is recorded in docs/tech-debt.md.
         limit = max(1, min(limit, 250))
 
         if collection_handle:

@@ -8,6 +8,30 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-09-27 — Story 10.81 (decided: `get_products_with_descriptions` keeps its 250 ceiling)
+
+Trello: https://trello.com/c/AI6vcceB (Story 10.81, Epic 10). A decision, not an implementation. It closes the residual that Story 10.76 left open ("Raising the description ceiling above 250"), whose entry condition was a live volume probe.
+
+**Probe (2026-09-27, read-only, API `2026-01` requested and served, main checkout at `origin/main` `76e8e31`).** `GET_PRODUCTS_WITH_DESCRIPTIONS` at `first: 250`:
+- **Cost:** `requestedQueryCost` 13, `actualQueryCost` 5, against a 2000-point bucket restoring at 100/s. Cost is not a factor. (10.72's 112 was for `GET_PRODUCTS`, which nests variants.)
+- **Raw response:** 46,937 bytes, one page. **The store has 53 products**, so the whole catalogue fits in one request.
+- **Rendered tool output at `limit=250`:** 45,974 bytes, about 11,500 tokens (bytes/4), with 54 `<UNTRUSTED-DATA>` fences.
+- **`bodyHtml` length:** max 7,872 characters, median 401, mean 673, p90 1,153. All 53 products have one.
+- **Rendered bytes per product:** about 864 on average and 8,039 at most. This was measured by rendering each product the way the tool does, and it matched the tool's real output to within its 198 bytes of fixed header, reminder and warning.
+
+**Decision: approach 1, keep 250.**
+- Cost never mattered, and on this store a higher ceiling changes nothing, because 250 already returns all 53 products.
+- What decides it is volume. At the measured density, 250 products would render to about 216 KB, roughly 54k tokens (about 37k at the median). 2,500 would be about 2.2 MB, roughly 540k tokens.
+- A single tool result of hundreds of thousands of tokens is not something a calling model can use, and MCP clients cap tool output well below that. The exact cap depends on the client and its configuration and was not measured here, so no specific figure is relied on.
+- So raising the ceiling could only make each response larger. A cursor (the card's approach 4) is the only way past 250 that keeps each response small. It would need its own card, and there is no demand for it at 53 products.
+- Why 250 specifically: it is the per-request maximum (`PRODUCTS_PAGE_SIZE`), so every reachable `limit` is one request, and on this store it already returns the whole catalogue.
+
+**What stays as it is.** The multi-page walk under `get_products_with_descriptions` (`_limit_budget()` with `max_pages` > 1) remains wired and tested but deliberately unreachable: every `limit` ≤ 250 is a single request of `first: limit`. The tool docstring's "wired but unreachable until the ceiling rises" is still accurate and was checked, not assumed. The comment above the clamp in `tools/products.py`, which said the decision was "deferred behind a live response-volume probe", now records the outcome and the numbers. No behaviour changed.
+
+**Out of scope, recorded as a residual.** Response size is already large *below* the ceiling. At the measured ~864 bytes per product, the tool's default `limit=50` renders about 43 KB (~11k tokens by bytes/4) on this store, and a catalogue of more than about 100 products would pass ~25k tokens at the 250 ceiling. If that causes truncation in practice, lowering the default or the ceiling, or adding a cursor, is a separate card.
+
+---
+
 ## 2026-09-27 — Story 10.100 (the DRAFT assigned-but-not-live state was in tool OUTPUT but not in tool DESCRIPTIONS)
 
 Trello: https://trello.com/c/52ZmEJps (Story 10.100, Epic 10). A follow-up of Story 10.99's code review, skipped there: 10.99 taught `get_product_publications`, `publish_product_to_channels`, `unpublish_product_from_channels` and `set_product_publications` a third channel state for a DRAFT product — assigned but not live, going live the instant the product turns ACTIVE — and reflected it in every tool's rendered OUTPUT, but never in the DESCRIPTIONS an MCP client actually reads before calling a tool.
@@ -1325,7 +1349,7 @@ Security findings resolved: no GraphQL injection is introduced (all three querie
 
 ### Deliberately out of scope
 - ~~**A `limit` argument for `get_products_by_collection`.** Three reviewers proposed it and it is the obvious symmetry with `get_products`, but it is a new model-facing parameter — a contract change this card did not authorize, and one that would need its own acceptance criterion. The growth it would bound is recorded above rather than left implicit. Worth its own card; the entry condition is the same live probe as the ceiling question.~~ **Closed 2026-09-25 by Story 10.80** — see the entry at the top of this file.
-- **Raising the description ceiling above 250** (the card's approach 3). Entry condition: a live `extensions.cost` probe of `GET_PRODUCTS_WITH_DESCRIPTIONS` at `first: 250`. 10.72 measured `GET_PRODUCTS` at `requestedQueryCost=112`; `bodyHtml` is a scalar so the *cost* should be similar, but the *response bytes* are not — 250 multi-KB descriptions in one MCP response is already large and a 10-page walk is ten times that. The volume question, not the cost question, is the one that needs answering before a number is picked.
+- ~~**Raising the description ceiling above 250** (the card's approach 3). Entry condition: a live `extensions.cost` probe of `GET_PRODUCTS_WITH_DESCRIPTIONS` at `first: 250`. 10.72 measured `GET_PRODUCTS` at `requestedQueryCost=112`; `bodyHtml` is a scalar so the *cost* should be similar, but the *response bytes* are not — 250 multi-KB descriptions in one MCP response is already large and a 10-page walk is ten times that. The volume question, not the cost question, is the one that needs answering before a number is picked.~~ **Closed 2026-09-27 by Story 10.81** (decided: the ceiling stays at 250) — see the entry at the top of this file.
 - ~~**The nested `variants(first: 50)` inside `GET_PRODUCTS`** — still open, still unpaginated, and still structurally unwalkable by `client.paginate()`, which cannot follow a connection nested inside another connection. Carded separately as Story 10.77 (`T-10.72-variants-detect`).~~ **Closed 2026-09-05 by Story 10.77** — the *detection* half, which was the achievable one; the connection remains unpaginated and permanently so. See the entry above.
 - **`read_product_collections`' `collections(first: 250)`** — a different connection with its own at-cap warning.
 - **Wrapping titles/handles in `wrap()`** — SEC-04 successor territory, not a pagination concern. Three consequences of leaving it, all recorded rather than fixed:
