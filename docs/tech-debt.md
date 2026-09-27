@@ -22,12 +22,13 @@ Trello: https://trello.com/c/AI6vcceB (Story 10.81, Epic 10). A decision, not an
 **Decision: approach 1, keep 250.**
 - Cost never mattered, and on this store a higher ceiling changes nothing, because 250 already returns all 53 products.
 - What decides it is volume. At the measured density, 250 products would render to about 216 KB, roughly 54k tokens (about 37k at the median). 2,500 would be about 2.2 MB, roughly 540k tokens.
-- A single MCP tool result that size is not usable by a calling model. Claude Code's documented default warns above 10k tokens of MCP output and truncates at 25k; that is quoted from its documentation, not measured, and Claude Desktop's limit was not measured.
-- So raising the ceiling could only produce responses a client truncates. A cursor (the card's approach 4) is the only way past 250 that keeps each response small. It would need its own card, and there is no demand for it at 53 products.
+- A single tool result of hundreds of thousands of tokens is not something a calling model can use, and MCP clients cap tool output well below that. The exact cap depends on the client and its configuration and was not measured here, so no specific figure is relied on.
+- So raising the ceiling could only make each response larger. A cursor (the card's approach 4) is the only way past 250 that keeps each response small. It would need its own card, and there is no demand for it at 53 products.
+- Why 250 specifically: it is the per-request maximum (`PRODUCTS_PAGE_SIZE`), so every reachable `limit` is one request, and on this store it already returns the whole catalogue.
 
 **What stays as it is.** The multi-page walk under `get_products_with_descriptions` (`_limit_budget()` with `max_pages` > 1) remains wired and tested but deliberately unreachable: every `limit` ≤ 250 is a single request of `first: limit`. The tool docstring's "wired but unreachable until the ceiling rises" is still accurate and was checked, not assumed. The comment above the clamp in `tools/products.py`, which said the decision was "deferred behind a live response-volume probe", now records the outcome and the numbers. No behaviour changed.
 
-**Out of scope.** Even 250 would overflow a 25k-token client on a catalogue of more than about 100 products at this description density. If that becomes real, lowering the ceiling or adding a cursor is a separate card.
+**Out of scope, recorded as a residual.** Response size is already large *below* the ceiling. At the measured ~864 bytes per product, the tool's default `limit=50` renders about 43 KB (~11k tokens by bytes/4) on this store, and a catalogue of more than about 100 products would pass ~25k tokens at the 250 ceiling. If that causes truncation in practice, lowering the default or the ceiling, or adding a cursor, is a separate card.
 
 ---
 

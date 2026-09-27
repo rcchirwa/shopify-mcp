@@ -611,10 +611,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         writing any of it back.
         """
         # The ceiling stays at 250 (Story 10.76 step-2 decision (b), confirmed by
-        # Story 10.81's live probe, 2026-09-27). The rendered output averaged
-        # ~864 bytes per product, so 250 products is already ~54k tokens and
-        # 2500 would be ~540k, far past what one tool result can usefully carry.
-        # Every reachable limit therefore resolves in a single request.
+        # Story 10.81's live probe, 2026-09-27). 250 is the per-request maximum,
+        # so every reachable limit resolves in a single request and the walk
+        # beneath stays unreachable. Raising it would only make each response
+        # larger: on the store measured then, output averaged ~864 bytes per
+        # product, so 2500 products would be ~2.2 MB. Even 250 is large for a
+        # big catalogue; that residual is recorded in docs/tech-debt.md.
         limit = max(1, min(limit, 250))
 
         if collection_handle:
