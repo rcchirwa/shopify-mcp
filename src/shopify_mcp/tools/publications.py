@@ -661,8 +661,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         publish the WRONG product (Story 10.68 — a contract change; see the
         module docstring of `shopify._identifiers`).
 
-        Publishing to a DRAFT product only assigns the channel — it goes live
-        once the product is set ACTIVE — and such channels are marked
+        Publishing to a DRAFT product only assigns the channel — it is queued
+        to go live once the product is set ACTIVE — and such channels are marked
         "(assigned, not live)" in the preview and the confirmed output (Story
         10.99). A channel a DRAFT is already assigned to is reported unchanged
         with the same mark, and no mutation is sent for it. If the assigned
@@ -732,8 +732,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         module docstring of `shopify._identifiers`).
 
         On a DRAFT product, a channel it is only assigned to (not yet live) is
-        removed too — the mutation is sent — and marked
-        "(was assigned, not live)" in the result (Story 10.99). If the
+        removed too — the mutation is sent. The preview marks it
+        "(assigned, not live)" and the result "(was assigned, not live)"
+        (Story 10.99). If the
         assigned channels could not be fully read, a trailing "Note: ..."
         line says some may be missing.
         """
@@ -963,8 +964,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         change; see the module docstring of `shopify._identifiers`).
 
         On a DRAFT product, a channel it is assigned to (not yet live) counts
-        as current: an undesired one is removed, marked
-        "(was assigned, not live)"; a desired one is unchanged, marked
+        as current: an undesired one is removed (the preview marks it
+        "(assigned, not live)", the result "(was assigned, not live)"); a
+        desired one is unchanged, marked
         "(assigned, not live)"; and an added channel gets the same
         "(assigned, not live)" mark (Story 10.99). If the assigned channels
         could not be fully read, a trailing "Note: ..." line says some may be

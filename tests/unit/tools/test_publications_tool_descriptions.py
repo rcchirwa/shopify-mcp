@@ -45,18 +45,37 @@ def _tool_descriptions(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[
 # (tool name, phrase(s) that must appear — all of them). Each phrase is
 # load-bearing: it would be lost if the new paragraph were deleted, and none
 # of them appear anywhere else in the tool's existing (pre-10.100) docstring
-# text, so a deleted paragraph cannot pass by accident.
+# text, so a deleted paragraph cannot pass by accident. "could not be fully
+# read" pins each tool's sentence about the trailing incomplete-read note.
 _MUST_CONTAIN: dict[str, tuple[str, ...]] = {
-    "get_product_publications": ("Assigned (goes live when the product is ACTIVE)",),
-    "publish_product_to_channels": ("(assigned, not live)", "DRAFT"),
-    "unpublish_product_from_channels": ("(was assigned, not live)",),
-    "set_product_publications": ("(assigned, not live)", "(was assigned, not live)"),
+    "get_product_publications": (
+        "Assigned (goes live when the product is ACTIVE)",
+        "could not be fully read",
+    ),
+    "publish_product_to_channels": ("(assigned, not live)", "DRAFT", "could not be fully read"),
+    "unpublish_product_from_channels": (
+        "(assigned, not live)",
+        "(was assigned, not live)",
+        "could not be fully read",
+    ),
+    "set_product_publications": (
+        "(assigned, not live)",
+        "(was assigned, not live)",
+        "could not be fully read",
+    ),
 }
 
 # Collection tools stay out of Story 10.99's and 10.100's scope (collections
 # have no status and no assigned state — see the module docstring and the
-# 2026-09-26 tech-debt entry). Their descriptions must never pick up the word
-# "assigned", which would signal scope creep into the collection tools.
+# 2026-09-26 tech-debt entry). Their descriptions must never pick up the
+# assigned-state labels, which would signal scope creep into the collection
+# tools. The labels are matched, not the bare word "assigned", so an unrelated
+# use of the word cannot fail this check.
+_ASSIGNED_STATE_LABELS = (
+    "(assigned, not live)",
+    "(was assigned, not live)",
+    "Assigned (goes live",
+)
 _COLLECTION_TOOLS = (
     "get_collection_publications",
     "publish_collection_to_channels",
@@ -82,8 +101,9 @@ def test_collection_publication_tool_description_does_not_mention_assigned(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, name: str
 ) -> None:
     descriptions = _tool_descriptions(monkeypatch, tmp_path)
-    assert "assigned" not in descriptions[name].lower(), (
-        f"{name}: collection tools have no assigned-channel state (Story "
-        f"10.99/10.100 are product-only) — this description should not "
-        f"mention it.\ndescription={descriptions[name]!r}"
-    )
+    for label in _ASSIGNED_STATE_LABELS:
+        assert label not in descriptions[name], (
+            f"{name}: collection tools have no assigned-channel state (Story "
+            f"10.99/10.100 are product-only) — this description should not "
+            f"carry {label!r}.\ndescription={descriptions[name]!r}"
+        )
