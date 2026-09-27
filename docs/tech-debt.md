@@ -4,7 +4,17 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-09-26.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-09-27.
+
+---
+
+## 2026-09-27 — Story 10.100 (the DRAFT assigned-but-not-live state was in tool OUTPUT but not in tool DESCRIPTIONS)
+
+Trello: https://trello.com/c/52ZmEJps (Story 10.100, Epic 10). A follow-up of Story 10.99's code review, skipped there: 10.99 taught `get_product_publications`, `publish_product_to_channels`, `unpublish_product_from_channels` and `set_product_publications` a third channel state for a DRAFT product — assigned but not live, going live the instant the product turns ACTIVE — and reflected it in every tool's rendered OUTPUT, but never in the DESCRIPTIONS an MCP client actually reads before calling a tool.
+
+**Fix.** Each of the four docstrings in `src/shopify_mcp/tools/publications.py` gained a short paragraph describing the DRAFT-only assigned state in the terms that tool's own output uses: `get_product_publications` names the "Assigned (goes live when the product is ACTIVE)" section; `publish_product_to_channels` and `set_product_publications` name the `(assigned, not live)` mark; `unpublish_product_from_channels` and `set_product_publications` name the `(was assigned, not live)` mark; all four mention the trailing incomplete-read note. No existing text was rewritten — the Story 10.68 paragraph in each docstring is unchanged — and the collection tools were not touched (collections have no DRAFT/assigned state; see the 10.99 entry above).
+
+**Test.** `tests/unit/tools/test_publications_tool_descriptions.py` builds the real server (`create_server()` + `list_tools()`, `_ENV_PATH` monkeypatched on both `shopify_mcp.server` and `shopify_mcp.client` to a nonexistent path, same isolation `test_confirmed_output_guard.py` uses) and asserts each tool's REGISTERED description — not `func.__doc__` read directly — contains the load-bearing phrase(s) for its own DRAFT behaviour, including "could not be fully read" for the incomplete-read note sentence. A negative check confirms the three collection tools' descriptions carry none of the assigned-state labels (scope stays pinned); it matches the labels, not the bare word "assigned", so an unrelated use of the word cannot fail it. Code review then made the unpublish and set descriptions say which mark the preview shows ("(assigned, not live)") and which the result shows ("(was assigned, not live)"), and changed "goes live once the product is set ACTIVE" to "is queued to go live" (activation was live-verified for Inbox only). Watched RED on the unedited docstrings (4 failed, 3 passed), then GREEN after the edits. Mutation-verified: deleting each of the four new paragraphs in turn was killed by that tool's own parametrized test case, and the file was restored and confirmed byte-identical (sha256) after each mutant and at the end.
 
 ---
 
