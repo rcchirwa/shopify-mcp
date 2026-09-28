@@ -592,7 +592,7 @@ def test_tracking_partial_failure_reports_per_variant():
         [
             _product_with_variants(variants),
             _tracked_update_ok("gid://shopify/InventoryItem/100", True),
-            _tracked_update_err("inventoryItemId", "locked by another process"),
+            _tracked_update_err(["input", "tracked"], "locked by another process"),
         ]
     )
     out = tools["update_variant_inventory_tracking"](
@@ -607,7 +607,26 @@ def test_tracking_partial_failure_reports_per_variant():
     assert "Failed (1):" in out
     # Full 'field: message' shape — locks in format_user_errors_joined output
     # so a regression in the helper surfaces here.
-    assert "inventoryItemId: locked by another process" in out
+    assert "    • M: input.tracked: locked by another process" in out.splitlines()
+
+
+def test_tracking_failed_bullet_renders_list_field_as_dotted_path():
+    """Story 10.94: the per-variant Failed bullet embeds format_user_errors_joined
+    with no "Error:" prefix; a `[String!]` path must render dotted there too."""
+    variants = [_variant("101", "M", "REEF-M", [], tracked=False)]
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            _tracked_update_err(["input", "tracked"], "locked by another process"),
+        ]
+    )
+    out = tools["update_variant_inventory_tracking"](
+        product_id="555",
+        tracked=True,
+        confirm=True,
+    )
+    assert len(fc.calls) == 2, "the mutation must have run"
+    assert "    • M: input.tracked: locked by another process" in out.splitlines()
 
 
 def test_tracking_all_rejected_is_not_confirmed():
@@ -628,8 +647,8 @@ def test_tracking_all_rejected_is_not_confirmed():
     tools, fc = _build(
         [
             _product_with_variants(variants),
-            _tracked_update_err("inventoryItemId", "locked by another process"),
-            _tracked_update_err("inventoryItemId", "locked by another process"),
+            _tracked_update_err(["input", "tracked"], "locked by another process"),
+            _tracked_update_err(["input", "tracked"], "locked by another process"),
         ]
     )
     out = tools["update_variant_inventory_tracking"](
@@ -1161,6 +1180,29 @@ def test_quantity_surfaces_user_errors_as_error_string():
     )
     assert out.startswith("Error:")
     assert "Quantity must be non-negative" in out
+
+
+def test_quantity_user_errors_render_list_field_as_dotted_path():
+    """Story 10.94: `field` is `[String!]`; the full error string must carry a
+    dotted path, not a Python list repr."""
+    variants = [
+        _variant("100", "S", "REEF-S", [_level(5, "gid://shopify/Location/9")]),
+    ]
+    tools, fc = _build(
+        [
+            _product_with_variants(variants),
+            _set_inventory_err(
+                ["input", "setQuantities", "0", "quantity"],
+                "Quantity must be non-negative",
+            ),
+        ]
+    )
+    out = tools["update_variant_inventory_quantity"](
+        product_id="555",
+        quantity=0,
+        confirm=True,
+    )
+    assert out == "Error: input.setQuantities.0.quantity: Quantity must be non-negative"
 
 
 def test_quantity_variant_with_no_levels_contributes_no_pair():

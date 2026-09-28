@@ -271,13 +271,13 @@ def test_seo_value_that_sanitizes_to_empty_is_refused(field):
 
 
 def test_seo_user_errors_surfaced():
-    tools, fc = _build([_seo_read(), _update_err("seo.title", "must be a string")])
+    tools, fc = _build([_seo_read(), _update_err(["product", "seo", "title"], "must be a string")])
     out = tools["update_product_seo"](
         product_id="123",
         new_seo_title="x",
         confirm=True,
     )
-    assert out.startswith("Error:") and "must be a string" in out, out
+    assert out == "Error: product.seo.title: must be a string", out
 
 
 def _between(text, label, next_label=None):
@@ -514,7 +514,7 @@ def test_title_user_errors_surfaced():
     tools, fc = _build(
         [
             _product_read(PROD_ID, CUR_TITLE, CUR_HANDLE),
-            _update_err("handle", "has already been taken"),
+            _update_err(["product", "handle"], "has already been taken"),
         ]
     )
     out = tools["update_product_title"](
@@ -523,7 +523,7 @@ def test_title_user_errors_surfaced():
         change_handle=True,
         confirm=True,
     )
-    assert out.startswith("Error:") and "has already been taken" in out, out
+    assert out == "Error: product.handle: has already been taken", out
 
 
 def test_title_confirmed_shows_confirmed_header_not_done_preview():
@@ -1510,14 +1510,14 @@ def test_tags_invalid_mode_rejected_no_shopify_call():
 
 
 def test_tags_user_errors_surfaced():
-    tools, fc = _build([_tags_update_err("tags", "invalid tag")])
+    tools, fc = _build([_tags_update_err(["product", "tags"], "invalid tag")])
     out = tools["update_product_tags"](
         product_id="123",
         new_tags=["x"],
         mode="replace",
         confirm=True,
     )
-    assert out.startswith("Error:") and "invalid tag" in out, out
+    assert out == "Error: product.tags: invalid tag", out
 
 
 def test_tags_append_preview_shows_added_and_not_removed():
@@ -1638,7 +1638,7 @@ def test_status_user_errors_surfaced():
     tools, fc = _build(
         [
             _product_read("123", "T", "t"),
-            _tags_update_err("status", "something broke"),
+            _tags_update_err(["product", "status"], "something broke"),
         ]
     )
     out = tools["update_product_status"](
@@ -1646,7 +1646,7 @@ def test_status_user_errors_surfaced():
         new_status="ARCHIVED",
         confirm=True,
     )
-    assert out.startswith("Error:") and "something broke" in out, out
+    assert out == "Error: product.status: something broke", out
 
 
 # ---------- update_variant_inventory_policy ----------
@@ -2580,7 +2580,7 @@ def test_update_description_user_errors_surfaced():
     tools, fc = _build(
         [
             {"product": {"bodyHtml": ""}},
-            _update_err("descriptionHtml", "invalid html"),
+            _update_err(["product", "descriptionHtml"], "invalid html"),
         ]
     )
     out = tools["update_product_description"](
@@ -2589,7 +2589,7 @@ def test_update_description_user_errors_surfaced():
         confirm=True,
     )
     assert out.startswith("Error:")
-    assert "descriptionHtml: invalid html" in out
+    assert out == "Error: product.descriptionHtml: invalid html"
 
 
 # ---------- sanitizer (Approach 2, post-sign-off): disallowed HTML stripped before write ----------

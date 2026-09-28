@@ -1842,8 +1842,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         user_errors = extract_user_errors(result, "productVariantsBulkUpdate")
         if user_errors:
             # `field` is a dotted-path list on productVariantsBulkUpdate, so
-            # paths go through the shared path formatter (format_user_errors
-            # stringifies the whole list).
+            # paths go through the shared path formatter.
             msgs = format_path_user_errors(user_errors)
             return _render(
                 f"Error: {msgs}",
@@ -2276,9 +2275,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         vendor_user_errors = extract_user_errors(result, "productUpdate")
         if vendor_user_errors:
-            err_summary = "; ".join(
-                f"{e.get('field')}: {e.get('message')}" for e in vendor_user_errors
-            )
+            err_summary = format_path_user_errors(vendor_user_errors)
             text = f"Error: productUpdate userErrors: {err_summary}\n"
             return (
                 text
@@ -2468,9 +2465,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         type_user_errors = extract_user_errors(result, "productUpdate")
         if type_user_errors:
-            err_summary = "; ".join(
-                f"{e.get('field')}: {e.get('message')}" for e in type_user_errors
-            )
+            err_summary = format_path_user_errors(type_user_errors)
             text = f"Error: productUpdate userErrors: {err_summary}\n"
             return (
                 text

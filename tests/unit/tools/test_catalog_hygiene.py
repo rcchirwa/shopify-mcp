@@ -1363,11 +1363,14 @@ def _product_update_ok(
     }
 
 
-def _product_update_err(field="category", message="invalid category for product"):
+def _product_update_err(field=None, message="invalid category for product"):
+    # `field` is `[String!]` in the Admin schema (Story 10.94): default to a
+    # realistic productUpdate(product:) path, not a scalar.
+    path = ["product", "category"] if field is None else field
     return {
         "productUpdate": {
             "product": None,
-            "userErrors": [{"field": field, "message": message}],
+            "userErrors": [{"field": path, "message": message}],
         }
     }
 
@@ -2150,7 +2153,9 @@ def test_update_product_category_user_errors_surface_in_output():
                 }
             ),
             _product_read_response(),
-            _product_update_err(field="category", message="invalid category for product"),
+            _product_update_err(
+                field=["product", "category"], message="invalid category for product"
+            ),
         ]
     )
     out = tools["update_product_category"](
@@ -2162,7 +2167,38 @@ def test_update_product_category_user_errors_surface_in_output():
     body = _extract_json_tail(out)
     assert body["ok"] is False
     # Verbatim userErrors land in the JSON tail.
-    assert body["errors"] == [{"field": "category", "message": "invalid category for product"}]
+    assert body["errors"] == [
+        {"field": ["product", "category"], "message": "invalid category for product"}
+    ]
+
+
+def test_update_product_category_user_errors_render_list_field_as_dotted_path():
+    """Story 10.94: `field` is `[String!]`; the human-readable head must carry
+    a dotted path, not a Python list repr."""
+    tools, _fc = _build(
+        [
+            _taxonomy_response(
+                {
+                    "id": "gid://shopify/TaxonomyCategory/aa-1-13-9",
+                    "fullName": "Sweatshirts",
+                    "name": "Sweatshirts",
+                }
+            ),
+            _product_read_response(),
+            _product_update_err(
+                field=["product", "category"], message="invalid category for product"
+            ),
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890",
+        category="sweatshirts",
+        confirm=True,
+    )
+    head = out.split("\n\n```json\n")[0]
+    assert head == (
+        "Error — update_product_category\n  Error: product.category: invalid category for product"
+    )
 
 
 def test_update_product_category_transport_error_on_taxonomy_search_surfaces_structured_error():
@@ -2803,7 +2839,7 @@ def test_update_product_vendor_user_errors_surface_in_output():
     tools, fc = _build(
         [
             _vendor_read(pid="123", vendor="Old"),
-            _update_user_err("vendor", "Vendor is too long"),
+            _update_user_err(["product", "vendor"], "Vendor is too long"),
         ]
     )
     out = tools["update_product_vendor"](product_id="123", vendor="Vanish", confirm=True)
@@ -2811,8 +2847,34 @@ def test_update_product_vendor_user_errors_surface_in_output():
     assert "Vendor is too long" in out
     payload = _extract_json(out)
     assert payload["ok"] is False
-    assert payload["errors"] == [{"field": "vendor", "message": "Vendor is too long"}]
+    assert payload["errors"] == [{"field": ["product", "vendor"], "message": "Vendor is too long"}]
     assert payload["preview"] is False
+
+
+def test_update_product_vendor_user_errors_render_list_field_as_dotted_path():
+    """Story 10.94: the vendor write hand-inlined the scalar-field joiner; a
+    `[String!]` path must reach the operator dotted, not as a list repr. Two
+    errors, one with a null `field`, so every error and the placeholder are
+    pinned at this site, which calls format_path_user_errors directly."""
+    tools, fc = _build(
+        [
+            _vendor_read(pid="123", vendor="Old"),
+            {
+                "productUpdate": {
+                    "product": None,
+                    "userErrors": [
+                        {"field": ["product", "vendor"], "message": "Vendor is too long"},
+                        {"field": None, "message": "boom"},
+                    ],
+                }
+            },
+        ]
+    )
+    out = tools["update_product_vendor"](product_id="123", vendor="Vanish", confirm=True)
+    assert fc.calls[1][0] == UPDATE_PRODUCT_VENDOR
+    assert out.split("\n")[0] == (
+        "Error: productUpdate userErrors: product.vendor: Vendor is too long; (no field): boom"
+    )
 
 
 def test_update_product_vendor_mutation_exception_surfaced():
@@ -3287,7 +3349,7 @@ def test_update_product_type_user_errors_surface_in_output():
     tools, fc = _build(
         [
             _type_read(pid="123", product_type="Old"),
-            _type_update_user_err("productType", "productType is too long"),
+            _type_update_user_err(["product", "productType"], "productType is too long"),
         ]
     )
     out = tools["update_product_type"](product_id="123", product_type="Crewneck", confirm=True)
@@ -3295,8 +3357,37 @@ def test_update_product_type_user_errors_surface_in_output():
     assert "productType is too long" in out
     payload = _extract_json(out)
     assert payload["ok"] is False
-    assert payload["errors"] == [{"field": "productType", "message": "productType is too long"}]
+    assert payload["errors"] == [
+        {"field": ["product", "productType"], "message": "productType is too long"}
+    ]
     assert payload["preview"] is False
+
+
+def test_update_product_type_user_errors_render_list_field_as_dotted_path():
+    """Story 10.94: the type write hand-inlined the scalar-field joiner; a
+    `[String!]` path must reach the operator dotted, not as a list repr. Two
+    errors, one with a null `field`, so every error and the placeholder are
+    pinned at this site, which calls format_path_user_errors directly."""
+    tools, fc = _build(
+        [
+            _type_read(pid="123", product_type="Old"),
+            {
+                "productUpdate": {
+                    "product": None,
+                    "userErrors": [
+                        {"field": ["product", "productType"], "message": "productType is too long"},
+                        {"field": None, "message": "boom"},
+                    ],
+                }
+            },
+        ]
+    )
+    out = tools["update_product_type"](product_id="123", product_type="Crewneck", confirm=True)
+    assert fc.calls[1][0] == UPDATE_PRODUCT_TYPE
+    assert out.split("\n")[0] == (
+        "Error: productUpdate userErrors: product.productType: productType is too long; "
+        "(no field): boom"
+    )
 
 
 def test_update_product_type_mutation_exception_surfaced():

@@ -8,9 +8,9 @@ Every single-mutation write tool has the same three-step boilerplate:
 `write_gate` centralises those steps so the omission (a missing log_write or
 a skipped confirm check) becomes impossible in tools that use it.
 
-Tools with custom error formatting (dotted field paths), per-item isolation,
-multi-stage mutations, or job polling should NOT use write_gate — their control
-flow is intentional and can't be collapsed without losing clarity.
+Tools with custom error formatting, per-item isolation, multi-stage mutations,
+or job polling should NOT use write_gate — their control flow is intentional
+and can't be collapsed without losing clarity.
 """
 
 from collections.abc import Callable

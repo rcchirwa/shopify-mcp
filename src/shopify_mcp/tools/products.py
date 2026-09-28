@@ -958,9 +958,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         user_errors = extract_user_errors(result, "productVariantsBulkUpdate")
         if user_errors:
             # `field` is a dotted path list on productVariantsBulkUpdate (e.g.
-            # ["variants", "0", "inventoryPolicy"]) — unlike simple scalar-field
-            # mutations — so format_user_errors' stringify-field logic won't
-            # render it readably. Use the shared path formatter.
+            # ["variants", "0", "inventoryPolicy"]). Use the shared path formatter.
             msgs = format_path_user_errors(user_errors)
             return f"Error: {msgs}"
 
