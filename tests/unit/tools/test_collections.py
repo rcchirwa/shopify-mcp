@@ -407,6 +407,30 @@ def test_remove_product_surfaces_user_errors():
     assert "Product not in collection" in out
 
 
+def test_remove_product_user_errors_render_list_field_as_dotted_path():
+    """Story 10.94: `field` is `[String!]`, so the full error line must carry
+    a dotted path, not a Python list repr."""
+    tools, fc = _build(
+        [
+            _manual_collection(),
+            {
+                "collectionRemoveProducts": {
+                    "job": None,
+                    "userErrors": [
+                        {"field": ["productIds", "0"], "message": "Product not in collection"},
+                    ],
+                }
+            },
+        ]
+    )
+    out = tools["remove_product_from_collection"](
+        handle="vanish",
+        product_id="777",
+        confirm=True,
+    )
+    assert out == "Error: productIds.0: Product not in collection"
+
+
 # --- job polling branches ---
 #
 # Covers the three outcomes of the 10s fixed-timeout poll_job helper when the

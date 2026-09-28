@@ -277,7 +277,7 @@ def test_seo_user_errors_surfaced():
         new_seo_title="x",
         confirm=True,
     )
-    assert out.startswith("Error:") and "must be a string" in out, out
+    assert out == "Error: product.seo.title: must be a string", out
 
 
 def _between(text, label, next_label=None):
@@ -523,7 +523,7 @@ def test_title_user_errors_surfaced():
         change_handle=True,
         confirm=True,
     )
-    assert out.startswith("Error:") and "has already been taken" in out, out
+    assert out == "Error: product.handle: has already been taken", out
 
 
 def test_title_confirmed_shows_confirmed_header_not_done_preview():
@@ -1517,7 +1517,7 @@ def test_tags_user_errors_surfaced():
         mode="replace",
         confirm=True,
     )
-    assert out.startswith("Error:") and "invalid tag" in out, out
+    assert out == "Error: product.tags: invalid tag", out
 
 
 def test_tags_append_preview_shows_added_and_not_removed():
@@ -1646,7 +1646,7 @@ def test_status_user_errors_surfaced():
         new_status="ARCHIVED",
         confirm=True,
     )
-    assert out.startswith("Error:") and "something broke" in out, out
+    assert out == "Error: product.status: something broke", out
 
 
 # ---------- update_variant_inventory_policy ----------

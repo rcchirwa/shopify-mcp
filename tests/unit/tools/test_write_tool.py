@@ -204,7 +204,7 @@ def test_confirm_user_errors_returns_error_without_logging(monkeypatch: pytest.M
         log_description="id=1 | 'A' → 'A'",
     )
 
-    assert out.startswith("Error:") and "must be unique" in out
+    assert out == "Error: product.title: must be unique"
     assert logged == [], "log_write must NOT be called when userErrors are present"
 
 
@@ -229,7 +229,7 @@ def test_custom_error_key_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
         error_key="priceRuleUserErrors",
     )
 
-    assert out.startswith("Error:") and "bad" in out
+    assert out == "Error: priceRule.value.percentageValue: bad"
 
 
 def test_confirm_user_errors_render_list_field_as_dotted_path(

@@ -134,7 +134,7 @@ def format_user_errors(
     """
     Extract and format a mutation's userErrors payload.
 
-    Returns an 'Error: field: message; …' string if the mutation reported
+    Returns an 'Error: field.path: message; …' string if the mutation reported
     any userErrors, else None. Callers guard with `if err: return err`.
 
     - `error_key` overrides the default `userErrors` slot.
