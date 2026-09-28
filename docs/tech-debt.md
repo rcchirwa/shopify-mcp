@@ -8,6 +8,53 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-09-27 — Story 10.94 (userError `field` paths render as dotted paths, not Python list reprs)
+
+Trello: https://trello.com/c/ztSuFMWr (Story 10.94, Epic 10).
+
+**Defect.** The Admin schema types `UserError.field` as `[String!]`, but three sites interpolated it raw, so an operator saw a Python list repr such as `['input', 'variants', '0', 'price']: must be positive`:
+- `format_user_errors_joined` in `tools/_response.py`, which `format_user_errors` wraps. Through it the defect reached `write_gate` (`tools/_write_tool.py`, the chokepoint for most write tools), `add_product_to_collection` / `remove_product_from_collection` (`tools/collections.py`), `update_product_category` (`tools/catalog_hygiene.py`), the per-variant Failed bullet of `update_variant_inventory_tracking` (`tools/inventory.py`, the joiner without the "Error:" prefix) and `update_variant_inventory_quantity` (`tools/inventory.py`).
+- The `update_product_vendor` and `update_product_type` writes in `tools/catalog_hygiene.py`, each a hand-inlined copy of the same f-string inside their `Error: productUpdate userErrors: ...` wrapper.
+
+**Fix: approach 1 (decided by Robert, 2026-09-27).** `format_user_errors_joined` now returns `format_path_user_errors(errors)`, the list-path formatter that has lived in `_response.py` since Story 10.90. The vendor and type sites call `format_path_user_errors` directly and keep their wrapper, so the two inlined copies are gone. The now-false "`format_user_errors` stringifies the whole list" comments above the `productVariantsBulkUpdate` sites in `tools/products.py` and `tools/catalog_hygiene.py` were trimmed, and the `_response.py` docstrings were updated to match.
+
+**Intended operator-facing output change.** It applies to every write tool on the routes above:
+
+```
+before: Error: ['input', 'variants', '0', 'price']: must be positive; None: boom
+after:  Error: input.variants.0.price: must be positive; (no field): boom
+```
+
+A null, missing or empty `field` now renders `(no field)` (was `None`), and a missing `message` renders empty (was `None`). A `message` that is present but null still renders `None`, as `format_path_user_errors` always has. The deliberate pins in `tests/unit/tools/test_response.py` moved on purpose: `format_user_errors_joined` on `[{}]` is now `"(no field): "` (was `"None: None"`), and `format_user_errors` on the same input is `"Error: (no field): "` (was `"Error: None: None"`).
+
+**No scalar guard, on purpose.** `[String!]` makes a scalar `field` unreachable from Shopify, and Story 10.91's review reversed exactly such an `isinstance` guard. `publications._map_user_error` remains the one caller that guards, as `format_field_path`'s docstring says. The mutation table confirms the choice is invisible to realistic input: adding the guard back changes no test result.
+
+**Tests.** Watched RED before the fix. Nine new tests use multi-segment list fixtures and assert the full formatted string, never a prefix: the two joiners directly, `write_gate`, `add_product_to_collection`, `update_product_category`, the inventory tracking bullet, `update_variant_inventory_quantity`, and the vendor and type writes. Every one failed on unfixed code with the list repr in its diff.
+
+**Fixture realism.** Scalar `"field": "..."` userError fixtures that feed these formatters were converted to realistic list paths, and their expected strings now carry the full new text:
+- `test_response.py`: the two happy paths (`["product", "title"]`, `["product", "handle"]`), the two `priceRuleUserErrors` cases (`["priceRule", "value", "percentageValue"]`) and the custom-prefix case (`["code"]`).
+- `test_write_tool.py`: the `_err` default (`["product", "title"]`), the must-be-unique case and the `priceRuleUserErrors` case.
+- `test_catalog_hygiene.py`: the category, vendor and type userError fixtures, together with their verbatim JSON-tail assertions.
+- `test_collections.py`: the `update_collection` case, now `["input", "title"]` with a full-string assert.
+- `test_inventory.py` (three) and `test_confirmed_output_guard.py` (one): the tracking fixtures, now `["input", "tracked"]`.
+- `test_products.py`: the SEO, title, tags, status and description cases, now `["product", ...]`.
+
+Left as they are, each on its role:
+- `format_field_path`'s `"t.i.t.l.e"` pin, which documents its scalar behaviour.
+- `test_publications.py`'s `_map_user_error({"field": "root"})` and the `_publish_err("publicationId")` fixtures in `test_publications.py` and `test_confirmed_output_guard.py`. Publications renders through `_map_user_error`'s guarded scalar branch, not the joiners.
+- The `extract_user_errors` fixtures in `test_response.py`, which only pass the list through.
+- The local-validation payloads whose `"field"` is this repo's own key (`"vendor"`, `"product_type"`, `"option"`).
+
+**Completeness sweep over `src/`** (`/usr/bin/grep` for `e.get("field")`, `e.get('field')`, `e['field']`, `["field"]`, `get("field"`, `err.get(`, `get("message"` and `{...field...}` f-string interpolation). No raw userError `field` interpolation remains outside `format_field_path`:
+- `publications._map_user_error` is the guarded caller.
+- The `catalog_hygiene.py` metafield sites read `field[1]` as an index and do not render it.
+- The `"field": ...` dict literals in `catalog_hygiene.py` are local validation payloads.
+- The `client.py` `err.get(...)` hits are transport-level GraphQL errors, not userErrors.
+
+**Follows serially.** Story 10.75 (a cap in the same function) and Story 10.69 (the fence) come next. Neither runs alongside this story, and 10.69 must re-derive its userError sites against this change.
+
+---
+
 ## 2026-09-27 — Story 10.81 (decided: `get_products_with_descriptions` keeps its 250 ceiling)
 
 Trello: https://trello.com/c/AI6vcceB (Story 10.81, Epic 10). A decision, not an implementation. It closes the residual that Story 10.76 left open ("Raising the description ceiling above 250"), whose entry condition was a live volume probe.

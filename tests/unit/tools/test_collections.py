@@ -288,6 +288,30 @@ def test_add_product_surfaces_user_errors():
     assert "Product already in collection" in out
 
 
+def test_add_product_user_errors_render_list_field_as_dotted_path():
+    """Story 10.94: `field` is `[String!]`, so the full error line must carry
+    a dotted path, not a Python list repr."""
+    tools, fc = _build(
+        [
+            _manual_collection(),
+            {
+                "collectionAddProductsV2": {
+                    "job": None,
+                    "userErrors": [
+                        {"field": ["productIds", "0"], "message": "Product already in collection"},
+                    ],
+                }
+            },
+        ]
+    )
+    out = tools["add_product_to_collection"](
+        handle="vanish",
+        product_id="777",
+        confirm=True,
+    )
+    assert out == "Error: productIds.0: Product already in collection"
+
+
 # --- remove_product_from_collection ---
 
 
@@ -752,7 +776,7 @@ def test_update_collection_user_errors_surfaced():
     tools, fc = _build(
         [
             _manual_collection(handle="vanish", title="Vanish"),
-            _collection_update_err("title", "too long"),
+            _collection_update_err(["input", "title"], "too long"),
         ]
     )
     out = tools["update_collection"](
@@ -761,7 +785,7 @@ def test_update_collection_user_errors_surfaced():
         confirm=True,
     )
     assert out.startswith("Error:")
-    assert "title: too long" in out
+    assert out == "Error: input.title: too long"
 
 
 def test_update_collection_preview_shows_full_new_description():

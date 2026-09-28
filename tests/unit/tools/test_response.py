@@ -74,13 +74,13 @@ def test_format_user_errors_joined_happy_path() -> None:
     result = {
         "productUpdate": {
             "userErrors": [
-                {"field": "title", "message": "can't be blank"},
-                {"field": "handle", "message": "already taken"},
+                {"field": ["product", "title"], "message": "can't be blank"},
+                {"field": ["product", "handle"], "message": "already taken"},
             ]
         }
     }
     assert format_user_errors_joined(result, "productUpdate") == (
-        "title: can't be blank; handle: already taken"
+        "product.title: can't be blank; product.handle: already taken"
     )
 
 
@@ -103,17 +103,24 @@ def test_format_user_errors_joined_mutation_slot_is_none_returns_none() -> None:
 
 def test_format_user_errors_joined_alt_error_key() -> None:
     result = {
-        "priceRuleCreate": {"priceRuleUserErrors": [{"field": "value", "message": "out of range"}]}
+        "priceRuleCreate": {
+            "priceRuleUserErrors": [
+                {"field": ["priceRule", "value", "percentageValue"], "message": "out of range"}
+            ]
+        }
     }
     assert (
         format_user_errors_joined(result, "priceRuleCreate", error_key="priceRuleUserErrors")
-        == "value: out of range"
+        == "priceRule.value.percentageValue: out of range"
     )
 
 
 def test_format_user_errors_joined_tolerates_missing_field_or_message() -> None:
+    # Story 10.94 moved this pin on purpose: it was "None: None" while the
+    # joiner interpolated `field` raw; it now renders through
+    # format_path_user_errors' "(no field)" placeholder and empty message.
     result: dict = {"productUpdate": {"userErrors": [{}]}}
-    assert format_user_errors_joined(result, "productUpdate") == "None: None"
+    assert format_user_errors_joined(result, "productUpdate") == "(no field): "
 
 
 # ---------- format_user_errors ----------
@@ -123,13 +130,13 @@ def test_format_user_errors_happy_path() -> None:
     result = {
         "productUpdate": {
             "userErrors": [
-                {"field": "title", "message": "can't be blank"},
-                {"field": "handle", "message": "already taken"},
+                {"field": ["product", "title"], "message": "can't be blank"},
+                {"field": ["product", "handle"], "message": "already taken"},
             ]
         }
     }
     assert format_user_errors(result, "productUpdate") == (
-        "Error: title: can't be blank; handle: already taken"
+        "Error: product.title: can't be blank; product.handle: already taken"
     )
 
 
@@ -156,18 +163,22 @@ def test_format_user_errors_mutation_slot_is_none_returns_none() -> None:
 def test_format_user_errors_alt_error_key() -> None:
     # priceRuleCreate uses priceRuleUserErrors instead of userErrors.
     result = {
-        "priceRuleCreate": {"priceRuleUserErrors": [{"field": "value", "message": "out of range"}]}
+        "priceRuleCreate": {
+            "priceRuleUserErrors": [
+                {"field": ["priceRule", "value", "percentageValue"], "message": "out of range"}
+            ]
+        }
     }
     assert (
         format_user_errors(result, "priceRuleCreate", error_key="priceRuleUserErrors")
-        == "Error: value: out of range"
+        == "Error: priceRule.value.percentageValue: out of range"
     )
 
 
 def test_format_user_errors_custom_prefix() -> None:
     result = {
         "priceRuleDiscountCodeCreate": {
-            "userErrors": [{"field": "code", "message": "already exists"}]
+            "userErrors": [{"field": ["code"], "message": "already exists"}]
         }
     }
     assert (
@@ -180,9 +191,40 @@ def test_format_user_errors_custom_prefix() -> None:
 
 def test_format_user_errors_tolerates_missing_field_or_message() -> None:
     # Defensive: Shopify's contract guarantees both keys, but an unexpected
-    # response shape yields "None: None" rather than a KeyError.
+    # response shape yields "(no field): " rather than a KeyError. Story 10.94
+    # moved this pin on purpose from "Error: None: None".
     result: dict = {"productUpdate": {"userErrors": [{}]}}
-    assert format_user_errors(result, "productUpdate") == "Error: None: None"
+    assert format_user_errors(result, "productUpdate") == "Error: (no field): "
+
+
+# ---------- Story 10.94: list-typed `field` renders as a dotted path ----------
+#
+# UserError.field is `[String!]` in the Admin schema, so the joiners must
+# render a path, never a Python list repr. The fixture is multi-segment on
+# purpose: a one-segment list differs from its dotted form only by brackets.
+
+
+def _story_1094_result() -> dict:
+    return {
+        "productUpdate": {
+            "userErrors": [
+                {"field": ["input", "variants", "0", "price"], "message": "must be positive"},
+                {"field": None, "message": "boom"},
+            ]
+        }
+    }
+
+
+def test_format_user_errors_joined_renders_list_field_as_dotted_path() -> None:
+    assert format_user_errors_joined(_story_1094_result(), "productUpdate") == (
+        "input.variants.0.price: must be positive; (no field): boom"
+    )
+
+
+def test_format_user_errors_renders_list_field_as_dotted_path() -> None:
+    assert format_user_errors(_story_1094_result(), "productUpdate") == (
+        "Error: input.variants.0.price: must be positive; (no field): boom"
+    )
 
 
 # ---------- format_field_path ----------
@@ -258,7 +300,7 @@ def test_format_path_user_errors_missing_message_renders_empty() -> None:
 def test_format_path_user_errors_null_message_renders_none() -> None:
     # An explicit null is distinct from a missing key: `.get("message", "")`
     # returns None rather than the default, so the row reads "code: None".
-    # Matches the scalar sibling's documented "None: None" behavior.
+    # Since Story 10.94 the format_user_errors joiners share this rendering.
     assert format_path_user_errors([{"field": ["code"], "message": None}]) == "code: None"
 
 

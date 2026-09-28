@@ -32,11 +32,12 @@ def format_field_path(error: dict[str, Any]) -> str:
 
     Several UserError types declare `field` as `[String!]` — a path addressing
     a nested input value, e.g. `["basicCodeDiscount", "code"]` or
-    `["variants", "0", "price"]` — rather than the scalar string
-    `format_user_errors` assumes. `str(field)` on the raw list reads poorly in
-    an error head, so every mutation whose input addresses a nested value
-    (`metafieldsSet`, `productOptionUpdate`, `discountCodeBasicCreate`,
-    `productVariantsBulkUpdate`, …) renders it through this helper instead.
+    `["variants", "0", "price"]` — rather than a scalar string. `str(field)`
+    on the raw list reads poorly in an error head, so every mutation whose
+    input addresses a nested value (`metafieldsSet`, `productOptionUpdate`,
+    `discountCodeBasicCreate`, `productVariantsBulkUpdate`, …) renders it
+    through this helper instead — as does `format_user_errors`, via
+    `format_path_user_errors` (Story 10.94).
 
     Missing, null, and empty `field` all yield `""` — the helper stays
     placeholder-free so callers can pick their own ("(no field)", "(unknown)").
@@ -57,8 +58,8 @@ def format_path_user_errors(errors: list[dict[str, Any]]) -> str:
     """
     Join already-extracted UserErrors as 'field.path: message; …'.
 
-    The list-`field` counterpart to `format_user_errors_joined`, and the shared
-    home for a formatter that was hand-inlined at seven call sites. Takes the
+    The body of `format_user_errors_joined`, and the shared home for a
+    formatter that was hand-inlined at seven call sites. Takes the
     error list directly rather than `(result, mutation_key)` because most
     callers format a *filtered* subset — `ACCESS_DENIED` entries, the
     non-idempotent remainder of a delete — for which no mutation slot exists.
@@ -104,21 +105,23 @@ def format_user_errors_joined(
     error_key: str = "userErrors",
 ) -> str | None:
     """
-    Join a mutation's userErrors as 'field: message; field: message', or None if absent.
+    Join a mutation's userErrors as 'field.path: message; …', or None if absent.
 
     Like `format_user_errors`, but without the canonical 'Error: ' prefix.
     Use when the output is embedded inside another sentence or report row
     where the prefix reads awkwardly — e.g. per-variant failure bullets in
     a bulk-op summary (rendered as `• {variant}: {error}`).
 
-    If an error dict is missing `field` or `message`, each missing key renders
-    as the literal string "None" (defensive: Shopify guarantees both keys, but
-    unexpected shapes yield "None: None" rather than a KeyError).
+    `field` is `[String!]` in the Admin schema, so each error renders through
+    `format_path_user_errors`: `["input", "variants", "0", "price"]` becomes
+    `input.variants.0.price`, a missing/null/empty `field` renders as
+    "(no field)", and a missing `message` renders as empty (Story 10.94 —
+    this used to interpolate `field` raw, showing operators a list repr).
     """
     errors = extract_user_errors(result, mutation_key, error_key=error_key)
     if not errors:
         return None
-    return "; ".join(f"{e.get('field')}: {e.get('message')}" for e in errors)
+    return format_path_user_errors(errors)
 
 
 def format_user_errors(

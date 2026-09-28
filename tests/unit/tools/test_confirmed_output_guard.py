@@ -943,7 +943,7 @@ def _check_update_variant_inventory_tracking_all_rejected() -> tuple[str, FakeCl
     tools, fc = _build_inventory(
         [
             _inv_product_with_variants(variants),
-            _tracked_update_err("inventoryItemId", "locked by another process"),
+            _tracked_update_err(["input", "tracked"], "locked by another process"),
         ]
     )
     out = tools["update_variant_inventory_tracking"](product_id="555", tracked=True, confirm=True)

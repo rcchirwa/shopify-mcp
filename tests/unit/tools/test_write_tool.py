@@ -16,8 +16,13 @@ def _ok(mutation_key: str = "productUpdate") -> dict:
     return {mutation_key: {"userErrors": []}}
 
 
-def _err(mutation_key: str = "productUpdate", field: str = "title", msg: str = "too short") -> dict:
-    return {mutation_key: {"userErrors": [{"field": field, "message": msg}]}}
+def _err(
+    mutation_key: str = "productUpdate", field: list[str] | None = None, msg: str = "too short"
+) -> dict:
+    # `field` is `[String!]` in the Admin schema (Story 10.94): default to a
+    # realistic productUpdate(product:) path, not a scalar.
+    path = ["product", "title"] if field is None else field
+    return {mutation_key: {"userErrors": [{"field": path, "message": msg}]}}
 
 
 # ---------- preview (confirm=False) ----------
@@ -193,7 +198,7 @@ def test_confirm_user_errors_returns_error_without_logging(monkeypatch: pytest.M
     out = _wt.write_gate(
         preview="PREVIEW — update title",
         confirm=True,
-        execute=lambda: _err(field="title", msg="must be unique"),
+        execute=lambda: _err(field=["product", "title"], msg="must be unique"),
         mutation_key="productUpdate",
         log_name="update_product_title",
         log_description="id=1 | 'A' → 'A'",
@@ -206,7 +211,13 @@ def test_confirm_user_errors_returns_error_without_logging(monkeypatch: pytest.M
 def test_custom_error_key_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_wt, "log_write", lambda *a, **k: None)
 
-    result = {"priceRuleCreate": {"priceRuleUserErrors": [{"field": "value", "message": "bad"}]}}
+    result = {
+        "priceRuleCreate": {
+            "priceRuleUserErrors": [
+                {"field": ["priceRule", "value", "percentageValue"], "message": "bad"}
+            ]
+        }
+    }
 
     out = _wt.write_gate(
         preview="PREVIEW — create discount",
@@ -219,6 +230,25 @@ def test_custom_error_key_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     assert out.startswith("Error:") and "bad" in out
+
+
+def test_confirm_user_errors_render_list_field_as_dotted_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 10.94: write_gate is the chokepoint for most write tools, so a
+    `[String!]` field path must reach the operator dotted, not as a list repr."""
+    monkeypatch.setattr(_wt, "log_write", lambda *a, **k: None)
+
+    out = _wt.write_gate(
+        preview="PREVIEW — update price",
+        confirm=True,
+        execute=lambda: _err(field=["input", "variants", "0", "price"], msg="must be positive"),
+        mutation_key="productUpdate",
+        log_name="t",
+        log_description="desc",
+    )
+
+    assert out == "Error: input.variants.0.price: must be positive"
 
 
 # ---------- done_text callable variant ----------
