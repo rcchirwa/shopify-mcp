@@ -2853,17 +2853,27 @@ def test_update_product_vendor_user_errors_surface_in_output():
 
 def test_update_product_vendor_user_errors_render_list_field_as_dotted_path():
     """Story 10.94: the vendor write hand-inlined the scalar-field joiner; a
-    `[String!]` path must reach the operator dotted, not as a list repr."""
+    `[String!]` path must reach the operator dotted, not as a list repr. Two
+    errors, one with a null `field`, so every error and the placeholder are
+    pinned at this site, which calls format_path_user_errors directly."""
     tools, fc = _build(
         [
             _vendor_read(pid="123", vendor="Old"),
-            _update_user_err(["product", "vendor"], "Vendor is too long"),
+            {
+                "productUpdate": {
+                    "product": None,
+                    "userErrors": [
+                        {"field": ["product", "vendor"], "message": "Vendor is too long"},
+                        {"field": None, "message": "boom"},
+                    ],
+                }
+            },
         ]
     )
     out = tools["update_product_vendor"](product_id="123", vendor="Vanish", confirm=True)
     assert fc.calls[1][0] == UPDATE_PRODUCT_VENDOR
     assert out.split("\n")[0] == (
-        "Error: productUpdate userErrors: product.vendor: Vendor is too long"
+        "Error: productUpdate userErrors: product.vendor: Vendor is too long; (no field): boom"
     )
 
 
@@ -3355,17 +3365,28 @@ def test_update_product_type_user_errors_surface_in_output():
 
 def test_update_product_type_user_errors_render_list_field_as_dotted_path():
     """Story 10.94: the type write hand-inlined the scalar-field joiner; a
-    `[String!]` path must reach the operator dotted, not as a list repr."""
+    `[String!]` path must reach the operator dotted, not as a list repr. Two
+    errors, one with a null `field`, so every error and the placeholder are
+    pinned at this site, which calls format_path_user_errors directly."""
     tools, fc = _build(
         [
             _type_read(pid="123", product_type="Old"),
-            _type_update_user_err(["product", "productType"], "productType is too long"),
+            {
+                "productUpdate": {
+                    "product": None,
+                    "userErrors": [
+                        {"field": ["product", "productType"], "message": "productType is too long"},
+                        {"field": None, "message": "boom"},
+                    ],
+                }
+            },
         ]
     )
     out = tools["update_product_type"](product_id="123", product_type="Crewneck", confirm=True)
     assert fc.calls[1][0] == UPDATE_PRODUCT_TYPE
     assert out.split("\n")[0] == (
-        "Error: productUpdate userErrors: product.productType: productType is too long"
+        "Error: productUpdate userErrors: product.productType: productType is too long; "
+        "(no field): boom"
     )
 
 

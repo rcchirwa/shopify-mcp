@@ -81,7 +81,7 @@ A13's own entry cites pre-move paths while describing the move that invalidated 
   - `publications.{publish,unpublish,set}_product_publications` — partial-success semantics: `log_write` is called even when some channels fail (partial success is normal for Shopify multi-channel mutations). Field-indexed userErrors mapping is incompatible with `write_gate`'s fail-fast model.
   - `catalog_hygiene.{update_product_category,update_product_vendor,update_product_type,update_product_pricing}` — use `_format_payload()` JSON-tail output format (incompatible with `write_gate`'s string return) and different confirm hint text ("Reply with confirm=True to execute." vs "To apply, call again with confirm=True.").
 - **Intentionally NOT migrated — complex control flow:**
-  - `products.update_variant_inventory_policy` — custom dotted-field-path error formatter
+  - `products.update_variant_inventory_policy` — custom dotted-field-path error formatter (no longer a reason since Story 10.94: `write_gate` renders dotted paths itself)
   - `collections.{add,remove}_product_to_collection` — async job polling via `poll_job()`
   - `inventory.{update_variant_inventory_tracking,update_variant_inventory_quantity}` — per-variant try/except isolation
   - `discounts.create_discount_code` — two-stage mutation with `priceRuleUserErrors` custom key

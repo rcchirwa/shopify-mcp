@@ -235,7 +235,7 @@ def test_custom_error_key_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_confirm_user_errors_render_list_field_as_dotted_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Story 10.94: write_gate is the chokepoint for most write tools, so a
+    """Story 10.94: write_gate is the shared error gate for ten write tools, so a
     `[String!]` field path must reach the operator dotted, not as a list repr."""
     monkeypatch.setattr(_wt, "log_write", lambda *a, **k: None)
 
