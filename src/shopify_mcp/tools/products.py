@@ -49,6 +49,7 @@ from shopify_mcp.tools._response import (
     format_path_user_errors,
     with_confirm_hint,
 )
+from shopify_mcp.tools._scrub import cap, sanitize_control_chars
 from shopify_mcp.tools._untrusted import with_reminder, wrap
 from shopify_mcp.tools._write_tool import _confirmed_from_preview, write_gate
 from shopify_mcp.validators.naming import format_validation_diff
@@ -388,7 +389,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         product = ops.read_product_seo(client, product_id)
         if not product:
-            return f"No product found with id {product_id}."
+            return f"No product found with id {cap(sanitize_control_chars(product_id))}."
 
         old_seo = product.get("seo") or {}
         old_title = old_seo.get("title") or ""
@@ -537,7 +538,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             client, collection_handle, limit=limit
         )
         if not col:
-            return f"No collection found with handle '{collection_handle}'."
+            return f"No collection found with handle '{cap(sanitize_control_chars(collection_handle))}'."
 
         if not product_nodes:
             # paginate() can stop with capped set and nothing collected — empty
@@ -624,7 +625,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 client, collection_handle, limit
             )
             if not col:
-                return f"No collection found with handle '{collection_handle}'."
+                return f"No collection found with handle '{cap(sanitize_control_chars(collection_handle))}'."
             header = f"Products in '{collection_handle}' ({_count_phrase(product_nodes, capped)}):"
         else:
             product_nodes, capped = ops.read_products_with_descriptions(client, limit=limit)
@@ -736,7 +737,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         """List every collection this product belongs to — manual and smart."""
         product = ops.read_product_collections(client, product_id)
         if not product:
-            return f"No product found with id {product_id}."
+            return f"No product found with id {cap(sanitize_control_chars(product_id))}."
 
         collections = product.get("collections") or {}
         nodes = collections.get("nodes", []) or []
@@ -784,7 +785,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if mode in ("append", "remove"):
             product = ops.fetch_product_full_record(client, product_id)
             if not product:
-                return f"No product found with id {product_id}."
+                return f"No product found with id {cap(sanitize_control_chars(product_id))}."
             old_tags = list(product.get("tags") or [])
 
         if mode == "replace":
@@ -851,7 +852,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         product = ops.fetch_product_core(client, product_id)
         if not product:
-            return f"No product found with id {product_id}."
+            return f"No product found with id {cap(sanitize_control_chars(product_id))}."
         old_status = product.get("status") or "(unknown)"
 
         no_op_suffix = "  (no-op — already at target status)" if old_status == new_status else ""
@@ -900,7 +901,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         product, variants, capped = ops.read_product_variants_policy(client, product_id)
         if not product:
-            return f"No product found with id {product_id}."
+            return f"No product found with id {cap(sanitize_control_chars(product_id))}."
 
         title = product.get("title", "")
         at_cap_warning = (

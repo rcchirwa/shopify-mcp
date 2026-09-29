@@ -5,6 +5,7 @@ from mcp.server.fastmcp import FastMCP
 from shopify_mcp.client import ShopifyClient
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._response import extract_user_errors, with_confirm_hint
+from shopify_mcp.tools._scrub import cap, sanitize_control_chars
 from shopify_mcp.tools._untrusted import with_reminder, wrap
 from shopify_mcp.tools.media._common import _as_product_gid, _fmt_media_user_errors
 from shopify_mcp.tools.media._constants import _MEDIA_PAGE_CAP
@@ -41,7 +42,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
         product = first_response.get("product")
         if not product:
-            return f"No product found with id {product_id}."
+            return f"No product found with id {cap(sanitize_control_chars(product_id))}."
         target = next((n for n in nodes if n.get("id") == media_id), None)
         if not target:
             return f"Error: media {media_id} is not attached to product {product_id}."

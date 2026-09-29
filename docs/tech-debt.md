@@ -4,7 +4,31 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-09-27.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-09-29.
+
+---
+
+## 2026-09-29 — Story 10.75 (SEC-24-remaining-sites — the scrub helpers applied at the remaining reflection sites)
+
+Trello: https://trello.com/c/Ol8n85Jl (Story 10.75, Epic 10). Surfaced by Story 10.74's security review.
+
+**This is the third pass over the SEC-11/SEC-12 class.** Story 10.39 built `tools/_scrub.py` (`cap` at `REFLECT_MAX_LEN = 300`, `sanitize_control_chars`) and applied it where it knew to. Story 10.58 (SEC-24) closed L1 and L7 from a review's ledger. This story swept the rest with a grep and then a parser, and adds a guard so there isn't a fourth pass. Defense-in-depth, not a live defect: Class A echoes a value the caller sent, and Class B reflects Shopify's own text.
+
+**The rule (step 2, decided by Robert 2026-09-28): `cap(sanitize_control_chars(x))`, one rule at every site.** Sanitize first, so the `\r` / `\n` escapes count toward the bound and a CR/LF-heavy value can't come out at up to twice `REFLECT_MAX_LEN`. Only CR and LF are escaped. Tabs and bidi controls pass, as `message` always has; they can't forge a line. Ordinary values render byte-for-byte as before.
+
+**Class A — "No {kind} found with {identifier}": 21 sites, not the card's 16.** The card's regex matched only `with (id|handle) {`, so it missed the five sites written with a quoted handle (`collections.py` ×3 and `products.py`'s `get_products_by_collection` / `get_products_with_descriptions`). By module: `products.py` 7, `catalog_hygiene.py` 4, `collections.py` 3, `media/` 5 (`_list`, `_reorder`, `_update`, `_upload`, `_delete`), `inventory.py` 2. Twenty were raw. The precedent at `catalog_hygiene.py` `_resolve_product_gid` was capped but not sanitized; it now reads `_cap(sanitize_control_chars(h or p))!r`. It keeps its own 200-char `_cap` and its `!r` quoting, so its output changes only for a value carrying CR/LF, which now renders as a doubled escape inside the repr. At `update_variant_image_binding`'s two id sites the value was already length-bounded to 200 by its producer (`_identifier_channel`'s `display_ref`); CR/LF was the open half there.
+
+**Class B — the userError joiner.** Since Story 10.94 every userError route renders through `_response.py::format_path_user_errors`: `format_user_errors` / `format_user_errors_joined`, `write_gate`, and the direct callers (`catalog_hygiene.py` ×8, `media/_common.py`, `discounts.py`'s `create_discount_code`, `products.py`'s `update_variant_inventory_policy`). The joined string is scrubbed **as a whole**, path segments included: the old `str(list)` repr escaped control characters inside `field` and the dotted join does not, so this also restores that. The one joiner outside it, `update_product_options`' local `_fmt` (which adds `[code]`), gets the same rule. Story 10.74's containment argument ("the operator sees Shopify's own `userError` through the existing error path") now rests on a bounded path.
+
+**Intended output change, only past the bound.** A userError report longer than 300 characters (one long message, or many errors) is truncated at 300. An identifier longer than 300 is echoed truncated. Anything containing CR/LF shows it as a visible `\r` / `\n`.
+
+**Guard (AC 3): `tests/architecture/test_reflection_scrub_guard.py`.** It walks the tools package with `ast`, finds every f-string whose literal text says `No <kind> found with`, and requires every interpolation in it to be `cap(sanitize_control_chars(...))` (`_cap` accepted for the outer call). It uses AST, not regex, because the quoted-handle form is exactly what the regex missed; implicit concatenation arrives as one `JoinedStr`. A floor test (`>= 21` sites) proves the walk saw real code, and a control pair proves the predicate rejects raw, cap-only, sanitize-only and reversed forms.
+
+**Tests.** Watched RED on unfixed code; 54 failed for the intended reason. `tests/unit/tools/test_reflection_scrub.py` drives **every** Class A site (21 rows; `collections.py`'s membership site is reached by both add and remove) with an over-long value, a GID-shaped CR/LF value and an ordinary value, and compares the whole reply. `catalog_hygiene` rows also check the JSON tail. It also covers the precedent site and the Class B routes: `write_gate`, `create_discount_code`, `update_variant_inventory_policy` and `update_product_options`' `_fmt`. `tests/unit/tools/test_response.py` pins the joiner: a long message, a many-error list, CR/LF in a message and in a path segment, the sanitize-before-cap order, and inheritance through both `format_user_errors*`. The 31 existing exact-string not-found pins pass unmodified, which is the byte-identical proof.
+
+**Mutation table, 27 mutants, 0 survivors** (restored by SHA-256 check, `PYTHONDONTWRITEBYTECODE=1`). Reverting any one Class A site fails only that site's rows plus the guard. Removing the joiner's cap, its sanitize, or swapping to cap-then-sanitize each fail; the same three mutants on `_fmt` each fail. The first run had one survivor (`_fmt` cap-then-sanitize); a `_fmt` ordering test was added for it.
+
+**Scope, per the card.** Not a general f-string audit. `client.py`'s transport-level `_format_errors` is untouched (SEC-27, and Story 10.69's fence). `publications._map_user_error` renders through its own guarded path and is Story 10.69's to re-derive.
 
 ---
 
