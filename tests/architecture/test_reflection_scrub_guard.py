@@ -10,7 +10,15 @@ accepted for the outer call, since the module-local `_cap` helpers delegate to
 AST, not a regex, on purpose. The card's original grep matched only
 `with (id|handle) {` and so missed the five sites written with a quoted handle
 (`... handle '{handle}'.`); the parser sees an f-string's parts whatever the
-quoting, and implicit string concatenation arrives as a single JoinedStr.
+quoting, and implicit string concatenation arrives as a single JoinedStr. The
+literal text is matched with each interpolation standing in as `{}`, so an
+interpolated or multi-word kind (`No {kind} found with`, `No product variant
+found with`) is still seen — and then its `{kind}` must be scrubbed too.
+
+What it does NOT see, stated so a green run isn't over-read: a reply built by
+concatenation, `.format()` or `%` rather than an f-string (the tools package
+uses f-strings throughout), and differently worded replies (`Product {id} not
+found.`, `no product found for {ref!r}`), which are outside this card's Class A.
 
 This class was re-discovered three times before this story (10.39 built the
 helpers, 10.58 closed two sites, 10.74's review raised two more). Without this
@@ -29,7 +37,7 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _TOOLS_ROOT = _REPO_ROOT / "src" / "shopify_mcp" / "tools"
 
-_NOT_FOUND = re.compile(r"No \w+ found with")
+_NOT_FOUND = re.compile(r"No .+? found with")
 _CAPS = {"cap", "_cap"}
 _SANITIZE = "sanitize_control_chars"
 
@@ -39,8 +47,14 @@ def _name(func: ast.expr) -> str | None:
 
 
 def _is_scrubbed(value: ast.expr) -> bool:
-    """`cap(sanitize_control_chars(x))` or `_cap(sanitize_control_chars(x))`."""
-    if not (isinstance(value, ast.Call) and _name(value.func) in _CAPS and value.args):
+    """`cap(sanitize_control_chars(x))` or `_cap(sanitize_control_chars(x))`.
+
+    The outer call must take exactly one argument: a second positional or a
+    `limit=` keyword would raise the bound past the shared default.
+    """
+    if not (isinstance(value, ast.Call) and _name(value.func) in _CAPS):
+        return False
+    if len(value.args) != 1 or value.keywords:
         return False
     inner = value.args[0]
     return isinstance(inner, ast.Call) and _name(inner.func) == _SANITIZE
@@ -54,9 +68,7 @@ def _not_found_fstrings() -> list[tuple[str, int, ast.JoinedStr]]:
             if not isinstance(node, ast.JoinedStr):
                 continue
             literal = "".join(
-                part.value
-                for part in node.values
-                if isinstance(part, ast.Constant) and isinstance(part.value, str)
+                part.value if isinstance(part, ast.Constant) else "{}" for part in node.values
             )
             if _NOT_FOUND.search(literal):
                 found.append((str(path.relative_to(_TOOLS_ROOT)), node.lineno, node))
@@ -103,3 +115,24 @@ def test_the_predicate_rejects_the_shapes_it_must():
     assert not _is_scrubbed(value('f"No product found with id {cap(x)}."'))
     assert not _is_scrubbed(value('f"No product found with id {sanitize_control_chars(cap(x))}."'))
     assert not _is_scrubbed(value('f"No product found with id {str(x)}."'))
+    assert not _is_scrubbed(
+        value('f"No product found with id {cap(sanitize_control_chars(x), 9999)}."')
+    )
+    assert not _is_scrubbed(
+        value('f"No product found with id {cap(sanitize_control_chars(x), limit=9999)}."')
+    )
+
+
+def test_the_literal_match_sees_interpolated_and_multi_word_kinds():
+    """Control pair for the literal match: shapes a `No \\w+` pattern missed."""
+
+    def matches(src: str) -> bool:
+        node = ast.parse(src, mode="eval").body
+        assert isinstance(node, ast.JoinedStr)
+        literal = "".join(p.value if isinstance(p, ast.Constant) else "{}" for p in node.values)
+        return bool(_NOT_FOUND.search(literal))
+
+    assert matches('f"No {kind} found with id {x}."')
+    assert matches('f"No product variant found with id {x}."')
+    assert matches("f\"No collection found with handle '{h}'.\"")
+    assert not matches('f"No metafields found for keys: {k}"')

@@ -1,8 +1,10 @@
 """Bound reflected exception / user text to a maximum length.
 
 Shared by the audit logger (tools/_log.py) and the tool error-reflection
-sites (publications, inventory, media, catalog_hygiene) so no caller
-re-implements slicing. Capping stops an attacker-controlled multi-KB field
+sites so no caller re-implements slicing. Model-facing replies that echo
+caller- or Shopify-supplied text use `cap(sanitize_control_chars(x))` — every
+"No {kind} found with {identifier}" reply and the shared userError joiner
+(Story 10.75; guarded by tests/architecture/test_reflection_scrub_guard.py). Capping stops an attacker-controlled multi-KB field
 from flooding the rotating audit log or leaking large upstream bodies
 (signed-URL fragments, internal host detail) back into model context, while
 leaving normal-length text byte-for-byte unchanged.
@@ -29,5 +31,10 @@ def sanitize_control_chars(text: str) -> str:
     handler — this collapses each back to a visible two-character escape
     token instead, leaving text with no control characters byte-for-byte
     unchanged.
+
+    Also load-bearing in model-facing replies, not only logs: composed as
+    `cap(sanitize_control_chars(x))`, sanitize first so the escapes count
+    toward the bound (Story 10.75). Removing it at a reply site reopens a
+    forged-second-line path the tests pin.
     """
     return text.replace("\r", "\\r").replace("\n", "\\n")

@@ -186,11 +186,18 @@ def test_s1075_not_found_ordinary_identifier_is_byte_identical(run, template, ta
     _assert_reply(run(SHORT), template.format(SHORT), tail)
 
 
-def test_s1075_class_a_table_covers_every_unscrubbed_site() -> None:
-    # 20 sites + catalog_hygiene:1147 (below) = the 21 the card's step 1 re-run
-    # counted. 21 rows: collections:359 is one site reached by two tools.
-    assert len(CLASS_A_SITES) == 21
-    assert len({s[0].split()[0] for s in CLASS_A_SITES}) == 20
+def test_s1075_class_a_table_matches_the_sites_in_the_source() -> None:
+    """Bind the table to the code, not to itself: per module, the rows here
+    must cover as many sites as the AST walk finds. The handle precedent,
+    catalog_hygiene.py:1147, is tested separately below."""
+    from collections import Counter
+
+    from tests.architecture.test_reflection_scrub_guard import _not_found_fstrings
+
+    in_source = Counter(rel.removesuffix(".py") for rel, _line, _node in _not_found_fstrings())
+    in_source["catalog_hygiene"] -= 1
+    in_table = Counter(site.split(":")[0] for site in {s[0].split()[0] for s in CLASS_A_SITES})
+    assert in_table == in_source
 
 
 # ---------- catalog_hygiene.py:1147 — the precedent site, now on the rule ----------
