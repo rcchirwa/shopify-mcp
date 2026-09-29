@@ -32,6 +32,7 @@ from shopify_mcp.tools._filters import (
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._response import format_user_errors, poll_failed_note, with_confirm_hint
+from shopify_mcp.tools._scrub import cap, sanitize_control_chars
 from shopify_mcp.tools._untrusted import with_reminder, wrap
 from shopify_mcp.tools._write_tool import _confirmed_from_preview, write_gate
 from shopify_mcp.tools.products import slugify_shopify_handle
@@ -92,7 +93,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         """Get collection details by handle — title and description."""
         col_type, col = _resolve_collection(client, handle)
         if not col:
-            return f"No collection found with handle '{handle}'."
+            return f"No collection found with handle '{cap(sanitize_control_chars(handle))}'."
         # Stored descriptionHtml is merchant/app/import-authored free text —
         # fence it as untrusted (Story 10.63 / SEC-04-descriptions). The
         # '(no description)' placeholder is our own text, so it stays bare.
@@ -124,7 +125,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         _col_type, col = _resolve_collection(client, handle)
         if not col:
-            return f"No collection found with handle '{handle}'."
+            return f"No collection found with handle '{cap(sanitize_control_chars(handle))}'."
 
         col_id = col["id"]
         # None (not "") means "not provided" — see ops.update_collection's
@@ -356,7 +357,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         col_type, col = _resolve_collection(client, handle)
         if not col:
-            return f"No collection found with handle '{handle}'."
+            return f"No collection found with handle '{cap(sanitize_control_chars(handle))}'."
         if col_type == "smart":
             return (
                 f"Error: '{handle}' is a smart collection — membership is "

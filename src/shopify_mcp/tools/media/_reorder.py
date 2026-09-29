@@ -6,6 +6,7 @@ from shopify_mcp.client import ShopifyClient, poll_job
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._response import poll_failed_note, with_confirm_hint
+from shopify_mcp.tools._scrub import cap, sanitize_control_chars
 from shopify_mcp.tools._untrusted import with_reminder, wrap
 from shopify_mcp.tools.media._common import (
     _as_product_gid,
@@ -57,7 +58,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
         product = first_response.get("product")
         if not product:
-            return f"No product found with id {product_id}."
+            return f"No product found with id {cap(sanitize_control_chars(product_id))}."
         current_ids = [n.get("id") for n in current_nodes]
         unknown = [m["id"] for m in parsed_moves if m["id"] not in current_ids]
         if unknown:

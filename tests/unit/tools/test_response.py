@@ -341,3 +341,59 @@ def test_poll_failed_note_stringifies_non_string_error() -> None:
     assert poll_failed_note(err) == (
         "(poll failed: boom — underlying write succeeded, check server-side for completion)"
     )
+
+
+# ---------- Story 10.75 (SEC-24-remaining-sites): the joiner is scrubbed ----------
+#
+# `format_path_user_errors` is the one joiner every userError route goes through
+# since Story 10.94 (`format_user_errors*`, `write_gate`, and the direct callers).
+# Rule: `cap(sanitize_control_chars(joined))` on the WHOLE joined string — path
+# segments included, since the dotted join no longer escapes them the way the
+# old list repr did. Sanitize first, so the escapes count toward the bound.
+# The CR/LF payloads are built from escapes, never typed.
+
+_CR, _LF = "\r", "\n"
+
+
+def test_s1075_long_single_message_is_capped_to_reflect_max_len() -> None:
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
+
+    errors = [{"field": ["input", "title"], "message": "m" * 1000}]
+    out = format_path_user_errors(errors)
+    assert out == ("input.title: " + "m" * 1000)[:REFLECT_MAX_LEN]
+    assert len(out) == REFLECT_MAX_LEN
+
+
+def test_s1075_many_errors_are_capped_as_one_joined_string() -> None:
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
+
+    errors = [{"field": ["variants", str(i), "price"], "message": "bad"} for i in range(60)]
+    joined = "; ".join(f"variants.{i}.price: bad" for i in range(60))
+    assert len(joined) > REFLECT_MAX_LEN
+    assert format_path_user_errors(errors) == joined[:REFLECT_MAX_LEN]
+
+
+def test_s1075_crlf_in_message_and_in_field_segment_is_escaped() -> None:
+    errors = [{"field": ["input", "a" + _CR + _LF + "b"], "message": "x" + _LF + "Injected: yes"}]
+    out = format_path_user_errors(errors)
+    assert out == "input.a\\r\\nb: x\\nInjected: yes"
+    assert _CR not in out and _LF not in out
+
+
+def test_s1075_escapes_count_toward_the_bound() -> None:
+    # Sanitize-then-cap: 200 LFs become 400 chars of escapes, and the cap still
+    # holds. Cap-then-sanitize would emit up to 2 x REFLECT_MAX_LEN.
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
+
+    out = format_path_user_errors([{"field": ["f"], "message": _LF * 200}])
+    assert len(out) == REFLECT_MAX_LEN
+    assert out == ("f: " + "\\n" * 200)[:REFLECT_MAX_LEN]
+
+
+def test_s1075_joined_and_prefixed_routes_inherit_the_bound() -> None:
+    from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
+
+    result = {"productUpdate": {"userErrors": [{"field": ["title"], "message": "m" * 1000}]}}
+    expected = ("title: " + "m" * 1000)[:REFLECT_MAX_LEN]
+    assert format_user_errors_joined(result, "productUpdate") == expected
+    assert format_user_errors(result, "productUpdate") == "Error: " + expected

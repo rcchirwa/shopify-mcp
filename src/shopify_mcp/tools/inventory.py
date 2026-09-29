@@ -29,7 +29,7 @@ from shopify_mcp.tools._response import (
     format_user_errors_joined,
     with_confirm_hint,
 )
-from shopify_mcp.tools._scrub import cap
+from shopify_mcp.tools._scrub import cap, sanitize_control_chars
 from shopify_mcp.tools._write_tool import _outcome_header, write_gate
 
 # The GraphQL strings now live in shopify.queries.inventory. They are re-exported
@@ -196,7 +196,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         """
         product, variants, capped = ops.read_product_inventory(client, product_id)
         if not product:
-            return f"No product found with id {product_id}."
+            return f"No product found with id {cap(sanitize_control_chars(product_id))}."
         title = product.get("title", "")
 
         targets, unresolved = filter_variant_targets(variant_ids, variants)
@@ -356,7 +356,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         product, variants, capped = ops.read_product_inventory(client, product_id)
         if not product:
-            return f"No product found with id {product_id}."
+            return f"No product found with id {cap(sanitize_control_chars(product_id))}."
         title = product.get("title", "")
         at_cap_warning = (
             "  WARNING: variant pagination stopped short — "

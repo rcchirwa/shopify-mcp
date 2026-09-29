@@ -11,7 +11,7 @@ response bodies.
 
 from typing import Any
 
-from shopify_mcp.tools._scrub import cap
+from shopify_mcp.tools._scrub import cap, sanitize_control_chars
 
 
 def poll_failed_note(error: object) -> str:
@@ -67,9 +67,19 @@ def format_path_user_errors(errors: list[dict[str, Any]]) -> str:
     A missing or empty `field` renders as "(no field)"; a missing `message`
     renders as empty. Returns "" for an empty list — callers guard on the
     error list being non-empty before formatting, so there is no None signal.
+
+    The joined string is scrubbed as a whole, `cap(sanitize_control_chars(…))`
+    (Story 10.75, SEC-24-remaining-sites): Shopify-supplied text is bounded to
+    `REFLECT_MAX_LEN` and its CR/LF escaped, path segments included. Sanitizing
+    first keeps the escapes inside the bound. Every userError route inherits
+    this — `format_user_errors*`, `write_gate`, and the direct callers.
     """
-    return "; ".join(
-        f"{format_field_path(e) or '(no field)'}: {e.get('message', '')}" for e in errors
+    return cap(
+        sanitize_control_chars(
+            "; ".join(
+                f"{format_field_path(e) or '(no field)'}: {e.get('message', '')}" for e in errors
+            )
+        )
     )
 
 

@@ -84,7 +84,7 @@ from shopify_mcp.tools._response import (
     format_user_errors,
     with_confirm_hint,
 )
-from shopify_mcp.tools._scrub import cap
+from shopify_mcp.tools._scrub import cap, sanitize_control_chars
 from shopify_mcp.tools._untrusted import INJECTION_REMINDER, wrap
 from shopify_mcp.tools.media._constants import MEDIA_IDS_MAX
 
@@ -1144,7 +1144,7 @@ def _resolve_product_gid(
         # that was never queried (e.g. a whitespace-only `handle`).
         h = handle.strip() if isinstance(handle, str) else ""
         p = product_id.strip() if isinstance(product_id, str) else ""
-        return None, f"No product found with handle {_cap(h or p)!r}."
+        return None, f"No product found with handle {_cap(sanitize_control_chars(h or p))!r}."
     return gid, None
 
 
@@ -1686,7 +1686,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return _render(msg, _err_payload(cap(str(exc))))
         product = (data or {}).get("product")
         if not product:
-            msg = f"No product found with id {product_id}."
+            msg = f"No product found with id {cap(sanitize_control_chars(product_id))}."
             return _render(msg, _err_payload(msg))
 
         title = product.get("title", "")
@@ -2617,7 +2617,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
             product = (data or {}).get("product")
             if not product:
-                msg = f"No product found with id {product_ref}."
+                msg = f"No product found with id {cap(sanitize_control_chars(product_ref))}."
                 return _render(msg, _err_payload(msg))
 
             all_media_nodes: list[dict[str, Any]] = (product.get("media") or {}).get(
@@ -2637,7 +2637,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 )
                 _page_product = (_page_data or {}).get("product")
                 if not _page_product:
-                    msg = f"No product found with id {product_ref}."
+                    msg = f"No product found with id {cap(sanitize_control_chars(product_ref))}."
                     return _render(msg, _err_payload(msg))
                 _page_media = _page_product.get("media") or {}
                 all_media_nodes.extend(_page_media.get("nodes", []) or [])
@@ -4212,7 +4212,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 code_part = f" [{e['code']}]" if e.get("code") else ""
                 return f"{format_field_path(e) or '(no field)'}{code_part}: {e.get('message', '')}"
 
-            msgs = "; ".join(_fmt(e) for e in user_errors)
+            msgs = cap(sanitize_control_chars("; ".join(_fmt(e) for e in user_errors)))
             return f"Error: productOptionUpdate userErrors: {msgs}\n\n" + _format_options_payload(
                 product_snapshot=_shape_options_snapshot(product),
                 ok=False,

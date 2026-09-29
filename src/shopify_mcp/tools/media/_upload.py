@@ -25,7 +25,7 @@ from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._http import default_headers
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._response import extract_user_errors, poll_failed_note, with_confirm_hint
-from shopify_mcp.tools._scrub import cap
+from shopify_mcp.tools._scrub import cap, sanitize_control_chars
 from shopify_mcp.tools._untrusted import with_reminder, wrap_reflected
 from shopify_mcp.tools.media._common import (
     _as_product_gid,
@@ -406,7 +406,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return f"Error at stage=read: {cap(str(e))}"
         product = first_response.get("product")
         if not product:
-            return f"No product found with id {product_id}."
+            return f"No product found with id {cap(sanitize_control_chars(product_id))}."
         current_count = len(current_nodes)
 
         if position and position < 1:

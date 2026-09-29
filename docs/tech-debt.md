@@ -4,7 +4,44 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-09-27.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-09-29.
+
+---
+
+## 2026-09-29 — Story 10.75 (SEC-24-remaining-sites — the scrub helpers applied at the remaining reflection sites)
+
+Trello: https://trello.com/c/Ol8n85Jl (Story 10.75, Epic 10). Surfaced by Story 10.74's security review.
+
+**This is the third pass over the SEC-11/SEC-12 class.** Story 10.39 built `tools/_scrub.py` (`cap` at `REFLECT_MAX_LEN = 300`, `sanitize_control_chars`) and applied it where it knew to. Story 10.58 (SEC-24) closed L1 and L7 from a review's ledger. This story swept the card's two classes (below) with a grep and then a parser, and adds a guard so those two cannot regress. It did not sweep every echo of caller text: other wordings of the same echo remain, listed under Residuals. Defense-in-depth, not a live defect: Class A echoes a value the caller sent, and Class B reflects Shopify's own text.
+
+**The rule (step 2, decided by Robert 2026-09-28): `cap(sanitize_control_chars(x))`, one rule at every site.** Sanitize first, so the `\r` / `\n` escapes count toward the bound and a CR/LF-heavy value can't come out at up to twice `REFLECT_MAX_LEN`. Only CR and LF are escaped. Tabs and bidi controls pass, as `message` always has; they can't forge a line. Ordinary values render byte-for-byte as before.
+
+**Class A — "No {kind} found with {identifier}": 21 sites, not the card's 16.** The card's regex matched only `with (id|handle) {`, so it missed the five sites written with a quoted handle (`collections.py` ×3 and `products.py`'s `get_products_by_collection` / `get_products_with_descriptions`). By module: `products.py` 7, `catalog_hygiene.py` 4, `collections.py` 3, `media/` 5 (`_list`, `_reorder`, `_update`, `_upload`, `_delete`), `inventory.py` 2. Twenty were raw. The precedent at `catalog_hygiene.py` `_resolve_product_gid` was capped but not sanitized; it now reads `_cap(sanitize_control_chars(h or p))!r`. It keeps its own 200-char `_cap` and its `!r` quoting, so its output changes only for a value carrying CR/LF, which now renders as a doubled escape inside the repr. That is a consistency change, not a closed hole: `!r` already escaped CR/LF there. At `update_variant_image_binding`'s two id sites the value was already length-bounded to 200 by its producer (`_identifier_channel`'s `display_ref`); CR/LF was the open half there.
+
+**Class B — the userError joiner.** Since Story 10.94 every userError route renders through `_response.py::format_path_user_errors`: `format_user_errors` / `format_user_errors_joined`, `write_gate`, and the direct callers (`catalog_hygiene.py` ×8, `media/_common.py`, `discounts.py`'s `create_discount_code`, `products.py`'s `update_variant_inventory_policy`). The joined string is scrubbed **as a whole**, path segments included: the old `str(list)` repr escaped control characters inside `field` and the dotted join does not, so this also restores that. The one joiner outside it, `update_product_options`' local `_fmt` (which adds `[code]`), gets the same rule. Story 10.74's containment argument ("the operator sees Shopify's own `userError` through the existing error path") now rests on bounded reply text. The JSON tails some tools append still carry the raw userErrors list (see Residuals).
+
+**Intended output change, only past the bound.** A userError report longer than 300 characters (one long message, or many errors) is truncated at 300. An identifier longer than 300 is echoed truncated. Anything containing CR/LF shows it as a visible `\r` / `\n`.
+
+**Guard (AC 3): `tests/architecture/test_reflection_scrub_guard.py`.** It walks the tools package with `ast`, finds every f-string whose literal text says `No <kind> found with`, and requires every interpolation in it to be `cap(sanitize_control_chars(...))` (`_cap` accepted for the outer call). It uses AST, not regex, because the quoted-handle form is exactly what the regex missed; implicit concatenation arrives as one `JoinedStr`. A floor test (`>= 21` sites) proves the walk saw real code, and a control pair proves the predicate rejects raw, cap-only, sanitize-only and reversed forms.
+
+**Tests.** Watched RED on unfixed code; 54 failed for the intended reason. `tests/unit/tools/test_reflection_scrub.py` drives **every** Class A site (21 rows; `collections.py`'s membership site is reached by both add and remove) with an over-long value, a GID-shaped CR/LF value and an ordinary value, and compares the whole reply. `catalog_hygiene` rows also check the JSON tail. It also covers the precedent site and the Class B routes: `write_gate`, `create_discount_code`, `update_variant_inventory_policy` and `update_product_options`' `_fmt`. `tests/unit/tools/test_response.py` pins the joiner: a long message, a many-error list, CR/LF in a message and in a path segment, the sanitize-before-cap order, and inheritance through both `format_user_errors*`. The 31 existing not-found assertions (exact-string or substring) pass unmodified, which is the byte-identical proof.
+
+**Mutation table, 27 mutants, 0 survivors** (restored by SHA-256 check, `PYTHONDONTWRITEBYTECODE=1`). Reverting any one Class A site fails only that site's rows plus the guard. Removing the joiner's cap, its sanitize, or swapping to cap-then-sanitize each fail; the same three mutants on `_fmt` each fail. The first run had one survivor (`_fmt` cap-then-sanitize); a `_fmt` ordering test was added for it.
+
+**What the review changed** (code-review, security-review, and an independent verifier; no Critical/High/Medium, no security finding at confidence 8 or above):
+- The guard matched the literal text with `No \w+ found with`, so `f"No {kind} found with id {x}"` and a two-word kind slipped past, and it accepted `cap(sanitize_control_chars(x), 9999)`. It now matches with each interpolation standing in as `{}` (`No .+? found with`), requires `cap` to take exactly one argument, and has control pairs for both. It still sees exactly the 21 sites. Its docstring states what it does not see: concatenation, `.format()`, `%`, and differently worded replies.
+- The Class A table test counted its own rows. It now compares them, per module, with the sites the AST walk finds.
+- `tools/_scrub.py`'s docstrings described `sanitize_control_chars` as a log-sink helper; they now say it is load-bearing in model-facing replies.
+- This entry's claims were narrowed where review showed them too broad (the sweep's reach, the `:1147` change, the containment argument, the pin count).
+- Pushed back, no change: a single `scrub(x)` composite for the 23 inline compositions. The rule was decided as written on the card, and the guard enforces the order at every not-found site.
+
+**Residuals, recorded not fixed** (outside the card's two classes; the card's scope guard forbids a general audit):
+- **Other wordings echo caller input raw**, uncapped, CR/LF intact (reproduced by the verifier): `inventory.py` `get_inventory`'s `Product {product_id} not found.`, `orders.py`'s `Order {order_id} not found.`, and `catalog_hygiene.py` `get_product_metafields`' `No metafields found for namespace: "…"` / `for keys: …`. By reading: the `Unresolved variant ids` lists in `inventory.py` and `products.py`, `inventory.py`'s `location_id` echo, `media/_update.py`'s `media_id` echo, `update_product_pricing`'s `variant … not found on product {product_id}`, and `catalog_hygiene.py`'s `ownerId` echo. Already safe: the `no product found for {product_ref!r}` sites (200-char `display_ref`, `!r`). Candidate follow-up card.
+- **JSON tails carry raw userErrors.** Several `catalog_hygiene.py` tools append `errors=list(user_errors)` in their JSON tail. `json.dumps` escapes CR/LF, so no line can be forged, but the length is unbounded.
+- **Truncation is silent.** A userError report past 300 characters is cut with no marker, which matches every other `cap` site in the repo (SEC-27, `poll_failed_note`). Where there is no JSON tail (`write_gate` tools, `update_variant_inventory_policy`), errors past the bound are not visible to the operator. The bound itself was the card's AC 2; a marker would be a repo-wide `cap` convention change.
+- The joiner can cut inside an escape and end on a lone `\`. Cosmetic.
+
+**Scope, per the card.** Not a general f-string audit. `client.py`'s transport-level `_format_errors` is untouched (SEC-27, and Story 10.69's fence). `publications._map_user_error` renders through its own guarded path and is Story 10.69's to re-derive.
 
 ---
 
