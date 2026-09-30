@@ -30,7 +30,8 @@ import pytest
 
 from shopify_mcp.tools import catalog_hygiene
 from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
-from tests.support import FakeClient
+from shopify_mcp.tools._untrusted import INJECTION_REMINDER
+from tests.support import FakeClient, fenced
 from tests.unit.tools.test_catalog_hygiene import (
     _OPT_GID,
     _OV_M,
@@ -229,12 +230,16 @@ def test_s1075_handle_precedent_ordinary_handle_is_byte_identical() -> None:
 # ---------- Class B: routes that frame the shared joiner ----------
 
 _LONG_MSG = "m" * 1000
+# Story 10.69: a fenced report keeps REFLECT_MAX_LEN less the 33 delimiter characters.
+_ROOM = REFLECT_MAX_LEN - len(fenced(""))
 
 
 def test_s1075_write_gate_route_caps_the_user_error_text() -> None:
     tools, _fc = _build_products([_seo_read(), _update_err(["product", "seo", "title"], _LONG_MSG)])
     out = tools["update_product_seo"](product_id="123", new_seo_title="x", confirm=True)
-    assert out == "Error: " + ("product.seo.title: " + _LONG_MSG)[:REFLECT_MAX_LEN]
+    assert out == INJECTION_REMINDER + "Error: " + fenced(
+        ("product.seo.title: " + _LONG_MSG)[:_ROOM]
+    )
 
 
 def test_s1075_write_gate_route_escapes_crlf_in_user_error_text() -> None:
@@ -242,16 +247,16 @@ def test_s1075_write_gate_route_escapes_crlf_in_user_error_text() -> None:
         [_seo_read(), _update_err(["product", "seo", "title"], "bad" + _LF + "Injected: yes")]
     )
     out = tools["update_product_seo"](product_id="123", new_seo_title="x", confirm=True)
-    assert out == "Error: product.seo.title: bad\\nInjected: yes"
+    assert out == INJECTION_REMINDER + "Error: " + fenced("product.seo.title: bad\\nInjected: yes")
 
 
 def test_s1075_discount_route_caps_the_user_error_text() -> None:
     tools, _fc = _build_discounts([_discount_create_err(["basicCodeDiscount", "code"], _LONG_MSG)])
     out = tools["create_discount_code"](title="T", code="X", percentage_off=10, confirm=True)
-    assert (
-        out
-        == "Error creating discount code: "
-        + ("basicCodeDiscount.code: " + _LONG_MSG)[:REFLECT_MAX_LEN]
+    assert out == (
+        INJECTION_REMINDER
+        + "Error creating discount code: "
+        + fenced(("basicCodeDiscount.code: " + _LONG_MSG)[:_ROOM])
     )
 
 
@@ -265,7 +270,9 @@ def test_s1075_inventory_policy_route_caps_the_user_error_text() -> None:
     out = tools["update_variant_inventory_policy"](
         product_id="123", new_policy="DENY", confirm=True
     )
-    assert out == "Error: " + ("variants.0.inventoryPolicy: " + _LONG_MSG)[:REFLECT_MAX_LEN]
+    assert out == INJECTION_REMINDER + "Error: " + fenced(
+        ("variants.0.inventoryPolicy: " + _LONG_MSG)[:_ROOM]
+    )
 
 
 def _option_update_err(user_errors: list[dict[str, Any]]) -> str:
@@ -283,7 +290,8 @@ def _option_update_err(user_errors: list[dict[str, Any]]) -> str:
     )
 
 
-_OPT_HEAD = "Error: productOptionUpdate userErrors: "
+# Story 10.69: the report is fenced and the head leads with the reminder.
+_OPT_HEAD = INJECTION_REMINDER + "Error: productOptionUpdate userErrors: "
 
 
 def test_s1075_option_update_joiner_caps_many_errors() -> None:
@@ -293,7 +301,7 @@ def test_s1075_option_update_joiner_caps_many_errors() -> None:
     ]
     joined = "; ".join(f"optionValuesToUpdate.{i}.name [TAKEN]: taken" for i in range(40))
     out = _option_update_err(errors)
-    assert out.startswith(_OPT_HEAD + joined[:REFLECT_MAX_LEN] + "\n\n")
+    assert out.startswith(_OPT_HEAD + fenced(joined[:_ROOM]) + "\n\n")
 
 
 def test_s1075_option_update_joiner_escapes_crlf() -> None:
@@ -306,15 +314,15 @@ def test_s1075_option_update_joiner_escapes_crlf() -> None:
             }
         ]
     )
-    assert out.startswith(_OPT_HEAD + "option.name: dup\\r\\nInjected: yes\n\n")
+    assert out.startswith(_OPT_HEAD + fenced("option.name: dup\\r\\nInjected: yes") + "\n\n")
 
 
 def test_s1075_option_update_joiner_escapes_count_toward_the_bound() -> None:
     # Sanitize-then-cap: 200 LFs are 400 chars of escapes, still capped at
     # REFLECT_MAX_LEN. Cap-then-sanitize would emit up to twice that.
     out = _option_update_err([{"field": ["option", "name"], "message": _LF * 200, "code": None}])
-    expected = ("option.name: " + "\\n" * 200)[:REFLECT_MAX_LEN]
-    assert out.startswith(_OPT_HEAD + expected + "\n\n")
+    expected = ("option.name: " + "\\n" * 200)[:_ROOM]
+    assert out.startswith(_OPT_HEAD + fenced(expected) + "\n\n")
 
 
 def test_s1075_option_update_joiner_ordinary_error_is_byte_identical() -> None:
@@ -329,5 +337,9 @@ def test_s1075_option_update_joiner_ordinary_error_is_byte_identical() -> None:
     )
     assert out.startswith(
         _OPT_HEAD
-        + "optionValuesToUpdate.0.name [DUPLICATE_OPTION_VALUE_NAME]: Option value name already exists.\n\n"
+        + fenced(
+            "optionValuesToUpdate.0.name [DUPLICATE_OPTION_VALUE_NAME]: "
+            "Option value name already exists."
+        )
+        + "\n\n"
     )

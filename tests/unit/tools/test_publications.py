@@ -18,6 +18,7 @@ from shopify_mcp.settings import Settings
 from shopify_mcp.shopify._cache import ShopifyMetadataCache
 from shopify_mcp.tools import publications
 from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
+from shopify_mcp.tools._untrusted import INJECTION_REMINDER
 from shopify_mcp.tools.publications import (
     GET_COLLECTION_PUBLICATIONS_BY_HANDLE,
     GET_PRODUCT_PUBLICATIONS_BY_HANDLE,
@@ -28,7 +29,7 @@ from shopify_mcp.tools.publications import (
     _resolve_product_gid_and_meta,
     _split_current,
 )
-from tests.support import CapturingServer, FakeClient
+from tests.support import CapturingServer, FakeClient, fenced
 
 
 def _short_ttl_settings(channels_ttl: int = 600) -> Settings:
@@ -444,7 +445,7 @@ def test_publish_all_rejected_is_not_confirmed():
         channel_names=["Online Store"],
         confirm=True,
     )
-    assert out.startswith("FAILED — Publish product to channels")
+    assert out.startswith(INJECTION_REMINDER + "FAILED — Publish product to channels")
     assert "CONFIRMED" not in out
     assert "PREVIEW" not in out
     assert "Now published to" in out
@@ -813,7 +814,7 @@ def test_map_user_error_non_integer_index_falls_back_to_raw_path():
         targets,
     )
     assert mapped["channel_name"] == "input.NaN.publicationId"
-    assert mapped["error"] == "boom"
+    assert mapped["error"] == fenced("boom")
 
 
 def test_map_user_error_non_list_field_falls_back_to_stringified():
@@ -1113,7 +1114,7 @@ def test_unpublish_user_errors_surface_in_confirmed_body():
         channel_names=["Online Store"],
         confirm=True,
     )
-    assert out.startswith("FAILED — Unpublish product from channels")
+    assert out.startswith(INJECTION_REMINDER + "FAILED — Unpublish product from channels")
     assert "CONFIRMED" not in out
     assert "Failed" in out
     assert "Online Store" in out[out.index("Failed") :]
@@ -1251,7 +1252,7 @@ def test_set_publish_user_errors_carry_into_apply_failed():
         channel_names=["Online Store"],
         confirm=True,
     )
-    assert out.startswith("FAILED — Set product publications (declarative)")
+    assert out.startswith(INJECTION_REMINDER + "FAILED — Set product publications (declarative)")
     assert "CONFIRMED" not in out
     assert "Failed" in out
     assert "not authorized" in out
@@ -1368,7 +1369,7 @@ def test_set_publish_rejected_then_unpublish_exception_is_failed(monkeypatch):
         channel_names=["Point of Sale", "Google & YouTube"],
         confirm=True,
     )
-    assert out.startswith("FAILED — Set product publications (declarative)")
+    assert out.startswith(INJECTION_REMINDER + "FAILED — Set product publications (declarative)")
     assert "CONFIRMED" not in out
     assert "PARTIAL" not in out
     failed_block = out[out.index("Failed") :]
@@ -1437,7 +1438,8 @@ def test_set_unpublish_user_errors_carry_into_apply_failed():
         confirm=True,
     )
     assert out.startswith(
-        "PARTIAL — Set product publications (declarative) (1 succeeded, 1 failed)"
+        INJECTION_REMINDER
+        + "PARTIAL — Set product publications (declarative) (1 succeeded, 1 failed)"
     )
     assert "CONFIRMED" not in out
     assert "Failed" in out
@@ -1465,7 +1467,8 @@ def test_set_publish_rejected_unpublish_succeeds_is_partial():
         confirm=True,
     )
     assert out.startswith(
-        "PARTIAL — Set product publications (declarative) (1 succeeded, 1 failed)"
+        INJECTION_REMINDER
+        + "PARTIAL — Set product publications (declarative) (1 succeeded, 1 failed)"
     )
     assert "Online Store" in out[out.index("Removed (unpublished)") : out.index("Unchanged")]
     assert len(fc.calls) == 4
@@ -1519,7 +1522,9 @@ def test_set_empty_list_unpublish_rejected_is_not_confirmed():
         channel_names=[],
         confirm=True,
     )
-    assert out.splitlines()[0] == "FAILED — Set product publications (declarative)"
+    assert out.removeprefix(INJECTION_REMINDER).splitlines()[0] == (
+        "FAILED — Set product publications (declarative)"
+    )
     assert "CONFIRMED" not in out
     assert "Online Store" in out[out.index("Failed") :]
     assert len(fc.calls) == 3
@@ -2238,7 +2243,7 @@ def test_publish_collection_user_error_maps_back_to_the_channel_name():
     out = tools["publish_collection_to_channels"](
         handle="all-copy", channel_names=["Online Store"], confirm=True
     )
-    assert "Online Store: Nope" in out
+    assert "Online Store: " + fenced("Nope") in out
 
 
 def test_publish_collection_all_rejected_is_not_confirmed():
@@ -2259,9 +2264,9 @@ def test_publish_collection_all_rejected_is_not_confirmed():
     out = tools["publish_collection_to_channels"](
         handle="all-copy", channel_names=["Online Store"], confirm=True
     )
-    assert out.startswith("FAILED — Publish collection to channels")
+    assert out.startswith(INJECTION_REMINDER + "FAILED — Publish collection to channels")
     assert "CONFIRMED" not in out
-    assert "Online Store: Nope" in out
+    assert "Online Store: " + fenced("Nope") in out
 
 
 def test_publish_collection_not_found_reports_cleanly_without_mutating():
@@ -2386,9 +2391,9 @@ def test_unpublish_collection_all_rejected_is_not_confirmed():
     out = tools["unpublish_collection_from_channels"](
         handle="all-copy", channel_names=["Online Store"], confirm=True
     )
-    assert out.startswith("FAILED — Unpublish collection from channels")
+    assert out.startswith(INJECTION_REMINDER + "FAILED — Unpublish collection from channels")
     assert "CONFIRMED" not in out
-    assert "Online Store: Nope" in out
+    assert "Online Store: " + fenced("Nope") in out
 
 
 def test_unpublish_collection_requires_a_handle_as_the_first_statement():
@@ -2490,8 +2495,11 @@ def test_failed_channel_lines_cap_an_oversized_shopify_user_error():
     out = tools["publish_collection_to_channels"](
         handle="all-copy", channel_names=["Online Store"], confirm=True
     )
-    assert "Z" * REFLECT_MAX_LEN in out
-    assert "Z" * (REFLECT_MAX_LEN + 1) not in out
+    # Story 10.69: the message is fenced inside the same bound, so it keeps
+    # REFLECT_MAX_LEN less the 33 delimiter characters, and the fence closes.
+    room = REFLECT_MAX_LEN - len(fenced(""))
+    assert "Online Store: " + fenced("Z" * room) in out
+    assert "Z" * (room + 1) not in out
 
 
 def test_failed_channel_lines_cap_an_oversized_caller_channel_name():
@@ -2623,7 +2631,7 @@ def test_user_error_maps_against_the_channels_actually_SENT_not_all_targets():
         confirm=True,
     )
     failed_section = out[out.index("Failed") :]
-    assert "Shop: Boom" in failed_section
+    assert "Shop: " + fenced("Boom") in failed_section
     assert "Online Store" not in failed_section
 
 
@@ -2920,9 +2928,11 @@ def test_s1099_unpublish_rejected_for_an_assigned_channel_is_failed():
     out = tools["unpublish_product_from_channels"](
         product_id="123", channel_names=["Google & YouTube"], confirm=True
     )
-    assert out.split("\n", 1)[0] == "FAILED — Unpublish product from channels"
+    assert out.removeprefix(INJECTION_REMINDER).split("\n", 1)[0] == (
+        "FAILED — Unpublish product from channels"
+    )
     assert "  Now unpublished from:\n  (none)" in out
-    assert "  • Google & YouTube: not authorized" in out
+    assert "  • Google & YouTube: " + fenced("not authorized") in out
 
 
 def test_s1099_publish_leaves_an_assigned_channel_unchanged_without_a_mutation():

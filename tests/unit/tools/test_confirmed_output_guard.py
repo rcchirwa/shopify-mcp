@@ -70,6 +70,7 @@ import shopify_mcp.server as _server_module
 from shopify_mcp.server import create_server
 from shopify_mcp.settings import Settings
 from shopify_mcp.tools import webhooks as _webhooks_module
+from shopify_mcp.tools._untrusted import INJECTION_REMINDER
 from shopify_mcp.tools.publications import PUBLISHABLE_PUBLISH, PUBLISHABLE_UNPUBLISH
 from tests.support import CapturingServer, FakeClient
 
@@ -833,7 +834,11 @@ def test_all_covered_write_tools_confirmed_output_has_no_preview_leak(name: str)
         f"{name}: {len(fc.responses)} scripted response(s) never consumed — "
         f"check short-circuited before completing the confirmed write (out={out!r})"
     )
-    assert not out.startswith("Error"), f"{name}: confirmed check returned an error: {out!r}"
+    # Read the header past a leading reminder (Story 10.69): an error carrying
+    # fenced Shopify text leads with INJECTION_REMINDER, so a bare startswith
+    # would pass vacuously for exactly the error this assertion exists to catch.
+    head = out.removeprefix(INJECTION_REMINDER)
+    assert not head.startswith("Error"), f"{name}: confirmed check returned an error: {out!r}"
     assert "PREVIEW" not in out, f"{name}: leaked PREVIEW in confirmed output: {out!r}"
 
 
@@ -1040,8 +1045,12 @@ def test_all_rejected_write_is_never_reported_confirmed(name: str) -> None:
         f"{name}: {len(fc.responses)} scripted response(s) never consumed — "
         f"check short-circuited before completing the write (out={out!r})"
     )
-    assert not out.startswith("CONFIRMED"), f"{name}: all-rejected write read CONFIRMED: {out!r}"
-    assert out.startswith("FAILED —"), f"{name}: all-rejected write did not read FAILED: {out!r}"
+    # Past a leading reminder (Story 10.69): the rejection's fenced Shopify
+    # text puts INJECTION_REMINDER first, which would make the negative
+    # startswith vacuous.
+    head = out.removeprefix(INJECTION_REMINDER)
+    assert not head.startswith("CONFIRMED"), f"{name}: all-rejected write read CONFIRMED: {out!r}"
+    assert head.startswith("FAILED —"), f"{name}: all-rejected write did not read FAILED: {out!r}"
 
 
 def test_set_product_publications_all_unresolved_is_refused_before_mutation() -> None:

@@ -379,7 +379,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         payload = result.get(op["result_key"], {}) or {}
         err = format_user_errors(result, op["result_key"])
         if err:
-            return err
+            return with_reminder(err)
 
         job = payload.get("job") or {}
         job_id = job.get("id")
@@ -425,7 +425,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                     f"server-side after {client._settings.job_poll_timeout_s:g}s timeout — "
                     f"operation likely completed, verify via get_collection)"
                 )
-        return body
+        # A poll failure's text is fenced at its source (Story 10.69).
+        return with_reminder(body)
 
     @server.tool()
     def add_product_to_collection(

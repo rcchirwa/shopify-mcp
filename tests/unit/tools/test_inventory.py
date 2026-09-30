@@ -17,6 +17,7 @@ import pytest
 
 from shopify_mcp.tools import inventory
 from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
+from shopify_mcp.tools._untrusted import INJECTION_REMINDER
 from shopify_mcp.tools.inventory import (
     GET_INVENTORY_ITEM,
     GET_PRODUCT_INVENTORY,
@@ -24,7 +25,7 @@ from shopify_mcp.tools.inventory import (
     UPDATE_INVENTORY_ITEM_TRACKED,
     _available_qty,
 )
-from tests.support import CapturingServer, FakeClient
+from tests.support import CapturingServer, FakeClient, fenced
 
 
 @pytest.fixture(autouse=True)
@@ -395,7 +396,7 @@ def test_update_inventory_surfaces_user_errors_as_error_string():
         quantity=5,
         confirm=True,
     )
-    assert out.startswith("Error:")
+    assert out.startswith(INJECTION_REMINDER + "Error:")
     assert "Quantity must be non-negative" in out
 
 
@@ -601,13 +602,15 @@ def test_tracking_partial_failure_reports_per_variant():
         confirm=True,
     )
     # Story 9.24: 1 changed / 1 failed is a partial write, not a confirmed one.
-    assert out.startswith("PARTIAL — Variant inventory tracking update (1 succeeded, 1 failed)")
+    assert out.startswith(
+        INJECTION_REMINDER + "PARTIAL — Variant inventory tracking update (1 succeeded, 1 failed)"
+    )
     assert "CONFIRMED" not in out
     assert "Changed (1):" in out
     assert "Failed (1):" in out
     # Full 'field: message' shape — locks in format_user_errors_joined output
     # so a regression in the helper surfaces here.
-    assert "    • M: input.tracked: locked by another process" in out.splitlines()
+    assert "    • M: " + fenced("input.tracked: locked by another process") in out.splitlines()
 
 
 def test_tracking_failed_bullet_renders_list_field_as_dotted_path():
@@ -626,7 +629,7 @@ def test_tracking_failed_bullet_renders_list_field_as_dotted_path():
         confirm=True,
     )
     assert len(fc.calls) == 2, "the mutation must have run"
-    assert "    • M: input.tracked: locked by another process" in out.splitlines()
+    assert "    • M: " + fenced("input.tracked: locked by another process") in out.splitlines()
 
 
 def test_tracking_all_rejected_is_not_confirmed():
@@ -656,7 +659,7 @@ def test_tracking_all_rejected_is_not_confirmed():
         tracked=True,
         confirm=True,
     )
-    assert out.startswith("FAILED — Variant inventory tracking update")
+    assert out.startswith(INJECTION_REMINDER + "FAILED — Variant inventory tracking update")
     assert "CONFIRMED" not in out
     assert "Changed (0):" in out
     assert "Unchanged (1):" in out
@@ -1178,7 +1181,7 @@ def test_quantity_surfaces_user_errors_as_error_string():
         quantity=0,
         confirm=True,
     )
-    assert out.startswith("Error:")
+    assert out.startswith(INJECTION_REMINDER + "Error:")
     assert "Quantity must be non-negative" in out
 
 
@@ -1202,7 +1205,9 @@ def test_quantity_user_errors_render_list_field_as_dotted_path():
         quantity=0,
         confirm=True,
     )
-    assert out == "Error: input.setQuantities.0.quantity: Quantity must be non-negative"
+    assert out == INJECTION_REMINDER + "Error: " + fenced(
+        "input.setQuantities.0.quantity: Quantity must be non-negative"
+    )
 
 
 def test_quantity_variant_with_no_levels_contributes_no_pair():

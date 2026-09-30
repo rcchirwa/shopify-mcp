@@ -403,7 +403,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 page_size=_MEDIA_PAGE_CAP,
             )
         except Exception as e:
-            return f"Error at stage=read: {cap(str(e))}"
+            return with_reminder(f"Error at stage=read: {cap(str(e))}")
         product = first_response.get("product")
         if not product:
             return f"No product found with id {cap(sanitize_control_chars(product_id))}."
@@ -448,7 +448,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # Stage 2: create the staged upload target.
         target, err = _stage_upload(client, filename, mime_type, len(image_bytes))
         if err:
-            return err
+            # Shopify's text in `err` is fenced at its source (Story 10.69).
+            return with_reminder(err)
         assert target is not None  # _stage_upload: (None, err) xor (target, None)
 
         # Stage 3: PUT bytes with parameters as headers.
@@ -462,7 +463,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         assert resource_url, "stagedUploadsCreate success implies resourceUrl is set"
         new_media, err = _attach_media(client, gid, alt, resource_url)
         if err:
-            return err
+            return with_reminder(err)
         assert new_media is not None
         new_media_id = new_media.get("id")
         assert new_media_id, "productCreateMedia success implies media id is set"
@@ -519,7 +520,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"{_MEDIA_PROCESSING_POLL_TIMEOUT_S}s — Shopify will finish "
                 f"server-side; storefront renders PROCESSING media in most cases."
             )
-        return (
+        # `reorder_note` can carry fenced Shopify text (Story 10.69).
+        return with_reminder(
             f"CONFIRMED — Upload product image\n"
             f"  Product ID : {product_id}\n"
             f"  Media ID   : {new_media_id}\n"

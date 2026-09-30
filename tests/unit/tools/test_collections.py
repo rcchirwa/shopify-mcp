@@ -24,7 +24,7 @@ from shopify_mcp.tools.collections import (
     REMOVE_PRODUCTS_FROM_COLLECTION,
     UPDATE_COLLECTION,
 )
-from tests.support import CapturingServer, FakeClient
+from tests.support import CapturingServer, FakeClient, fenced
 
 
 class _FakeClock:
@@ -284,7 +284,7 @@ def test_add_product_surfaces_user_errors():
         product_id="777",
         confirm=True,
     )
-    assert out.startswith("Error:")
+    assert out.startswith(INJECTION_REMINDER + "Error:")
     assert "Product already in collection" in out
 
 
@@ -309,7 +309,9 @@ def test_add_product_user_errors_render_list_field_as_dotted_path():
         product_id="777",
         confirm=True,
     )
-    assert out == "Error: productIds.0: Product already in collection"
+    assert out == INJECTION_REMINDER + "Error: " + fenced(
+        "productIds.0: Product already in collection"
+    )
 
 
 # --- remove_product_from_collection ---
@@ -403,7 +405,7 @@ def test_remove_product_surfaces_user_errors():
         product_id="777",
         confirm=True,
     )
-    assert out.startswith("Error:")
+    assert out.startswith(INJECTION_REMINDER + "Error:")
     assert "Product not in collection" in out
 
 
@@ -428,7 +430,7 @@ def test_remove_product_user_errors_render_list_field_as_dotted_path():
         product_id="777",
         confirm=True,
     )
-    assert out == "Error: productIds.0: Product not in collection"
+    assert out == INJECTION_REMINDER + "Error: " + fenced("productIds.0: Product not in collection")
 
 
 # --- job polling branches ---
@@ -808,8 +810,8 @@ def test_update_collection_user_errors_surfaced():
         new_title="X" * 500,
         confirm=True,
     )
-    assert out.startswith("Error:")
-    assert out == "Error: input.title: too long"
+    assert out.startswith(INJECTION_REMINDER + "Error:")
+    assert out == INJECTION_REMINDER + "Error: " + fenced("input.title: too long")
 
 
 def test_update_collection_preview_shows_full_new_description():

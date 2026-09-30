@@ -50,7 +50,8 @@ from shopify_mcp.tools._response import (
     format_field_path,
     with_confirm_hint,
 )
-from shopify_mcp.tools._scrub import cap
+from shopify_mcp.tools._scrub import cap, sanitize_control_chars
+from shopify_mcp.tools._untrusted import with_reminder, wrap_reflected
 from shopify_mcp.tools._write_tool import _outcome_header
 
 # The GraphQL strings now live in shopify.queries.publications. They are re-exported
@@ -165,9 +166,17 @@ def _resolve_ids(client: ShopifyClient, cache: dict, pub_ids: list) -> tuple:
 def _map_user_error(user_error: dict, targets: list) -> dict:
     """Shopify returns userError.field like ["input", "0", "publicationId"] for
     list-shaped mutation inputs. Recover the channel name by matching the index
-    back to our target list. Falls back to the raw field path on parse failure."""
+    back to our target list. Falls back to the raw field path on parse failure.
+
+    Shopify's message is fenced as untrusted (Story 10.69, SEC-04-errors) and
+    its CR/LF escaped first (Story 10.75's rule, which left this joiner to
+    10.69). The channel name stays raw: it is a store publication name or a
+    field path, not Shopify's prose. An absent or empty message stays as-is,
+    so there is never an empty fence."""
     field = user_error.get("field") or []
     message = user_error.get("message")
+    if message:
+        message = wrap_reflected("", sanitize_control_chars(str(message)))
     idx = None
     if isinstance(field, list) and len(field) >= 2:
         try:
@@ -492,7 +501,7 @@ def _channel_write(
             # call, silently un-testing every write path that patches it.
             result = getattr(ops, spec["op_name"])(client, gid, [t["id"] for t in acting])
         except Exception as e:
-            return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
+            return with_reminder(f"Error: {cap(str(e))}\n{SCOPE_HINT}")
         user_errors = extract_user_errors(result, spec["result_key"])
         # Treated as all-or-nothing: any userError means none of `acting` applied.
         # Live-verified only for a non-existent publication id (2026-09-26, API
@@ -535,7 +544,8 @@ def _channel_write(
     )
     if apply_failed:
         body += "\n  Failed:\n" + _render_failed(apply_failed)
-    return _with_incomplete_note(body, assigned_incomplete)
+    # A failed line can carry fenced Shopify text (Story 10.69).
+    return with_reminder(_with_incomplete_note(body, assigned_incomplete))
 
 
 def _render_channel_lines(
@@ -568,7 +578,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             nodes = _load_channels(client, channel_cache)
         except Exception as e:
-            return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
+            return with_reminder(f"Error: {cap(str(e))}\n{SCOPE_HINT}")
         if not nodes:
             return "No sales channels found on this store."
         lines = [f"Sales channels ({len(nodes)} total):"]
@@ -607,14 +617,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             _ensure_channels(client, channel_cache)
         except Exception as e:
-            return f"Error loading sales channels: {cap(str(e))}\n{SCOPE_HINT}"
+            return with_reminder(f"Error loading sales channels: {cap(str(e))}\n{SCOPE_HINT}")
 
         try:
             gid, title, prod_handle, rps, _status, assigned_incomplete = (
                 _resolve_product_gid_and_meta(client, product_id, handle)
             )
         except Exception as e:
-            return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
+            return with_reminder(f"Error: {cap(str(e))}\n{SCOPE_HINT}")
 
         if not gid:
             return "No product found."
@@ -683,7 +693,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             targets, failed = _resolve_target_nodes(channel_names, publication_ids)
         except Exception as e:
-            return f"Error resolving channels: {cap(str(e))}\n{SCOPE_HINT}"
+            return with_reminder(f"Error resolving channels: {cap(str(e))}\n{SCOPE_HINT}")
         if targets is None:
             return "Error: " + "; ".join(f.get("error", "") for f in failed)
 
@@ -692,7 +702,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 _resolve_product_gid_and_meta(client, product_id, handle)
             )
         except Exception as e:
-            return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
+            return with_reminder(f"Error: {cap(str(e))}\n{SCOPE_HINT}")
         if not gid:
             return "No product found."
 
@@ -752,7 +762,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             targets, failed = _resolve_target_nodes(channel_names, publication_ids)
         except Exception as e:
-            return f"Error resolving channels: {cap(str(e))}\n{SCOPE_HINT}"
+            return with_reminder(f"Error resolving channels: {cap(str(e))}\n{SCOPE_HINT}")
         if targets is None:
             return "Error: " + "; ".join(f.get("error", "") for f in failed)
 
@@ -761,7 +771,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 _resolve_product_gid_and_meta(client, product_id, handle)
             )
         except Exception as e:
-            return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
+            return with_reminder(f"Error: {cap(str(e))}\n{SCOPE_HINT}")
         if not gid:
             return "No product found."
 
@@ -808,7 +818,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             gid, title, col_handle, _kind, rps = _resolve_collection_gid_and_meta(client, handle)
         except Exception as e:
-            return f"Error: {cap(str(e))}\n{SCOPE_HINT}", "", "", []
+            return with_reminder(f"Error: {cap(str(e))}\n{SCOPE_HINT}"), "", "", []
         if not gid:
             return "No collection found.", "", "", []
         return "", gid, f"Collection: {title} (handle: {col_handle}, id: {from_gid(gid)})", rps
@@ -824,14 +834,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             _ensure_channels(client, channel_cache)
         except Exception as e:
-            return f"Error loading sales channels: {cap(str(e))}\n{SCOPE_HINT}"
+            return with_reminder(f"Error loading sales channels: {cap(str(e))}\n{SCOPE_HINT}")
 
         try:
             gid, title, col_handle, kind, rps = _resolve_collection_gid_and_meta(
                 client, handle.strip()
             )
         except Exception as e:
-            return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
+            return with_reminder(f"Error: {cap(str(e))}\n{SCOPE_HINT}")
         if not gid:
             return "No collection found."
 
@@ -868,7 +878,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             targets, failed = _resolve_target_nodes(channel_names or [], publication_ids or [])
         except Exception as e:
-            return f"Error resolving channels: {cap(str(e))}\n{SCOPE_HINT}"
+            return with_reminder(f"Error resolving channels: {cap(str(e))}\n{SCOPE_HINT}")
         if targets is None:
             return "Error: " + "; ".join(f.get("error", "") for f in failed)
 
@@ -986,14 +996,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         try:
             desired_nodes, failed = _resolve_names(client, channel_cache, channel_names)
         except Exception as e:
-            return f"Error resolving channels: {cap(str(e))}\n{SCOPE_HINT}"
+            return with_reminder(f"Error resolving channels: {cap(str(e))}\n{SCOPE_HINT}")
 
         try:
             gid, title, prod_handle, rps, status, assigned_incomplete = (
                 _resolve_product_gid_and_meta(client, product_id, handle)
             )
         except Exception as e:
-            return f"Error: {cap(str(e))}\n{SCOPE_HINT}"
+            return with_reminder(f"Error: {cap(str(e))}\n{SCOPE_HINT}")
         if not gid:
             return "No product found."
 
@@ -1055,7 +1065,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             try:
                 result = ops.publish(client, gid, [n["id"] for n in added_nodes])
             except Exception as e:
-                return f"Error during publish: {cap(str(e))}\n{SCOPE_HINT}"
+                return with_reminder(f"Error during publish: {cap(str(e))}\n{SCOPE_HINT}")
             user_errors = extract_user_errors(result, "publishablePublish")
             # Same all-or-nothing assumption and verified scope as _channel_write.
             if user_errors:
@@ -1070,7 +1080,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 result = ops.unpublish(client, gid, [n["id"] for n in removed_nodes])
             except Exception as e:
                 if not added_nodes:
-                    return f"Error during unpublish: {cap(str(e))}\n{SCOPE_HINT}"
+                    return with_reminder(f"Error during unpublish: {cap(str(e))}\n{SCOPE_HINT}")
                 # A publish leg was attempted (whether it landed or was
                 # rejected), so this can't be a bare Error return — that
                 # would hide the publish outcome and skip log_write. Record
@@ -1122,4 +1132,4 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
         if apply_failed:
             body += "\n  Failed:\n" + _render_failed(apply_failed)
-        return _with_incomplete_note(body, assigned_incomplete)
+        return with_reminder(_with_incomplete_note(body, assigned_incomplete))

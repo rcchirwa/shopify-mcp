@@ -12,6 +12,7 @@ response bodies.
 from typing import Any
 
 from shopify_mcp.tools._scrub import cap, sanitize_control_chars
+from shopify_mcp.tools._untrusted import wrap_reflected
 
 
 def poll_failed_note(error: object) -> str:
@@ -68,18 +69,25 @@ def format_path_user_errors(errors: list[dict[str, Any]]) -> str:
     renders as empty. Returns "" for an empty list — callers guard on the
     error list being non-empty before formatting, so there is no None signal.
 
-    The joined string is scrubbed as a whole, `cap(sanitize_control_chars(…))`
-    (Story 10.75, SEC-24-remaining-sites): Shopify-supplied text is bounded to
-    `REFLECT_MAX_LEN` and its CR/LF escaped, path segments included. Sanitizing
-    first keeps the escapes inside the bound. Every userError route inherits
-    this — `format_user_errors*`, `write_gate`, and the direct callers.
+    The joined string is scrubbed as a whole (Story 10.75, SEC-24-remaining-
+    sites): its CR/LF escaped, path segments included, then bounded. Since
+    Story 10.69 (SEC-04-errors) the report is also fenced as untrusted, as one
+    value: it is Shopify's text, and Shopify echoes input into it.
+    `wrap_reflected` does the bounding, so the fenced string, delimiters
+    included, is at most `REFLECT_MAX_LEN`. Sanitizing first keeps the escapes
+    inside the bound. Every userError route inherits this —
+    `format_user_errors*`, `write_gate`, and the direct callers — and each
+    caller that renders it adds the reminder with `with_reminder()`.
     """
-    return cap(
+    if not errors:
+        return ""
+    return wrap_reflected(
+        "",
         sanitize_control_chars(
             "; ".join(
                 f"{format_field_path(e) or '(no field)'}: {e.get('message', '')}" for e in errors
             )
-        )
+        ),
     )
 
 

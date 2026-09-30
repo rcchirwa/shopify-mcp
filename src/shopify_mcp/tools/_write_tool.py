@@ -17,6 +17,7 @@ from collections.abc import Callable
 
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._response import format_user_errors, with_confirm_hint
+from shopify_mcp.tools._untrusted import with_reminder
 
 _PREVIEW_MARKER = "PREVIEW — "
 _CONFIRMED_MARKER = "CONFIRMED — "
@@ -120,7 +121,8 @@ def write_gate(
     result = execute()
     err = format_user_errors(result, mutation_key, error_key=error_key)
     if err:
-        return err
+        # The report is fenced Shopify text (Story 10.69), so it leads with the reminder.
+        return with_reminder(err)
     if post_execute_check is not None:
         check_err = post_execute_check(result)
         if check_err is not None:

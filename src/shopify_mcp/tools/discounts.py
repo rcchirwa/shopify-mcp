@@ -31,7 +31,7 @@ from shopify_mcp.tools._response import (
     with_confirm_hint,
 )
 from shopify_mcp.tools._scrub import cap, sanitize_control_chars
-from shopify_mcp.tools._untrusted import _NON_CF_DEFAULT_IGNORABLE
+from shopify_mcp.tools._untrusted import _NON_CF_DEFAULT_IGNORABLE, with_reminder
 from shopify_mcp.tools._write_tool import _confirmed_from_preview
 
 # Shopify rejects a 0% or negative discount, and a >100% value would zero out
@@ -378,7 +378,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         result = ops.create_discount_code_basic(client, discount_input)
         errors = extract_user_errors(result, "discountCodeBasicCreate")
         if errors:
-            return f"Error creating discount code: {format_path_user_errors(errors)}"
+            return with_reminder(f"Error creating discount code: {format_path_user_errors(errors)}")
 
         # codeDiscountNode is None when the mutation shape-drifts or userErrors
         # are empty but the server-side commit still failed — guard with `or {}`

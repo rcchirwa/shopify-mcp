@@ -13,6 +13,7 @@ Usage:
 
 import shopify_mcp.tools._write_tool as _wt
 from shopify_mcp.tools import webhooks
+from shopify_mcp.tools._untrusted import INJECTION_REMINDER
 from shopify_mcp.tools.webhooks import CREATE_WEBHOOK, DELETE_WEBHOOK, LIST_WEBHOOKS
 from tests.support import CapturingServer, FakeClient
 
@@ -221,7 +222,7 @@ def test_register_confirmed_surfaces_user_errors(monkeypatch):
         endpoint_url="https://example.com/hook",
         confirm=True,
     )
-    assert out.startswith("Error:")
+    assert out.startswith(INJECTION_REMINDER + "Error:")
     assert "must be https" in out
 
 
@@ -327,7 +328,7 @@ def test_delete_confirmed_surfaces_user_errors():
         ]
     )
     out = tools["delete_webhook"](subscription_id="123", confirm=True)
-    assert out.startswith("Error:")
+    assert out.startswith(INJECTION_REMINDER + "Error:")
     assert "not found" in out
 
 
@@ -590,7 +591,7 @@ def test_register_log_write_not_called_on_user_error(monkeypatch):
         endpoint_url="https://example.com/hook",
         confirm=True,
     )
-    assert out.startswith("Error:")
+    assert out.startswith(INJECTION_REMINDER + "Error:")
     assert logged == []
 
 

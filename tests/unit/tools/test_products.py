@@ -34,7 +34,13 @@ from shopify_mcp.tools.products import (
     UPDATE_PRODUCT_TAGS,
     UPDATE_PRODUCT_VARIANTS_POLICY,
 )
-from tests.support import CapturingServer, FakeClient, collection_products_page, products_page
+from tests.support import (
+    CapturingServer,
+    FakeClient,
+    collection_products_page,
+    fenced,
+    products_page,
+)
 
 
 def _build(responses):
@@ -277,7 +283,9 @@ def test_seo_user_errors_surfaced():
         new_seo_title="x",
         confirm=True,
     )
-    assert out == "Error: product.seo.title: must be a string", out
+    assert out == INJECTION_REMINDER + "Error: " + fenced("product.seo.title: must be a string"), (
+        out
+    )
 
 
 def _between(text, label, next_label=None):
@@ -523,7 +531,9 @@ def test_title_user_errors_surfaced():
         change_handle=True,
         confirm=True,
     )
-    assert out == "Error: product.handle: has already been taken", out
+    assert out == INJECTION_REMINDER + "Error: " + fenced(
+        "product.handle: has already been taken"
+    ), out
 
 
 def test_title_confirmed_shows_confirmed_header_not_done_preview():
@@ -1517,7 +1527,7 @@ def test_tags_user_errors_surfaced():
         mode="replace",
         confirm=True,
     )
-    assert out == "Error: product.tags: invalid tag", out
+    assert out == INJECTION_REMINDER + "Error: " + fenced("product.tags: invalid tag"), out
 
 
 def test_tags_append_preview_shows_added_and_not_removed():
@@ -1646,7 +1656,7 @@ def test_status_user_errors_surfaced():
         new_status="ARCHIVED",
         confirm=True,
     )
-    assert out == "Error: product.status: something broke", out
+    assert out == INJECTION_REMINDER + "Error: " + fenced("product.status: something broke"), out
 
 
 # ---------- update_variant_inventory_policy ----------
@@ -1812,7 +1822,7 @@ def test_policy_user_errors_surfaced():
         new_policy="DENY",
         confirm=True,
     )
-    assert out.startswith("Error:") and "invalid value" in out, out
+    assert out.startswith(INJECTION_REMINDER + "Error:") and "invalid value" in out, out
 
 
 # ---------- No-op passthrough coverage ----------
@@ -1952,7 +1962,7 @@ def test_policy_user_errors_surfaced_with_null_field():
         new_policy="DENY",
         confirm=True,
     )
-    assert out.startswith("Error:"), out
+    assert out.startswith(INJECTION_REMINDER + "Error:"), out
     assert "something went wrong" in out
     assert "(no field)" in out
 
@@ -2588,8 +2598,8 @@ def test_update_description_user_errors_surfaced():
         new_description="<script>",
         confirm=True,
     )
-    assert out.startswith("Error:")
-    assert out == "Error: product.descriptionHtml: invalid html"
+    assert out.startswith(INJECTION_REMINDER + "Error:")
+    assert out == INJECTION_REMINDER + "Error: " + fenced("product.descriptionHtml: invalid html")
 
 
 # ---------- sanitizer (Approach 2, post-sign-off): disallowed HTML stripped before write ----------

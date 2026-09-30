@@ -961,7 +961,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             # `field` is a dotted path list on productVariantsBulkUpdate (e.g.
             # ["variants", "0", "inventoryPolicy"]). Use the shared path formatter.
             msgs = format_path_user_errors(user_errors)
-            return f"Error: {msgs}"
+            return with_reminder(f"Error: {msgs}")
 
         updated = (result.get("productVariantsBulkUpdate") or {}).get("productVariants") or []
         updated_lines = (
