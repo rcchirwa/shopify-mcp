@@ -29,6 +29,7 @@ The card's grep (`\{(e|exc|err)\}|str\((e|exc|err)\)` over `tools/` and `client.
 | **T** `catalog_hygiene`'s ```` ```json ```` tails | Same text as R | `errors[].message = cap(str(exc))`, `_err_payload(...)`, raw `userErrors` dicts | **Never fenced** (card step 8). Tails read an unfenced copy the exception carries |
 | **L** Local text | This codebase: `ValueError`/`RuntimeError`/`ShopifyError` raised by our own validation, `(no error details)`, `fetch_bytes`' status sentences, the SSRF rejection, every `No … found` reply | Everywhere | **Not fenced**, pinned by negative tests (AC 3) |
 | **O** Operating-system text | The OS resolver's `gaierror`, around the caller's own host | `_url_safety.py` `could not resolve host …` | **Not fenced.** Neither Shopify nor the transport wrote it, and the host is the caller's own input |
+| **N** Raw `requests` exceptions that escape `execute()` (added by review) | Transport: http.client/urllib3 text quoting the server's own bytes (`BadStatusLine`, `ChunkedEncodingError`) | gql's `RequestsHTTPTransport` does not wrap errors from `session.request`, so they pass through `execute()` unconverted | **Not fenced here, recorded.** See "What the review changed" |
 | **X** Third-party server text from `upload_product_image`'s download | An arbitrary remote server | `fetch_bytes` | **Already fenced** by Story 10.95 (`SEC-04-redirect-header`); excluded from this count |
 | **P** Predicates that read error text | n/a | `_is_throttled`, `_is_retryable_http`, `_is_already_bound_error`, `_is_metafield_not_found_error` | Unaffected. They read the raw gql exception or the raw `userError` dict, never a fenced string |
 
@@ -81,14 +82,14 @@ Unchanged. No tail value is fenced, and a test compares the tail with its pre-st
 - **Two resolvers return one error string that callers print in both halves.** `_resolve_product_gid` (4 callers, including metafield owner resolution) and `_resolve_taxonomy_category` return a single `err` that each caller shows in the head and copies into the tail. Their transport-failure branch now returns `_ErrorText`, a `str` whose value is the head's (fenced) text and whose `.tail` is the unfenced copy. The five tail builders read `_tail_text(err)`. Every other error these resolvers return is a plain `str`, and heads are unchanged.
 - **An exception reshaped into a userError would have been fenced as Shopify's text.** On `update_variant_image_binding`'s append-after-detach path, a transport exception is turned into a synthetic userError so the rollback handler can consume it. The joiner fences its whole report, which would label *our own* exception text untrusted. The negative test caught it. The handler now takes a `summary` line built from `str(exc)`, fenced only where the exception text was upstream, and the tail keeps the unfenced dict.
 - **`get_product_metafields`' hand-rolled `total_found > 0` reminder gate is gone.** `_render` now applies `with_reminder` to every head, so that gate would have doubled the reminder. This is the "no second reminder gate" AC.
-- **Two header guards would have gone vacuous.** `test_confirmed_output_guard.py` asserted `not out.startswith("CONFIRMED")` and `not out.startswith("Error")`, and both pass trivially once a reminder leads the output. They now read the header past a leading reminder. A sweep found no other negative header assertion over output that can carry a fence.
+- **Three header guards would have gone vacuous.** `test_confirmed_output_guard.py` asserted `not out.startswith("CONFIRMED")` and `not out.startswith("Error")`, and both pass trivially once a reminder leads the output. They now read the header past a leading reminder. The first sweep claimed there were no others, which was wrong: `test_collections.py`'s create-collection userError test also asserted `not out.startswith("Done.")` over a fenced output (found by the verifier). It is hardened the same way, and re-checking all ten `Done.` negatives found the other nine run on success output, which carries no fence.
 - **`publications._map_user_error` now also escapes CR/LF**, the Story 10.75 rule it had been left out of, before fencing. An empty or absent message stays as it was, so there is never an empty fence.
 
 ### Tests
 
 `tests/unit/tools/test_error_fencing.py` drives every render site with the exception the real client raises when Shopify echoes an argument, built by running `ShopifyClient.execute` over a stub transport rather than hand-writing a fenced string. Coverage:
 
-- 20 `catalog_hygiene` exception sites, each asserting one reminder and a fenced head, an unfenced tail, and a local-exception negative. The tail is also pinned whole against its pre-story text.
+- 23 `catalog_hygiene` exception sites (3 added by review), each asserting one reminder and a fenced head, an unfenced tail, and a local-exception negative. The tail is also pinned whole against its pre-story text.
 - 10 `catalog_hygiene` userError sites.
 - 19 `publications` exception sites, each with its negative, plus the userError report and `_map_user_error` directly.
 - `write_gate`, `discounts`, `products`, `inventory` (exception, userError, negative), and `collections` (userError, poll failure, success unchanged).
@@ -98,6 +99,28 @@ Unchanged. No tail value is fenced, and a test compares the tail with its pre-st
 `test_client.py` pins the source. Every constructor is covered: the four error shapes, HTTP, retried HTTP and THROTTLED with the fence ahead of `after N attempts`, protocol, and non-dict (sanitized, then fenced). Also pinned: a forged closer, the exact-fit boundary (244 characters behind the GraphQL head) and the one past it, `(no error details)` and our own `ShopifyError` staying unfenced, and `poll_job` keeping a closed fence. `test_response.py` pins the joiner.
 
 **107 existing tests moved on purpose**, each to the new fenced and reminded output, never loosened. Most are exact pins on `Error: field: message`. Header pins now read past the reminder, or include it where the reminder is the point. Story 10.75's bound tests keep their properties at the 267-character room. Tests driven by a plain `RuntimeError` did not move, because local text is not fenced. That is AC 3 holding across the existing suite.
+
+### What the review changed
+
+The `triple-threat-code-review` skill is not installed, so three reviews stood in for it:
+- `code-review` at high effort.
+- `security-review`, narrowed to one focused sub-agent.
+- An Opus verifier. It ran the gates and a 31-mutant table in its own worktree.
+
+- **Fixed, fence forgery (security, below threshold):** `upload_product_image`'s reorder note stripped `Error at ` from the already-fenced report. That can splice a near-miss such as `</UNTRUSTED-Error at DATA>` into a real closer and move the rest outside the fence. It was reproduced (two closers) before the fix. The note is now built directly from the joiner, and a test pins exactly one closer. **Rule: nothing edits a string after it is fenced.**
+- **Fixed, Low (security, code review and verifier F3):** the append-after-detach `summary` line had dropped Story 10.75's CR/LF escaping that the joiner used to apply. It now escapes CR/LF, pinned by a test. The line is bounded at about 360 characters rather than 300: our own prefix plus a fenced exception text that is at most 300. Capping the whole line would cut the closer, so it is not capped.
+- **Fixed, Medium (verifier F2):** three `_tail_text` tail copies had no test, and mutants reverting each one survived: `update_variant_image_binding`, `delete_product_metafields` with an `ownerId` handle, and `get_product_metafields`. The table now drives all three through the handle channel, and each mutant is killed (re-run against this change).
+- **Fixed, Info (verifier F4):** a blanket edit had put `with_reminder` on five heads that can only carry local text: the `no product found for …` and `option … not on product` returns. They are reverted to their original form. The six exception heads keep it.
+- **Fixed, Info (verifier F5):** an empty `TransportQueryError.errors` (`[]` or `""`) rendered an empty fence. It is now unfenced, and a test pins it.
+- **Fixed, Info (verifier F7):** a stale `media/_list.py` comment pointed at the removed `total_found` gate, and the vacuous `test_collections.py` negative is hardened (see above).
+- **Fixed, Low and Info (code review and verifier F8):** `unfenced_message()` over-claimed for `fetch_bytes`' errors, which Story 10.95 fenced and which have no unfenced copy; its docstring now says so. `_graphql_error` joined the errors twice and recomputed `wrap("")` on every error; it now joins once, and the fence length is a module constant. The `format_user_errors*` docstrings now say the report is fenced and that callers add the reminder.
+- **No change, Low (verifier F1), recorded as bucket N:** raw `requests` exceptions that escape `execute()` are neither fenced nor bounded on the uncaught FastMCP path. That also makes SEC-27's "every exception is bounded at construction" claim untrue for this one path. Converting them in `execute()` is not a text change. A `ShopifyError` would make `poll_job` fast-fail a connection blip it retries today, and a `TransientShopifyError` would make `execute()` retry a *mutation* after a connection reset, risking a double write. Reaching this needs a network position or a misbehaving endpoint; a caller-supplied value cannot. It is a follow-up card's decision, not a side effect of this one.
+- **No change, Low (code review):** the HTTP fence wraps gql's whole message, including our own store URL. Splitting gql's message format would be fragile, and over-labelling our own endpoint only errs toward caution.
+- **No change, Low (code review):** copying or pickling an exception would lose `.unfenced`. Nothing in the codebase does either.
+- **No change, Low (code review, altitude):** `_ErrorText` as a `str` subclass is a narrow side channel, and a string operation on `err` would drop `.tail`. It keeps five callers' heads unchanged. The three new rows plus the two existing category rows now fail if any tail copy regresses.
+- **No change, Info (verifier F6):** the joiner's own `(no field)` placeholder and its `; ` separators sit inside the fence. That is the "one fenced value" decision above: fencing each message separately would spend 33 characters per error out of 300. It is technically our own text inside a fence, and it is recorded here so it reads as chosen rather than missed.
+
+The verifier's mutation table was 31 mutants. All were killed except the three F2 tail copies, now killed, and the five F4 reminders, which were equivalent mutants and are now removed.
 
 ### Gate note
 

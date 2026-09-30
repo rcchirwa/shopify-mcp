@@ -24,7 +24,12 @@ from shopify_mcp.settings import Settings
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._http import default_headers
 from shopify_mcp.tools._log import log_write
-from shopify_mcp.tools._response import extract_user_errors, poll_failed_note, with_confirm_hint
+from shopify_mcp.tools._response import (
+    extract_user_errors,
+    format_path_user_errors,
+    poll_failed_note,
+    with_confirm_hint,
+)
 from shopify_mcp.tools._scrub import cap, sanitize_control_chars
 from shopify_mcp.tools._untrusted import with_reminder, wrap_reflected
 from shopify_mcp.tools.media._common import (
@@ -335,7 +340,11 @@ def _maybe_reorder_new_media(
     rpayload = reorder.get("productReorderMedia", {}) or {}
     rerrs = _extract_media_user_errors(reorder, "productReorderMedia")
     if rerrs:
-        return "\n  " + _fmt_media_user_errors(rerrs, "reorder").replace("Error at ", "")
+        # Built directly, not by stripping "Error at " from the formatted
+        # error: that edit ran on the fenced report and could splice a
+        # near-miss like `</UNTRUSTED-Error at DATA>` into a real closing tag
+        # (Story 10.69). Nothing may edit a string after it is fenced.
+        return "\n  stage=reorder: " + format_path_user_errors(rerrs)
     job = rpayload.get("job") or {}
     job_id = job.get("id")
     initial_done = bool(job.get("done"))

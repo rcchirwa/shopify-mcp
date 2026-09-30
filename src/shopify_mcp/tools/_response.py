@@ -125,6 +125,9 @@ def format_user_errors_joined(
     """
     Join a mutation's userErrors as 'field.path: message; …', or None if absent.
 
+    The report is fenced as untrusted (Story 10.69, see
+    `format_path_user_errors`); a caller that renders it adds the reminder.
+
     Like `format_user_errors`, but without the canonical 'Error: ' prefix.
     Use when the output is embedded inside another sentence or report row
     where the prefix reads awkwardly — e.g. per-variant failure bullets in
@@ -152,8 +155,10 @@ def format_user_errors(
     """
     Extract and format a mutation's userErrors payload.
 
-    Returns an 'Error: field.path: message; …' string if the mutation reported
-    any userErrors, else None. Callers guard with `if err: return err`.
+    Returns an 'Error: <fenced field.path: message; …>' string if the mutation
+    reported any userErrors, else None. The report is fenced as untrusted
+    (Story 10.69), so callers return it through the reminder:
+    `if err: return with_reminder(err)`.
 
     - `error_key` overrides the default `userErrors` slot.
     - `prefix` customizes the leading token (e.g. 'Error creating price rule').

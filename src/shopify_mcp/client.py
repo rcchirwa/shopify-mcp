@@ -157,11 +157,13 @@ class TransientShopifyError(_CarriesUnfenced):
 
 
 def unfenced_message(exc: BaseException) -> str:
-    """``str(exc)`` with any upstream text left unfenced, for a ```json tail.
+    """``str(exc)`` as it read before Story 10.69 fenced it, for a ```json tail.
 
-    Story 10.69: a tail keeps raw values (the SEC-04 head/tail split), so it
-    reads this rather than the fenced message. Any exception the client did
-    not build is its own ``str``.
+    A tail keeps raw values (the SEC-04 head/tail split), so it reads this
+    rather than the fenced message. Any exception the client did not build is
+    its own ``str``. Only the ``execute()`` constructors keep a distinct copy:
+    ``fetch_bytes``' errors were fenced by Story 10.95 before this existed,
+    have no unfenced form, and no tail reads them. Wire one before a tail does.
     """
     if isinstance(exc, _CarriesUnfenced):
         return exc.unfenced
@@ -189,15 +191,15 @@ def _graphql_error(cls: type[_E], head: str, errors: Any) -> _E:
 
     Keeps SEC-27's ``…[truncated]`` marker (see :func:`_bound`), moved outside
     the fence, and present exactly when the joined text did not fit.
-    ``(no error details)`` is ours, so that case is not fenced.
+    ``(no error details)`` is ours, so that case is not fenced, and neither is
+    an empty payload: an empty fence would earn a reminder pointing at nothing.
     """
-    unfenced = head + _format_errors(errors)
-    if errors is None:
-        return cls(unfenced)
-    text = _join_errors(errors)
-    room = REFLECT_MAX_LEN - len(head) - len(wrap(""))
+    text = "" if errors is None else _join_errors(errors)
+    if not text:
+        return cls(head + _format_errors(errors))
+    room = REFLECT_MAX_LEN - len(head) - _FENCE_LEN
     tail = "" if len(text) <= room else _TRUNCATED
-    return cls(wrap_reflected(head, text, tail), unfenced=unfenced)
+    return cls(wrap_reflected(head, text, tail), unfenced=head + _bound(text))
 
 
 def _is_throttled(errors: Any) -> bool:
@@ -795,6 +797,9 @@ def _bound(text: str) -> str:
 
 
 _TRUNCATED = " …[truncated]"
+
+# The delimiters' share of a fenced sentence's REFLECT_MAX_LEN budget.
+_FENCE_LEN = len(wrap(""))
 
 
 def _format_errors(errors: Any) -> str:

@@ -2247,7 +2247,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             # Name the identifier actually queried, not a blank `product_id`,
             # now that the caller may have supplied only `handle`.
             msg = f"Error: no product found for {product_ref!r}."
-            return f"{with_reminder(msg)}\n\n" + _format_vendor_payload(
+            return f"{msg}\n\n" + _format_vendor_payload(
                 product_gid="",
                 vendor=new_vendor,
                 ok=False,
@@ -2436,7 +2436,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             # Name the identifier actually queried, not a blank `product_id`,
             # now that the caller may have supplied only `handle`.
             msg = f"Error: no product found for {product_ref!r}."
-            return f"{with_reminder(msg)}\n\n" + _format_type_payload(
+            return f"{msg}\n\n" + _format_type_payload(
                 product_gid="",
                 product_type=new_type,
                 ok=False,
@@ -2970,13 +2970,15 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 failed = f"productVariantAppendMedia failed ({type(exc).__name__}): "
                 append_exc_errors = [{"message": failed + cap(unfenced_message(exc))}]
                 if detached_variant_gids:
+                    # CR/LF escaped first, as the joiner this replaces did (10.75).
+                    escaped = sanitize_control_chars(str(exc))  # reflect-ok: capped below
                     return _handle_append_failure_after_detach(
                         real_errors=append_exc_errors,
                         detached_variant_gids=detached_variant_gids,
                         routes=routes,
                         product_gid=gid,
                         client=client,
-                        summary=f"(no field): {failed}{cap(str(exc))}",
+                        summary=f"(no field): {failed}{cap(escaped)}",
                     )
                 # Append-only path: nothing was detached, so there is no
                 # rollback to attempt and no destructive state to disclose.
@@ -4040,7 +4042,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             # Name the identifier actually queried, not a blank `product_id`,
             # now that the caller may have supplied only `handle`.
             msg = f"Error: no product found for {product_ref!r}."
-            return f"{with_reminder(msg)}\n\n" + _format_options_payload(
+            return f"{msg}\n\n" + _format_options_payload(
                 product_snapshot=_shape_options_snapshot(None),
                 ok=False,
                 preview=False,
@@ -4073,7 +4075,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"Error: option.id {_cap(normalized['option_id'])!r} is not on "
                 f"product {product_ref!r}."
             )
-            return f"{with_reminder(msg)}\n\n" + _format_options_payload(
+            return f"{msg}\n\n" + _format_options_payload(
                 product_snapshot=_shape_options_snapshot(product),
                 ok=False,
                 preview=False,
@@ -4101,7 +4103,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"Error: option_values_to_update contains IDs not on option "
                 f"{_cap(normalized['option_id'])!r}: {', '.join(unknown_value_ids)}."
             )
-            return f"{with_reminder(msg)}\n\n" + _format_options_payload(
+            return f"{msg}\n\n" + _format_options_payload(
                 product_snapshot=_shape_options_snapshot(product),
                 ok=False,
                 preview=False,

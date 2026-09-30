@@ -1259,7 +1259,9 @@ def test_create_collection_user_errors_surfaced():
     )
     out = tools["create_collection"](title="Grey Casualty", confirm=True)
     assert "Handle is invalid" in out
-    assert not out.startswith("Done.")
+    # Past the reminder a fenced userError leads with (Story 10.69), or this
+    # negative passes vacuously.
+    assert not out.removeprefix(INJECTION_REMINDER).startswith("Done.")
 
 
 def test_create_collection_done_text_reports_the_handle_shopify_returned():

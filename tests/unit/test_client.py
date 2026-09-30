@@ -1807,6 +1807,15 @@ def test_s1069_graphql_error_with_no_details_is_ours_and_not_fenced():
     assert exc.unfenced == str(exc)
 
 
+def test_s1069_empty_errors_are_not_an_empty_fence():
+    """Verifier F5: an empty fence would earn a reminder pointing at nothing.
+    gql raises only on truthy `errors`, so this guards the shape, not a path."""
+    for errors in ([], ""):
+        exc = _s1069_raise(_make_client(exc=TransportQueryError("x", errors=errors)))
+        assert "UNTRUSTED-DATA" not in str(exc), errors
+        assert str(exc) == exc.unfenced == _S1069_GQL + _format_errors(errors), errors
+
+
 def test_s1069_every_error_shape_is_fenced():
     """`TransportQueryError.errors` has four shapes; each joins, then fences."""
     for errors, text in [
