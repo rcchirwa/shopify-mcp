@@ -215,8 +215,9 @@ pip-compile --extra dev --generate-hashes --allow-unsafe --strip-extras -o requi
 Commit the regenerated lockfiles alongside the `pyproject.toml` change. CI's
 `dependency-audit` job (`.github/workflows/test.yml`) runs
 [`pip-audit`](https://github.com/pypa/pip-audit) against **both**
-`requirements.lock` and `requirements-dev.lock` on every PR and fails the
-build if any pinned dependency in either file has a known CVE.
+`requirements.lock` and `requirements-dev.lock` (and its own
+`requirements-audit.lock`, below) on every PR and fails the build if any
+pinned dependency in any of them has a known CVE.
 
 **If the flagged package is a *declared* dependency** (listed in
 `pyproject.toml`), bump its floor past the fixed version there and
@@ -257,8 +258,11 @@ hashes) as a stopgap, documenting why in the same ledger entry.
 `pip-audit` itself is pinned in a third lockfile, `requirements-audit.lock`,
 generated from `requirements-audit.in` — the CI job installs it with
 `--require-hashes` too, so the scanner isn't a floating, unverified install in
-the job that exists to catch exactly that. Regenerate it the same way when its
-version range changes:
+the job that exists to catch exactly that. The job audits this file as well,
+so a CVE in the scanner's own environment (pip-audit, `requests`/`urllib3`,
+or the pinned `pip`) fails the build like any other. Regenerate it the same
+way when its version range changes, or with `--upgrade-package` when a pin in
+it is flagged:
 
 ```bash
 pip-compile --generate-hashes --allow-unsafe --strip-extras -o requirements-audit.lock requirements-audit.in
