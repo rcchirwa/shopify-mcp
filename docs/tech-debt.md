@@ -26,6 +26,10 @@ All three lockfiles: only the named entries moved, headers unchanged (pip-tools 
 
 **Gap left open:** CI's `dependency-audit` job does not audit `requirements-audit.lock`, so a CVE in the scanner's own environment (this round's `pip` one) only surfaces when someone checks by hand.
 
+### Gap closed (added 2026-10-01)
+
+The `dependency-audit` job (`.github/workflows/test.yml`) now has a third step, `pip-audit -r requirements-audit.lock --strict`, so the scanner's own environment fails the build like the project lockfiles do. README's "Regenerating the lockfile" section says so. Stacked on PR #188: before #188's bump, this step fails on `main`'s `pip==26.1.2`. No architecture test pins the job's steps (`tests/architecture/test_ci_workflow_pins.py` checks only `uses:` lines), so nothing offline proves the step exists. CI on the PR is the only check that it runs.
+
 ## 2026-09-30 — PR #187 (stale transitive `pyjwt` pin, dependency-audit gate repair)
 
 No Trello card and no SEC id: this came from the `dependency-audit` gate going red, not from a security scan, so it is logged under the package name. **Not an exploitable hole in this codebase** — the same shape as SEC-23 (Story 10.57, 2026-08-11 below): a CI-gate repair and lockfile-hygiene fix. Merged as `40b0b88`.
