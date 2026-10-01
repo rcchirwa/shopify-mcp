@@ -12,6 +12,7 @@ response bodies.
 from typing import Any
 
 from shopify_mcp.tools._scrub import cap, sanitize_control_chars
+from shopify_mcp.tools._untrusted import wrap_reflected
 
 
 def poll_failed_note(error: object) -> str:
@@ -68,18 +69,25 @@ def format_path_user_errors(errors: list[dict[str, Any]]) -> str:
     renders as empty. Returns "" for an empty list — callers guard on the
     error list being non-empty before formatting, so there is no None signal.
 
-    The joined string is scrubbed as a whole, `cap(sanitize_control_chars(…))`
-    (Story 10.75, SEC-24-remaining-sites): Shopify-supplied text is bounded to
-    `REFLECT_MAX_LEN` and its CR/LF escaped, path segments included. Sanitizing
-    first keeps the escapes inside the bound. Every userError route inherits
-    this — `format_user_errors*`, `write_gate`, and the direct callers.
+    The joined string is scrubbed as a whole (Story 10.75, SEC-24-remaining-
+    sites): its CR/LF escaped, path segments included, then bounded. Since
+    Story 10.69 (SEC-04-errors) the report is also fenced as untrusted, as one
+    value: it is Shopify's text, and Shopify echoes input into it.
+    `wrap_reflected` does the bounding, so the fenced string, delimiters
+    included, is at most `REFLECT_MAX_LEN`. Sanitizing first keeps the escapes
+    inside the bound. Every userError route inherits this —
+    `format_user_errors*`, `write_gate`, and the direct callers — and each
+    caller that renders it adds the reminder with `with_reminder()`.
     """
-    return cap(
+    if not errors:
+        return ""
+    return wrap_reflected(
+        "",
         sanitize_control_chars(
             "; ".join(
                 f"{format_field_path(e) or '(no field)'}: {e.get('message', '')}" for e in errors
             )
-        )
+        ),
     )
 
 
@@ -117,6 +125,9 @@ def format_user_errors_joined(
     """
     Join a mutation's userErrors as 'field.path: message; …', or None if absent.
 
+    The report is fenced as untrusted (Story 10.69, see
+    `format_path_user_errors`); a caller that renders it adds the reminder.
+
     Like `format_user_errors`, but without the canonical 'Error: ' prefix.
     Use when the output is embedded inside another sentence or report row
     where the prefix reads awkwardly — e.g. per-variant failure bullets in
@@ -144,8 +155,10 @@ def format_user_errors(
     """
     Extract and format a mutation's userErrors payload.
 
-    Returns an 'Error: field.path: message; …' string if the mutation reported
-    any userErrors, else None. Callers guard with `if err: return err`.
+    Returns an 'Error: <fenced field.path: message; …>' string if the mutation
+    reported any userErrors, else None. The report is fenced as untrusted
+    (Story 10.69), so callers return it through the reminder:
+    `if err: return with_reminder(err)`.
 
     - `error_key` overrides the default `userErrors` slot.
     - `prefix` customizes the leading token (e.g. 'Error creating price rule').

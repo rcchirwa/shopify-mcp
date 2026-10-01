@@ -103,7 +103,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         payload = result.get("productReorderMedia", {}) or {}
         media_errors = _extract_media_user_errors(result, "productReorderMedia")
         if media_errors:
-            return _fmt_media_user_errors(media_errors, "reorder")
+            return with_reminder(_fmt_media_user_errors(media_errors, "reorder"))
 
         job = payload.get("job") or {}
         job_id = job.get("id")

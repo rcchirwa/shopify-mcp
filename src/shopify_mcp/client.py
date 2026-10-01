@@ -30,15 +30,15 @@ from shopify_mcp.shopify._cache import ShopifyMetadataCache
 # leaf modules (tools/_http, tools/_url_safety import nothing from here), so
 # this does not create an import cycle.
 from shopify_mcp.tools._http import default_headers
+from shopify_mcp.tools._scrub import REFLECT_MAX_LEN, sanitize_control_chars
 
 # Aliased: `_backoff_delay` takes a float parameter named `cap`, so importing
 # the bound-text helper under its bare name would shadow it there.
 from shopify_mcp.tools._scrub import cap as cap_text
-from shopify_mcp.tools._scrub import sanitize_control_chars
 
 # Also a leaf (imports only the standard library and tools/_scrub): fences the
-# third-party text fetch_bytes reflects.
-from shopify_mcp.tools._untrusted import wrap_reflected
+# third-party text fetch_bytes reflects, and Shopify's own error text (10.69).
+from shopify_mcp.tools._untrusted import wrap, wrap_reflected
 from shopify_mcp.tools._url_safety import _reject_if_private_host
 
 # Return type of the callable handed to ShopifyClient._with_retry.
@@ -124,7 +124,23 @@ def _mask_token(token: str) -> str:
     return f"{prefix}…{token[-4:]}"
 
 
-class ShopifyError(RuntimeError):
+class _CarriesUnfenced(RuntimeError):
+    """Base of the client's two error families: keeps an unfenced copy of the message.
+
+    Story 10.69 (SEC-04-errors). Text Shopify or the transport supplied is
+    fenced as untrusted in the message, which is right for a head the model
+    reads and wrong for a ```json tail a machine parses. ``unfenced`` is the
+    message as it read before the fence existed; :func:`unfenced_message`
+    returns it. Text this codebase writes is never fenced, so for it the two
+    are equal.
+    """
+
+    def __init__(self, message: str, *, unfenced: str | None = None) -> None:
+        super().__init__(message)
+        self.unfenced = message if unfenced is None else unfenced
+
+
+class ShopifyError(_CarriesUnfenced):
     """Permanent Shopify failure — do not retry (4xx other than 429,
     schema/permission errors, malformed mutations)."""
 
@@ -135,9 +151,55 @@ class ShopifyProtocolError(ShopifyError):
     caller."""
 
 
-class TransientShopifyError(RuntimeError):
+class TransientShopifyError(_CarriesUnfenced):
     """Transient Shopify failure — safe to retry (THROTTLED, 429, 5xx).
     Surfaces to callers only after retries are exhausted."""
+
+
+def unfenced_message(exc: BaseException) -> str:
+    """``str(exc)`` as it read before Story 10.69 fenced it, for a ```json tail.
+
+    A tail keeps raw values (the SEC-04 head/tail split), so it reads this
+    rather than the fenced message. Any exception the client did not build is
+    its own ``str``. Only the ``execute()`` constructors keep a distinct copy:
+    ``fetch_bytes``' errors were fenced by Story 10.95 before this existed,
+    have no unfenced form, and no tail reads them. Wire one before a tail does.
+    """
+    if isinstance(exc, _CarriesUnfenced):
+        return exc.unfenced
+    return str(exc)  # reflect-ok: every caller caps
+
+
+_E = TypeVar("_E", bound=_CarriesUnfenced)
+
+
+def _upstream_error(cls: type[_E], head: str, text: str) -> _E:
+    """``cls`` for our ``head`` plus text Shopify or the transport supplied.
+
+    Story 10.69 (SEC-04-errors). Shopify echoes caller-supplied variable values
+    verbatim in its errors (live probe, 2026-09-30), and a transport error can
+    carry a raw response body, so ``text`` is fenced; ``head`` is ours and stays
+    outside. ``wrap_reflected`` sizes the whole sentence to ``REFLECT_MAX_LEN``
+    (the cap applies inside the fence), so every later ``cap(str(e))`` is a
+    no-op and cannot cut a closing tag. ``unfenced`` keeps the pre-10.69 text.
+    """
+    return cls(wrap_reflected(head, text), unfenced=head + cap_text(text))
+
+
+def _graphql_error(cls: type[_E], head: str, errors: Any) -> _E:
+    """``cls`` for a ``TransportQueryError``'s errors, fenced unless there are none.
+
+    Keeps SEC-27's ``…[truncated]`` marker (see :func:`_bound`), moved outside
+    the fence, and present exactly when the joined text did not fit.
+    ``(no error details)`` is ours, so that case is not fenced, and neither is
+    an empty payload: an empty fence would earn a reminder pointing at nothing.
+    """
+    text = "" if errors is None else _join_errors(errors)
+    if not text:
+        return cls(head + _format_errors(errors))
+    room = REFLECT_MAX_LEN - len(head) - _FENCE_LEN
+    tail = "" if len(text) <= room else _TRUNCATED
+    return cls(wrap_reflected(head, text, tail), unfenced=head + _bound(text))
 
 
 def _is_throttled(errors: Any) -> bool:
@@ -275,8 +337,11 @@ class ShopifyClient:
                     logger.warning("retryable %s attempt=%d sleep=%.2fs", label, attempt, delay)
                     time.sleep(delay)
                     continue
+                # The suffix follows the fence, so a later cap at
+                # REFLECT_MAX_LEN drops the suffix, never the closing tag.
                 raise TransientShopifyError(
-                    f"{cap_text(str(e))} after {attempt + 1} attempts"
+                    f"{cap_text(str(e))} after {attempt + 1} attempts",
+                    unfenced=f"{cap_text(e.unfenced)} after {attempt + 1} attempts",
                 ) from e
         raise TransientShopifyError(f"{label} retry loop exhausted")  # pragma: no cover
 
@@ -344,16 +409,22 @@ class ShopifyClient:
         def _attempt() -> dict:
             try:
                 result = self._client.execute(gql_query, variable_values=variables or {})
+            # Every upstream text below is fenced where the message is built
+            # (Story 10.69, SEC-04-errors); see _upstream_error.
             except TransportQueryError as e:
                 if _is_throttled(e.errors):
-                    raise TransientShopifyError(
-                        f"Shopify GraphQL THROTTLED: {_format_errors(e.errors)}"
+                    raise _graphql_error(
+                        TransientShopifyError, "Shopify GraphQL THROTTLED: ", e.errors
                     ) from e
-                raise ShopifyError(f"Shopify GraphQL error: {_format_errors(e.errors)}") from e
+                raise _graphql_error(ShopifyError, "Shopify GraphQL error: ", e.errors) from e
             except TransportServerError as e:
                 if _is_retryable_http(e):
-                    raise TransientShopifyError(f"Shopify HTTP error: {cap_text(str(e))}") from e
-                raise ShopifyError(f"Shopify HTTP error: {cap_text(str(e))}") from e
+                    raise _upstream_error(
+                        TransientShopifyError,
+                        "Shopify HTTP error: ",
+                        str(e),  # reflect-ok: bounded in _upstream_error
+                    ) from e
+                raise _upstream_error(ShopifyError, "Shopify HTTP error: ", str(e)) from e
             except TransportProtocolError as e:
                 # gql raises this when Shopify returns something that is not a
                 # GraphQL result — an HTML error page, a WAF interstitial, a
@@ -362,7 +433,11 @@ class ShopifyClient:
                 # so it was the single largest remaining path for unbounded
                 # upstream text to reach model context. Bounded here, at the
                 # only place that sees it. (Story 10.67 / SEC-27, round 2.)
-                raise ShopifyProtocolError(f"Shopify protocol error: {cap_text(str(e))}") from e
+                raise _upstream_error(
+                    ShopifyProtocolError,
+                    "Shopify protocol error: ",
+                    str(e),  # reflect-ok: bounded in _upstream_error
+                ) from e
 
             if not isinstance(result, dict):
                 # Surface the real payload (scope error text, HTML error page, etc.)
@@ -376,9 +451,10 @@ class ShopifyClient:
                 # preview was still an unscrubbed slice with no control-character
                 # stripping, so a CR/LF-bearing upstream payload could forge
                 # extra lines wherever this exception message is logged.
-                preview = cap_text(sanitize_control_chars(str(result)))
-                raise ShopifyProtocolError(
-                    f"Shopify returned non-dict response (type={type(result).__name__}): {preview}"
+                raise _upstream_error(
+                    ShopifyProtocolError,
+                    f"Shopify returned non-dict response (type={type(result).__name__}): ",
+                    sanitize_control_chars(str(result)),
                 )
             return result
 
@@ -717,22 +793,24 @@ def _bound(text: str) -> str:
     this adds a suffix, it does not introduce a second slicing implementation.
     """
     bounded = cap_text(text)
-    return bounded if bounded == text else f"{bounded} …[truncated]"
+    return bounded if bounded == text else f"{bounded}{_TRUNCATED}"
+
+
+_TRUNCATED = " …[truncated]"
+
+# The delimiters' share of a fenced sentence's REFLECT_MAX_LEN budget.
+_FENCE_LEN = len(wrap(""))
 
 
 def _format_errors(errors: Any) -> str:
-    # `TransportQueryError.errors` is typed Optional[List[Any]] in gql 4.0 — in
-    # practice it can be a list of dicts, a list of GraphQLError objects, a
-    # list of strings, a single string, or None. Earlier versions of this
-    # handler assumed list-of-dicts and crashed with
-    # `'str' object has no attribute 'get'` on the other shapes, masking the
-    # real Shopify error from callers.
+    """The unfenced, bounded text of a ``TransportQueryError``'s errors.
+
+    Since Story 10.69 the message a ShopifyError carries is built by
+    :func:`_graphql_error`, which fences this same text; this form is its
+    ``unfenced`` copy.
+    """
     if errors is None:
         return "(no error details)"
-    if isinstance(errors, str):
-        return _bound(errors)
-    if not isinstance(errors, list):
-        return _bound(str(errors))
     # Story 10.67 (SEC-27) bounds the join. This is the constructor for the
     # message every ShopifyError carries, and it concatenates arbitrary upstream
     # text — so it is the actual unbounded source, not the call sites that echo
@@ -740,7 +818,21 @@ def _format_errors(errors: Any) -> str:
     # `tools/collections.py` did, via poll_job) cannot leak an unbounded body.
     # The call sites still cap; this is the backstop that makes enumerating
     # them unnecessary for safety.
-    return _bound("; ".join(_format_one_error(err) for err in errors))
+    return _bound(_join_errors(errors))
+
+
+def _join_errors(errors: Any) -> str:
+    # `TransportQueryError.errors` is typed Optional[List[Any]] in gql 4.0 — in
+    # practice it can be a list of dicts, a list of GraphQLError objects, a
+    # list of strings, a single string, or None. Earlier versions of this
+    # handler assumed list-of-dicts and crashed with
+    # `'str' object has no attribute 'get'` on the other shapes, masking the
+    # real Shopify error from callers. Unbounded: both callers bound it.
+    if isinstance(errors, str):
+        return errors
+    if not isinstance(errors, list):
+        return str(errors)  # reflect-ok: bounded by both callers
+    return "; ".join(_format_one_error(err) for err in errors)
 
 
 def _format_one_error(err: Any) -> str:

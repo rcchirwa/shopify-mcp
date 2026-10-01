@@ -36,7 +36,7 @@ from shopify_mcp.tools.media._graphql import (
 )
 from shopify_mcp.tools.media._list import _render_media_list
 from shopify_mcp.tools.media._upload import _download_image, _format_bytes, _upload_bytes_to_target
-from tests.support import CapturingServer, FakeClient
+from tests.support import CapturingServer, FakeClient, fenced
 
 PRODUCT_GID = "gid://shopify/Product/123"
 MEDIA_A = "gid://shopify/MediaImage/111"
@@ -654,7 +654,7 @@ def test_upload_attach_user_errors_labelled_attach_stage():
             source="https://cdn.example.com/hero.jpg",
             confirm=True,
         )
-    assert out.startswith("Error at stage=attach:"), out
+    assert out.startswith(INJECTION_REMINDER + "Error at stage=attach:"), out
     assert "unsupported format" in out
 
 
@@ -680,7 +680,9 @@ def test_upload_attach_list_field_renders_dotted_path():
             source="https://cdn.example.com/hero.jpg",
             confirm=True,
         )
-    assert out == "Error at stage=attach: media.0.originalSource: is invalid"
+    assert out == INJECTION_REMINDER + "Error at stage=attach: " + fenced(
+        "media.0.originalSource: is invalid"
+    )
 
 
 def test_upload_staged_target_put_failure_labels_stage_upload():
@@ -894,7 +896,7 @@ def test_reorder_surfaces_media_user_errors():
         moves=[{"id": MEDIA_B, "newPosition": 1}],
         confirm=True,
     )
-    assert out.startswith("Error at stage=reorder:"), out
+    assert out.startswith(INJECTION_REMINDER + "Error at stage=reorder:"), out
     assert "bad position" in out
 
 
@@ -920,7 +922,9 @@ def test_reorder_surfaces_media_user_errors_list_field():
         moves=[{"id": MEDIA_B, "newPosition": 1}],
         confirm=True,
     )
-    assert out == "Error at stage=reorder: moves.0.newPosition: bad position"
+    assert out == INJECTION_REMINDER + "Error at stage=reorder: " + fenced(
+        "moves.0.newPosition: bad position"
+    )
 
 
 # ---------- update_product_media ----------
@@ -1028,7 +1032,7 @@ def test_update_media_user_errors_surfaced():
         alt="x" * 500,
         confirm=True,
     )
-    assert out.startswith("Error at stage=update:"), out
+    assert out.startswith(INJECTION_REMINDER + "Error at stage=update:"), out
     assert "too long" in out
 
 
@@ -1052,7 +1056,7 @@ def test_update_media_user_errors_list_field_renders_dotted_path():
         alt="x" * 500,
         confirm=True,
     )
-    assert out == "Error at stage=update: media.0.alt: too long"
+    assert out == INJECTION_REMINDER + "Error at stage=update: " + fenced("media.0.alt: too long")
 
 
 # ---------- delete_product_media ----------
@@ -1151,7 +1155,7 @@ def test_delete_media_user_errors_surfaced():
         media_ids=[MEDIA_A],
         confirm=True,
     )
-    assert out.startswith("Error at stage=delete:"), out
+    assert out.startswith(INJECTION_REMINDER + "Error at stage=delete:"), out
     assert "locked" in out
 
 
@@ -1175,7 +1179,7 @@ def test_delete_media_user_errors_list_field_renders_dotted_path():
         media_ids=[MEDIA_A],
         confirm=True,
     )
-    assert out == "Error at stage=delete: mediaIds.0: locked"
+    assert out == INJECTION_REMINDER + "Error at stage=delete: " + fenced("mediaIds.0: locked")
 
 
 def test_delete_media_dedupes_input_ids():
@@ -1551,31 +1555,31 @@ def test_fmt_media_user_errors_list_field_renders_dotted_path():
     the raw Python list repr — past the 'Error at stage=<stage>:' prefix."""
     errors = [{"field": ["media", "0", "originalSource"], "message": "is invalid"}]
     out = _fmt_media_user_errors(errors, "attach")
-    assert out == "Error at stage=attach: media.0.originalSource: is invalid"
+    assert out == "Error at stage=attach: " + fenced("media.0.originalSource: is invalid")
 
 
 def test_fmt_media_user_errors_none_field_renders_no_field_placeholder():
     errors = [{"field": None, "message": "boom"}]
     out = _fmt_media_user_errors(errors, "delete")
-    assert out == "Error at stage=delete: (no field): boom"
+    assert out == "Error at stage=delete: " + fenced("(no field): boom")
 
 
 def test_fmt_media_user_errors_missing_field_key_renders_no_field_placeholder():
     errors = [{"message": "boom"}]
     out = _fmt_media_user_errors(errors, "update")
-    assert out == "Error at stage=update: (no field): boom"
+    assert out == "Error at stage=update: " + fenced("(no field): boom")
 
 
 def test_fmt_media_user_errors_empty_list_field_renders_no_field_placeholder():
     errors = [{"field": [], "message": "boom"}]
     out = _fmt_media_user_errors(errors, "reorder")
-    assert out == "Error at stage=reorder: (no field): boom"
+    assert out == "Error at stage=reorder: " + fenced("(no field): boom")
 
 
 def test_fmt_media_user_errors_list_field_non_string_segment_coerced():
     errors = [{"field": ["media", 0, "alt"], "message": "too long"}]
     out = _fmt_media_user_errors(errors, "update")
-    assert out == "Error at stage=update: media.0.alt: too long"
+    assert out == "Error at stage=update: " + fenced("media.0.alt: too long")
 
 
 def test_fmt_media_user_errors_multiple_errors_joined():
@@ -1585,7 +1589,8 @@ def test_fmt_media_user_errors_multiple_errors_joined():
     ]
     out = _fmt_media_user_errors(errors, "attach")
     assert out == (
-        "Error at stage=attach: media.0.originalSource: is invalid; media.1.alt: too long"
+        "Error at stage=attach: "
+        + fenced("media.0.originalSource: is invalid; media.1.alt: too long")
     )
 
 
@@ -1981,7 +1986,7 @@ def test_upload_staged_uploads_user_errors_surfaced():
         source="https://cdn.example.com/a.jpg",
         confirm=True,
     )
-    assert out.startswith("Error at stage=stage_upload:")
+    assert out.startswith(INJECTION_REMINDER + "Error at stage=stage_upload:")
     assert "invalid mimeType" in out
 
 
@@ -2006,7 +2011,9 @@ def test_upload_staged_uploads_user_errors_list_field_renders_dotted_path():
         source="https://cdn.example.com/a.jpg",
         confirm=True,
     )
-    assert out == "Error at stage=stage_upload: input.0.mimeType: invalid mimeType"
+    assert out == INJECTION_REMINDER + "Error at stage=stage_upload: " + fenced(
+        "input.0.mimeType: invalid mimeType"
+    )
 
 
 def test_upload_staged_uploads_empty_targets_reported():
@@ -2139,7 +2146,7 @@ def test_upload_reorder_media_user_errors_append_note():
             position=1,
             confirm=True,
         )
-    assert out.startswith("CONFIRMED —")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED —")
     assert "stage=reorder" in out
     assert "bad position" in out
 
@@ -2179,9 +2186,11 @@ def test_upload_reorder_media_user_errors_list_field_append_note():
             position=1,
             confirm=True,
         )
-    assert out.startswith("CONFIRMED —")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED —")
     reorder_note = out[out.index("\n  stage=reorder") :]
-    assert reorder_note.startswith("\n  stage=reorder: moves.0.newPosition: bad position")
+    assert reorder_note.startswith(
+        "\n  stage=reorder: " + fenced("moves.0.newPosition: bad position")
+    )
     assert "[" not in reorder_note
     assert "'" not in reorder_note
 

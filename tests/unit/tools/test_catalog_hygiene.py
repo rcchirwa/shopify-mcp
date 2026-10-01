@@ -42,7 +42,7 @@ from shopify_mcp.tools.catalog_hygiene import (
     UPDATE_PRODUCT_VENDOR,
     VENDOR_MAX_LEN,
 )
-from tests.support import CapturingServer, FakeClient
+from tests.support import CapturingServer, FakeClient, fenced
 
 
 @pytest.fixture(autouse=True)
@@ -928,7 +928,9 @@ def test_user_errors_dotted_path_formatting():
         confirm=True,
     )
     assert out.startswith(
-        "Error: variants.0.compareAtPrice: Compare at price must be higher than price"
+        INJECTION_REMINDER
+        + "Error: "
+        + fenced("variants.0.compareAtPrice: Compare at price must be higher than price")
     )
 
 
@@ -950,7 +952,7 @@ def test_user_errors_missing_field_renders_no_field_token():
         variants=[{"variantId": "201", "price": "49.99"}],
         confirm=True,
     )
-    assert out.startswith("Error: (no field): Generic failure")
+    assert out.startswith(INJECTION_REMINDER + "Error: " + fenced("(no field): Generic failure"))
 
 
 # Caller-supplied numeric/GID not on product ---------------------------------
@@ -2197,7 +2199,9 @@ def test_update_product_category_user_errors_render_list_field_as_dotted_path():
     )
     head = out.split("\n\n```json\n")[0]
     assert head == (
-        "Error — update_product_category\n  Error: product.category: invalid category for product"
+        INJECTION_REMINDER
+        + "Error — update_product_category\n  Error: "
+        + fenced("product.category: invalid category for product")
     )
 
 
@@ -2872,8 +2876,9 @@ def test_update_product_vendor_user_errors_render_list_field_as_dotted_path():
     )
     out = tools["update_product_vendor"](product_id="123", vendor="Vanish", confirm=True)
     assert fc.calls[1][0] == UPDATE_PRODUCT_VENDOR
-    assert out.split("\n")[0] == (
-        "Error: productUpdate userErrors: product.vendor: Vendor is too long; (no field): boom"
+    assert out.removeprefix(INJECTION_REMINDER).split("\n")[0] == (
+        "Error: productUpdate userErrors: "
+        + fenced("product.vendor: Vendor is too long; (no field): boom")
     )
 
 
@@ -3384,9 +3389,9 @@ def test_update_product_type_user_errors_render_list_field_as_dotted_path():
     )
     out = tools["update_product_type"](product_id="123", product_type="Crewneck", confirm=True)
     assert fc.calls[1][0] == UPDATE_PRODUCT_TYPE
-    assert out.split("\n")[0] == (
-        "Error: productUpdate userErrors: product.productType: productType is too long; "
-        "(no field): boom"
+    assert out.removeprefix(INJECTION_REMINDER).split("\n")[0] == (
+        "Error: productUpdate userErrors: "
+        + fenced("product.productType: productType is too long; (no field): boom")
     )
 
 
@@ -4437,7 +4442,7 @@ def test_s96_user_errors_other_returned_as_error():
         variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
         confirm=True,
     )
-    assert out.startswith("Error:")
+    assert out.startswith(INJECTION_REMINDER + "Error:")
     assert "Media is not ready" in out
     # Human prefix uses dotted-path field formatting.
     assert "variantMedia:" in out.split("```json")[0]
@@ -4460,7 +4465,7 @@ def test_s96_user_errors_mixed_real_and_already_bound_returns_real_only():
         variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]}],
         confirm=True,
     )
-    assert out.startswith("Error:")
+    assert out.startswith(INJECTION_REMINDER + "Error:")
     assert "not ready" in out
     assert "already associated" not in out
 
@@ -5225,7 +5230,7 @@ def test_s99_detach_ok_append_fails_rollback_succeeds():
         variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]}],
         confirm=True,
     )
-    assert out.startswith("Error:"), out
+    assert out.startswith(INJECTION_REMINDER + "Error:"), out
     assert len(fc.calls) == 4
     tail = _parse_tail(out)
     assert tail["ok"] is False
@@ -5251,7 +5256,7 @@ def test_s99_detach_ok_append_fails_rollback_also_fails():
         variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]}],
         confirm=True,
     )
-    assert out.startswith("Error:"), out
+    assert out.startswith(INJECTION_REMINDER + "Error:"), out
     assert len(fc.calls) == 4
     tail = _parse_tail(out)
     assert tail["ok"] is False
@@ -5276,7 +5281,7 @@ def test_s99_detach_ok_append_fails_rollback_raises_exception():
         variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]}],
         confirm=True,
     )
-    assert out.startswith("Error:"), out
+    assert out.startswith(INJECTION_REMINDER + "Error:"), out
     tail = _parse_tail(out)
     assert tail["ok"] is False
     assert tail["rollbackOk"] is False
@@ -5324,7 +5329,7 @@ def test_s99_detach_userErrors_halts_before_append():
         variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]}],
         confirm=True,
     )
-    assert out.startswith("Error:"), out
+    assert out.startswith(INJECTION_REMINDER + "Error:"), out
     assert len(fc.calls) == 2
     assert fc.calls[1][0] == PRODUCT_VARIANT_DETACH_MEDIA
     tail = _parse_tail(out)
@@ -6497,7 +6502,7 @@ def test_s95_confirm_user_errors_preserves_code():
         option_values_to_update=[{"id": _OV_M, "name": "L-CRM"}],
         confirm=True,
     )
-    assert out.startswith("Error: productOptionUpdate userErrors")
+    assert out.startswith(INJECTION_REMINDER + "Error: productOptionUpdate userErrors")
     assert "DUPLICATE_OPTION_VALUE_NAME" in out  # code surfaced in the head
     assert "optionValuesToUpdate.0.name" in out  # dotted field path
     tail = _parse_tail(out)
@@ -7202,7 +7207,7 @@ def test_s910_errors_keyed_by_entry_index():
         ],
         confirm=True,
     )
-    assert out.startswith("Error: metafieldsDelete userErrors")
+    assert out.startswith(INJECTION_REMINDER + "Error: metafieldsDelete userErrors")
     assert len(fc.calls) == 2  # 1 batched resolve + 1 mutation.
     tail = _parse_tail(out)
     assert tail["ok"] is False

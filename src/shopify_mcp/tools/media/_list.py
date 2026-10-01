@@ -47,8 +47,8 @@ def _render_media_list(
     body = "\n".join(lines)
     # Prefix the injection reminder only when at least one node actually has a
     # non-empty alt (so a wrapped <UNTRUSTED-DATA> value is present). Node
-    # presence alone doesn't imply alt presence — this mirrors catalog_hygiene's
-    # `total_found > 0` gate so the reminder never references an absent tag.
+    # presence alone doesn't imply alt presence — the same rule `with_reminder`
+    # derives from the body, so the reminder never references an absent tag.
     if any(n.get("alt") for n in nodes):
         body = INJECTION_REMINDER + body
     return body

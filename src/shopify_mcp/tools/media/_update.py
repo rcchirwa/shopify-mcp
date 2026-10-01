@@ -75,7 +75,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
         errors = extract_user_errors(result, "productUpdateMedia", error_key="mediaUserErrors")
         if errors:
-            return _fmt_media_user_errors(errors, "update")
+            return with_reminder(_fmt_media_user_errors(errors, "update"))
 
         log_write(
             "update_product_media",

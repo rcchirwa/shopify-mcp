@@ -24,7 +24,12 @@ from shopify_mcp.settings import Settings
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._http import default_headers
 from shopify_mcp.tools._log import log_write
-from shopify_mcp.tools._response import extract_user_errors, poll_failed_note, with_confirm_hint
+from shopify_mcp.tools._response import (
+    extract_user_errors,
+    format_path_user_errors,
+    poll_failed_note,
+    with_confirm_hint,
+)
 from shopify_mcp.tools._scrub import cap, sanitize_control_chars
 from shopify_mcp.tools._untrusted import with_reminder, wrap_reflected
 from shopify_mcp.tools.media._common import (
@@ -335,7 +340,11 @@ def _maybe_reorder_new_media(
     rpayload = reorder.get("productReorderMedia", {}) or {}
     rerrs = _extract_media_user_errors(reorder, "productReorderMedia")
     if rerrs:
-        return "\n  " + _fmt_media_user_errors(rerrs, "reorder").replace("Error at ", "")
+        # Built directly, not by stripping "Error at " from the formatted
+        # error: that edit ran on the fenced report and could splice a
+        # near-miss like `</UNTRUSTED-Error at DATA>` into a real closing tag
+        # (Story 10.69). Nothing may edit a string after it is fenced.
+        return "\n  stage=reorder: " + format_path_user_errors(rerrs)
     job = rpayload.get("job") or {}
     job_id = job.get("id")
     initial_done = bool(job.get("done"))
@@ -403,7 +412,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 page_size=_MEDIA_PAGE_CAP,
             )
         except Exception as e:
-            return f"Error at stage=read: {cap(str(e))}"
+            return with_reminder(f"Error at stage=read: {cap(str(e))}")
         product = first_response.get("product")
         if not product:
             return f"No product found with id {cap(sanitize_control_chars(product_id))}."
@@ -448,7 +457,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # Stage 2: create the staged upload target.
         target, err = _stage_upload(client, filename, mime_type, len(image_bytes))
         if err:
-            return err
+            # Shopify's text in `err` is fenced at its source (Story 10.69).
+            return with_reminder(err)
         assert target is not None  # _stage_upload: (None, err) xor (target, None)
 
         # Stage 3: PUT bytes with parameters as headers.
@@ -462,7 +472,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         assert resource_url, "stagedUploadsCreate success implies resourceUrl is set"
         new_media, err = _attach_media(client, gid, alt, resource_url)
         if err:
-            return err
+            return with_reminder(err)
         assert new_media is not None
         new_media_id = new_media.get("id")
         assert new_media_id, "productCreateMedia success implies media id is set"
@@ -519,7 +529,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"{_MEDIA_PROCESSING_POLL_TIMEOUT_S}s — Shopify will finish "
                 f"server-side; storefront renders PROCESSING media in most cases."
             )
-        return (
+        # `reorder_note` can carry fenced Shopify text (Story 10.69).
+        return with_reminder(
             f"CONFIRMED — Upload product image\n"
             f"  Product ID : {product_id}\n"
             f"  Media ID   : {new_media_id}\n"

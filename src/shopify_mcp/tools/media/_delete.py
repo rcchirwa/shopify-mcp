@@ -6,6 +6,7 @@ from shopify_mcp.client import ShopifyClient
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._response import extract_user_errors, with_confirm_hint
 from shopify_mcp.tools._scrub import cap, sanitize_control_chars
+from shopify_mcp.tools._untrusted import with_reminder
 from shopify_mcp.tools.media._common import _as_product_gid, _fmt_media_user_errors
 from shopify_mcp.tools.media._constants import _MEDIA_PAGE_CAP, MEDIA_IDS_MAX
 from shopify_mcp.tools.media._graphql import GET_PRODUCT_MEDIA, PRODUCT_DELETE_MEDIA
@@ -102,7 +103,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         payload = result.get("productDeleteMedia", {}) or {}
         errors = extract_user_errors(result, "productDeleteMedia", error_key="mediaUserErrors")
         if errors:
-            return _fmt_media_user_errors(errors, "delete")
+            return with_reminder(_fmt_media_user_errors(errors, "delete"))
         deleted = payload.get("deletedMediaIds") or []
 
         log_write(

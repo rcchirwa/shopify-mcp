@@ -30,6 +30,7 @@ from shopify_mcp.tools._response import (
     with_confirm_hint,
 )
 from shopify_mcp.tools._scrub import cap, sanitize_control_chars
+from shopify_mcp.tools._untrusted import with_reminder
 from shopify_mcp.tools._write_tool import _outcome_header, write_gate
 
 # The GraphQL strings now live in shopify.queries.inventory. They are re-exported
@@ -322,7 +323,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             unresolved=len(unresolved),
             resolved_any=bool(targets),
         )
-        return (
+        # `failed_block` can carry fenced Shopify text (Story 10.69).
+        return with_reminder(
             f"{header}\n"
             f"  Product : {title} (id: {product_id})\n"
             f"  Target  : tracked={tracked}\n"
@@ -503,7 +505,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         result = ops.set_inventory_on_hand(client, set_quantities)
         err = format_user_errors(result, "inventorySetOnHandQuantities")
         if err:
-            return err
+            return with_reminder(err)
 
         changed_lines = "\n".join(
             f"{_pair_prefix(v, lv, loc)} — {_current_display(cur)} → {quantity}"

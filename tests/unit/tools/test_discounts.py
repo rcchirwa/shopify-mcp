@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from shopify_mcp.tools import discounts
+from shopify_mcp.tools._untrusted import INJECTION_REMINDER
 from shopify_mcp.tools.discounts import CREATE_DISCOUNT_CODE_BASIC, GET_CODE_DISCOUNTS
 from tests.support import CapturingServer, FakeClient
 
@@ -1323,7 +1324,7 @@ def test_create_discount_code_surfaces_user_errors():
         percentage_off=10,
         confirm=True,
     )
-    assert out.startswith("Error creating discount code:")
+    assert out.startswith(INJECTION_REMINDER + "Error creating discount code:")
     assert "basicCodeDiscount.code: Code has already been taken" in out
     assert len(fc.calls) == 1
 

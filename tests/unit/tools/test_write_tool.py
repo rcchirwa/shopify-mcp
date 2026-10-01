@@ -10,6 +10,8 @@ import pytest
 import shopify_mcp.tools._write_tool as _wt
 from shopify_mcp.client import TransientShopifyError
 from shopify_mcp.tools._response import with_confirm_hint
+from shopify_mcp.tools._untrusted import INJECTION_REMINDER
+from tests.support import fenced
 
 
 def _ok(mutation_key: str = "productUpdate") -> dict:
@@ -184,7 +186,7 @@ def test_callable_log_description_not_invoked_on_user_errors(
         log_name="t",
         log_description=_desc,
     )
-    assert out.startswith("Error:")
+    assert out.startswith(INJECTION_REMINDER + "Error:")
     assert desc_calls == [], "log_description callable must not run when userErrors are present"
 
 
@@ -204,7 +206,7 @@ def test_confirm_user_errors_returns_error_without_logging(monkeypatch: pytest.M
         log_description="id=1 | 'A' → 'A'",
     )
 
-    assert out == "Error: product.title: must be unique"
+    assert out == INJECTION_REMINDER + "Error: " + fenced("product.title: must be unique")
     assert logged == [], "log_write must NOT be called when userErrors are present"
 
 
@@ -229,7 +231,7 @@ def test_custom_error_key_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
         error_key="priceRuleUserErrors",
     )
 
-    assert out == "Error: priceRule.value.percentageValue: bad"
+    assert out == INJECTION_REMINDER + "Error: " + fenced("priceRule.value.percentageValue: bad")
 
 
 def test_confirm_user_errors_render_list_field_as_dotted_path(
@@ -248,7 +250,9 @@ def test_confirm_user_errors_render_list_field_as_dotted_path(
         log_description="desc",
     )
 
-    assert out == "Error: input.variants.0.price: must be positive"
+    assert out == INJECTION_REMINDER + "Error: " + fenced(
+        "input.variants.0.price: must be positive"
+    )
 
 
 # ---------- done_text callable variant ----------
@@ -312,7 +316,7 @@ def test_done_text_callable_not_invoked_on_user_errors(monkeypatch: pytest.Monke
         log_description="desc",
         done_text=_done,
     )
-    assert out.startswith("Error:")
+    assert out.startswith(INJECTION_REMINDER + "Error:")
     assert calls == []
 
 
@@ -379,7 +383,7 @@ def test_post_execute_check_skipped_on_user_errors(monkeypatch: pytest.MonkeyPat
         log_description="desc",
         post_execute_check=_check,
     )
-    assert out.startswith("Error:")
+    assert out.startswith(INJECTION_REMINDER + "Error:")
     assert check_calls == [], "post_execute_check must not run when userErrors are present"
 
 
