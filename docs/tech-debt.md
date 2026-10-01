@@ -4,9 +4,27 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-09-30.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-10-01.
 
 ---
+
+## 2026-10-01 — PR #188 (second round: transitive `pyjwt` + `urllib3`, audit-env `pip`)
+
+No Trello card and no SEC id, same as the 2026-09-30 entry below: the `dependency-audit` gate went red again the day after PR #187 merged, on a docs-only PR. **Unlike that entry, one item here was reachable in this server** — `urllib3`, row 2.
+
+**Process note:** PR #187 pinned exactly `pyjwt==2.14.0`, the minimum fixed version, but 2.15.0 (2026-09-23) and 2.15.1 (2026-09-28) were already on PyPI and 2.15.0 fixes this round's pyjwt CVE. Checking for the latest release before pinning would have avoided the pyjwt half of this round. This round pins the latest release of each package, not the minimum fix.
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|----------------|
+| pyjwt-2.14.0 | ~~`pip-audit --strict` flagged `pyjwt==2.14.0` (via `mcp`) in both CI lockfiles for CVE-2026-101918 / GHSA-42vr-xj54-vc7v, fixed in 2.15.0: `PyJWKClient.get_signing_key_from_jwt` decodes an unverified payload with `json.loads`, and a deeply nested payload raises `RecursionError`, which escapes the documented `PyJWTError` hierarchy. Unreachable here — no first-party JWT use and no use of `mcp`'s auth modules (the 2026-09-30 grep still holds).~~ | Pinned `pyjwt==2.15.1` (latest) via `pip-compile --upgrade-package` in `requirements.lock` and `requirements-dev.lock`. |
+| urllib3-2.7.0 | ~~`pip-audit --strict` flagged `urllib3==2.7.0` (via `requests`) in both CI lockfiles for CVE-2026-97687 / GHSA-8988-9cw3-xx77 (HTTPS-proxy and target TLS settings not kept separate), CVE-2026-97688 / GHSA-gh4c-6fx4-qh6g (streaming decoder can loop forever on bytes after the end of a Deflate stream) and CVE-2026-97689 / GHSA-vxq7-64xx-v4gw (streaming decoder buffers a chunk-size line with no newline without bound), all fixed in 2.8.0. **97688 and 97689 were reachable:** `ShopifyClient.fetch_bytes` (`client.py`) streams a **caller-supplied URL** with `stream=True` + `iter_content`, so a hostile server could hang the process (the loop is CPU-bound, so the read timeout doesn't stop it) or grow memory before the `max_size` cap applies. The only caller is `upload_product_image`, which fetches only after `confirm=True` (`tools/media/_upload.py`); the SSRF guard and no-redirect default don't help, because the attacker's host is public. 97687 needs an HTTPS proxy — the code configures none, though `requests` honours `HTTPS_PROXY` from the environment.~~ | Pinned `urllib3==2.8.0` (latest) via `pip-compile --upgrade-package` in `requirements.lock` and `requirements-dev.lock`. |
+| pip-26.1.2 | ~~`requirements-audit.lock` — the CI audit job's own environment, which CI does not itself audit — pinned `urllib3==2.7.0` (via `requests`, a pip-audit dependency) and `pip==26.1.2` for PYSEC-2026-3721 (doubly-encoded package URLs from a malicious index can write files outside the install target), fixed in 26.2.0. Found by running `pip-audit` against the audit lockfile by hand.~~ | Pinned `urllib3==2.8.0` and `pip==26.2.1` (latest) via `pip-compile --upgrade-package -o requirements-audit.lock requirements-audit.in`. |
+
+All three lockfiles: only the named entries moved, headers unchanged (pip-tools 7.6.1 with `click<8.3`, see below), and every new hash matches PyPI's published sha256 for the wheel and sdist (none yanked). Verified in a fresh Python 3.11 venv from `requirements-dev.lock` with `--require-hashes`: `shopify-mcp-check-deps`, `ruff check`, `ruff format --check`, mypy, 2512 offline tests (9/9 in `tests/architecture/test_lockfiles.py`) at 100% coverage. `pip-audit --strict` exits 0 on all three lockfiles from a venv built from the regenerated `requirements-audit.lock`. Control: the same audit against the pre-bump CI lockfiles still reports all four CVEs.
+
+**Gap left open:** CI's `dependency-audit` job does not audit `requirements-audit.lock`, so a CVE in the scanner's own environment (this round's `pip` one) only surfaces when someone checks by hand.
 
 ## 2026-09-30 — PR #187 (stale transitive `pyjwt` pin, dependency-audit gate repair)
 
