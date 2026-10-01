@@ -156,3 +156,5 @@ jobs:
         run: pip-audit -r requirements.lock --strict
       - name: pip-audit against requirements-dev.lock
         run: pip-audit -r requirements-dev.lock --strict
+      - name: pip-audit against requirements-audit.lock
+        run: pip-audit -r requirements-audit.lock --strict
