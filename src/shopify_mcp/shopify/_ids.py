@@ -5,9 +5,37 @@ These are pure functions with no dependencies, needed by ``shopify.operations``
 many existing ``from tools._gid import ...`` call sites keep working unchanged.
 """
 
+PRODUCT_GID_PREFIX = "gid://shopify/Product/"
+
+INVALID_PRODUCT_ID_ERROR = (
+    "product_id must be a numeric ID or a full Product GID (gid://shopify/Product/<id>)"
+)
+
 
 def to_gid(resource_type: str, numeric_id: int | str) -> str:
     return f"gid://shopify/{resource_type}/{numeric_id}"
+
+
+def product_gid(product_id: int | str) -> str:
+    """Return the Product GID for a ``product_id`` given as a number or a GID.
+
+    A Product GID passes through, and anything else that is not a GID is
+    wrapped. ``to_gid`` wraps without checking, so a full GID came out
+    double-prefixed and Shopify refused it (Story 10.108). Raises ValueError
+    for a GID of another type, such as ``gid://shopify/ProductVariant/1``,
+    so it never reaches Shopify as a product id. The message does not echo
+    the value. Surrounding whitespace is stripped first, so a padded GID is
+    neither wrapped again nor let past the type check. A Product GID with
+    nothing after the prefix is refused too, as ``_resolve_product`` does.
+    """
+    value = str(product_id).strip()
+    if value.startswith(PRODUCT_GID_PREFIX):
+        if value == PRODUCT_GID_PREFIX:
+            raise ValueError(INVALID_PRODUCT_ID_ERROR)
+        return value
+    if value.startswith("gid://"):
+        raise ValueError(INVALID_PRODUCT_ID_ERROR)
+    return to_gid("Product", value)
 
 
 def from_gid(gid: str) -> str:

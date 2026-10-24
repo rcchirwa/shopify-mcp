@@ -37,11 +37,11 @@ from shopify_mcp.shopify._identifiers import (
     both_identifiers_supplied,
     is_supplied,
 )
+from shopify_mcp.shopify._ids import INVALID_PRODUCT_ID_ERROR, product_gid
+from shopify_mcp.shopify._ids import PRODUCT_GID_PREFIX as _PRODUCT_GID_PREFIX
 from shopify_mcp.shopify.operations import catalog_hygiene as ops
-from shopify_mcp.tools._gid import to_gid
 from shopify_mcp.tools._scrub import cap
 
-_PRODUCT_GID_PREFIX = "gid://shopify/Product/"
 # Same 200-char bound `catalog_hygiene._cap` uses — cap user-supplied text
 # reflected into error messages / logs to prevent log-flood from
 # attacker-controlled input that starts with "gid://".
@@ -85,11 +85,32 @@ def identifier_error(product_id: object, handle: object) -> str | None:
     the message is a constant. `is_supplied` (not bare truthiness) decides
     "supplied", so a blank or whitespace-only `handle` alongside a real
     `product_id` stays an unambiguous call rather than becoming a refusal.
+
+    When the pair is good, it also returns `product_id_error` for the id, so
+    these seven tools refuse a GID of another type too (Story 10.108).
     """
     if both_identifiers_supplied(product_id, handle):
         return BOTH_IDENTIFIERS_MESSAGE
     if not is_supplied(product_id) and not is_supplied(handle):
         return NEITHER_IDENTIFIER_MESSAGE
+    return product_id_error(product_id)
+
+
+def product_id_error(product_id: object) -> str | None:
+    """Refuse a `product_id` that is a GID of another type. Returns a message, or None.
+
+    `shopify._ids.product_gid` is the rule, and the operations layer applies it.
+    This runs it as the tool's first statement, for the same reason as
+    `identifier_error`: some tools make a network call before the product read
+    (sales channels, the collection lookup), so a refusal from underneath would
+    come one round-trip late (Story 10.108). The message does not echo the value.
+    """
+    if not isinstance(product_id, str):
+        return None
+    try:
+        product_gid(product_id)
+    except ValueError:
+        return f"{INVALID_PRODUCT_ID_ERROR}."
     return None
 
 
@@ -181,6 +202,8 @@ def _resolve_product(
         # `catalog_hygiene._resolve_product_gid` maps verbatim.
         raise ValueError("product_id must be a non-empty string")
 
+    # The same rule as `shopify._ids.product_gid`, checked here by hand because
+    # these messages echo the capped value and name the handle channel.
     if stripped.startswith("gid://") and not stripped.startswith(_PRODUCT_GID_PREFIX):
         raise ValueError(
             "product_id must be a numeric ID, Product GID, or handle"
@@ -201,7 +224,7 @@ def _resolve_product(
         # ('٤٢') digits, which would be wrapped into a malformed
         # `gid://shopify/Product/²`. Shopify IDs are ASCII, so those fall
         # through to the handle lookup below and simply do not resolve.
-        gid = to_gid("Product", stripped)
+        gid = product_gid(stripped)
     else:
         return _lookup_by_handle(client, stripped, query_by_handle)
 

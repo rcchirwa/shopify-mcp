@@ -17,7 +17,7 @@ import requests
 from shopify_mcp.client import ShopifyError, TransientShopifyError
 from shopify_mcp.shopify._client import GraphQLClient
 from shopify_mcp.shopify._identifiers import is_supplied, reject_both_identifiers
-from shopify_mcp.shopify._ids import to_gid
+from shopify_mcp.shopify._ids import product_gid
 from shopify_mcp.shopify.queries.publications import (
     GET_COLLECTION_PUBLICATIONS_BY_HANDLE,
     GET_PRODUCT_ASSIGNED_PUBLICATIONS,
@@ -105,7 +105,7 @@ def read_product_publications(
     if product_id:
         data, rps, capped = client.paginate(
             GET_PRODUCT_PUBLICATIONS_BY_ID,
-            {"id": to_gid("Product", product_id)},
+            {"id": product_gid(product_id)},
             connection_path=["product", "resourcePublications"],
             page_size=PUBLICATIONS_PAGE_SIZE,
         )

@@ -43,6 +43,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from shopify_mcp.client import ShopifyClient, unfenced_message
+from shopify_mcp.shopify import _ids
 from shopify_mcp.shopify._identifiers import is_supplied
 from shopify_mcp.shopify.operations import catalog_hygiene as ops
 from shopify_mcp.shopify.queries.catalog_hygiene import (
@@ -73,7 +74,7 @@ from shopify_mcp.shopify.queries.catalog_hygiene import (
     _build_get_product_metafields_query,
     _build_get_product_variant_metafields_page_query,
 )
-from shopify_mcp.tools._gid import from_gid, to_gid
+from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._product_resolver import _resolve_product
 from shopify_mcp.tools._resolvers import resolve_variant_ids_with_variants
@@ -1700,10 +1701,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # ---- Validate inputs --------------------------------------------
         try:
             entries = _normalize_entries(variants)
+            # Story 10.108: a full Product GID passes through; another type is refused here.
+            product_gid = _ids.product_gid(product_id)
         except ValueError as exc:
             return _render(f"Error: {cap(str(exc))}", _err_payload(cap(unfenced_message(exc))))
-
-        product_gid = to_gid("Product", product_id)
 
         # ---- Read existing pricing state (one round-trip) ---------------
         # Wide read pulls id+sku+price+compareAtPrice in one call. The same

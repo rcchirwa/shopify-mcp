@@ -31,6 +31,7 @@ from shopify_mcp.tools._filters import (
 )
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
+from shopify_mcp.tools._product_resolver import product_id_error
 from shopify_mcp.tools._response import format_user_errors, poll_failed_note, with_confirm_hint
 from shopify_mcp.tools._scrub import cap, sanitize_control_chars
 from shopify_mcp.tools._untrusted import with_reminder, wrap
@@ -350,6 +351,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         the mutation, response key, verbs, and preposition are all derived
         from the ops table below so the two paths can't drift.
         """
+        err = product_id_error(product_id)
+        if err:
+            return err
         op = _MEMBERSHIP_OPS[direction]
 
         if not product_id:

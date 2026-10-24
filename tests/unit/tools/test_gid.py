@@ -9,6 +9,9 @@ Usage:
 
 from typing import Any
 
+import pytest
+
+from shopify_mcp.shopify._ids import product_gid
 from shopify_mcp.tools._gid import from_gid, to_gid
 
 # ---------- to_gid ----------
@@ -24,6 +27,21 @@ def test_to_gid_builds_correct_gid_from_str() -> None:
 
 def test_to_gid_uses_resource_type() -> None:
     assert to_gid("ProductVariant", 42) == "gid://shopify/ProductVariant/42"
+
+
+# ---------- product_gid (Story 10.108) ----------
+
+
+@pytest.mark.parametrize("value", [123, "123", "gid://shopify/Product/123"])
+def test_product_gid_accepts_a_numeric_id_or_a_product_gid(value: Any) -> None:
+    assert product_gid(value) == "gid://shopify/Product/123"
+
+
+def test_product_gid_refuses_another_type_without_echoing_it() -> None:
+    with pytest.raises(ValueError) as exc:
+        product_gid("gid://shopify/ProductVariant/987")
+    assert "Product GID" in str(exc.value)
+    assert "987" not in str(exc.value)
 
 
 # ---------- from_gid ----------

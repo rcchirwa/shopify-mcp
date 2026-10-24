@@ -42,9 +42,9 @@ from shopify_mcp.shopify.queries.publications import (
     PUBLISHABLE_PUBLISH,
     PUBLISHABLE_UNPUBLISH,
 )
-from shopify_mcp.tools._gid import from_gid
+from shopify_mcp.tools._gid import from_gid, to_gid
 from shopify_mcp.tools._log import log_write
-from shopify_mcp.tools._product_resolver import identifier_error, to_gid
+from shopify_mcp.tools._product_resolver import identifier_error
 from shopify_mcp.tools._response import (
     extract_user_errors,
     format_field_path,
