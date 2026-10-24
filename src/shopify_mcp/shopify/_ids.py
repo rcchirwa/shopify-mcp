@@ -7,7 +7,9 @@ many existing ``from tools._gid import ...`` call sites keep working unchanged.
 
 PRODUCT_GID_PREFIX = "gid://shopify/Product/"
 
-WRONG_GID_TYPE_ERROR = "product_id must be a numeric ID or a Product GID, not a GID of another type"
+WRONG_GID_TYPE_ERROR = (
+    "product_id must be a numeric ID or a Product GID with an id, not a GID of another type"
+)
 
 
 def to_gid(resource_type: str, numeric_id: int | str) -> str:
@@ -23,10 +25,13 @@ def product_gid(product_id: int | str) -> str:
     for a GID of another type, such as ``gid://shopify/ProductVariant/1``,
     so it never reaches Shopify as a product id. The message does not echo
     the value. Surrounding whitespace is stripped first, so a padded GID is
-    neither wrapped again nor let past the type check.
+    neither wrapped again nor let past the type check. A Product GID with
+    nothing after the prefix is refused too, as ``_resolve_product`` does.
     """
     value = str(product_id).strip()
     if value.startswith(PRODUCT_GID_PREFIX):
+        if value == PRODUCT_GID_PREFIX:
+            raise ValueError(WRONG_GID_TYPE_ERROR)
         return value
     if value.startswith("gid://"):
         raise ValueError(WRONG_GID_TYPE_ERROR)

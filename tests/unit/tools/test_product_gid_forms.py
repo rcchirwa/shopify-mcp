@@ -139,8 +139,9 @@ def test_both_forms_send_one_single_prefixed_product_gid(module, tool, kwargs, p
         "gid://shopify/ProductVariant/1",
         "gid://shopify/Order/123",
         " gid://shopify/ProductVariant/1",
+        "gid://shopify/Product/",
     ],
-    ids=["variant", "order", "padded-variant"],
+    ids=["variant", "order", "padded-variant", "empty-body"],
 )
 def test_wrong_type_gid_is_refused_before_any_network_call(module, tool, kwargs, pre, product_id):
     out, fc = _run(module, tool, kwargs, pre, product_id)
@@ -210,8 +211,9 @@ def test_every_operations_site_sends_one_single_prefixed_product_gid(name, call,
 
 
 @pytest.mark.parametrize(("name", "call"), _OPS, ids=[o[0] for o in _OPS])
-def test_every_operations_site_refuses_a_wrong_type_gid(name, call):
+@pytest.mark.parametrize("bad", [" gid://shopify/ProductVariant/1", "gid://shopify/Product/"])
+def test_every_operations_site_refuses_a_wrong_type_gid(name, call, bad):
     fc = _StopAtProductClient([])
     with pytest.raises(ValueError):
-        call(fc, " gid://shopify/ProductVariant/1")
+        call(fc, bad)
     assert fc.calls == []
