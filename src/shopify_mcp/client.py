@@ -15,6 +15,7 @@ import requests
 from dotenv import load_dotenv
 from gql import Client, gql
 from gql.transport.exceptions import (
+    TransportConnectionFailed,
     TransportProtocolError,
     TransportQueryError,
     TransportServerError,
@@ -402,13 +403,16 @@ class ShopifyClient:
 
     def execute(self, query_str: str, variables: dict | None = None) -> dict:
         gql_query = gql(query_str)
+        # gql 4 carries the variables on the request; its `variable_values=`
+        # keyword on execute() is deprecated.
+        gql_query.variable_values = variables or None
         _m = _GQL_OP_NAME_RE.search(query_str)
         op_name = _m.group(1) if _m else "<anonymous>"
         logger.debug("gql op=%s variables=%s", op_name, list((variables or {}).keys()))
 
         def _attempt() -> dict:
             try:
-                result = self._client.execute(gql_query, variable_values=variables or {})
+                result = self._client.execute(gql_query)
             # Every upstream text below is fenced where the message is built
             # (Story 10.69, SEC-04-errors); see _upstream_error.
             except TransportQueryError as e:
@@ -438,6 +442,13 @@ class ShopifyClient:
                     "Shopify protocol error: ",
                     str(e),  # reflect-ok: bounded in _upstream_error
                 ) from e
+            except TransportConnectionFailed as e:
+                # gql 4 wraps what requests raised (a connection error, a
+                # timeout); gql 3 let it through. Callers catch
+                # requests.RequestException, so raise the original again.
+                if isinstance(e.__cause__, Exception):
+                    raise e.__cause__ from None
+                raise
 
             if not isinstance(result, dict):
                 # Surface the real payload (scope error text, HTML error page, etc.)

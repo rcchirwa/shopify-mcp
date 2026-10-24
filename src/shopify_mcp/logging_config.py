@@ -27,10 +27,12 @@ def configure_logging(settings: Settings) -> None:
     root.setLevel(level)
 
     # Clamp noisy third-party loggers that inherit from root (SEC-19 / Story
-    # 10.53). The pinned gql==3.5.3 transport (gql.transport.requests /
+    # 10.53). The pinned gql transport (gql.transport.requests /
     # gql.transport.aiohttp) logs full request payloads and response bodies
-    # at INFO with no level of its own — that includes plaintext discount
+    # with no level of its own — that includes plaintext discount
     # codes and staged-upload signing material passed as GraphQL variables.
+    # (gql 3.5.3 logged them at INFO, gql 4.4.0 at DEBUG; every gql logger is
+    # under "gql". Re-checked in Story 10.107.)
     # Without this clamp, setting root to INFO (the default) or DEBUG makes
     # every Shopify Admin API request/response body land on stderr verbatim,
     # bypassing the redaction done at client.py and the individual tools.

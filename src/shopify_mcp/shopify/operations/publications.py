@@ -37,8 +37,8 @@ PUBLICATIONS_PAGE_SIZE = 50
 # What ``ShopifyClient.execute`` (and so ``paginate``) raises for a failed
 # request: ShopifyError (permanent API errors, and ShopifyProtocolError for a
 # non-GraphQL response), TransientShopifyError (throttling / 429 / 5xx after
-# the retries), and requests.RequestException (connection errors and timeouts,
-# which gql's requests transport lets through unwrapped). A failed V2
+# the retries), and requests.RequestException (connection errors and timeouts;
+# gql 4 wraps them, and ``execute`` raises the original again). A failed V2
 # assigned-records read degrades to the v1 records; anything else, such as a
 # programming error, still propagates.
 _READ_FAILURES = (ShopifyError, TransientShopifyError, requests.RequestException)

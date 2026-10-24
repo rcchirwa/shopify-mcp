@@ -16,7 +16,10 @@ dependencies = [
     "mcp>=1.30.0,<2",
     "python-dotenv>=1.0.0,<2",
     "requests>=2.31.0,<3",
-    "gql[requests]>=3.4.0,<4",
+    # Floor 4.4 (Story 10.107): gql 3.5.3 caps graphql-core <3.2.7, below the
+    # CVE-2026-75507 / -75508 fixes. gql 4.0.0 caps it <3.3, so it cannot
+    # install with the graphql-core floor below; 4.4.0 is the tested release.
+    "gql[requests]>=4.4,<5",
     "pydantic>=2.0,<3",
     "pydantic-settings>=2.0,<3",
     "python-json-logger>=3,<4",
@@ -34,7 +37,9 @@ dependencies = [
     # requirements.lock via gql's transitive chain regardless, which
     # test_every_dev_dependency_is_pinned_in_dev_lockfile_only correctly flags
     # as a dev-only declaration leaking into the runtime lockfile.
-    "graphql-core>=3.2,<4",
+    # Floor raised 3.2 -> 3.3 (Story 10.107): gql 4 needs 3.3, and 3.3.0 holds
+    # the fixes for CVE-2026-75507 and CVE-2026-75508.
+    "graphql-core>=3.3,<4",
 ]
 
 [project.optional-dependencies]

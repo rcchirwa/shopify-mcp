@@ -8,6 +8,20 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-10-23 — Story 10.107: gql 4 / graphql-core 3.3 (closes `graphql-core-3.2.6`)
+
+[Story 10.107](https://trello.com/c/30HS3tGz) closes the one open item of the lockfile CVE round below. No gql 3.5.x after 3.5.3 exists, so the fix is the major upgrade.
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|----------------|
+| graphql-core-3.2.6 | ~~`graphql-core==3.2.6` for CVE-2026-75507 and CVE-2026-75508. `gql==3.5.3` capped it below the fix, so CI passed `--ignore-vuln` for both CVEs on the two project lockfiles.~~ | Pinned `gql==4.4.0` and `graphql-core==3.3.0` (the latest releases), with floors `gql[requests]>=4.4,<5` and `graphql-core>=3.3,<4`. gql 4 also replaced `backoff` with `tenacity==9.2.1`; nothing else moved. Removed both `--ignore-vuln` flags and their comment from the `dependency-audit` job. |
+
+What the upgrade changed:
+- **The schema contract test.** graphql-core 3.3 checks the schema before it validates a document, and Shopify's own snapshot breaks one rule (`MediaImage.metafield` is deprecated, `HasMetafields.metafield` is not). `_SCHEMA` is now built with `assume_valid=True`, for the vendor snapshot only. `test_snapshot_breaks_only_the_known_vendor_rule` runs the skipped check and pins that one error, so any other schema defect still fails. Document validation, payload coercion and the deprecation ceilings are unchanged. `get_variable_values` now returns `VariableValues`, so `_coerce` reads `.coerced`.
+- **`ShopifyClient.execute`.** gql 4 takes the variables on the `GraphQLRequest`; the old `variable_values=` keyword is deprecated. gql 4 also wraps a `requests` connection error or timeout in `TransportConnectionFailed`. `execute` raises the original exception again, so `operations/publications._READ_FAILURES` still degrades a failed V2 read to the v1 records.
+
 ## 2026-10-23 — lockfile CVE round (`certifi`, `mcp`, `multidict`, audit-env `filelock`; `graphql-core` ignored)
 
 No SEC id of its own, same as the two entries below: the `dependency-audit` gate went red on a docs-only PR (#191). The failure was reproduced against `origin/main` (`9f48f50`), so it failed every PR. This round pins the latest release of each package, not the minimum fix, as the 2026-10-01 process note asks.
@@ -24,6 +38,8 @@ No SEC id of its own, same as the two entries below: the `dependency-audit` gate
 All lockfiles were regenerated with the `pip-compile` command in each header, with `--upgrade-package` only for the named packages. Only those packages moved; the headers did not change.
 
 ### Open — accepted for now
+
+**Closed by Story 10.107** — see the entry above. The row is kept as it was written.
 
 | # | Item | Why it stays open |
 |---|------|-------------------|

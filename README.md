@@ -256,7 +256,8 @@ capping dependency's own fix or hand-edit the lockfile entry (matching
 hashes) as a stopgap, documenting why in the same ledger entry.
 
 If the fix needs a major upgrade that breaks the project (2026-10-23:
-`graphql-core`'s fix needs `gql` 4, which fails the schema-contract tests),
+`graphql-core`'s fix needed `gql` 4, which failed the schema-contract tests;
+Story 10.107 did the upgrade and removed the ignore),
 and the CVE is not reachable here, the `dependency-audit` job may pass
 `--ignore-vuln <ID>` for that one CVE. Every ignore needs three things: a
 comment in `.github/workflows/test.yml`, a ledger entry in

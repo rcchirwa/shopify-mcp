@@ -11,10 +11,18 @@ Usage:
 """
 
 import os
+import warnings
 
 import pytest
-from gql.transport.exceptions import TransportQueryError, TransportServerError
-from graphql import parse
+import requests
+from gql import Client
+from gql.transport import Transport
+from gql.transport.exceptions import (
+    TransportConnectionFailed,
+    TransportQueryError,
+    TransportServerError,
+)
+from graphql import ExecutionResult, parse
 from pydantic import ValidationError
 from requests.structures import CaseInsensitiveDict
 
@@ -214,6 +222,71 @@ def test_execute_wraps_transport_server_error():
     # Pin M8: a non-retryable TransportServerError raises the plain class, not
     # the ShopifyProtocolError subclass poll_job treats as transient.
     assert type(exc_info.value) is ShopifyError
+
+
+# ---------- gql 4 request and connection-failure contract (Story 10.107) ----------
+
+
+class _CapturingTransport(Transport):
+    """A real gql sync transport that records the request it is given."""
+
+    def __init__(self):
+        self.requests = []
+
+    def execute(self, request, *args, **kwargs):
+        self.requests.append(request)
+        return ExecutionResult(data={"shop": {"id": "gid://shopify/Shop/1"}})
+
+    def connect(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_execute_sends_the_variables_on_the_gql_request_without_a_deprecation():
+    # The stub client above ignores its arguments, so only a real gql Client
+    # shows that the variables reach the request. gql 4 still accepts the old
+    # `variable_values=` keyword, but warns that the form is temporary.
+    transport = _CapturingTransport()
+    client = _bare_client(Client(transport=transport, fetch_schema_from_transport=False))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        result = client.execute("query Q($id: ID!) { shop { id } }", {"id": "1"})
+    assert result == {"shop": {"id": "gid://shopify/Shop/1"}}
+    assert [r.variable_values for r in transport.requests] == [{"id": "1"}]
+
+
+def test_execute_without_variables_sends_no_variables_key():
+    # Same wire payload as gql 3: no `variables` key, not `{}` or null.
+    transport = _CapturingTransport()
+    client = _bare_client(Client(transport=transport, fetch_schema_from_transport=False))
+    client.execute("query { shop { id } }")
+    assert [r.variable_values for r in transport.requests] == [None]
+    assert "variables" not in transport.requests[0].payload
+
+
+def test_execute_raises_a_connection_failure_as_the_original_requests_exception():
+    # gql 4 wraps whatever requests raised in TransportConnectionFailed; gql 3
+    # let it through. Callers catch requests.RequestException (see
+    # operations/publications._READ_FAILURES), so execute() keeps that contract.
+    original = requests.ConnectionError("connection reset")
+    try:
+        raise TransportConnectionFailed(str(original)) from original
+    except TransportConnectionFailed as e:
+        wrapped = e
+    client = _make_client(exc=wrapped)
+    with pytest.raises(requests.ConnectionError) as exc_info:
+        client.execute("query { __typename }")
+    assert exc_info.value is original
+
+
+def test_execute_reraises_an_unchained_connection_failure_unchanged():
+    err = TransportConnectionFailed("no cause")
+    client = _make_client(exc=err)
+    with pytest.raises(TransportConnectionFailed) as exc_info:
+        client.execute("query { __typename }")
+    assert exc_info.value is err
 
 
 # ---------- _format_errors helper shapes ----------
