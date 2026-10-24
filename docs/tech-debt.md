@@ -4,9 +4,30 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-10-01.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-10-23.
 
 ---
+
+## 2026-10-23 — lockfile CVE round (`certifi`, `mcp`, `multidict`, audit-env `filelock`; `graphql-core` ignored)
+
+No SEC id of its own, same as the two entries below: the `dependency-audit` gate went red on a docs-only PR (#191). The failure was reproduced against `origin/main` (`9f48f50`), so it failed every PR. This round pins the latest release of each package, not the minimum fix, as the 2026-10-01 process note asks.
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|----------------|
+| certifi-2026.6.17 | ~~`pip-audit --strict` flagged `certifi==2026.6.17` (via `requests`, `httpx` and `httpcore`) in all three lockfiles for PYSEC-2026-4320, fixed in 2026.10.19: the bundle trusted the `emSign ECC Root CA - G3` root, and eight intermediates under it have compromised keys. **Reachable here:** every Shopify call and `fetch_bytes` verify TLS against this bundle, so an on-path attacker with one of those keys could intercept them.~~ | Pinned `certifi==2026.10.23` in all three lockfiles. |
+| mcp-1.28.1 | ~~`mcp==1.28.1` (declared) for CVE-2026-59951, fixed in 1.30.0: a Streamable HTTP server in stateful mode never reclaimed session state, so memory grew without bound. Not reachable: `server.py` runs `transport="stdio"`, which is not affected.~~ | Pinned `mcp==1.30.0` in both project lockfiles, and raised the declared floor in `pyproject.toml` to `mcp>=1.30.0,<2`, as README's playbook asks for a declared dependency. |
+| multidict-6.7.1 | ~~`multidict==6.7.1` (via `yarl`, via `gql`) for PYSEC-2026-4244, fixed in 6.9.1: a reference leak in items-view union and subtraction. Not reachable: nothing in `src/` imports `multidict`, `yarl` or `aiohttp`; the client uses gql's `requests` transport.~~ | Pinned `multidict==7.1.0`, the latest release (a new major version). No test or gate changed. |
+| filelock-3.30.3 | ~~`requirements-audit.lock` (the scanner's own environment) pinned `filelock==3.30.3` for CVE-2026-112907, CVE-2026-112913 and CVE-2026-112940, all fixed in 4.2.1. Found by the `requirements-audit.lock` step that PR #189 added.~~ | Pinned `filelock==4.2.4` in `requirements-audit.lock`. |
+
+All lockfiles were regenerated with the `pip-compile` command in each header, with `--upgrade-package` only for the named packages. Only those packages moved; the headers did not change.
+
+### Open — accepted for now
+
+| # | Item | Why it stays open |
+|---|------|-------------------|
+| graphql-core-3.2.6 | `graphql-core==3.2.6` (declared, and via `gql`) for CVE-2026-75507 (the `OverlappingFieldsCanBeMerged` validation rule can take quadratic time) and CVE-2026-75508 (the parser's `max_tokens` did not count comment tokens), both fixed in 3.2.12. | **Cannot resolve on gql 3.** `pyproject.toml` pins `gql[requests]>=3.4.0,<4`; `gql==3.5.3`, the last 3.x release, requires `graphql-core<3.2.7`. `gql` 4.4.0 requires `graphql-core>=3.3.0a3`. A trial on gql 4.4.0 + graphql-core 3.3.0 failed 115 of 2684 tests, mostly `test_admin_schema_contract.py`: graphql-core 3.3 rejects the committed Admin schema snapshot (`Interface field HasMetafields.metafield is not deprecated, so implementation field MediaImage.metafield must not be deprecated`). **Not reachable:** both CVEs need an attacker to send a GraphQL document to a server that parses it. This server is a GraphQL client. It parses only its own query constants (`ShopifyClient.execute` → `gql(query_str)`), with `fetch_schema_from_transport=False`. The `dependency-audit` job now passes `--ignore-vuln CVE-2026-75507 --ignore-vuln CVE-2026-75508` on the two project lockfiles. This is the first `--ignore-vuln` in this repo. **Entry condition:** [Story 10.107](https://trello.com/c/30HS3tGz) (gql 4 / graphql-core 3.3 migration) removes the flags. If that story is blocked, re-check PyPI for a gql 3.5.x that allows graphql-core 3.2.12. |
 
 ## 2026-10-01 — PR #188 (second round: transitive `pyjwt` + `urllib3`, audit-env `pip`)
 
