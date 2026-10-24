@@ -54,7 +54,10 @@ write_files
 
 Notes:
 - Media upload tools need both `write_files` and `write_products`.
-- Inventory zero-out by location is manual admin work — no `read_locations` scope is granted.
+- Inventory zero-out works through the tools. `read_locations` is not needed.
+  - `update_variant_inventory_quantity` sets **on-hand** stock at the locations that it reads from each variant's inventory levels (`GET_PRODUCT_INVENTORY` in `src/shopify_mcp/shopify/queries/inventory.py`). It reads only the first 10 levels per variant. If a variant has stock at more than 10 locations, check the other locations in Shopify admin.
+  - Shopify shows available = on-hand − committed. To stop sales, set on-hand to 0. A variant with units committed to open orders then shows available below 0. With tracked = true and DENY, that variant cannot sell. Do not set on-hand to the committed count. If an order is cancelled, that stock becomes available and the product can sell again. The tool compares the target with the available quantity, not with on-hand. When they are equal, the tool does not write that variant and lists it under `Unchanged (N):` as `— already at 0`. Example: a variant with on-hand 2 and 2 committed shows available 0, so a target of 0 does not change it. Read the stock back after the update. In the preview line, the "before" value is available and the "after" value is on-hand.
+  - `DENY` (`update_variant_inventory_policy`) stops sales only when the inventory item has tracked = true (`update_variant_inventory_tracking`).
 - When adding a new scope, update this section and [README.md](README.md) together.
 
 ## Pull request workflow
