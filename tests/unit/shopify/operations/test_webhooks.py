@@ -17,6 +17,8 @@ Usage:
   pytest tests/unit/shopify/operations/test_webhooks.py -v
 """
 
+import pytest
+
 from shopify_mcp.shopify.operations import webhooks as ops
 from shopify_mcp.shopify.queries import webhooks as q
 from tests.support import FakeClient
@@ -134,8 +136,8 @@ def test_delete_webhook_coerces_numeric_id_to_gid():
 
 
 def test_delete_webhook_accepts_full_gid_without_double_prefix():
-    """A full GID in → the same canonical GID out (from_gid strips, to_gid rebuilds
-    cleanly — no ``gid://shopify/WebhookSubscription/gid://...`` double-prefix)."""
+    """A full GID in → the same canonical GID out (it passes through — no
+    ``gid://shopify/WebhookSubscription/gid://...`` double-prefix)."""
     raw = {
         "webhookSubscriptionDelete": {
             "deletedWebhookSubscriptionId": "gid://shopify/WebhookSubscription/123",
@@ -145,3 +147,21 @@ def test_delete_webhook_accepts_full_gid_without_double_prefix():
     fc = FakeClient([raw])
     ops.delete_webhook(fc, "gid://shopify/WebhookSubscription/123")
     assert fc.calls[0][1] == {"id": "gid://shopify/WebhookSubscription/123"}
+
+
+@pytest.mark.parametrize(
+    "subscription_id",
+    [
+        "gid://shopify/ProductVariant/123",
+        "gid://shopify/Order/123",
+        "foo/123",
+        "gid://shopify/WebhookSubscription/",
+        " gid://shopify/ProductVariant/123",
+    ],
+)
+def test_delete_webhook_refuses_a_wrong_subscription_id_before_any_call(subscription_id):
+    """Story 10.109: the operations layer refuses too, for callers outside the tool."""
+    fc = FakeClient([])
+    with pytest.raises(ValueError):
+        ops.delete_webhook(fc, subscription_id)
+    assert fc.calls == []

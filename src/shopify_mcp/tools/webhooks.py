@@ -17,6 +17,7 @@ from mcp.server.fastmcp import FastMCP
 
 from shopify_mcp.client import ShopifyClient
 from shopify_mcp.settings import idna_normalize
+from shopify_mcp.shopify._ids import INVALID_SUBSCRIPTION_ID_ERROR, webhook_subscription_gid
 from shopify_mcp.shopify.operations import webhooks as ops
 from shopify_mcp.shopify.queries.webhooks import CREATE_WEBHOOK, DELETE_WEBHOOK, LIST_WEBHOOKS
 from shopify_mcp.tools._gid import from_gid
@@ -165,7 +166,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         ("gid://shopify/WebhookSubscription/123").
         Returns a preview unless confirm=True.
         """
-        numeric_id = from_gid(subscription_id)
+        # Story 10.109: a GID of another type, or a path, is refused before any call.
+        try:
+            gid = webhook_subscription_gid(subscription_id)
+        except ValueError:
+            return f"Error: {INVALID_SUBSCRIPTION_ID_ERROR}."
+        numeric_id = from_gid(gid)
         preview = f"PREVIEW — Delete webhook\n  Subscription ID : {numeric_id}"
 
         def _check_deleted(result: dict) -> str | None:
@@ -177,7 +183,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         return write_gate(
             preview=preview,
             confirm=confirm,
-            execute=lambda: ops.delete_webhook(client, subscription_id),
+            execute=lambda: ops.delete_webhook(client, gid),
             mutation_key="webhookSubscriptionDelete",
             log_name="delete_webhook",
             log_description=f"id={numeric_id}",
