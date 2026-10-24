@@ -16,7 +16,7 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 | # | Item | How it closed |
 |---|------|----------------|
-| graphql-core-3.2.6 | ~~`graphql-core==3.2.6` for CVE-2026-75507 and CVE-2026-75508. `gql==3.5.3` capped it below the fix, so CI passed `--ignore-vuln` for both CVEs on the two project lockfiles.~~ | Pinned `gql==4.4.0` and `graphql-core==3.3.0` (the latest releases), with floors `gql[requests]>=4,<5` and `graphql-core>=3.3,<4`. gql 4 also replaced `backoff` with `tenacity==9.2.1`; nothing else moved. Removed both `--ignore-vuln` flags and their comment from the `dependency-audit` job. |
+| graphql-core-3.2.6 | ~~`graphql-core==3.2.6` for CVE-2026-75507 and CVE-2026-75508. `gql==3.5.3` capped it below the fix, so CI passed `--ignore-vuln` for both CVEs on the two project lockfiles.~~ | Pinned `gql==4.4.0` and `graphql-core==3.3.0` (the latest releases), with floors `gql[requests]>=4.4,<5` and `graphql-core>=3.3,<4`. gql 4 also replaced `backoff` with `tenacity==9.2.1`; nothing else moved. Removed both `--ignore-vuln` flags and their comment from the `dependency-audit` job. |
 
 What the upgrade changed:
 - **The schema contract test.** graphql-core 3.3 checks the schema before it validates a document, and Shopify's own snapshot breaks one rule (`MediaImage.metafield` is deprecated, `HasMetafields.metafield` is not). `_SCHEMA` is now built with `assume_valid=True`, for the vendor snapshot only. `test_snapshot_breaks_only_the_known_vendor_rule` runs the skipped check and pins that one error, so any other schema defect still fails. Document validation, payload coercion and the deprecation ceilings are unchanged. `get_variable_values` now returns `VariableValues`, so `_coerce` reads `.coerced`.

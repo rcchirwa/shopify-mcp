@@ -257,6 +257,15 @@ def test_execute_sends_the_variables_on_the_gql_request_without_a_deprecation():
     assert [r.variable_values for r in transport.requests] == [{"id": "1"}]
 
 
+def test_execute_without_variables_sends_no_variables_key():
+    # Same wire payload as gql 3: no `variables` key, not `{}` or null.
+    transport = _CapturingTransport()
+    client = _bare_client(Client(transport=transport, fetch_schema_from_transport=False))
+    client.execute("query { shop { id } }")
+    assert [r.variable_values for r in transport.requests] == [None]
+    assert "variables" not in transport.requests[0].payload
+
+
 def test_execute_raises_a_connection_failure_as_the_original_requests_exception():
     # gql 4 wraps whatever requests raised in TransportConnectionFailed; gql 3
     # let it through. Callers catch requests.RequestException (see

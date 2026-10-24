@@ -16,9 +16,10 @@ dependencies = [
     "mcp>=1.30.0,<2",
     "python-dotenv>=1.0.0,<2",
     "requests>=2.31.0,<3",
-    # Story 10.107: gql 4 is the first line that allows a graphql-core with the
-    # CVE-2026-75507 / -75508 fixes (gql 3.5.3 caps graphql-core <3.2.7).
-    "gql[requests]>=4,<5",
+    # Floor 4.4 (Story 10.107): gql 3.5.3 caps graphql-core <3.2.7, below the
+    # CVE-2026-75507 / -75508 fixes. gql 4.0.0 caps it <3.3, so it cannot
+    # install with the graphql-core floor below; 4.4.0 is the tested release.
+    "gql[requests]>=4.4,<5",
     "pydantic>=2.0,<3",
     "pydantic-settings>=2.0,<3",
     "python-json-logger>=3,<4",
