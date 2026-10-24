@@ -22,9 +22,10 @@ def product_gid(product_id: int | str) -> str:
     double-prefixed and Shopify refused it (Story 10.108). Raises ValueError
     for a GID of another type, such as ``gid://shopify/ProductVariant/1``,
     so it never reaches Shopify as a product id. The message does not echo
-    the value.
+    the value. Surrounding whitespace is stripped first, so a padded GID is
+    neither wrapped again nor let past the type check.
     """
-    value = str(product_id)
+    value = str(product_id).strip()
     if value.startswith(PRODUCT_GID_PREFIX):
         return value
     if value.startswith("gid://"):

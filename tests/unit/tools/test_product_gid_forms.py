@@ -21,6 +21,10 @@ from typing import Any
 
 import pytest
 
+from shopify_mcp.shopify.operations import collections as col_ops
+from shopify_mcp.shopify.operations import inventory as inv_ops
+from shopify_mcp.shopify.operations import products as prod_ops
+from shopify_mcp.shopify.operations import publications as pub_ops
 from shopify_mcp.tools import catalog_hygiene, collections, inventory, products, publications
 from shopify_mcp.tools._product_resolver import product_id_error
 from tests.support import CapturingServer, FakeClient
@@ -131,8 +135,12 @@ def test_both_forms_send_one_single_prefixed_product_gid(module, tool, kwargs, p
 @pytest.mark.parametrize(("module", "tool", "kwargs", "pre"), _CASES, ids=_IDS)
 @pytest.mark.parametrize(
     "product_id",
-    ["gid://shopify/ProductVariant/1", "gid://shopify/Order/123"],
-    ids=["variant", "order"],
+    [
+        "gid://shopify/ProductVariant/1",
+        "gid://shopify/Order/123",
+        " gid://shopify/ProductVariant/1",
+    ],
+    ids=["variant", "order", "padded-variant"],
 )
 def test_wrong_type_gid_is_refused_before_any_network_call(module, tool, kwargs, pre, product_id):
     out, fc = _run(module, tool, kwargs, pre, product_id)
@@ -145,3 +153,65 @@ def test_wrong_type_gid_is_refused_before_any_network_call(module, tool, kwargs,
 def test_product_id_error_passes_everything_but_a_wrong_type_gid(value):
     # A missing or non-string id is the tool's own concern, not this check's.
     assert product_id_error(value) is None
+
+
+# The tool tests above stop at the first Product call, which for a write tool is
+# the preview read. These call every operations site directly, so each
+# mutation's id is pinned too.
+_OPS: list[tuple[str, Callable[[Any, str], Any]]] = [
+    ("read_product", lambda c, pid: prod_ops.read_product(c, product_id=pid)),
+    ("read_product_full", lambda c, pid: prod_ops.read_product_full(c, product_id=pid)),
+    (
+        "read_product_description",
+        lambda c, pid: prod_ops.read_product_description(c, product_id=pid),
+    ),
+    ("read_product_seo", prod_ops.read_product_seo),
+    ("read_product_collections", prod_ops.read_product_collections),
+    ("read_product_variants_policy", prod_ops.read_product_variants_policy),
+    ("fetch_product_core", prod_ops.fetch_product_core),
+    ("fetch_product_full_record", prod_ops.fetch_product_full_record),
+    ("update_product_title", lambda c, pid: prod_ops.update_product_title(c, pid, "T", "t")),
+    ("update_product_description", lambda c, pid: prod_ops.update_product_description(c, pid, "D")),
+    (
+        "update_product_seo",
+        lambda c, pid: prod_ops.update_product_seo(c, pid, title="S", description=None),
+    ),
+    ("update_product_tags", lambda c, pid: prod_ops.update_product_tags(c, pid, ["a"])),
+    ("update_product_status", lambda c, pid: prod_ops.update_product_status(c, pid, "DRAFT")),
+    (
+        "update_variant_inventory_policy",
+        lambda c, pid: prod_ops.update_variant_inventory_policy(c, pid, []),
+    ),
+    ("read_product_inventory", inv_ops.read_product_inventory),
+    ("read_product_publications", lambda c, pid: pub_ops.read_product_publications(c, pid, "")),
+    (
+        "add_products_to_collection",
+        lambda c, pid: col_ops.add_products_to_collection(c, "gid://shopify/Collection/9", pid),
+    ),
+    (
+        "remove_products_from_collection",
+        lambda c, pid: col_ops.remove_products_from_collection(
+            c, "gid://shopify/Collection/9", pid
+        ),
+    ),
+]
+
+
+@pytest.mark.parametrize(("name", "call"), _OPS, ids=[o[0] for o in _OPS])
+@pytest.mark.parametrize(
+    "product_id", ["123", EXPECTED, f" {EXPECTED} "], ids=["numeric", "gid", "padded"]
+)
+def test_every_operations_site_sends_one_single_prefixed_product_gid(name, call, product_id):
+    fc = _StopAtProductClient([])
+    with contextlib.suppress(_Stop):
+        call(fc, product_id)
+    sent = [g for _q, v in fc.calls for g in _product_gids(v)]
+    assert sent == [EXPECTED], (name, sent)
+
+
+@pytest.mark.parametrize(("name", "call"), _OPS, ids=[o[0] for o in _OPS])
+def test_every_operations_site_refuses_a_wrong_type_gid(name, call):
+    fc = _StopAtProductClient([])
+    with pytest.raises(ValueError):
+        call(fc, " gid://shopify/ProductVariant/1")
+    assert fc.calls == []

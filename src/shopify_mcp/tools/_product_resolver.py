@@ -37,12 +37,12 @@ from shopify_mcp.shopify._identifiers import (
     both_identifiers_supplied,
     is_supplied,
 )
+from shopify_mcp.shopify._ids import PRODUCT_GID_PREFIX as _PRODUCT_GID_PREFIX
 from shopify_mcp.shopify._ids import WRONG_GID_TYPE_ERROR, product_gid
 from shopify_mcp.shopify.operations import catalog_hygiene as ops
 from shopify_mcp.tools._gid import to_gid
 from shopify_mcp.tools._scrub import cap
 
-_PRODUCT_GID_PREFIX = "gid://shopify/Product/"
 # Same 200-char bound `catalog_hygiene._cap` uses — cap user-supplied text
 # reflected into error messages / logs to prevent log-flood from
 # attacker-controlled input that starts with "gid://".
@@ -86,6 +86,9 @@ def identifier_error(product_id: object, handle: object) -> str | None:
     the message is a constant. `is_supplied` (not bare truthiness) decides
     "supplied", so a blank or whitespace-only `handle` alongside a real
     `product_id` stays an unambiguous call rather than becoming a refusal.
+
+    When the pair is good, it also returns `product_id_error` for the id, so
+    these seven tools refuse a GID of another type too (Story 10.108).
     """
     if both_identifiers_supplied(product_id, handle):
         return BOTH_IDENTIFIERS_MESSAGE
