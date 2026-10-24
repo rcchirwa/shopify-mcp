@@ -9,17 +9,18 @@ from shopify_mcp.tools._response import extract_user_errors, format_path_user_er
 def _as_product_gid(pid: str) -> str:
     """Normalize a product_id arg that may arrive as numeric string or full GID.
 
-    Returns `""` when the input is missing OR when it's a gid of the wrong
-    type (e.g. `gid://shopify/Order/1`) — defense in depth against a caller
-    accidentally targeting the wrong resource. Numeric ids are wrapped into
-    a Product gid; Product gids pass through unchanged.
+    Returns `""` when the input is missing OR when `product_gid` refuses it:
+    a gid of the wrong type (e.g. `gid://shopify/Order/1`) or a Product gid
+    with an empty body — defense in depth against a caller accidentally
+    targeting the wrong resource. Numeric ids are wrapped into a Product gid;
+    Product gids pass through. Surrounding whitespace is stripped.
     """
     if not pid:
         return ""
     try:
         return product_gid(pid)
     except ValueError:
-        # Wrong gid type — refuse rather than letting it reach Shopify.
+        # Not a valid Product id — refuse rather than letting it reach Shopify.
         return ""
 
 

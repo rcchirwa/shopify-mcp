@@ -37,10 +37,9 @@ from shopify_mcp.shopify._identifiers import (
     both_identifiers_supplied,
     is_supplied,
 )
+from shopify_mcp.shopify._ids import INVALID_PRODUCT_ID_ERROR, product_gid
 from shopify_mcp.shopify._ids import PRODUCT_GID_PREFIX as _PRODUCT_GID_PREFIX
-from shopify_mcp.shopify._ids import WRONG_GID_TYPE_ERROR, product_gid
 from shopify_mcp.shopify.operations import catalog_hygiene as ops
-from shopify_mcp.tools._gid import to_gid
 from shopify_mcp.tools._scrub import cap
 
 # Same 200-char bound `catalog_hygiene._cap` uses — cap user-supplied text
@@ -111,7 +110,7 @@ def product_id_error(product_id: object) -> str | None:
     try:
         product_gid(product_id)
     except ValueError:
-        return f"{WRONG_GID_TYPE_ERROR}."
+        return f"{INVALID_PRODUCT_ID_ERROR}."
     return None
 
 
@@ -203,6 +202,8 @@ def _resolve_product(
         # `catalog_hygiene._resolve_product_gid` maps verbatim.
         raise ValueError("product_id must be a non-empty string")
 
+    # The same rule as `shopify._ids.product_gid`, checked here by hand because
+    # these messages echo the capped value and name the handle channel.
     if stripped.startswith("gid://") and not stripped.startswith(_PRODUCT_GID_PREFIX):
         raise ValueError(
             "product_id must be a numeric ID, Product GID, or handle"
@@ -223,7 +224,7 @@ def _resolve_product(
         # ('٤٢') digits, which would be wrapped into a malformed
         # `gid://shopify/Product/²`. Shopify IDs are ASCII, so those fall
         # through to the handle lookup below and simply do not resolve.
-        gid = to_gid("Product", stripped)
+        gid = product_gid(stripped)
     else:
         return _lookup_by_handle(client, stripped, query_by_handle)
 

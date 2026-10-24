@@ -7,8 +7,8 @@ many existing ``from tools._gid import ...`` call sites keep working unchanged.
 
 PRODUCT_GID_PREFIX = "gid://shopify/Product/"
 
-WRONG_GID_TYPE_ERROR = (
-    "product_id must be a numeric ID or a Product GID with an id, not a GID of another type"
+INVALID_PRODUCT_ID_ERROR = (
+    "product_id must be a numeric ID or a full Product GID (gid://shopify/Product/<id>)"
 )
 
 
@@ -31,10 +31,10 @@ def product_gid(product_id: int | str) -> str:
     value = str(product_id).strip()
     if value.startswith(PRODUCT_GID_PREFIX):
         if value == PRODUCT_GID_PREFIX:
-            raise ValueError(WRONG_GID_TYPE_ERROR)
+            raise ValueError(INVALID_PRODUCT_ID_ERROR)
         return value
     if value.startswith("gid://"):
-        raise ValueError(WRONG_GID_TYPE_ERROR)
+        raise ValueError(INVALID_PRODUCT_ID_ERROR)
     return to_gid("Product", value)
 
 
