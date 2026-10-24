@@ -152,15 +152,9 @@ jobs:
           cache: pip
       - name: Install pinned pip-audit
         run: pip install --require-hashes -r requirements-audit.lock
-      # The two graphql-core CVEs are ignored on purpose. The fix (3.2.12+)
-      # needs gql 4, and gql 4 needs graphql-core 3.3, which rejects the
-      # committed Admin schema snapshot. Both CVEs need an attacker-supplied
-      # GraphQL document; this server parses only its own query constants.
-      # Story 10.107 (https://trello.com/c/30HS3tGz) removes these flags.
-      # See docs/tech-debt.md, 2026-10-23.
       - name: pip-audit against requirements.lock
-        run: pip-audit -r requirements.lock --strict --ignore-vuln CVE-2026-75507 --ignore-vuln CVE-2026-75508
+        run: pip-audit -r requirements.lock --strict
       - name: pip-audit against requirements-dev.lock
-        run: pip-audit -r requirements-dev.lock --strict --ignore-vuln CVE-2026-75507 --ignore-vuln CVE-2026-75508
+        run: pip-audit -r requirements-dev.lock --strict
       - name: pip-audit against requirements-audit.lock
         run: pip-audit -r requirements-audit.lock --strict

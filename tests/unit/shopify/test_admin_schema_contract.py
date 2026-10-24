@@ -64,6 +64,7 @@ from graphql import (
     parse,
     type_from_ast,
     validate,
+    validate_schema,
 )
 from graphql.execution.values import get_variable_values
 from graphql.validation import NoDeprecatedCustomRule
@@ -91,8 +92,18 @@ from tests.support.tool_emitters import TOOL_EMITTERS
 _SNAPSHOT_TEXT = SNAPSHOT_PATH.read_text(encoding="utf-8")
 _API_VERSION, _CAPTURED = read_snapshot_header(_SNAPSHOT_TEXT)
 
+# Shopify's own schema breaks one graphql-core 3.3 rule (Story 10.107), and
+# validate() refuses an invalid schema before it checks any document. So the
+# VENDOR snapshot skips the schema-validity check; documents and payloads are
+# still validated and coerced against it. test_snapshot_breaks_only_the_known_
+# vendor_rule keeps the skip from hiding any other schema defect.
+_KNOWN_VENDOR_SCHEMA_ERRORS = [
+    "Interface field HasMetafields.metafield is not deprecated,"
+    " so implementation field MediaImage.metafield must not be deprecated."
+]
+
 # Imported by test_nested_input_writes.py (Story 9.19). Keep the name.
-_SCHEMA = build_schema(_SNAPSHOT_TEXT)
+_SCHEMA = build_schema(_SNAPSHOT_TEXT, assume_valid=True)
 
 _DOCUMENTS = all_documents()
 _LABEL_BY_TEXT = {text: label for label, text in _DOCUMENTS.items()}
@@ -318,6 +329,15 @@ def test_snapshot_carries_deprecated_input_values():
     assert webhook_input.fields["callbackUrl"].deprecation_reason
 
 
+def test_snapshot_breaks_only_the_known_vendor_rule():
+    """``_SCHEMA`` is built with ``assume_valid=True``. This runs the skipped
+    schema-validity check on a normal build, so a refresh that brings in any
+    other schema defect still fails here. If Shopify fixes the known error,
+    this fails too: remove it and the ``assume_valid`` skip."""
+    errors = validate_schema(build_schema(_SNAPSHOT_TEXT))
+    assert [e.message for e in errors] == _KNOWN_VENDOR_SCHEMA_ERRORS
+
+
 # ===========================================================================
 # LEG 1: document matches the pinned schema (drift detector)
 # ===========================================================================
@@ -395,9 +415,7 @@ def test_a_deprecated_argument_matches_but_is_reported_as_deprecated():
     )
     assert validate(_SCHEMA, parse(old_shape)) == []
     deprecations = validate(_SCHEMA, parse(old_shape), [NoDeprecatedCustomRule])
-    assert any("'input'" in str(e) and "productUpdate" in str(e) for e in deprecations), (
-        deprecations
-    )
+    assert any("productUpdate(input:)" in str(e) for e in deprecations), deprecations
 
 
 def test_validator_catches_job_spread_inside_node():
@@ -573,9 +591,11 @@ def _emit(emitter: Callable[[_CapturingClient], Any]) -> tuple[str, dict]:
 
 
 def _coerce(query: str, variables: dict) -> Any:
-    """graphql-core 3.2 returns the coerced dict on success, or a list of
-    GraphQLError on failure, so ``isinstance(..., dict)`` IS the verdict."""
-    return get_variable_values(_SCHEMA, _operation(query).variable_definitions, variables)
+    """graphql-core 3.3 returns ``VariableValues`` on success, or a list of
+    GraphQLError on failure. Unwrapping ``.coerced`` (the coerced dict) keeps
+    ``isinstance(..., dict)`` as the verdict."""
+    result = get_variable_values(_SCHEMA, _operation(query).variable_definitions, variables)
+    return result if isinstance(result, list) else result.coerced
 
 
 def _coercion_errors(query: str, variables: dict) -> str:
