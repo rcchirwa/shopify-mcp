@@ -157,6 +157,9 @@ def test_delete_webhook_accepts_full_gid_without_double_prefix():
         "foo/123",
         "gid://shopify/WebhookSubscription/",
         " gid://shopify/ProductVariant/123",
+        "",
+        "abc",
+        "gid://shopify/WebhookSubscription/123/7",
     ],
 )
 def test_delete_webhook_refuses_a_wrong_subscription_id_before_any_call(subscription_id):

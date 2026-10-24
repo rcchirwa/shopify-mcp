@@ -24,16 +24,15 @@ def to_gid(resource_type: str, numeric_id: int | str) -> str:
 def typed_gid(resource_type: str, value: int | str, error: str) -> str:
     """Return the ``resource_type`` GID for an id given as a number or a GID.
 
-    A GID of that type passes through, and anything else that is not a GID is
-    wrapped. ``to_gid`` wraps without checking, so a full GID came out
-    double-prefixed and Shopify refused it (Story 10.108). Raises
-    ValueError(``error``) for a GID of another type, such as
-    ``gid://shopify/ProductVariant/1``, for a GID with nothing after the
-    prefix, and for a path such as ``foo/1``. ``from_gid`` keeps only the last
-    segment, so those once reached Shopify as a different record of this type
-    (Story 10.109). The caller's message must not echo the value. Surrounding
-    whitespace is stripped first, so a padded GID is neither wrapped again nor
-    let past the type check.
+    Surrounding whitespace is stripped first. A GID of that type passes
+    through, and a value that is not a GID is wrapped. These raise
+    ValueError(``error``): a GID of another type, a GID with nothing after
+    the prefix, and a path such as ``foo/1``. The caller's message must not
+    echo the value.
+
+    ``to_gid`` wraps without checking, so a full GID came out double-prefixed
+    (Story 10.108). ``from_gid`` keeps only the last segment, so a GID of
+    another type once deleted a different record of this type (Story 10.109).
     """
     prefix = to_gid(resource_type, "")
     text = str(value).strip()
@@ -59,10 +58,15 @@ def product_gid(product_id: int | str) -> str:
 def webhook_subscription_gid(subscription_id: int | str) -> str:
     """Return the WebhookSubscription GID for a ``subscription_id`` (Story 10.109).
 
-    The rule is ``typed_gid``. A GID of another type once deleted the
-    WebhookSubscription with the same number.
+    The rule is ``typed_gid``, and the id must also be digits only. So an
+    empty or blank value, ``abc`` and ``gid://shopify/WebhookSubscription/42/7``
+    are refused, and the preview always shows the id that the call deletes.
     """
-    return typed_gid("WebhookSubscription", subscription_id, INVALID_SUBSCRIPTION_ID_ERROR)
+    gid = typed_gid("WebhookSubscription", subscription_id, INVALID_SUBSCRIPTION_ID_ERROR)
+    numeric_id = gid.removeprefix(to_gid("WebhookSubscription", ""))
+    if not (numeric_id.isascii() and numeric_id.isdigit()):
+        raise ValueError(INVALID_SUBSCRIPTION_ID_ERROR)
+    return gid
 
 
 def from_gid(gid: str) -> str:

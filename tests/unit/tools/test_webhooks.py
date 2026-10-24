@@ -365,6 +365,12 @@ _WRONG_SUBSCRIPTION_IDS = [
     "foo/42",
     "gid://shopify/WebhookSubscription/",
     " gid://shopify/ProductVariant/42",
+    "",
+    "   ",
+    "abc",
+    "gid://shopify/WebhookSubscription/42/7",
+    "gid://shopify/WebhookSubscription/ 42",
+    chr(0xFF14) + chr(0xFF12),  # full-width "42": isdigit() is True, so isascii() refuses it
 ]
 
 
