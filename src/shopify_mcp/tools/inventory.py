@@ -24,6 +24,7 @@ from shopify_mcp.shopify.queries.inventory import (
 from shopify_mcp.tools._filters import filter_variant_targets
 from shopify_mcp.tools._gid import from_gid, to_gid
 from shopify_mcp.tools._log import log_write
+from shopify_mcp.tools._product_resolver import product_id_error
 from shopify_mcp.tools._response import (
     format_user_errors,
     format_user_errors_joined,
@@ -102,6 +103,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def get_inventory(product_id: str) -> str:
         """Get inventory levels for a product and all its variants."""
+        err = product_id_error(product_id)
+        if err:
+            return err
         product, variants, capped = ops.read_product_inventory(client, product_id)
         if not product:
             return f"Product {product_id} not found."
@@ -195,6 +199,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         the target state are reported as unchanged and no mutation is issued for
         them. Returns a preview unless confirm=True.
         """
+        err = product_id_error(product_id)
+        if err:
+            return err
         product, variants, capped = ops.read_product_inventory(client, product_id)
         if not product:
             return f"No product found with id {cap(sanitize_control_chars(product_id))}."
@@ -352,6 +359,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         quantity: must be >= 0 and <= 2,147,483,647 (int32 max).
         Returns a preview unless confirm=True.
         """
+        err = product_id_error(product_id)
+        if err:
+            return err
         range_err = _quantity_range_error(quantity)
         if range_err:
             return range_err

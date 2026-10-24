@@ -12,7 +12,7 @@ formatting on top.
 from typing import Any
 
 from shopify_mcp.shopify._client import GraphQLClient
-from shopify_mcp.shopify._ids import to_gid
+from shopify_mcp.shopify._ids import product_gid, to_gid
 from shopify_mcp.shopify.queries.inventory import (
     GET_INVENTORY_ITEM,
     GET_PRODUCT_INVENTORY,
@@ -39,7 +39,7 @@ def read_product_inventory(
     """
     data, variants, capped = client.paginate(
         GET_PRODUCT_INVENTORY,
-        {"id": to_gid("Product", product_id)},
+        {"id": product_gid(product_id)},
         connection_path=["product", "variants"],
         page_size=VARIANTS_PAGE_CAP,
     )

@@ -16,7 +16,7 @@ which had by-id / by-handle pairs).
 from typing import Any
 
 from shopify_mcp.shopify._client import GraphQLClient
-from shopify_mcp.shopify._ids import to_gid
+from shopify_mcp.shopify._ids import product_gid
 from shopify_mcp.shopify.queries.collections import (
     ADD_PRODUCTS_TO_COLLECTION,
     CREATE_COLLECTION,
@@ -112,7 +112,7 @@ def _change_membership(
     """
     return client.execute(
         mutation,
-        {"id": collection_id, "productIds": [to_gid("Product", product_id)]},
+        {"id": collection_id, "productIds": [product_gid(product_id)]},
     )
 
 

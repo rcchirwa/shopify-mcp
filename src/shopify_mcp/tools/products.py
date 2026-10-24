@@ -43,7 +43,7 @@ from shopify_mcp.tools._filters import (
 )
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
-from shopify_mcp.tools._product_resolver import identifier_error
+from shopify_mcp.tools._product_resolver import identifier_error, product_id_error
 from shopify_mcp.tools._response import (
     extract_user_errors,
     format_path_user_errors,
@@ -268,6 +268,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         =True the new handle is the slugified new_title; if that slug matches
         the existing handle, the handle is effectively unchanged.
         """
+        err = product_id_error(product_id)
+        if err:
+            return err
         product = ops.fetch_product_core(client, product_id) or {}
         old_title = product.get("title", "")
         old_handle = product.get("handle", "")
@@ -312,6 +315,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         """
         Update a product's body_html description. Returns a preview unless confirm=True.
         """
+        err = product_id_error(product_id)
+        if err:
+            return err
         product = ops.fetch_product_core(client, product_id) or {}
         # `or ""` (not just a .get default): Shopify returns JSON null for an
         # unset bodyHtml, which would make the slice and len() below raise.
@@ -384,6 +390,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         supplied", and a value that sanitizes to empty is refused, so this tool
         cannot clear an SEO field — do that in the Shopify admin.
         """
+        err = product_id_error(product_id)
+        if err:
+            return err
         if not new_seo_title and not new_seo_description:
             return "Error: provide at least one of new_seo_title or new_seo_description."
 
@@ -735,6 +744,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def get_product_collections(product_id: str) -> str:
         """List every collection this product belongs to — manual and smart."""
+        err = product_id_error(product_id)
+        if err:
+            return err
         product = ops.read_product_collections(client, product_id)
         if not product:
             return f"No product found with id {cap(sanitize_control_chars(product_id))}."
@@ -776,6 +788,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         (case-insensitive strip). append and remove pre-read the product to
         compute the diff. Returns a preview unless confirm=True.
         """
+        err = product_id_error(product_id)
+        if err:
+            return err
         if mode not in TAG_MODES:
             return f"Error: mode must be one of {', '.join(TAG_MODES)}."
         if not new_tags:
@@ -847,6 +862,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         purchasable by direct link, only dropping out of search, collections and
         recommendations. Use DRAFT to unpublish.
         """
+        err = product_id_error(product_id)
+        if err:
+            return err
         if new_status not in PRODUCT_STATUS_VALUES:
             return f"Error: new_status must be one of {', '.join(PRODUCT_STATUS_VALUES)}."
 
@@ -896,6 +914,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         filters to those variant ids; unknown ids are surfaced in the response
         and skipped. Returns a preview unless confirm=True.
         """
+        err = product_id_error(product_id)
+        if err:
+            return err
         if new_policy not in INVENTORY_POLICY_VALUES:
             return f"Error: new_policy must be one of {', '.join(INVENTORY_POLICY_VALUES)}."
 

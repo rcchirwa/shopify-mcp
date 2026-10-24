@@ -11,7 +11,7 @@ from typing import Any
 
 from shopify_mcp.shopify._client import GraphQLClient
 from shopify_mcp.shopify._identifiers import reject_both_identifiers
-from shopify_mcp.shopify._ids import to_gid
+from shopify_mcp.shopify._ids import product_gid
 from shopify_mcp.shopify.queries.products import (
     GET_PRODUCT_BY_HANDLE,
     GET_PRODUCT_BY_ID,
@@ -270,7 +270,7 @@ def read_product(
     if product_id:
         data, variants, capped = client.paginate(
             GET_PRODUCT_BY_ID,
-            {"id": to_gid("Product", product_id)},
+            {"id": product_gid(product_id)},
             connection_path=["product", "variants"],
             page_size=_VARIANTS_PAGE_CAP,
         )
@@ -295,7 +295,7 @@ def read_product_full(
     if product_id:
         data, variants, capped = client.paginate(
             GET_PRODUCT_FULL_BY_ID,
-            {"id": to_gid("Product", product_id)},
+            {"id": product_gid(product_id)},
             connection_path=["product", "variants"],
             page_size=_VARIANTS_PAGE_CAP,
         )
@@ -315,7 +315,7 @@ def read_product_description(
     """Read a single product's core record (for its body_html) by id or handle."""
     _require_discriminator(product_id, handle)
     if product_id:
-        data = client.execute(GET_PRODUCT_BY_ID, {"id": to_gid("Product", product_id)})
+        data = client.execute(GET_PRODUCT_BY_ID, {"id": product_gid(product_id)})
         return data.get("product")
     data = client.execute(GET_PRODUCT_BY_HANDLE, {"handle": handle})
     return data.get("productByHandle")
@@ -323,13 +323,13 @@ def read_product_description(
 
 def read_product_seo(client: GraphQLClient, product_id: str) -> dict[str, Any] | None:
     """Read a product's id/title/seo fields."""
-    data = client.execute(GET_PRODUCT_SEO_BY_ID, {"id": to_gid("Product", product_id)})
+    data = client.execute(GET_PRODUCT_SEO_BY_ID, {"id": product_gid(product_id)})
     return data.get("product")
 
 
 def read_product_collections(client: GraphQLClient, product_id: str) -> dict[str, Any] | None:
     """Read a product with its collection memberships (capped at 250)."""
-    data = client.execute(GET_PRODUCT_COLLECTIONS, {"id": to_gid("Product", product_id)})
+    data = client.execute(GET_PRODUCT_COLLECTIONS, {"id": product_gid(product_id)})
     return data.get("product")
 
 
@@ -422,7 +422,7 @@ def read_product_variants_policy(
     """
     data, variants, capped = client.paginate(
         GET_PRODUCT_VARIANTS_POLICY,
-        {"id": to_gid("Product", product_id)},
+        {"id": product_gid(product_id)},
         connection_path=["product", "variants"],
         page_size=VARIANTS_PAGE_CAP,
     )
@@ -432,14 +432,14 @@ def read_product_variants_policy(
 def fetch_product_core(client: GraphQLClient, product_id: str) -> dict[str, Any] | None:
     """Single (non-paginated) read of a product's core fields by id — used by
     the title/description/status write previews."""
-    data = client.execute(GET_PRODUCT_BY_ID, {"id": to_gid("Product", product_id)})
+    data = client.execute(GET_PRODUCT_BY_ID, {"id": product_gid(product_id)})
     return data.get("product")
 
 
 def fetch_product_full_record(client: GraphQLClient, product_id: str) -> dict[str, Any] | None:
     """Single (non-paginated) read of a product's full record by id — used by
     the tags write preview (which needs the current tag list)."""
-    data = client.execute(GET_PRODUCT_FULL_BY_ID, {"id": to_gid("Product", product_id)})
+    data = client.execute(GET_PRODUCT_FULL_BY_ID, {"id": product_gid(product_id)})
     return data.get("product")
 
 
@@ -454,7 +454,7 @@ def update_product_title(
         UPDATE_PRODUCT,
         {
             "product": {
-                "id": to_gid("Product", product_id),
+                "id": product_gid(product_id),
                 "title": new_title,
                 "handle": target_handle,
             }
@@ -468,7 +468,7 @@ def update_product_description(
     """Execute a productUpdate setting descriptionHtml."""
     return client.execute(
         UPDATE_PRODUCT,
-        {"product": {"id": to_gid("Product", product_id), "descriptionHtml": new_description}},
+        {"product": {"id": product_gid(product_id), "descriptionHtml": new_description}},
     )
 
 
@@ -491,7 +491,7 @@ def update_product_seo(
         UPDATE_PRODUCT,
         {
             "product": {
-                "id": to_gid("Product", product_id),
+                "id": product_gid(product_id),
                 "seo": {"title": title, "description": description},
             }
         },
@@ -502,7 +502,7 @@ def update_product_tags(client: GraphQLClient, product_id: str, tags: list[str])
     """Execute a productUpdate setting the tag list verbatim."""
     return client.execute(
         UPDATE_PRODUCT_TAGS,
-        {"product": {"id": to_gid("Product", product_id), "tags": tags}},
+        {"product": {"id": product_gid(product_id), "tags": tags}},
     )
 
 
@@ -512,7 +512,7 @@ def update_product_status(
     """Execute a productUpdate setting status."""
     return client.execute(
         UPDATE_PRODUCT_STATUS,
-        {"product": {"id": to_gid("Product", product_id), "status": new_status}},
+        {"product": {"id": product_gid(product_id), "status": new_status}},
     )
 
 
@@ -522,5 +522,5 @@ def update_variant_inventory_policy(
     """Execute a productVariantsBulkUpdate setting inventoryPolicy per variant."""
     return client.execute(
         UPDATE_PRODUCT_VARIANTS_POLICY,
-        {"productId": to_gid("Product", product_id), "variants": variants_input},
+        {"productId": product_gid(product_id), "variants": variants_input},
     )

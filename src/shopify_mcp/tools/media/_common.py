@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from shopify_mcp.tools._gid import to_gid
+from shopify_mcp.shopify._ids import product_gid
 from shopify_mcp.tools._response import extract_user_errors, format_path_user_errors
 
 
@@ -16,12 +16,11 @@ def _as_product_gid(pid: str) -> str:
     """
     if not pid:
         return ""
-    if pid.startswith("gid://shopify/Product/"):
-        return pid
-    if pid.startswith("gid://"):
+    try:
+        return product_gid(pid)
+    except ValueError:
         # Wrong gid type — refuse rather than letting it reach Shopify.
         return ""
-    return to_gid("Product", pid)
 
 
 def _fmt_media_user_errors(errors: list[dict[str, Any]], stage: str) -> str:
