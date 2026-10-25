@@ -11,6 +11,8 @@ Usage:
   pytest tests/unit/tools/test_webhooks.py -v
 """
 
+import pytest
+
 import shopify_mcp.tools._write_tool as _wt
 from shopify_mcp.tools import webhooks
 from shopify_mcp.tools._untrusted import INJECTION_REMINDER
@@ -273,7 +275,7 @@ def test_delete_preview_accepts_full_gid():
     out = tools["delete_webhook"](
         subscription_id="gid://shopify/WebhookSubscription/123",
     )
-    assert "Subscription ID : 123" in out  # from_gid normalized
+    assert "Subscription ID : 123" in out  # numeric id of the validated GID
     assert len(fc.calls) == 0
 
 
@@ -312,7 +314,7 @@ def test_delete_confirmed_with_full_gid_input_sends_canonical_gid():
         confirm=True,
     )
     _, variables = fc.calls[0]
-    # No double-prefix — from_gid strips, to_gid rebuilds cleanly.
+    # No double-prefix — a WebhookSubscription GID passes through.
     assert variables == {"id": "gid://shopify/WebhookSubscription/123"}
 
 
@@ -346,6 +348,55 @@ def test_delete_confirmed_missing_id_and_no_errors_is_error():
     out = tools["delete_webhook"](subscription_id="123", confirm=True)
     assert "Error" in out
     assert "deletedWebhookSubscriptionId" in out
+
+
+# ---------- delete_webhook — subscription_id forms (Story 10.109) ----------
+
+_DELETED = {
+    "webhookSubscriptionDelete": {
+        "deletedWebhookSubscriptionId": "gid://shopify/WebhookSubscription/42",
+        "userErrors": [],
+    }
+}
+
+_WRONG_SUBSCRIPTION_IDS = [
+    "gid://shopify/ProductVariant/42",
+    "gid://shopify/Order/42",
+    "foo/42",
+    "gid://shopify/WebhookSubscription/",
+    " gid://shopify/ProductVariant/42",
+    "",
+    "   ",
+    "abc",
+    "gid://shopify/WebhookSubscription/42/7",
+    "gid://shopify/WebhookSubscription/ 42",
+    chr(0xFF14) + chr(0xFF12),  # full-width "42": isdigit() is True, so isascii() refuses it
+]
+
+
+@pytest.mark.parametrize("subscription_id", _WRONG_SUBSCRIPTION_IDS)
+@pytest.mark.parametrize("confirm", [False, True])
+def test_delete_refuses_a_wrong_subscription_id_before_any_call(subscription_id, confirm):
+    """A GID of another type kept its number and deleted that WebhookSubscription."""
+    tools, fc = _build([_DELETED])
+    out = tools["delete_webhook"](subscription_id=subscription_id, confirm=confirm)
+    assert fc.calls == []
+    assert out.startswith("Error:")
+    assert "WebhookSubscription GID" in out
+    assert "42" not in out
+
+
+@pytest.mark.parametrize(
+    "subscription_id",
+    ["42", " 42 ", "gid://shopify/WebhookSubscription/42", " gid://shopify/WebhookSubscription/42"],
+)
+def test_delete_good_forms_preview_and_send_the_same_subscription(subscription_id):
+    tools, fc = _build([_DELETED])
+    preview = tools["delete_webhook"](subscription_id=subscription_id)
+    assert "Subscription ID : 42\n" in preview
+    out = tools["delete_webhook"](subscription_id=subscription_id, confirm=True)
+    assert out.startswith("CONFIRMED —")
+    assert fc.calls == [(DELETE_WEBHOOK, {"id": "gid://shopify/WebhookSubscription/42"})]
 
 
 # ---------- register_webhook — endpoint allowlist (M3 / SEC-17) ----------

@@ -12,7 +12,7 @@ string formatting on top.
 from typing import Any
 
 from shopify_mcp.shopify._client import GraphQLClient
-from shopify_mcp.shopify._ids import from_gid, to_gid
+from shopify_mcp.shopify._ids import webhook_subscription_gid
 from shopify_mcp.shopify.queries.webhooks import CREATE_WEBHOOK, DELETE_WEBHOOK, LIST_WEBHOOKS
 
 
@@ -57,7 +57,8 @@ def delete_webhook(client: GraphQLClient, subscription_id: str) -> dict[str, Any
 
     Accepts a numeric id (``"123"``) or a full GID
     (``gid://shopify/WebhookSubscription/123``) and coerces it to the canonical
-    WebhookSubscription GID (``from_gid`` strips, ``to_gid`` rebuilds — no
-    double-prefix) before executing. Returns the raw mutation result."""
-    gid = to_gid("WebhookSubscription", from_gid(subscription_id))
+    WebhookSubscription GID before executing. Raises ValueError, before any
+    call, for a GID of another type or a path (Story 10.109). Returns the raw
+    mutation result."""
+    gid = webhook_subscription_gid(subscription_id)
     return client.execute(DELETE_WEBHOOK, {"id": gid})
