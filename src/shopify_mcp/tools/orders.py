@@ -12,6 +12,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from shopify_mcp.client import ShopifyClient
+from shopify_mcp.shopify._ids import INVALID_ORDER_ID_ERROR, order_gid
 from shopify_mcp.shopify.operations import orders as ops
 from shopify_mcp.shopify.queries.orders import GET_ORDER_BY_ID, GET_ORDERS
 from shopify_mcp.tools._gid import from_gid
@@ -99,7 +100,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     @server.tool()
     def get_order(order_id: str) -> str:
         """Get a single order by id."""
-        o, line_items, capped = ops.read_order(client, order_id)
+        # Story 10.110: a GID of another type, or a path, is refused before any call.
+        try:
+            gid = order_gid(order_id)
+        except ValueError:
+            return f"Error: {INVALID_ORDER_ID_ERROR}."
+        o, line_items, capped = ops.read_order(client, gid)
         if not o:
             return f"Order {order_id} not found."
 

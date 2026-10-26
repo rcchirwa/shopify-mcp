@@ -13,7 +13,7 @@ no mutation wrappers.
 from typing import Any
 
 from shopify_mcp.shopify._client import GraphQLClient
-from shopify_mcp.shopify._ids import to_gid
+from shopify_mcp.shopify._ids import order_gid
 from shopify_mcp.shopify.queries.orders import GET_ORDER_BY_ID, GET_ORDERS
 
 # Page size for line-item pagination via ``client.paginate()`` on the single-order
@@ -74,7 +74,7 @@ def read_order(
     ``ShopifyClient.paginate`` for the three ways that can happen."""
     data, line_items, capped = client.paginate(
         GET_ORDER_BY_ID,
-        {"id": to_gid("Order", order_id)},
+        {"id": order_gid(order_id)},
         connection_path=["order", "lineItems"],
         page_size=ORDER_LINE_ITEMS_PAGE_SIZE,
     )

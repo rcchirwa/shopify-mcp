@@ -12,7 +12,7 @@ formatting on top.
 from typing import Any
 
 from shopify_mcp.shopify._client import GraphQLClient
-from shopify_mcp.shopify._ids import product_gid, to_gid
+from shopify_mcp.shopify._ids import inventory_item_gid, product_gid
 from shopify_mcp.shopify.queries.inventory import (
     GET_INVENTORY_ITEM,
     GET_PRODUCT_INVENTORY,
@@ -51,7 +51,7 @@ def read_inventory_item_levels(
 ) -> dict[str, Any] | None:
     """Read a single inventory item's levels by id. None when the item is absent
     (Shopify returns ``{"inventoryItem": null}`` for a deleted / wrong id)."""
-    data = client.execute(GET_INVENTORY_ITEM, {"id": to_gid("InventoryItem", inventory_item_id)})
+    data = client.execute(GET_INVENTORY_ITEM, {"id": inventory_item_gid(inventory_item_id)})
     return data.get("inventoryItem")
 
 
