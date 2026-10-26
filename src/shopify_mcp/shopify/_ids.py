@@ -73,7 +73,7 @@ def numeric_typed_gid(resource_type: str, value: int | str, error: str) -> str:
 
     The id must also be ASCII digits, as a plain value or after the prefix.
     So an empty or blank value, ``abc`` and ``gid://shopify/<Type>/42/7`` raise
-    ValueError(``error``), and the GID always names the record a caller sees.
+    ValueError(``error``). So the GID always has the same id that a preview shows.
     """
     gid = typed_gid(resource_type, value, error)
     numeric_id = gid.removeprefix(to_gid(resource_type, ""))

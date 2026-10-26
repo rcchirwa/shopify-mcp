@@ -158,6 +158,7 @@ def test_variant_quantity_refuses_a_wrong_location_id_before_any_call(location_i
     assert fc.calls == []
     assert out.startswith("Error:")
     assert "Location GID" in out
+    assert "5" not in out
 
 
 def test_variant_quantity_without_location_id_still_covers_every_level():
