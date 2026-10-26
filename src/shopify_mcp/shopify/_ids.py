@@ -16,6 +16,19 @@ INVALID_SUBSCRIPTION_ID_ERROR = (
     "(gid://shopify/WebhookSubscription/<id>)"
 )
 
+INVALID_ORDER_ID_ERROR = (
+    "order_id must be a numeric ID or a full Order GID (gid://shopify/Order/<id>)"
+)
+
+INVALID_INVENTORY_ITEM_ID_ERROR = (
+    "inventory_item_id must be a numeric ID or a full InventoryItem GID "
+    "(gid://shopify/InventoryItem/<id>)"
+)
+
+INVALID_LOCATION_ID_ERROR = (
+    "location_id must be a numeric ID or a full Location GID (gid://shopify/Location/<id>)"
+)
+
 
 def to_gid(resource_type: str, numeric_id: int | str) -> str:
     return f"gid://shopify/{resource_type}/{numeric_id}"
@@ -55,18 +68,42 @@ def product_gid(product_id: int | str) -> str:
     return typed_gid("Product", product_id, INVALID_PRODUCT_ID_ERROR)
 
 
+def numeric_typed_gid(resource_type: str, value: int | str, error: str) -> str:
+    """Return the ``resource_type`` GID by the ``typed_gid`` rule, for a numeric id only.
+
+    The id must also be ASCII digits, as a plain value or after the prefix.
+    So an empty or blank value, ``abc`` and ``gid://shopify/<Type>/42/7`` raise
+    ValueError(``error``). So the GID always has the same id that a preview shows.
+    """
+    gid = typed_gid(resource_type, value, error)
+    numeric_id = gid.removeprefix(to_gid(resource_type, ""))
+    if not (numeric_id.isascii() and numeric_id.isdigit()):
+        raise ValueError(error)
+    return gid
+
+
 def webhook_subscription_gid(subscription_id: int | str) -> str:
     """Return the WebhookSubscription GID for a ``subscription_id`` (Story 10.109).
 
-    The rule is ``typed_gid``, and the id must also be digits only. So an
-    empty or blank value, ``abc`` and ``gid://shopify/WebhookSubscription/42/7``
-    are refused, and the preview always shows the id that the call deletes.
+    A GID of another type once deleted the WebhookSubscription with the same
+    number. The preview always shows the id that the call deletes.
     """
-    gid = typed_gid("WebhookSubscription", subscription_id, INVALID_SUBSCRIPTION_ID_ERROR)
-    numeric_id = gid.removeprefix(to_gid("WebhookSubscription", ""))
-    if not (numeric_id.isascii() and numeric_id.isdigit()):
-        raise ValueError(INVALID_SUBSCRIPTION_ID_ERROR)
-    return gid
+    return numeric_typed_gid("WebhookSubscription", subscription_id, INVALID_SUBSCRIPTION_ID_ERROR)
+
+
+def order_gid(order_id: int | str) -> str:
+    """Return the Order GID for an ``order_id`` (Story 10.110)."""
+    return numeric_typed_gid("Order", order_id, INVALID_ORDER_ID_ERROR)
+
+
+def inventory_item_gid(inventory_item_id: int | str) -> str:
+    """Return the InventoryItem GID for an ``inventory_item_id`` (Story 10.110)."""
+    return numeric_typed_gid("InventoryItem", inventory_item_id, INVALID_INVENTORY_ITEM_ID_ERROR)
+
+
+def location_gid(location_id: int | str) -> str:
+    """Return the Location GID for a ``location_id`` (Story 10.110)."""
+    return numeric_typed_gid("Location", location_id, INVALID_LOCATION_ID_ERROR)
 
 
 def from_gid(gid: str) -> str:

@@ -14,6 +14,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from shopify_mcp.client import ShopifyClient
+from shopify_mcp.shopify import _ids
 from shopify_mcp.shopify.operations import inventory as ops
 from shopify_mcp.shopify.queries.inventory import (
     GET_INVENTORY_ITEM,
@@ -22,7 +23,7 @@ from shopify_mcp.shopify.queries.inventory import (
     UPDATE_INVENTORY_ITEM_TRACKED,
 )
 from shopify_mcp.tools._filters import filter_variant_targets
-from shopify_mcp.tools._gid import from_gid, to_gid
+from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._product_resolver import product_id_error
 from shopify_mcp.tools._response import (
@@ -144,14 +145,22 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         range_err = _quantity_range_error(quantity)
         if range_err:
             return range_err
+        # Story 10.110: a GID of another type, or a path, is refused before any call.
+        try:
+            item_gid = _ids.inventory_item_gid(inventory_item_id)
+        except ValueError:
+            return f"Error: {_ids.INVALID_INVENTORY_ITEM_ID_ERROR}."
+        try:
+            location_gid = _ids.location_gid(location_id)
+        except ValueError:
+            return f"Error: {_ids.INVALID_LOCATION_ID_ERROR}."
 
         # Fetch current level. `data.get("inventoryItem", {})` is not safe: if
         # Shopify returns `{"inventoryItem": null}` (deleted / wrong id), the
         # default isn't used and we'd crash on a None.get() chain. Same shape
         # elsewhere in this module — see get_inventory above.
-        inv_item = ops.read_inventory_item_levels(client, inventory_item_id) or {}
+        inv_item = ops.read_inventory_item_levels(client, item_gid) or {}
         levels = (inv_item.get("inventoryLevels") or {}).get("nodes", [])
-        location_gid = to_gid("Location", location_id)
         matching = [lv for lv in levels if lv.get("location", {}).get("id") == location_gid]
         # Preserve 0 as a legit current qty — only fall back to "unknown" on missing.
         current_qty: int | str | None = _available_qty(matching[0]) if matching else None
@@ -173,7 +182,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 client,
                 [
                     {
-                        "inventoryItemId": to_gid("InventoryItem", inventory_item_id),
+                        "inventoryItemId": item_gid,
                         "locationId": location_gid,
                         "quantity": quantity,
                     }
@@ -365,6 +374,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         range_err = _quantity_range_error(quantity)
         if range_err:
             return range_err
+        # Story 10.110: a GID of another type, or a path, is refused before any call.
+        try:
+            target_location_gid = _ids.location_gid(location_id) if location_id else None
+        except ValueError:
+            return f"Error: {_ids.INVALID_LOCATION_ID_ERROR}."
 
         product, variants, capped = ops.read_product_inventory(client, product_id)
         if not product:
@@ -383,7 +397,6 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # `location_resolved_for_any_variant` tracks whether location_id matched
         # at least one level, so we can warn when the caller's filter misses
         # every variant.
-        target_location_gid = to_gid("Location", location_id) if location_id else None
         pairs = []  # list of (variant, level, current_qty, location_gid)
         location_resolved_for_any_variant = False
         for v in targets:
