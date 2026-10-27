@@ -23,17 +23,20 @@ Usage:
 
 import json
 from collections.abc import Callable
+from http.client import BadStatusLine
 from typing import Any
 from unittest.mock import patch
 
 import pytest
+import requests
 from gql.transport.exceptions import TransportQueryError
 
 from shopify_mcp.client import ShopifyError
 from shopify_mcp.tools import collections, publications
+from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
 from shopify_mcp.tools._untrusted import INJECTION_REMINDER
 from tests.support import CapturingServer, FakeClient, fenced
-from tests.unit.test_client import _make_client
+from tests.unit.test_client import _TRANSPORT_HEAD, _make_client, _wrapped_by_gql
 from tests.unit.tools.test_catalog_hygiene import (
     _OPT_GID,
     _OV_M,
@@ -948,3 +951,62 @@ def test_s1069_uncaught_error_carries_the_fence_without_a_reminder() -> None:
     with pytest.raises(ShopifyError) as info:
         srv.tools["get_collection"](handle="vanish")
     assert str(info.value) == HEAD + FENCED
+
+
+# ---------- Story 10.104: a transport failure, end to end ----------
+
+
+def transport_error(original: Exception) -> ShopifyError:
+    """What the real client raises when gql 4 wraps a requests exception."""
+    client = _make_client(exc=_wrapped_by_gql(original))
+    with pytest.raises(ShopifyError) as info:
+        client.execute("query { __typename }")
+    return info.value
+
+
+def bad_status_line() -> Exception:
+    """The server's status line, quoted back by http.client."""
+    return requests.ConnectionError(("Connection aborted.", BadStatusLine(ECHO)))
+
+
+_PRICING_MUTATION = next(row for row in _HYGIENE_EXCEPTION_SITES if row[0] == "pricing-mutation")
+
+
+def test_s10104_hygiene_transport_error_is_fenced_with_one_reminder() -> None:
+    _id, tool, kwargs, before = _PRICING_MUTATION
+    out = _run_hygiene(tool, kwargs, before, transport_error(bad_status_line()))
+    assert out.startswith(INJECTION_REMINDER), out
+    assert out.count(INJECTION_REMINDER) == 1, out
+    head = out.split("```json", 1)[0]
+    assert _TRANSPORT_HEAD + "<UNTRUSTED-DATA>" in head, out
+    assert ECHO in head, out
+    assert head.count("</UNTRUSTED-DATA>") == 1, out
+
+
+def test_s10104_hygiene_transport_error_tail_stays_unfenced() -> None:
+    _id, tool, kwargs, before = _PRICING_MUTATION
+    out = _run_hygiene(tool, kwargs, before, transport_error(bad_status_line()))
+    [error] = _parse_tail(out)["errors"]
+    assert error["message"] == _TRANSPORT_HEAD + str(bad_status_line())
+    assert_tail_unfenced(out)
+
+
+def test_s10104_hygiene_local_runtime_error_is_still_not_fenced() -> None:
+    _id, tool, kwargs, before = _PRICING_MUTATION
+    out = _run_hygiene(tool, kwargs, before, RuntimeError(LOCAL))
+    assert LOCAL in out
+    assert_unmarked(out)
+
+
+def test_s10104_uncaught_transport_error_is_fenced_and_bounded() -> None:
+    """A tool that does not catch used to let FastMCP show the whole raw
+    requests text: 5,000 characters, unfenced."""
+    srv = CapturingServer()
+    huge = requests.exceptions.ChunkedEncodingError("x" * 5000)
+    collections.register(srv, FakeClient([transport_error(huge)]))
+    with pytest.raises(ShopifyError) as info:
+        srv.tools["get_collection"](handle="vanish")
+    msg = str(info.value)
+    assert msg.startswith(_TRANSPORT_HEAD + "<UNTRUSTED-DATA>x"), msg
+    assert msg.endswith("</UNTRUSTED-DATA>"), msg
+    assert len(msg) <= REFLECT_MAX_LEN

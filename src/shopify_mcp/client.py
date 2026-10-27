@@ -148,8 +148,15 @@ class ShopifyError(_CarriesUnfenced):
 
 class ShopifyProtocolError(ShopifyError):
     """A non-GraphQL response (HTML error page, WAF interstitial, garbage
-    200) that may be transient — still a ShopifyError for every existing
-    caller."""
+    200), or no response at all (ShopifyTransportError), that may be
+    transient — still a ShopifyError for every existing caller."""
+
+
+class ShopifyTransportError(ShopifyProtocolError):
+    """The request failed in transport (a connection reset, a timeout, a
+    broken chunked body). A ShopifyProtocolError, so ``poll_job`` retries it
+    to budget; not a TransientShopifyError, so ``execute()`` never retries it,
+    because a reset can come after Shopify applied a mutation (Story 10.104)."""
 
 
 class TransientShopifyError(_CarriesUnfenced):
@@ -442,13 +449,18 @@ class ShopifyClient:
                     "Shopify protocol error: ",
                     str(e),  # reflect-ok: bounded in _upstream_error
                 ) from e
-            except TransportConnectionFailed as e:
+            except (TransportConnectionFailed, requests.RequestException) as e:
                 # gql 4 wraps what requests raised (a connection error, a
-                # timeout); gql 3 let it through. Callers catch
-                # requests.RequestException, so raise the original again.
-                if isinstance(e.__cause__, Exception):
-                    raise e.__cause__ from None
-                raise
+                # timeout, a broken chunked body); gql 3 let it through, so the
+                # raw form is caught too. http.client and urllib3 quote the
+                # server's own bytes (BadStatusLine repeats the status line), so
+                # the text is fenced. Never retried: a reset can come after
+                # Shopify applied a mutation (Story 10.104).
+                raise _upstream_error(
+                    ShopifyTransportError,
+                    "Shopify transport error: ",
+                    str(e),  # reflect-ok: bounded in _upstream_error
+                ) from e
 
             if not isinstance(result, dict):
                 # Surface the real payload (scope error text, HTML error page, etc.)
@@ -695,8 +707,10 @@ def poll_job(
         the first poll rather than retrying to budget, since retrying a
         validation/auth/schema error cannot help and reporting it as a
         timeout hides the real cause. ShopifyProtocolError (a non-GraphQL
-        response that may be transient) is exempt from the fast-fail and
-        retries to budget like any other unclassified error.
+        response that may be transient), and so its subclass
+        ShopifyTransportError (a connection error or timeout, Story 10.104),
+        is exempt from the fast-fail and retries to budget like any other
+        unclassified error.
 
     When `interval_s` is None (default), uses capped exponential backoff
     (0.5s, 1s, 2s, 4s, 5s, 5s …). Pass an explicit float to override with

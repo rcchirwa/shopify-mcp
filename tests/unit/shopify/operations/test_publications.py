@@ -17,9 +17,13 @@ Usage:
 
 import graphql
 import pytest
-import requests
 
-from shopify_mcp.client import ShopifyError, ShopifyProtocolError, TransientShopifyError
+from shopify_mcp.client import (
+    ShopifyError,
+    ShopifyProtocolError,
+    ShopifyTransportError,
+    TransientShopifyError,
+)
 from shopify_mcp.shopify.operations import publications as ops
 from shopify_mcp.shopify.queries import publications as q
 from tests.support import FakeClient
@@ -243,7 +247,7 @@ def test_s1099_a_draft_product_makes_exactly_two_reads(product_id, handle, root_
         ShopifyError("Shopify GraphQL error: boom"),
         ShopifyProtocolError("Shopify protocol error: <html>"),
         TransientShopifyError("Shopify HTTP error: 503 after 4 attempts"),
-        requests.ConnectionError("connection reset"),
+        ShopifyTransportError("Shopify transport error: connection reset"),
     ],
     ids=["api", "protocol", "transient", "transport"],
 )
