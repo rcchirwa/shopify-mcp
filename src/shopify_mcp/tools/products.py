@@ -51,7 +51,12 @@ from shopify_mcp.tools._response import (
 )
 from shopify_mcp.tools._scrub import cap, sanitize_control_chars
 from shopify_mcp.tools._untrusted import with_reminder, wrap
-from shopify_mcp.tools._write_tool import _confirmed_from_preview, write_gate
+from shopify_mcp.tools._write_tool import (
+    _CONFIRMED_MARKER,
+    _confirmed_from_preview,
+    _outcome_header,
+    write_gate,
+)
 from shopify_mcp.validators.naming import format_validation_diff
 from shopify_mcp.validators.seo import SEO_DESCRIPTION_MAX_CHARS, SEO_TITLE_MAX_CHARS
 
@@ -961,8 +966,21 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return with_confirm_hint(preview)
 
         if not targets:
+            # Story 9.25: when every requested id is unresolved, nothing the
+            # caller asked for could be written, so `_outcome_header` reads
+            # FAILED over the Unresolved block. Only a genuine no-op keeps the
+            # CONFIRMED (no-op) header.
+            header = _outcome_header(
+                "Variant inventory policy update",
+                0,
+                0,
+                unresolved=len(unresolved),
+                resolved_any=False,
+            )
+            if header.startswith(_CONFIRMED_MARKER):
+                header += " (no-op)"
             body = (
-                f"CONFIRMED — Variant inventory policy update (no-op)\n"
+                f"{header}\n"
                 f"  Product    : {title} (id: {product_id})\n"
                 f"  New policy : {new_policy}\n"
                 f"  Targets    : (none — nothing to update)"

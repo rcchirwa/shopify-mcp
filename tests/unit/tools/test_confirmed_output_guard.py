@@ -128,6 +128,9 @@ from tests.unit.tools.test_inventory import (
 from tests.unit.tools.test_inventory import _level as _inv_level
 from tests.unit.tools.test_inventory import _product_with_variants as _inv_product_with_variants
 from tests.unit.tools.test_inventory import _variant as _inv_variant
+from tests.unit.tools.test_inventory import (
+    _variant_with_null_location_level as _inv_variant_with_null_location_level,
+)
 
 # ---- media/*.py ----
 from tests.unit.tools.test_media import (
@@ -990,6 +993,37 @@ def _check_update_variant_inventory_tracking_all_unresolved() -> tuple[str, Fake
     return out, fc
 
 
+# ---- Story 9.25: the two tools whose nothing-writable branch returned a
+# CONFIRMED (no-op) header. Only the product read is scripted, so the
+# consumed-responses assertion below also proves no mutation was sent (a
+# mutation would hit FakeClient's "unexpected extra execute() call"). ----
+
+
+def _check_update_variant_inventory_policy_all_unresolved() -> tuple[str, FakeClient]:
+    tools, fc = _build_products([_variants_policy_read([_variant_policy("10", "S", "CONTINUE")])])
+    out = tools["update_variant_inventory_policy"](
+        product_id="123", new_policy="DENY", variant_ids=["999"], confirm=True
+    )
+    return out, fc
+
+
+def _check_update_variant_inventory_quantity_all_unresolved() -> tuple[str, FakeClient]:
+    variants = [_inv_variant("100", "S", "REEF-S", [_inv_level(5, "gid://shopify/Location/9")])]
+    tools, fc = _build_inventory([_inv_product_with_variants(variants)])
+    out = tools["update_variant_inventory_quantity"](
+        product_id="555", quantity=0, variant_ids=["999"], confirm=True
+    )
+    return out, fc
+
+
+def _check_update_variant_inventory_quantity_all_skipped() -> tuple[str, FakeClient]:
+    tools, fc = _build_inventory(
+        [_inv_product_with_variants([_inv_variant_with_null_location_level("101", "Broken", 3)])]
+    )
+    out = tools["update_variant_inventory_quantity"](product_id="555", quantity=0, confirm=True)
+    return out, fc
+
+
 # ---- Round 4 (surviving mutant M6): channel_names=[] with an existing
 # publication — nothing REQUESTED resolves (the list is empty), so the
 # "nothing resolved" fallback applies, but the empty desired state still
@@ -1025,6 +1059,15 @@ _ALL_REJECTED_CHECKS: dict[str, Callable[[], tuple[str, FakeClient]]] = {
     ),
     "update_variant_inventory_tracking_all_unresolved": (
         _check_update_variant_inventory_tracking_all_unresolved
+    ),
+    "update_variant_inventory_policy_all_unresolved": (
+        _check_update_variant_inventory_policy_all_unresolved
+    ),
+    "update_variant_inventory_quantity_all_unresolved": (
+        _check_update_variant_inventory_quantity_all_unresolved
+    ),
+    "update_variant_inventory_quantity_all_skipped": (
+        _check_update_variant_inventory_quantity_all_skipped
     ),
     "set_product_publications_empty_channel_names": (
         _check_set_product_publications_empty_channel_names_rejected
