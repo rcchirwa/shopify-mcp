@@ -33,7 +33,7 @@ from shopify_mcp.tools._response import (
 )
 from shopify_mcp.tools._scrub import cap, sanitize_control_chars
 from shopify_mcp.tools._untrusted import with_reminder
-from shopify_mcp.tools._write_tool import _outcome_header, write_gate
+from shopify_mcp.tools._write_tool import _CONFIRMED_MARKER, _outcome_header, write_gate
 
 # The GraphQL strings now live in shopify.queries.inventory. They are re-exported
 # here so existing callers/tests (`from tools.inventory import GET_PRODUCT_INVENTORY`)
@@ -434,8 +434,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             else:
                 to_write.append(pair)
 
+        location_unresolved = bool(
+            target_location_gid and not location_resolved_for_any_variant and targets
+        )
         unresolved_location_block = ""
-        if target_location_gid and not location_resolved_for_any_variant and targets:
+        if location_unresolved:
             unresolved_location_block = (
                 f"\n  Unresolved location: {location_id} "
                 f"(not found on any of the targeted variants)"
@@ -500,8 +503,23 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"written=0 unchanged={len(unchanged)} skipped={len(skipped)} "
                 f"unresolved_variants={len(unresolved_variants)}",
             )
+            # Story 9.25: only a genuine no-op reads CONFIRMED (no-op). A
+            # skipped pair counts as failed, as a missing inventoryItem id
+            # does in update_variant_inventory_tracking, and so does a
+            # location_id that matched no level. When no variant id resolved
+            # at all, `_outcome_header` counts the unresolved ids instead, so
+            # an all-unresolved call reads FAILED too.
+            header = _outcome_header(
+                "Variant inventory quantity update",
+                0,
+                len(skipped) + (1 if location_unresolved else 0),
+                unresolved=len(unresolved_variants),
+                resolved_any=bool(targets),
+            )
+            if header.startswith(_CONFIRMED_MARKER):
+                header += " (no-op)"
             return (
-                f"CONFIRMED — Variant inventory quantity update (no-op)\n"
+                f"{header}\n"
                 f"  Product     : {title} (id: {product_id})\n"
                 f"  Target qty  : {quantity}\n"
                 f"  Target loc  : {target_loc_label}\n"
@@ -541,8 +559,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"written={len(to_write)} unchanged={len(unchanged)} skipped={len(skipped)} "
             f"unresolved_variants={len(unresolved_variants)}",
         )
+        # Story 9.25: a skipped pair is a requested change that was not
+        # written, so writes plus skips read PARTIAL (as in 9.24's tracking tool).
+        header = _outcome_header("Variant inventory quantity update", len(to_write), len(skipped))
         return (
-            f"CONFIRMED — Variant inventory quantity update\n"
+            f"{header}\n"
             f"  Product     : {title} (id: {product_id})\n"
             f"  Target qty  : {quantity}\n"
             f"  Target loc  : {target_loc_label}\n"

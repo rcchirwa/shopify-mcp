@@ -1086,8 +1086,102 @@ def test_quantity_all_already_at_target_issues_no_mutation():
         quantity=0,
         confirm=True,
     )
-    assert "no-op" in out
-    assert "Changed     : (none" in out
+    # Story 9.25 pin: the genuine no-op keeps its exact text, byte for byte.
+    assert out == (
+        "CONFIRMED — Variant inventory quantity update (no-op)\n"
+        "  Product     : Luminous Reef Tee (id: 555)\n"
+        "  Target qty  : 0\n"
+        "  Target loc  : all locations\n"
+        "  Changed     : (none — nothing writable at target)\n"
+        "  Unchanged (2):\n"
+        "    • S @ Main — variant_id: 100, location: 9 — already at 0\n"
+        "    • M @ Main — variant_id: 101, location: 9 — already at 0"
+    ), out
+    assert len(fc.calls) == 1
+
+
+def test_quantity_successful_write_output_is_byte_identical():
+    """Story 9.25 pin: the normal confirmed write keeps its exact text."""
+    variants = [
+        _variant("100", "S", "REEF-S", [_level(5, "gid://shopify/Location/9")]),
+        _variant("101", "M", "REEF-M", [_level(3, "gid://shopify/Location/9")]),
+    ]
+    tools, _fc = _build([_product_with_variants(variants), _set_inventory_ok()])
+    out = tools["update_variant_inventory_quantity"](
+        product_id="555",
+        quantity=0,
+        confirm=True,
+    )
+    assert out == (
+        "CONFIRMED — Variant inventory quantity update\n"
+        "  Product     : Luminous Reef Tee (id: 555)\n"
+        "  Target qty  : 0\n"
+        "  Target loc  : all locations\n"
+        "  Changed (2):\n"
+        "    • S @ Main — variant_id: 100, location: 9 — 5 → 0\n"
+        "    • M @ Main — variant_id: 101, location: 9 — 3 → 0\n"
+        "  Unchanged (0):\n"
+        "    (none)"
+    ), out
+
+
+def test_quantity_all_variant_ids_unresolved_reads_failed_and_sends_no_mutation():
+    """Story 9.25: every supplied variant id is unresolved, so nothing could be
+    written. That reads FAILED, never CONFIRMED, and the Unresolved block stays."""
+    variants = [_variant("100", "S", "REEF-S", [_level(5, "gid://shopify/Location/9")])]
+    tools, fc = _build([_product_with_variants(variants)])
+    out = tools["update_variant_inventory_quantity"](
+        product_id="555",
+        quantity=0,
+        variant_ids=["999"],
+        confirm=True,
+    )
+    assert out == (
+        "FAILED — Variant inventory quantity update\n"
+        "  Product     : Luminous Reef Tee (id: 555)\n"
+        "  Target qty  : 0\n"
+        "  Target loc  : all locations\n"
+        "  Changed     : (none — nothing writable at target)\n"
+        "  Unchanged (0):\n"
+        "    (none)\n"
+        "  Unresolved variant ids:\n"
+        "    • 999"
+    ), out
+    assert [q for q, _ in fc.calls] == [GET_PRODUCT_INVENTORY]
+
+
+def test_quantity_unresolved_location_on_confirm_reads_failed_and_sends_no_mutation():
+    """Story 9.25: a location_id that matches no level on any targeted variant
+    leaves nothing to write. That reads FAILED, not a CONFIRMED no-op."""
+    variants = [_variant("100", "S", "REEF-S", [_level(5, "gid://shopify/Location/9")])]
+    tools, fc = _build([_product_with_variants(variants)])
+    out = tools["update_variant_inventory_quantity"](
+        product_id="555",
+        quantity=0,
+        location_id="9999",
+        confirm=True,
+    )
+    assert out.split("\n")[0] == "FAILED — Variant inventory quantity update", out
+    assert out.endswith(
+        "\n  Unresolved location: 9999 (not found on any of the targeted variants)"
+    ), out
+    assert [q for q, _ in fc.calls] == [GET_PRODUCT_INVENTORY]
+
+
+def test_quantity_some_variant_ids_unresolved_and_rest_at_target_stays_confirmed_no_op():
+    """Story 9.25: one id resolved and is already at target, one is a typo.
+    Something requested resolved, so (like 9.24's tracking tool) this stays a
+    CONFIRMED no-op, with the typo still listed."""
+    variants = [_variant("100", "S", "REEF-S", [_level(0, "gid://shopify/Location/9")])]
+    tools, fc = _build([_product_with_variants(variants)])
+    out = tools["update_variant_inventory_quantity"](
+        product_id="555",
+        quantity=0,
+        variant_ids=["100", "999"],
+        confirm=True,
+    )
+    assert out.split("\n")[0] == "CONFIRMED — Variant inventory quantity update (no-op)", out
+    assert out.endswith("\n  Unresolved variant ids:\n    • 999"), out
     assert len(fc.calls) == 1
 
 
@@ -1389,6 +1483,11 @@ def test_quantity_skipped_pair_when_location_id_is_null_on_level():
         quantity=0,
         confirm=True,
     )
+    # Story 9.25: one pair written and one needed change skipped reads
+    # PARTIAL, the same as 9.24's tracking tool for a missing inventoryItem id.
+    assert out.split("\n")[0] == (
+        "PARTIAL — Variant inventory quantity update (1 succeeded, 1 failed)"
+    ), out
     assert "Changed (1):" in out
     assert "Skipped (1):" in out
     assert "missing inventoryItem.id or location.id" in out
@@ -1396,3 +1495,94 @@ def test_quantity_skipped_pair_when_location_id_is_null_on_level():
     set_qtys = fc.calls[1][1]["input"]["setQuantities"]
     assert len(set_qtys) == 1
     assert set_qtys[0]["inventoryItemId"] == "gid://shopify/InventoryItem/100"
+
+
+def _variant_with_null_location_level(vid, title, available):
+    """A variant whose only level has location=None — every pair that needs
+    a change for it lands in `skipped`."""
+    return {
+        "id": f"gid://shopify/ProductVariant/{vid}",
+        "title": title,
+        "sku": f"SKU-{vid}",
+        "inventoryItem": {
+            "id": f"gid://shopify/InventoryItem/{vid}",
+            "tracked": True,
+            "inventoryLevels": {
+                "nodes": [
+                    {"quantities": [{"name": "available", "quantity": available}], "location": None}
+                ]
+            },
+        },
+    }
+
+
+def test_quantity_every_needed_change_skipped_reads_failed_and_sends_no_mutation():
+    """Story 9.25: every pair that needs a change is skipped, so nothing was
+    writable. That reads FAILED (not the genuine-no-op CONFIRMED text), the
+    Skipped block stays, and no mutation is sent."""
+    variants = [_variant_with_null_location_level("101", "Broken", 3)]
+    tools, fc = _build([_product_with_variants(variants)])
+    out = tools["update_variant_inventory_quantity"](
+        product_id="555",
+        quantity=0,
+        confirm=True,
+    )
+    assert out.split("\n")[0] == "FAILED — Variant inventory quantity update", out
+    assert "  Changed     : (none — nothing writable at target)\n" in out
+    assert "\n  Skipped (1):\n" in out
+    assert "missing inventoryItem.id or location.id, not written" in out
+    assert [q for q, _ in fc.calls] == [GET_PRODUCT_INVENTORY]
+
+
+def test_quantity_resolved_variant_without_levels_plus_typo_stays_confirmed_no_op():
+    """Story 9.25 review: a variant that resolves but has no inventory levels,
+    plus one unresolved id. Something requested resolved, so (keyed on the
+    resolved variants, like 9.24's tracking tool) this stays a CONFIRMED no-op
+    — one typo must not flip it to FAILED."""
+    variants = [_variant("100", "S", "REEF-S", [])]
+    tools, fc = _build([_product_with_variants(variants)])
+    out = tools["update_variant_inventory_quantity"](
+        product_id="555",
+        quantity=0,
+        variant_ids=["100", "999"],
+        confirm=True,
+    )
+    assert out.split("\n")[0] == "CONFIRMED — Variant inventory quantity update (no-op)", out
+    assert out.endswith("\n  Unresolved variant ids:\n    • 999"), out
+    assert len(fc.calls) == 1
+
+
+def test_quantity_skipped_pair_plus_typo_reads_failed():
+    """Story 9.25 review: the only resolved variant's needed change is skipped
+    and the other id is a typo. Nothing requested was written, so FAILED."""
+    variants = [_variant_with_null_location_level("101", "Broken", 3)]
+    tools, fc = _build([_product_with_variants(variants)])
+    out = tools["update_variant_inventory_quantity"](
+        product_id="555",
+        quantity=0,
+        variant_ids=["101", "999"],
+        confirm=True,
+    )
+    assert out.split("\n")[0] == "FAILED — Variant inventory quantity update", out
+    assert "\n  Skipped (1):\n" in out
+    assert out.endswith("\n  Unresolved variant ids:\n    • 999"), out
+    assert len(fc.calls) == 1
+
+
+def test_quantity_skipped_pair_plus_unchanged_pair_reads_failed():
+    """Story 9.25 review: one pair is already at target and the other needed
+    a change but was skipped. Nothing that needed a change landed, so FAILED."""
+    variants = [
+        _variant("100", "S", "REEF-S", [_level(0, "gid://shopify/Location/9")]),
+        _variant_with_null_location_level("101", "Broken", 3),
+    ]
+    tools, fc = _build([_product_with_variants(variants)])
+    out = tools["update_variant_inventory_quantity"](
+        product_id="555",
+        quantity=0,
+        confirm=True,
+    )
+    assert out.split("\n")[0] == "FAILED — Variant inventory quantity update", out
+    assert "  Unchanged (1):\n" in out
+    assert "\n  Skipped (1):\n" in out
+    assert len(fc.calls) == 1
