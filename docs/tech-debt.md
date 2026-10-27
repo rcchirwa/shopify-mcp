@@ -58,6 +58,18 @@ Approaches declined: approach 1 (plain `ShopifyProtocolError`) gives the same be
 
 ---
 
+## 2026-10-27 — audit-env `msgpack` (CVE-2026-114613)
+
+No SEC id of its own, same as the lockfile CVE round below. The `dependency-audit` gate went red on the `requirements-audit.lock` step. `main` (`333361d`) passed on 2026-10-26, so the advisory is new. It was found by the local gate run for Story 9.25.
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|----------------|
+| msgpack-1.2.1 | ~~`requirements-audit.lock` (the scanner's own environment) pinned `msgpack==1.2.1` (via `cachecontrol`, which pip-audit uses for its HTTP cache) for CVE-2026-114613, fixed in 1.2.3. Not reachable from the server: `msgpack` is not in `requirements.lock` or `requirements-dev.lock`, and nothing in `src/` imports it.~~ | Pinned `msgpack==1.2.4`, the latest release, in `requirements-audit.lock`. |
+
+The lockfile was regenerated with the `pip-compile` command in its header plus `--upgrade-package msgpack`. Only the `msgpack` block moved (version and hashes); the header did not change. `pip-audit --strict` passes on all three lockfiles.
+
 ## 2026-10-23 — Story 10.107: gql 4 / graphql-core 3.3 (closes `graphql-core-3.2.6`)
 
 [Story 10.107](https://trello.com/c/30HS3tGz) closes the one open item of the lockfile CVE round below. No gql 3.5.x after 3.5.3 exists, so the fix is the major upgrade.
