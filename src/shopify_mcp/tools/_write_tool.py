@@ -62,8 +62,10 @@ def _outcome_header(
     target, so no mutation could be attempted at all — `failed` is replaced
     with `unresolved` (the resolve-failure count) so an all-unresolved batch
     reads FAILED over its Failed:/Unresolved: block instead of a trivial
-    CONFIRMED. See `publications._channel_write` and
-    `inventory.update_variant_inventory_tracking` for callers of this.
+    CONFIRMED. See `publications._channel_write`,
+    `inventory.update_variant_inventory_tracking` and the nothing-written
+    branches of `update_variant_inventory_quantity` and
+    `products.update_variant_inventory_policy` for callers of this.
     """
     if not resolved_any:
         failed = unresolved

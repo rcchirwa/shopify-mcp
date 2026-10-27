@@ -1778,11 +1778,38 @@ def test_policy_unknown_variant_id_on_confirm_skips_mutation_when_no_targets():
         variant_ids=["9999"],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED —"), out
-    assert "no-op" in out
-    assert "9999" in out
+    # Story 9.25: nothing the caller asked for resolved, so nothing landed.
+    # That reads FAILED, never CONFIRMED, and the Unresolved block stays.
+    assert out == (
+        "FAILED — Variant inventory policy update\n"
+        "  Product    : T (id: 123)\n"
+        "  New policy : DENY\n"
+        "  Targets    : (none — nothing to update)\n"
+        "  Unresolved variant ids:\n"
+        "    • 9999"
+    ), out
     # Only the read happened — no bulk update issued when nothing resolves.
     assert len(fc.calls) == 1
+    assert fc.calls[0][0] == GET_PRODUCT_VARIANTS_POLICY
+
+
+def test_policy_successful_write_output_is_byte_identical():
+    """Story 9.25 pin: the normal confirmed write keeps its exact text."""
+    variants = [_variant_policy("10", "S", "CONTINUE")]
+    updated = [{"id": "gid://shopify/ProductVariant/10", "inventoryPolicy": "DENY"}]
+    tools, _fc = _build([_variants_policy_read(variants), _bulk_policy_ok(updated)])
+    out = tools["update_variant_inventory_policy"](
+        product_id="123",
+        new_policy="DENY",
+        confirm=True,
+    )
+    assert out == (
+        "CONFIRMED — Variant inventory policy update\n"
+        "  Product    : T (id: 123)\n"
+        "  New policy : DENY\n"
+        "  Updated (1):\n"
+        "    • id: 10 — inventoryPolicy: DENY"
+    ), out
 
 
 def test_policy_invalid_enum_rejected_no_shopify_call():
@@ -1886,7 +1913,14 @@ def test_policy_product_with_no_variants_skips_mutation():
         new_policy="DENY",
         confirm=True,
     )
-    assert out.startswith("CONFIRMED —") and "no-op" in out
+    # Story 9.25 pin: a genuine no-op (nothing requested was unresolved) keeps
+    # its exact CONFIRMED (no-op) text, byte for byte.
+    assert out == (
+        "CONFIRMED — Variant inventory policy update (no-op)\n"
+        "  Product    : T (id: 123)\n"
+        "  New policy : DENY\n"
+        "  Targets    : (none — nothing to update)"
+    ), out
     assert len(fc.calls) == 1  # only the read
 
 

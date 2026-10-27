@@ -8,6 +8,23 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-10-27 — Story 9.25: nothing-written branches no longer read `CONFIRMED —`
+
+[Story 9.25](https://trello.com/c/p8eG775K) fixes the two tools that the Story 9.24 entry below recorded as out of scope: `update_variant_inventory_quantity` (round 3 nit) and `update_variant_inventory_policy` (round 4 should-fix).
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|----------------|
+| 9.25-policy | ~~`update_variant_inventory_policy` replied `CONFIRMED — Variant inventory policy update (no-op)` when every supplied variant id was unresolved.~~ | The `if not targets:` branch picks its header with `_outcome_header(..., resolved_any=False)`. All unresolved reads `FAILED — Variant inventory policy update`. A genuine no-op (no unresolved ids) keeps `CONFIRMED — … (no-op)` byte for byte. |
+| 9.25-quantity | ~~`update_variant_inventory_quantity` replied `CONFIRMED — Variant inventory quantity update (no-op)` when every variant id was unresolved, when every pair that needed a change was skipped, or when `location_id` matched no level.~~ | The `if not to_write:` branch counts skipped pairs and an unresolved location as failed. When no variant id resolved, it counts the unresolved variant ids instead. Those three cases read `FAILED —`. The write path now reads `PARTIAL — … (N succeeded, M failed)` when pairs were also skipped, as `update_variant_inventory_tracking` does for a missing inventoryItem id. |
+
+Operator-facing output changes on purpose. The Unresolved, Skipped and Unresolved-location blocks and the `log_write` lines do not change, and no mutation is sent in any nothing-written case. A call where some ids resolve and the rest are unresolved keeps `CONFIRMED`, as in the tracking tool.
+
+### Re-audit by subject (AC 3)
+
+Every other write tool with a nothing-applied branch was read. `update_product_pricing` and `update_variant_image_binding` return `Error:` for an unknown id before their no-op, so the no-op means everything is already at target. `delete_product_metafields` treats not-found as idempotent success by design. `delete_product_media` replies `CONFIRMED — … (no-op)` when every media id is unattached, which includes a typo. It stays: an idempotent delete reaches the end state the caller wants (Robert, 2026-10-27).
+
 ## 2026-10-27 — audit-env `msgpack` (CVE-2026-114613)
 
 No SEC id of its own, same as the lockfile CVE round below. The `dependency-audit` gate went red on the `requirements-audit.lock` step. `main` (`333361d`) passed on 2026-10-26, so the advisory is new. It was found by the local gate run for Story 9.25.
