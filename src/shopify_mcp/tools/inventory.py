@@ -434,8 +434,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             else:
                 to_write.append(pair)
 
+        location_unresolved = bool(
+            target_location_gid and not location_resolved_for_any_variant and targets
+        )
         unresolved_location_block = ""
-        if target_location_gid and not location_resolved_for_any_variant and targets:
+        if location_unresolved:
             unresolved_location_block = (
                 f"\n  Unresolved location: {location_id} "
                 f"(not found on any of the targeted variants)"
@@ -502,15 +505,16 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
             # Story 9.25: only a genuine no-op reads CONFIRMED (no-op). A
             # skipped pair counts as failed, as a missing inventoryItem id
-            # does in update_variant_inventory_tracking. When no pair resolved
-            # at all, `_outcome_header` counts the unresolved variant ids and
-            # location instead, so an all-unresolved call reads FAILED too.
+            # does in update_variant_inventory_tracking, and so does a
+            # location_id that matched no level. When no variant id resolved
+            # at all, `_outcome_header` counts the unresolved ids instead, so
+            # an all-unresolved call reads FAILED too.
             header = _outcome_header(
                 "Variant inventory quantity update",
                 0,
-                len(skipped),
-                unresolved=len(unresolved_variants) + (1 if unresolved_location_block else 0),
-                resolved_any=bool(pairs),
+                len(skipped) + (1 if location_unresolved else 0),
+                unresolved=len(unresolved_variants),
+                resolved_any=bool(targets),
             )
             if header.startswith(_CONFIRMED_MARKER):
                 header += " (no-op)"
