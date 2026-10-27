@@ -4,7 +4,41 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-10-23.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-10-27.
+
+---
+
+## 2026-10-27 — Story 10.104 (SEC-04-errors-transport — raw `requests` exceptions escaped `execute()` unfenced and unbounded)
+
+Trello: https://trello.com/c/XUudHsQr (Story 10.104, Epic 10). This closes Story 10.69's bucket N (verifier F1). **This section was written before any code was edited** (card step 3).
+
+### Step 1: the facts, re-derived on `333361d` (gql 4.4.0)
+
+The card was written against gql 3.5.3. Story 10.107 (`e9beb86`) moved the pin to gql 4.4.0, which changes where the defect is:
+- gql 4's `RequestsHTTPTransport.execute` wraps `session.request(...)` in `except Exception: raise TransportConnectionFailed(str(e)) from e`. The transport does not stream, so requests reads the whole body inside that call. `ChunkedEncodingError` is therefore wrapped too. **No `requests` exception escapes gql unwrapped.**
+- `execute()`'s `_attempt` then caught `TransportConnectionFailed` and raised `e.__cause__ from None`, the raw `requests` exception. `e9beb86` added that on purpose, so that `publications._READ_FAILURES` (which listed `requests.RequestException`) still degraded a failed V2 read. The defect channel is now that re-raise, not a missing handler. A `TransportConnectionFailed` with no `Exception` cause went out as-is, also unfenced.
+- The card's repro, through the real `execute()` and `poll_job`, gave the same result for a raw exception and for one wrapped in `TransportConnectionFailed`: `ConnectionError(BadStatusLine(...))` escaped unfenced (106 characters), a `ChunkedEncodingError` escaped unfenced at 5,000 characters, and `poll_job` retried each one until the budget was used.
+
+### Step 2: the consumers
+
+| Consumer | Before | After (approach 2) |
+|---|---|---|
+| `_with_retry` (retries only `TransientShopifyError`) | not retried | not retried |
+| `poll_job` | broad `except Exception`: retries until the budget is used | `except ShopifyProtocolError`: retries until the budget is used |
+| `publications._READ_FAILURES` | caught by its `requests.RequestException` entry | caught by `ShopifyError`; the entry is removed |
+| Tools with `except Exception` (`catalog_hygiene`, `publications`, `inventory`, `media/_upload`) | capped at 300, unfenced, no reminder | fenced and bounded; `with_reminder` adds the reminder, because it reads the body |
+| Tools with no `except` (`products`, `collections`, and others) | FastMCP shows the full text (5,000 characters) | FastMCP shows fenced text, at most `REFLECT_MAX_LEN` |
+| `fetch_bytes`, the staged `requests.put` | not `execute()`; Story 10.95 fences or hides them | unchanged |
+
+No tool catches only `ShopifyError`, so no narrow tool-level catch changes its behavior.
+
+### Step 3: the decision (Robert, 2026-10-27)
+
+- **Approach 2.** A new class `ShopifyTransportError(ShopifyProtocolError)`, built through `_upstream_error` with the head `Shopify transport error: `. Our head stays outside the fence. The server's text goes inside the fence, sized to `REFLECT_MAX_LEN`, and `unfenced` keeps a copy for the ```json tails. A `TransportConnectionFailed` with no cause gets the same treatment.
+- **Mutations: never retry.** `execute()` does not retry a transport failure, for a read or for a mutation, which is the same as before. A connection reset during a mutation can come after Shopify has applied the write, so a retry can write twice. Only `poll_job` retries, at its own level, and it only reads. A read-only retry needs an operation-type signal that `execute()` does not have; that is not in this story's scope.
+- **`_READ_FAILURES` drops `requests.RequestException`.** `execute()` no longer raises it, so the entry can catch nothing. The `ShopifyError` entry now catches a transport failure, and a test keeps that proof.
+
+Approaches declined: approach 1 (plain `ShopifyProtocolError`) gives the same behavior but puts a transport failure and a non-GraphQL body in one class. Approach 3 (`TransientShopifyError`) makes `_with_retry` retry a mutation. Approach 4 (accept the risk) leaves a 5,000-character unfenced path open when a two-line fix closes it.
 
 ---
 
