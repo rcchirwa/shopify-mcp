@@ -148,8 +148,8 @@ class ShopifyError(_CarriesUnfenced):
 
 class ShopifyProtocolError(ShopifyError):
     """A non-GraphQL response (HTML error page, WAF interstitial, garbage
-    200) that may be transient — still a ShopifyError for every existing
-    caller."""
+    200), or no response at all (ShopifyTransportError), that may be
+    transient — still a ShopifyError for every existing caller."""
 
 
 class ShopifyTransportError(ShopifyProtocolError):

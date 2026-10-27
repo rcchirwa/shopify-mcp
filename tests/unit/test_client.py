@@ -335,25 +335,27 @@ def test_execute_raises_a_read_timeout_as_a_transport_error(shape, no_sleep):
 
     original = requests.exceptions.ReadTimeout("timed out")
     client = _make_scripted([shape(original)])
-    with pytest.raises(ShopifyTransportError, match=r"^Shopify transport error: ") as exc_info:
+    with pytest.raises(ShopifyTransportError) as exc_info:
         client.execute("query { __typename }")
+    assert str(exc_info.value) == _TRANSPORT_HEAD + fenced("timed out")
     assert exc_info.value.__cause__ is not None
     assert client._client.calls == 1
 
 
-def test_execute_fences_an_unchained_connection_failure():
+def test_execute_fences_an_unchained_connection_failure(no_sleep):
     from shopify_mcp.client import ShopifyTransportError
 
-    client = _make_client(exc=TransportConnectionFailed("no cause"))
+    client = _make_scripted([TransportConnectionFailed("no cause")])
     with pytest.raises(ShopifyTransportError) as exc_info:
         client.execute("query { __typename }")
     assert str(exc_info.value) == _TRANSPORT_HEAD + fenced("no cause")
+    assert client._client.calls == 1
 
 
 @_SHAPES
 def test_execute_never_retries_a_mutation_after_a_transport_failure(shape, no_sleep):
     # A reset can come after Shopify applied the write; a retry could write it
-    # twice (Robert, 2026-10-27: execute() never retries a transport failure).
+    # twice (docs/tech-debt.md, SEC-04-errors-transport: never retried).
     from shopify_mcp.client import ShopifyTransportError
 
     original = requests.ConnectionError("connection reset by peer")

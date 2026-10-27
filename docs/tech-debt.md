@@ -46,6 +46,16 @@ Approaches declined: approach 1 (plain `ShopifyProtocolError`) gives the same be
 - `operations/publications.py`: `_READ_FAILURES` is `(ShopifyError, TransientShopifyError)`. The test row that proves a transport failure degrades to the v1 records now raises `ShopifyTransportError`, which is what `execute()` raises.
 - Tests: `test_client.py` replaces Story 10.107's two re-raise tests and runs each case in both shapes (gql 4 wrapped, raw). `ConnectionError(BadStatusLine(...))` gives our head plus the fenced server text, and keeps an unfenced copy. A 5,000-character `ChunkedEncodingError` is at most `REFLECT_MAX_LEN` with one closing tag at the end. `ReadTimeout` and a cause-less `TransportConnectionFailed` give the new class. A mutation is attempted once, with no sleep. `poll_job`, through the real `execute()`, polls three times in a 3-second budget, and recovers when the next poll succeeds. `test_error_fencing.py` adds a `catalog_hygiene` mutation row (one reminder, fenced head, unfenced ```json tail, local `RuntimeError` unfenced) and an uncaught-tool row (fenced and bounded at FastMCP).
 
+### What the review changed
+
+`triple-threat-code-review` is not installed. `mattpocock-skills:code-review` (Standards and Spec, with the card plus the gql 4 correction as the spec) and a separate security review stood in for it. Two mutants were run: putting back the raw re-raise failed 14 tests, and raising `TransientShopifyError` instead failed 11, among them the call-count tests for "no mutation retry" and "`poll_job` retries until the budget is used".
+
+- **Fixed (Standards, judgement):** `test_error_fencing.py` built its own copy of the gql 4 wrapper and of the head string; it now imports `_wrapped_by_gql` and `_TRANSPORT_HEAD` from `test_client.py`. `ShopifyProtocolError`'s docstring now also names the no-response case, so the subclass reads true. The cause-less test now counts calls like its siblings. A test comment now cites this entry, not a person.
+- **Fixed (Spec):** the `ReadTimeout` test now pins the whole fenced message, not only the class.
+- **No change (Spec):** the tool-level rows use only the gql 4 wrapped shape. The conversion is in `execute()`, where both shapes are tested.
+- **No change (Spec):** a real `ConnectionError` text names our own store host (`HTTPSConnectionPool(host=…)`), so the host is inside the fence. This is the over-fencing Story 10.69 already accepted for HTTP errors.
+- **No change (security, Info):** the `unfenced` copy keeps a forged closing tag from the server. Only the ```json tails read it, and JSON encoding escapes it, as before this story. The security review drove real broken responses (a forged closer, a 5,000-byte status line, a broken chunked body) through the real client from a raw-socket server: one real closer each time, at most `REFLECT_MAX_LEN`, and no token in the text.
+
 ---
 
 ## 2026-10-23 — Story 10.107: gql 4 / graphql-core 3.3 (closes `graphql-core-3.2.6`)
