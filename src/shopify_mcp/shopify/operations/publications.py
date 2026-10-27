@@ -12,8 +12,6 @@ preview/confirm flow, userError mapping, and string formatting on top.
 import logging
 from typing import Any
 
-import requests
-
 from shopify_mcp.client import ShopifyError, TransientShopifyError
 from shopify_mcp.shopify._client import GraphQLClient
 from shopify_mcp.shopify._identifiers import is_supplied, reject_both_identifiers
@@ -35,13 +33,12 @@ from shopify_mcp.shopify.queries.publications import (
 PUBLICATIONS_PAGE_SIZE = 50
 
 # What ``ShopifyClient.execute`` (and so ``paginate``) raises for a failed
-# request: ShopifyError (permanent API errors, and ShopifyProtocolError for a
-# non-GraphQL response), TransientShopifyError (throttling / 429 / 5xx after
-# the retries), and requests.RequestException (connection errors and timeouts;
-# gql 4 wraps them, and ``execute`` raises the original again). A failed V2
-# assigned-records read degrades to the v1 records; anything else, such as a
-# programming error, still propagates.
-_READ_FAILURES = (ShopifyError, TransientShopifyError, requests.RequestException)
+# request: ShopifyError (permanent API errors, ShopifyProtocolError for a
+# non-GraphQL response, and ShopifyTransportError for a connection error or
+# timeout, Story 10.104) and TransientShopifyError (throttling / 429 / 5xx after
+# the retries). A failed V2 assigned-records read degrades to the v1 records;
+# anything else, such as a programming error, still propagates.
+_READ_FAILURES = (ShopifyError, TransientShopifyError)
 
 logger = logging.getLogger(__name__)
 
