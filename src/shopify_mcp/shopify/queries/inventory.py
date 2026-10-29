@@ -6,7 +6,7 @@ no imports from ``shopify.operations`` or ``tools``.
 
 **Shared fragment applies.** The two reads — ``GET_PRODUCT_INVENTORY`` (per
 variant) and ``GET_INVENTORY_ITEM`` (single item) — both select the 2024-07+
-``quantities(names: ["available"]) { name quantity }`` set on ``InventoryLevel``
+``quantities(names: ["available", "on_hand", "committed"]) { name quantity }`` set on ``InventoryLevel``
 verbatim, so it is factored into the ``InventoryLevelQuantities`` fragment both
 queries spread (Story 10.28 / A5, AC3). Each read still adds its own
 ``location`` selection (``id name`` for the product read, ``id`` for the item
@@ -15,13 +15,15 @@ read), which GraphQL keeps query-local. Centralizing only the version-sensitive
 one-line edit instead of two.
 """
 
-# Shared selection set for the "available" quantity on an InventoryLevel.
+# Shared selection set for the quantities on an InventoryLevel.
 # 2024-07+ replaced InventoryLevel.available with
 # `quantities(names: [...]) { name quantity }`. The `available` name is the
-# direct equivalent of the old field.
+# direct equivalent of the old field. Story 10.111: the writes set on-hand, so
+# `on_hand` is read for the comparison, and `committed` (on-hand - available)
+# is read to show why available is lower.
 INVENTORY_LEVEL_QUANTITIES = """
 fragment InventoryLevelQuantities on InventoryLevel {
-  quantities(names: ["available"]) { name quantity }
+  quantities(names: ["available", "on_hand", "committed"]) { name quantity }
 }
 """
 

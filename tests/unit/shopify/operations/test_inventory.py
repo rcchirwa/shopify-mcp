@@ -4,7 +4,7 @@ Offline unit tests for shopify.operations.inventory.
 These exercise the operations layer DIRECTLY with a FakeClient — no MCP server,
 no FastMCP import — proving the inventory operations are callable from non-MCP
 entry points (Story 10.28 / A5, AC4). The two reads (GET_PRODUCT_INVENTORY and
-GET_INVENTORY_ITEM) share the 2024-07+ "available" inventory-level selection, so
+GET_INVENTORY_ITEM) share the 2024-07+ inventory-level quantities selection, so
 it is factored into one InventoryLevelQuantities fragment both spread (AC3 — the
 fragment-reuse decision is pinned by test_shared_inventory_level_fragment).
 
@@ -14,6 +14,8 @@ Usage:
   pytest tests/unit/shopify/operations/test_inventory.py -v
 """
 
+from graphql import FieldNode, FragmentDefinitionNode, ListValueNode, StringValueNode, parse
+
 from shopify_mcp.shopify.operations import inventory as ops
 from shopify_mcp.shopify.queries import inventory as q
 from tests.support import FakeClient
@@ -22,13 +24,27 @@ from tests.support import FakeClient
 
 
 def test_shared_inventory_level_fragment_is_reused():
-    """The available-qty selection on InventoryLevel is identical across the two
+    """The quantities selection on InventoryLevel is identical across the two
     reads, so it lives in one fragment that both GET queries spread."""
     assert "fragment InventoryLevelQuantities on InventoryLevel" in q.INVENTORY_LEVEL_QUANTITIES
     for query in (q.GET_PRODUCT_INVENTORY, q.GET_INVENTORY_ITEM):
         assert "...InventoryLevelQuantities" in query
         # the fragment definition is embedded in the query document it's used in
         assert q.INVENTORY_LEVEL_QUANTITIES.strip() in query
+
+
+def test_shared_fragment_reads_available_on_hand_and_committed():
+    """Story 10.111: the write sets on-hand, so the read must return on-hand
+    (and committed, which explains why available is lower) as well as available."""
+    fragment = parse(q.INVENTORY_LEVEL_QUANTITIES).definitions[0]
+    assert isinstance(fragment, FragmentDefinitionNode)
+    (field,) = fragment.selection_set.selections
+    assert isinstance(field, FieldNode) and field.name.value == "quantities"
+    (arg,) = field.arguments
+    assert arg.name.value == "names"
+    assert isinstance(arg.value, ListValueNode)
+    names = [v.value for v in arg.value.values if isinstance(v, StringValueNode)]
+    assert names == ["available", "on_hand", "committed"]
 
 
 def test_mutations_do_not_carry_the_read_fragment():

@@ -19,7 +19,11 @@ _LOC = "gid://shopify/Location/5"
 _ITEM = "gid://shopify/InventoryItem/7"
 _LEVEL = {
     "location": {"id": _LOC, "name": "Main"},
-    "quantities": [{"name": "available", "quantity": 3}],
+    "quantities": [
+        {"name": "available", "quantity": 3},
+        {"name": "on_hand", "quantity": 3},
+        {"name": "committed", "quantity": 0},
+    ],
 }
 _INV_ITEM = {"inventoryItem": {"id": _ITEM, "inventoryLevels": {"nodes": [_LEVEL]}}}
 _SET_OK = {"inventorySetOnHandQuantities": {"userErrors": [], "inventoryAdjustmentGroup": {}}}
@@ -99,7 +103,7 @@ def test_update_inventory_sends_one_inventory_item_gid(inventory_item_id):
 def test_update_inventory_sends_one_location_gid_and_finds_the_level(location_id):
     tools, fc = _tools(inventory, [_INV_ITEM, _SET_OK])
     preview = tools["update_inventory"](inventory_item_id="7", location_id=location_id, quantity=1)
-    assert "Current quantity  : 3\n" in preview
+    assert "Current on-hand   : 3 (committed: 0, available: 3)\n" in preview
     tools, fc = _tools(inventory, [_INV_ITEM, _SET_OK])
     tools["update_inventory"](
         inventory_item_id="7", location_id=location_id, quantity=1, confirm=True
