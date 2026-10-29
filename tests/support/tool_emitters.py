@@ -313,9 +313,14 @@ def _discount() -> list[Call]:
     )
 
 
-def _level(available: int) -> dict[str, Any]:
+def _level(on_hand: int) -> dict[str, Any]:
+    # Story 10.111: the shared fragment reads all three names.
     return {
-        "quantities": [{"name": "available", "quantity": available}],
+        "quantities": [
+            {"name": "available", "quantity": on_hand},
+            {"name": "on_hand", "quantity": on_hand},
+            {"name": "committed", "quantity": 0},
+        ],
         "location": {"id": "gid://shopify/Location/9", "name": "Main"},
     }
 

@@ -1147,7 +1147,7 @@ def test_quantity_all_already_at_target_issues_no_mutation():
     assert len(fc.calls) == 1
 
 
-def test_quantity_successful_write_output_is_byte_identical():
+def test_quantity_successful_write_output_pins_exact_text():
     """Story 9.25 pin: the normal confirmed write keeps its exact text."""
     variants = [
         _variant("100", "S", "REEF-S", [_level(5, "gid://shopify/Location/9")]),

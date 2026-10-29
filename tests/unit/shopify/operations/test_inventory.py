@@ -4,7 +4,7 @@ Offline unit tests for shopify.operations.inventory.
 These exercise the operations layer DIRECTLY with a FakeClient — no MCP server,
 no FastMCP import — proving the inventory operations are callable from non-MCP
 entry points (Story 10.28 / A5, AC4). The two reads (GET_PRODUCT_INVENTORY and
-GET_INVENTORY_ITEM) share the 2024-07+ "available" inventory-level selection, so
+GET_INVENTORY_ITEM) share the 2024-07+ inventory-level quantities selection, so
 it is factored into one InventoryLevelQuantities fragment both spread (AC3 — the
 fragment-reuse decision is pinned by test_shared_inventory_level_fragment).
 
@@ -24,7 +24,7 @@ from tests.support import FakeClient
 
 
 def test_shared_inventory_level_fragment_is_reused():
-    """The available-qty selection on InventoryLevel is identical across the two
+    """The quantities selection on InventoryLevel is identical across the two
     reads, so it lives in one fragment that both GET queries spread."""
     assert "fragment InventoryLevelQuantities on InventoryLevel" in q.INVENTORY_LEVEL_QUANTITIES
     for query in (q.GET_PRODUCT_INVENTORY, q.GET_INVENTORY_ITEM):
