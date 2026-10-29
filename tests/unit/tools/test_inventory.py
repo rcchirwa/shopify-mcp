@@ -1148,7 +1148,9 @@ def test_quantity_all_already_at_target_issues_no_mutation():
 
 
 def test_quantity_successful_write_output_pins_exact_text():
-    """Story 9.25 pin: the normal confirmed write keeps its exact text."""
+    """Story 9.25 pin: the normal confirmed write keeps its exact text. Story
+    10.111: the Changed lines carry no (committed, available) detail, because
+    those values were read before the write and are no longer true."""
     variants = [
         _variant("100", "S", "REEF-S", [_level(5, "gid://shopify/Location/9")]),
         _variant("101", "M", "REEF-M", [_level(3, "gid://shopify/Location/9")]),
@@ -1165,10 +1167,8 @@ def test_quantity_successful_write_output_pins_exact_text():
         "  Target qty  : 0\n"
         "  Target loc  : all locations\n"
         "  Changed (2):\n"
-        "    • S @ Main — variant_id: 100, location: 9 — on-hand 5 → 0 "
-        "(committed: 0, available: 5)\n"
-        "    • M @ Main — variant_id: 101, location: 9 — on-hand 3 → 0 "
-        "(committed: 0, available: 3)\n"
+        "    • S @ Main — variant_id: 100, location: 9 — on-hand 5 → 0\n"
+        "    • M @ Main — variant_id: 101, location: 9 — on-hand 3 → 0\n"
         "  Unchanged (0):\n"
         "    (none)"
     ), out
@@ -1190,7 +1190,11 @@ def test_quantity_zero_out_writes_a_variant_whose_committed_units_hide_its_on_ha
     tools, fc = _build([_product_with_variants(variants), _set_inventory_ok()])
     out = tools["update_variant_inventory_quantity"](product_id="555", quantity=0, confirm=True)
     assert out.split("\n")[0] == "CONFIRMED — Variant inventory quantity update", out
-    assert "  Changed (1):\n" in out, out
+    assert (
+        "  Changed (1):\n"
+        "    • Butter / 4XL @ Main — variant_id: 100, location: 9 — on-hand 2 → 0\n"
+        "  Unchanged (0):\n"
+    ) in out, out
     assert [q for q, _ in fc.calls] == [GET_PRODUCT_INVENTORY, SET_INVENTORY]
     assert fc.calls[1][1] == {
         "input": {
@@ -1212,7 +1216,7 @@ def test_quantity_target_equal_to_available_but_not_on_hand_is_written():
     variants = [_variant("100", "S", "REEF-S", [_level(5, committed=2)])]
     tools, fc = _build([_product_with_variants(variants), _set_inventory_ok()])
     out = tools["update_variant_inventory_quantity"](product_id="555", quantity=3, confirm=True)
-    assert "on-hand 5 → 3 (committed: 2, available: 3)" in out, out
+    assert "— on-hand 5 → 3\n" in out, out
     assert fc.calls[1][0] == SET_INVENTORY
     assert fc.calls[1][1]["input"]["setQuantities"][0]["quantity"] == 3
 
@@ -1237,7 +1241,7 @@ def test_quantity_missing_on_hand_counts_as_needs_change():
     variants = [_variant("100", "S", "REEF-S", [level])]
     tools, fc = _build([_product_with_variants(variants), _set_inventory_ok()])
     out = tools["update_variant_inventory_quantity"](product_id="555", quantity=0, confirm=True)
-    assert "on-hand N/A → 0 (committed: N/A, available: 0)" in out, out
+    assert "— on-hand N/A → 0\n" in out, out
     assert fc.calls[1][0] == SET_INVENTORY
 
 

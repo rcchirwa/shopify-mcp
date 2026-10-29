@@ -574,6 +574,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if err:
             return with_reminder(err)
 
+        # No (committed, available) detail here: those values were read before
+        # the write, so after it they are no longer true.
+        changed_lines = "\n".join(
+            f"{_pair_prefix(v, lv, loc)} — on-hand {_current_display(cur)} → {quantity}"
+            for v, lv, cur, loc in to_write
+        )
+
         log_write(
             "update_variant_inventory_quantity",
             f"product={product_id} qty={quantity} location={location_id or 'all'} "
@@ -588,7 +595,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"  Product     : {title} (id: {product_id})\n"
             f"  Target qty  : {quantity}\n"
             f"  Target loc  : {target_loc_label}\n"
-            f"  Changed ({len(to_write)}):\n{write_lines}\n"
+            f"  Changed ({len(to_write)}):\n{changed_lines}\n"
             f"  Unchanged ({len(unchanged)}):\n{unchanged_lines}"
             f"{skipped_block}"
             f"{unresolved_variants_block}"
