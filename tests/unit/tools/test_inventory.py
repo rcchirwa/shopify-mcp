@@ -23,7 +23,7 @@ from shopify_mcp.tools.inventory import (
     GET_PRODUCT_INVENTORY,
     SET_INVENTORY,
     UPDATE_INVENTORY_ITEM_TRACKED,
-    _available_qty,
+    _level_qty,
 )
 from tests.support import CapturingServer, FakeClient, fenced
 
@@ -44,11 +44,21 @@ def _build(responses):
 # ---- Fixture builders ----
 
 
-def _level(available, location_gid="gid://shopify/Location/9"):
+def _quantities(on_hand, committed=0):
+    """The `quantities` list the shared fragment reads. Shopify derives
+    available = on_hand - committed."""
+    return [
+        {"name": "available", "quantity": on_hand - committed},
+        {"name": "on_hand", "quantity": on_hand},
+        {"name": "committed", "quantity": committed},
+    ]
+
+
+def _level(on_hand, location_gid="gid://shopify/Location/9", committed=0, name="Main"):
     """Build an InventoryLevel node in the 2024-07+ `quantities` shape."""
     return {
-        "quantities": [{"name": "available", "quantity": available}],
-        "location": {"id": location_gid, "name": "Main"},
+        "quantities": _quantities(on_hand, committed),
+        "location": {"id": location_gid, "name": name},
     }
 
 
@@ -75,59 +85,66 @@ def _variant(vid, title, sku, levels, tracked=True):
     }
 
 
-# ---- _available_qty helper ----
+# ---- _level_qty helper ----
 
 
-def test_available_qty_returns_quantity_for_available_name():
-    assert _available_qty({"quantities": [{"name": "available", "quantity": 7}]}) == 7
+def test_level_qty_returns_the_quantity_for_the_named_entry():
+    level = {"quantities": _quantities(on_hand=10, committed=7)}
+    assert _level_qty(level, "on_hand") == 10
+    assert _level_qty(level, "committed") == 7
+    assert _level_qty(level, "available") == 3
 
 
-def test_available_qty_ignores_other_names():
-    level = {
-        "quantities": [
-            {"name": "on_hand", "quantity": 10},
-            {"name": "available", "quantity": 3},
-        ]
-    }
-    assert _available_qty(level) == 3
+def test_level_qty_returns_none_when_the_name_is_missing():
+    assert _level_qty({"quantities": [{"name": "available", "quantity": 10}]}, "on_hand") is None
 
 
-def test_available_qty_returns_none_when_no_available_entry():
-    assert _available_qty({"quantities": [{"name": "on_hand", "quantity": 10}]}) is None
-
-
-def test_available_qty_returns_none_on_empty_or_missing_quantities():
-    assert _available_qty({}) is None
-    assert _available_qty({"quantities": None}) is None
-    assert _available_qty({"quantities": []}) is None
+def test_level_qty_returns_none_on_empty_or_missing_quantities():
+    assert _level_qty({}, "on_hand") is None
+    assert _level_qty({"quantities": None}, "on_hand") is None
+    assert _level_qty({"quantities": []}, "on_hand") is None
 
 
 # ---- get_inventory ----
 
 
-def test_get_inventory_renders_variant_lines_with_available_quantity():
+def test_get_inventory_renders_on_hand_committed_and_available_per_location():
+    """Story 10.111: one sub-line per location, with on-hand and committed as
+    well as available, so a level with committed units is visible."""
     tools, fc = _build(
         [
             _product_with_variants(
                 [
-                    _variant("100", "Small", "REEF-S", [_level(12)]),
+                    _variant(
+                        "100",
+                        "Small",
+                        "REEF-S",
+                        [
+                            _level(12),
+                            _level(2, "gid://shopify/Location/77", committed=2, name="Annex"),
+                        ],
+                    ),
                     _variant("101", "Medium", "REEF-M", [_level(0)]),
                 ]
             )
         ]
     )
     out = tools["get_inventory"](product_id="555")
-    assert "Luminous Reef Tee" in out
-    assert "Small" in out and "available: 12" in out
-    assert "Medium" in out and "available: 0" in out
-    assert "variant_id: 100" in out
-    assert "variant_id: 101" in out
+    assert out == (
+        "Inventory for: Luminous Reef Tee (id: 555)\n"
+        "\n"
+        "  • Small — SKU: REEF-S — variant_id: 100\n"
+        "      @ Main (location: 9) — on-hand: 12 — committed: 0 — available: 12\n"
+        "      @ Annex (location: 77) — on-hand: 2 — committed: 2 — available: 0\n"
+        "  • Medium — SKU: REEF-M — variant_id: 101\n"
+        "      @ Main (location: 9) — on-hand: 0 — committed: 0 — available: 0"
+    ), out
     # Query is the new 2024-07+ shape and was called with a full GID
     assert fc.calls[0][0] == GET_PRODUCT_INVENTORY
     assert fc.calls[0][1] == {"id": "gid://shopify/Product/555", "first": 50, "after": None}
 
 
-def test_get_inventory_falls_back_to_na_when_no_levels():
+def test_get_inventory_says_so_when_a_variant_has_no_levels():
     tools, fc = _build(
         [
             _product_with_variants(
@@ -138,11 +155,20 @@ def test_get_inventory_falls_back_to_na_when_no_levels():
         ]
     )
     out = tools["get_inventory"](product_id="555")
-    assert "available: N/A" in out
+    assert out.endswith("  • OneSize — SKU: ONE — variant_id: 200\n      (no inventory levels)"), (
+        out
+    )
 
 
-def test_get_inventory_falls_back_to_na_when_available_name_missing():
-    """Defensive: if Shopify returns a level without an 'available' entry, render N/A, not crash."""
+def test_get_inventory_names_a_location_by_id_when_its_name_is_missing():
+    level = {"quantities": _quantities(4), "location": {"id": "gid://shopify/Location/9"}}
+    tools, fc = _build([_product_with_variants([_variant("200", "S", "S1", [level])])])
+    out = tools["get_inventory"](product_id="555")
+    assert "      @ id 9 (location: 9) — on-hand: 4 — committed: 0 — available: 4" in out, out
+
+
+def test_get_inventory_falls_back_to_na_when_a_quantity_name_is_missing():
+    """Defensive: if Shopify returns a level without some quantity names, render N/A, not crash."""
     tools, fc = _build(
         [
             _product_with_variants(
@@ -163,7 +189,7 @@ def test_get_inventory_falls_back_to_na_when_available_name_missing():
         ]
     )
     out = tools["get_inventory"](product_id="555")
-    assert "available: N/A" in out
+    assert "— on-hand: 5 — committed: N/A — available: N/A" in out, out
 
 
 def test_get_inventory_handles_null_nested_fields_without_crashing():
@@ -202,8 +228,8 @@ def test_get_inventory_handles_null_nested_fields_without_crashing():
     )
     out = tools["get_inventory"](product_id="555")
     assert "Tracking Off" in out
-    assert "NoTrack" in out and "available: N/A" in out
-    assert "NullLevels" in out
+    assert "  • NoTrack — SKU: NOTRACK — variant_id: 500\n      (no inventory levels)" in out
+    assert "  • NullLevels — SKU: NULL — variant_id: 501\n      (no inventory levels)" in out
 
 
 def test_get_inventory_returns_not_found_on_missing_product():
@@ -236,13 +262,13 @@ def test_get_inventory_warns_when_variant_pagination_is_capped():
 # ---- update_inventory ----
 
 
-def _inventory_item_response(available, location_id="9"):
+def _inventory_item_response(on_hand, location_id="9", committed=0):
     return {
         "inventoryItem": {
             "inventoryLevels": {
                 "nodes": [
                     {
-                        "quantities": [{"name": "available", "quantity": available}],
+                        "quantities": _quantities(on_hand, committed),
                         "location": {"id": f"gid://shopify/Location/{location_id}"},
                     }
                 ]
@@ -252,7 +278,7 @@ def _inventory_item_response(available, location_id="9"):
 
 
 def test_update_inventory_preview_shows_current_qty_from_quantities_and_does_not_mutate():
-    tools, fc = _build([_inventory_item_response(available=5)])
+    tools, fc = _build([_inventory_item_response(on_hand=5)])
     out = tools["update_inventory"](
         inventory_item_id="42",
         location_id="9",
@@ -260,8 +286,8 @@ def test_update_inventory_preview_shows_current_qty_from_quantities_and_does_not
         confirm=False,
     )
     assert "PREVIEW" in out
-    assert "Current quantity  : 5" in out
-    assert "New quantity      : 0" in out
+    assert "Current on-hand   : 5 (committed: 0, available: 5)\n" in out
+    assert "New on-hand       : 0" in out
     assert "To apply, call again with confirm=True." in out
     # Only the GET ran; no SET
     assert len(fc.calls) == 1
@@ -270,20 +296,39 @@ def test_update_inventory_preview_shows_current_qty_from_quantities_and_does_not
 
 def test_update_inventory_preview_unknown_when_no_matching_location():
     # Inventory item response has location 9 but we ask about location 77
-    tools, fc = _build([_inventory_item_response(available=5, location_id="9")])
+    tools, fc = _build([_inventory_item_response(on_hand=5, location_id="9")])
     out = tools["update_inventory"](
         inventory_item_id="42",
         location_id="77",
         quantity=3,
         confirm=False,
     )
-    assert "Current quantity  : unknown" in out
+    assert "Current on-hand   : unknown" in out
+
+
+def test_update_inventory_preview_shows_committed_units_beside_on_hand():
+    """Story 10.111: the write sets on-hand, so the preview's current value is
+    on-hand too, with committed and available beside it."""
+    tools, fc = _build([_inventory_item_response(on_hand=2, committed=2)])
+    out = tools["update_inventory"](inventory_item_id="42", location_id="9", quantity=0)
+    assert "  Current on-hand   : 2 (committed: 2, available: 0)\n" in out, out
+    assert "  New on-hand       : 0" in out, out
+
+
+def test_update_inventory_preview_marks_a_missing_on_hand_unknown():
+    level = {
+        "quantities": [{"name": "available", "quantity": 3}],
+        "location": {"id": "gid://shopify/Location/9"},
+    }
+    tools, fc = _build([{"inventoryItem": {"inventoryLevels": {"nodes": [level]}}}])
+    out = tools["update_inventory"](inventory_item_id="42", location_id="9", quantity=0)
+    assert "  Current on-hand   : unknown (committed: N/A, available: 3)\n" in out, out
 
 
 def test_update_inventory_confirmed_calls_set_inventory_with_correct_gids():
     tools, fc = _build(
         [
-            _inventory_item_response(available=5),
+            _inventory_item_response(on_hand=5),
             {
                 "inventorySetOnHandQuantities": {
                     "inventoryAdjustmentGroup": {"createdAt": "2026-04-22T00:00:00Z"},
@@ -338,7 +383,7 @@ def test_update_inventory_rejects_out_of_range_quantity(quantity):
 def test_update_inventory_accepts_boundary_quantity(quantity):
     tools, fc = _build(
         [
-            _inventory_item_response(available=5),
+            _inventory_item_response(on_hand=5),
             {
                 "inventorySetOnHandQuantities": {
                     "inventoryAdjustmentGroup": {"createdAt": "2026-04-22T00:00:00Z"},
@@ -369,14 +414,14 @@ def test_update_inventory_handles_missing_inventory_item_without_crashing():
         confirm=False,
     )
     assert "PREVIEW" in out
-    assert "Current quantity  : unknown" in out
+    assert "Current on-hand   : unknown" in out
     assert "confirm=True" in out
 
 
 def test_update_inventory_surfaces_user_errors_as_error_string():
     tools, fc = _build(
         [
-            _inventory_item_response(available=5),
+            _inventory_item_response(on_hand=5),
             {
                 "inventorySetOnHandQuantities": {
                     "inventoryAdjustmentGroup": None,
@@ -1094,8 +1139,10 @@ def test_quantity_all_already_at_target_issues_no_mutation():
         "  Target loc  : all locations\n"
         "  Changed     : (none — nothing writable at target)\n"
         "  Unchanged (2):\n"
-        "    • S @ Main — variant_id: 100, location: 9 — already at 0\n"
-        "    • M @ Main — variant_id: 101, location: 9 — already at 0"
+        "    • S @ Main — variant_id: 100, location: 9 — on-hand already at 0 "
+        "(committed: 0, available: 0)\n"
+        "    • M @ Main — variant_id: 101, location: 9 — on-hand already at 0 "
+        "(committed: 0, available: 0)"
     ), out
     assert len(fc.calls) == 1
 
@@ -1118,11 +1165,80 @@ def test_quantity_successful_write_output_is_byte_identical():
         "  Target qty  : 0\n"
         "  Target loc  : all locations\n"
         "  Changed (2):\n"
-        "    • S @ Main — variant_id: 100, location: 9 — 5 → 0\n"
-        "    • M @ Main — variant_id: 101, location: 9 — 3 → 0\n"
+        "    • S @ Main — variant_id: 100, location: 9 — on-hand 5 → 0 "
+        "(committed: 0, available: 5)\n"
+        "    • M @ Main — variant_id: 101, location: 9 — on-hand 3 → 0 "
+        "(committed: 0, available: 3)\n"
         "  Unchanged (0):\n"
         "    (none)"
     ), out
+
+
+def test_quantity_zero_out_writes_a_variant_whose_committed_units_hide_its_on_hand():
+    """Story 10.111: on-hand 2 with 2 committed reads available 0. The write
+    sets on-hand, so a target of 0 must write it, not call it "already at 0"."""
+    variants = [_variant("100", "Butter / 4XL", "TB-4XL", [_level(2, committed=2)])]
+    tools, fc = _build([_product_with_variants(variants), _set_inventory_ok()])
+    preview = tools["update_variant_inventory_quantity"](product_id="555", quantity=0)
+    assert (
+        "  Would change (1):\n"
+        "    • Butter / 4XL @ Main — variant_id: 100, location: 9 — on-hand 2 → 0 "
+        "(committed: 2, available: 0)\n"
+        "  Unchanged (0):\n"
+    ) in preview, preview
+
+    tools, fc = _build([_product_with_variants(variants), _set_inventory_ok()])
+    out = tools["update_variant_inventory_quantity"](product_id="555", quantity=0, confirm=True)
+    assert out.split("\n")[0] == "CONFIRMED — Variant inventory quantity update", out
+    assert "  Changed (1):\n" in out, out
+    assert [q for q, _ in fc.calls] == [GET_PRODUCT_INVENTORY, SET_INVENTORY]
+    assert fc.calls[1][1] == {
+        "input": {
+            "reason": "correction",
+            "setQuantities": [
+                {
+                    "inventoryItemId": "gid://shopify/InventoryItem/100",
+                    "locationId": "gid://shopify/Location/9",
+                    "quantity": 0,
+                }
+            ],
+        }
+    }
+
+
+def test_quantity_target_equal_to_available_but_not_on_hand_is_written():
+    """Story 10.111, the class in general: on-hand 5, committed 2, available 3,
+    target 3. The target matches available only, so the pair needs a write."""
+    variants = [_variant("100", "S", "REEF-S", [_level(5, committed=2)])]
+    tools, fc = _build([_product_with_variants(variants), _set_inventory_ok()])
+    out = tools["update_variant_inventory_quantity"](product_id="555", quantity=3, confirm=True)
+    assert "on-hand 5 → 3 (committed: 2, available: 3)" in out, out
+    assert fc.calls[1][0] == SET_INVENTORY
+    assert fc.calls[1][1]["input"]["setQuantities"][0]["quantity"] == 3
+
+
+def test_quantity_on_hand_at_target_with_committed_units_is_unchanged():
+    """On-hand already equals the target, so no write, even though available
+    differs (on-hand 3, committed 3, available 0, target 3)."""
+    variants = [_variant("100", "S", "REEF-S", [_level(3, committed=3)])]
+    tools, fc = _build([_product_with_variants(variants)])
+    out = tools["update_variant_inventory_quantity"](product_id="555", quantity=3, confirm=True)
+    assert out.split("\n")[0] == "CONFIRMED — Variant inventory quantity update (no-op)", out
+    assert "— on-hand already at 3 (committed: 3, available: 0)" in out, out
+    assert [q for q, _ in fc.calls] == [GET_PRODUCT_INVENTORY]
+
+
+def test_quantity_missing_on_hand_counts_as_needs_change():
+    """No on_hand entry: write it (the safer default), and show N/A."""
+    level = {
+        "quantities": [{"name": "available", "quantity": 0}],
+        "location": {"id": "gid://shopify/Location/9", "name": "Main"},
+    }
+    variants = [_variant("100", "S", "REEF-S", [level])]
+    tools, fc = _build([_product_with_variants(variants), _set_inventory_ok()])
+    out = tools["update_variant_inventory_quantity"](product_id="555", quantity=0, confirm=True)
+    assert "on-hand N/A → 0 (committed: N/A, available: 0)" in out, out
+    assert fc.calls[1][0] == SET_INVENTORY
 
 
 def test_quantity_all_variant_ids_unresolved_reads_failed_and_sends_no_mutation():

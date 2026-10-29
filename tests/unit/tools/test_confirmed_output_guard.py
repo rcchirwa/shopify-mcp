@@ -419,7 +419,7 @@ def _check_delete_webhook() -> tuple[str, FakeClient]:
 def _check_update_inventory() -> tuple[str, FakeClient]:
     tools, fc = _build_inventory(
         [
-            _inventory_item_response(available=5),
+            _inventory_item_response(on_hand=5),
             {
                 "inventorySetOnHandQuantities": {
                     "inventoryAdjustmentGroup": {"createdAt": "2026-04-22T00:00:00Z"},

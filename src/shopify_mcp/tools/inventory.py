@@ -53,14 +53,22 @@ __all__ = [
 INVENTORY_QTY_MAX = 2_147_483_647
 
 
-def _available_qty(level: dict[str, Any]) -> int | None:
-    """Extract the 'available' quantity from an InventoryLevel's quantities
-    array (2024-07+ shape). Returns the integer quantity, or None if the
-    `available` name wasn't returned."""
+def _level_qty(level: dict[str, Any], name: str) -> int | None:
+    """Extract one named quantity (e.g. 'on_hand') from an InventoryLevel's
+    quantities array (2024-07+ shape). Returns the integer quantity, or None
+    if that name wasn't returned."""
     for q in level.get("quantities") or []:
-        if q.get("name") == "available":
+        if q.get("name") == name:
             return q.get("quantity")
     return None
+
+
+def _qty_detail(level: dict[str, Any]) -> str:
+    """Render '(committed: X, available: Y)' for a level. The writes set
+    on-hand, so on-hand is the compared value and these two only explain it."""
+    committed = _current_display(_level_qty(level, "committed"))
+    available = _current_display(_level_qty(level, "available"))
+    return f"(committed: {committed}, available: {available})"
 
 
 def _tracked_display(current: bool | None) -> bool | str:
@@ -115,14 +123,26 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         for variant in variants:
             inv_item = variant.get("inventoryItem") or {}
             levels = (inv_item.get("inventoryLevels") or {}).get("nodes", []) or []
-            # Preserve 0 as a legit qty — only fall back to "N/A" on missing.
-            qty: int | str | None = _available_qty(levels[0]) if levels else None
-            if qty is None:
-                qty = "N/A"
             lines.append(
                 f"  • {variant['title']} — SKU: {variant.get('sku', 'N/A')} "
-                f"— available: {qty} — variant_id: {from_gid(variant['id'])}"
+                f"— variant_id: {from_gid(variant['id'])}"
             )
+            if not levels:
+                lines.append("      (no inventory levels)")
+            # Story 10.111: one line per location, with on-hand and committed
+            # as well as available. Preserve 0 as a legit qty — N/A on missing.
+            for lv in levels:
+                loc = lv.get("location") or {}
+                loc_id = from_gid(loc.get("id") or "")
+                loc_name = loc.get("name") or f"id {loc_id}"
+                on_hand, committed, available = (
+                    _current_display(_level_qty(lv, name))
+                    for name in ("on_hand", "committed", "available")
+                )
+                lines.append(
+                    f"      @ {loc_name} (location: {loc_id}) — on-hand: {on_hand} "
+                    f"— committed: {committed} — available: {available}"
+                )
         if capped:
             lines.append(
                 "  WARNING: variant pagination stopped short — "
@@ -162,17 +182,19 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         inv_item = ops.read_inventory_item_levels(client, item_gid) or {}
         levels = (inv_item.get("inventoryLevels") or {}).get("nodes", [])
         matching = [lv for lv in levels if lv.get("location", {}).get("id") == location_gid]
-        # Preserve 0 as a legit current qty — only fall back to "unknown" on missing.
-        current_qty: int | str | None = _available_qty(matching[0]) if matching else None
+        # Story 10.111: the write sets on-hand, so the current value shown is
+        # on-hand too. Preserve 0 as a legit current qty — "unknown" on missing.
+        current_qty: int | str | None = _level_qty(matching[0], "on_hand") if matching else None
         if current_qty is None:
             current_qty = "unknown"
+        current_line = f"{current_qty} {_qty_detail(matching[0])}" if matching else current_qty
 
         preview = (
             f"PREVIEW — Inventory update\n"
             f"  inventory_item_id : {inventory_item_id}\n"
             f"  location_id       : {location_id}\n"
-            f"  Current quantity  : {current_qty}\n"
-            f"  New quantity      : {quantity}"
+            f"  Current on-hand   : {current_line}\n"
+            f"  New on-hand       : {quantity}"
         )
 
         return write_gate(
@@ -408,7 +430,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                     continue
                 if target_location_gid:
                     location_resolved_for_any_variant = True
-                current_qty = _available_qty(lv)
+                # Story 10.111: compare with on-hand, the value the mutation
+                # sets. Available is lower by the committed units, so a
+                # comparison with available skipped stock held by open orders.
+                current_qty = _level_qty(lv, "on_hand")
                 pairs.append((v, lv, current_qty, loc_gid))
 
         # Split pairs into three disjoint buckets:
@@ -417,7 +442,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         #               the whole setQuantities batch with a Shopify validation
         #               error, so we drop them before the mutation and report
         #               them separately)
-        #   unchanged — current qty already matches target
+        #   unchanged — current on-hand qty already matches target
         # `current_qty is None` is treated as "needs change" — the safer default
         # than silently skipping, since the caller asked to set a target value.
         to_write = []
@@ -446,14 +471,15 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         write_lines = (
             "\n".join(
-                f"{_pair_prefix(v, lv, loc)} — {_current_display(cur)} → {quantity}"
+                f"{_pair_prefix(v, lv, loc)} — on-hand {_current_display(cur)} → {quantity} "
+                f"{_qty_detail(lv)}"
                 for v, lv, cur, loc in to_write
             )
             or "    (none)"
         )
         unchanged_lines = (
             "\n".join(
-                f"{_pair_prefix(v, lv, loc)} — already at {quantity}"
+                f"{_pair_prefix(v, lv, loc)} — on-hand already at {quantity} {_qty_detail(lv)}"
                 for v, lv, cur, loc in unchanged
             )
             or "    (none)"
@@ -548,11 +574,6 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if err:
             return with_reminder(err)
 
-        changed_lines = "\n".join(
-            f"{_pair_prefix(v, lv, loc)} — {_current_display(cur)} → {quantity}"
-            for v, lv, cur, loc in to_write
-        )
-
         log_write(
             "update_variant_inventory_quantity",
             f"product={product_id} qty={quantity} location={location_id or 'all'} "
@@ -567,7 +588,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"  Product     : {title} (id: {product_id})\n"
             f"  Target qty  : {quantity}\n"
             f"  Target loc  : {target_loc_label}\n"
-            f"  Changed ({len(to_write)}):\n{changed_lines}\n"
+            f"  Changed ({len(to_write)}):\n{write_lines}\n"
             f"  Unchanged ({len(unchanged)}):\n{unchanged_lines}"
             f"{skipped_block}"
             f"{unresolved_variants_block}"
