@@ -40,7 +40,7 @@ from shopify_mcp.shopify.queries.catalog_hygiene import (
 )
 
 # Story 9.28: 250 is Shopify's page maximum; 10 pages is 2,500 entries of one
-# type, far above the 48 values the largest live attribute had.
+# type, far above the 85 values the largest live attribute had.
 METAOBJECTS_PAGE_SIZE = 250
 METAOBJECTS_MAX_PAGES = 10
 

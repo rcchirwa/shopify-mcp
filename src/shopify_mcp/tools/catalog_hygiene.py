@@ -1706,6 +1706,7 @@ def _category_value_payload(
     found: bool = False,
     created: bool = False,
     errors: list[dict[str, Any]] | None = None,
+    alternates: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """JSON tail for resolve_category_metafield_value.
 
@@ -1725,6 +1726,7 @@ def _category_value_payload(
         "found": found,
         "created": created,
         "category": category,
+        "alternates": alternates or [],
         "attribute": attribute,
         "value": value,
         "metaobject": metaobject,
@@ -1742,14 +1744,32 @@ def _category_value_error(
     tail: str | None = None,
     choices: list[str] | None = None,
     category: dict[str, Any] | None = None,
+    alternates: list[dict[str, Any]] | None = None,
 ) -> str:
     """Render one error. `tail` is the unfenced copy when `head` carries a fence."""
     error: dict[str, Any] = {"message": tail if tail is not None else head, "stage": stage}
     if choices is not None:
         error["choices"] = choices
+    body = f"Error — resolve_category_metafield_value\n  {head}\n{_alternates_line(alternates)}"
     return _render(
-        f"Error — resolve_category_metafield_value\n  {head}",
-        _category_value_payload(ok=False, preview=preview, category=category, errors=[error]),
+        body.rstrip("\n"),
+        _category_value_payload(
+            ok=False, preview=preview, category=category, alternates=alternates, errors=[error]
+        ),
+    )
+
+
+def _alternates_line(alternates: list[dict[str, Any]] | None) -> str:
+    """Head line for a category search with runner-ups, or "" when there are none.
+
+    Live on 2026-10-30, "T-Shirts" best-matched Baby & Children's T-Shirts, not
+    aa-1-13-8. The fabric values were the same, but a caller must see the pick.
+    """
+    if not alternates:
+        return ""
+    return (
+        f"  Alternates : {len(alternates)} runner-up(s) (see JSON tail). "
+        f"Pass a TaxonomyCategory GID to choose one.\n"
     )
 
 
@@ -4432,9 +4452,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
 
         # --- Category: GID passthrough or taxonomy search (shared with 9.1).
-        chosen, _alternates, cat_err = _resolve_taxonomy_category(
-            client, category, resolve_strategy
-        )
+        chosen, alternates, cat_err = _resolve_taxonomy_category(client, category, resolve_strategy)
         if cat_err or chosen is None:
             err = cat_err or "category resolve failed"
             return _category_value_error(
@@ -4473,6 +4491,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 tail=lead + ", ".join(names),
                 choices=names,
                 category=category_info,
+                alternates=alternates,
             )
 
         # --- Value: matched by name within the attribute's taxonomy values.
@@ -4482,34 +4501,35 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         match = next((v for v in values if _taxonomy_key(v["name"]) == value_key), None)
         if match is None:
             names = [v["name"] for v in values]
-            lead = (
-                f"Value {_cap(value.strip())!r} is not a {attr['name']} value of this "
-                f"category. Valid choices: "
-            )
+            lead = f"Value {_cap(value.strip())!r} is not a "
+            rest = " value of this category. Valid choices: "
             more = (
                 f" (only the first {_TAXONOMY_VALUES_PAGE} values were read)"
                 if (values_conn.get("pageInfo") or {}).get("hasNextPage")
                 else ""
             )
             return _category_value_error(
-                lead + wrap(", ".join(names)) + more,
+                lead + wrap(attr["name"]) + rest + wrap(", ".join(names)) + more,
                 "value",
                 preview=preview,
-                tail=lead + ", ".join(names) + more,
+                tail=lead + attr["name"] + rest + ", ".join(names) + more,
                 choices=names,
                 category=category_info,
+                alternates=alternates,
             )
 
         handle = _attribute_handle(attr["name"])
         metaobject_type = f"shopify--{handle}"
         context: dict[str, Any] = {
             "category": category_info,
+            "alternates": alternates,
             "attribute": {"id": attr["id"], "name": attr["name"]},
             "value": {"id": match["id"], "name": match["name"]},
         }
         lines = (
             f"  Category   : {wrap(category_info['fullName'] or '')} ({category_info['id']})\n"
-            f"  Attribute  : {wrap(attr['name'])} "
+            + _alternates_line(alternates)
+            + f"  Attribute  : {wrap(attr['name'])} "
             f"(metafield {_CATEGORY_METAFIELD_NAMESPACE}.{handle})\n"
             f"  Value      : {wrap(match['name'])} ({match['id']})\n"
         )

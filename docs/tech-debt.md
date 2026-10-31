@@ -15,11 +15,13 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 ### Facts from the live probe (2026-10-30, API 2026-01)
 
 - **Scopes.** The token has `read_metaobjects` and `write_metaobjects`, so the app did not need a reinstall. The CLAUDE.md and README lists did not show them before this story. The token has 35 scopes, and those lists still show only the scopes that the tools need. `read_metaobject_definitions` is **not** granted: `metaobjectDefinitionByType` is refused. So the tool does not read the definition. It reads the entries (`metaobjects(type:)`) only.
-- **No attribute handle.** `TaxonomyChoiceListAttribute` has only `id`, `name` and `values`. The metaobject type (`shopify--fabric`) and the metafield key (`fabric`) are made from the attribute name. This rule was confirmed live for "Fabric" only. For a two-word name ("Decoration technique" → `decoration-technique`), it is an inference. If Shopify uses a different handle, the lookup finds no entries, and a create gets a `userErrors` refusal. It never gives a false GID.
+- **No attribute handle.** `TaxonomyChoiceListAttribute` has only `id`, `name` and `values`. The metaobject type (`shopify--fabric`) and the metafield key (`fabric`) are made from the attribute name. This rule was confirmed live for "Fabric" and for the two-word "Decoration technique" (type `shopify--decoration-technique`, which found Screen printing `610329886873`). If Shopify uses a different handle for some other attribute, the lookup finds no entries, and a create gets a `userErrors` refusal. It never gives a false GID.
 - **Match by link, not by name.** Each entry has a `taxonomy_reference` field that holds the TaxonomyValue GID. The tool matches on it. A shop can rename an entry, so its `displayName` is not a safe key.
 
 ### Limits, recorded
 
+- **Attributes per category:** one page of 50, with no `hasNextPage` check. T-Shirts had 15. An attribute past the first page would read as "not on this category".
+- **Category search:** a search term goes through `_resolve_taxonomy_category` (best-match by default). Live, "T-Shirts" picked Baby & Children's T-Shirts, not `aa-1-13-8`. The head shows an `Alternates` line and the tail an `alternates` list when the search had runner-ups. Pass a TaxonomyCategory GID to be exact.
 - **Values per attribute:** one page of 250. The largest live attribute had 85 values. A value past the first page is reported as not found, and the error says that only the first 250 values were read.
 - **Entries per type:** at most 10 pages of 250. If the walk stops before the end and the value is not found, the tool refuses to create, because a duplicate is worse than one admin step.
 - **Schema snapshot:** regenerated offline from the probe introspection. On `origin/main` documents, the fresh introspection added one line only: `CREATED_AT` in `ProductMediaSortKeys`. Shopify added it to 2026-01 after the 2026-09-26 capture. It does not change any document.

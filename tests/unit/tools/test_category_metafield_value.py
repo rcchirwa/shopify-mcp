@@ -430,3 +430,61 @@ def test_bad_inputs_are_refused_before_any_call(kwargs, needle):
     assert needle in _head(out)
     assert _tail(out)["errors"][0]["stage"] == "input"
     assert fc.calls == []
+
+
+# ---------- review fixes ----------
+
+
+def _ambiguous_search_response():
+    """Live on 2026-10-30, "T-Shirts" best-matched Baby & Children's T-Shirts first."""
+    baby = {
+        "id": "gid://shopify/TaxonomyCategory/aa-1-25-9-7",
+        "fullName": "Apparel & Accessories > Clothing > Baby & Children's Clothing > "
+        "Baby & Children's Tops > T-Shirts",
+        "name": "T-Shirts",
+        "level": 6,
+        "isLeaf": True,
+        "isRoot": False,
+    }
+    response = _search_response()
+    response["taxonomy"]["categories"]["nodes"].insert(0, baby)
+    return response
+
+
+def test_search_runner_ups_are_shown_in_head_and_tail():
+    tool, fc = _build(
+        [_ambiguous_search_response(), _attributes_response(), _metaobjects_page(_cotton_entry())]
+    )
+    out = tool(category="T-Shirts", attribute="fabric", value="Cotton")
+
+    assert "Alternates : 1 runner-up" in _head(out)
+    assert "TaxonomyCategory GID" in _head(out)
+    assert _tail(out)["alternates"] == [
+        {"id": TSHIRTS_GID, "fullName": TSHIRTS_FULL, "name": "T-Shirts"}
+    ]
+    assert fc.calls[1][1] == {"id": "gid://shopify/TaxonomyCategory/aa-1-25-9-7"}
+
+
+def test_runner_ups_are_shown_on_an_attribute_error_too():
+    """A wrong pick is the likely cause of an attribute error, so the error names it."""
+    tool, _fc = _build([_ambiguous_search_response(), _attributes_response()])
+    out = tool(category="T-Shirts", attribute="material", value="Cotton")
+
+    assert "Alternates : 1 runner-up" in _head(out)
+    assert len(_tail(out)["alternates"]) == 1
+
+
+def test_no_alternates_line_for_a_category_gid():
+    tool, _fc = _build([_attributes_response(), _metaobjects_page(_cotton_entry())])
+    out = tool(category=TSHIRTS_GID, attribute="fabric", value="Cotton")
+
+    assert "Alternates" not in _head(out)
+    assert _tail(out)["alternates"] == []
+
+
+def test_value_error_fences_the_attribute_name():
+    tool, _fc = _build([_attributes_response()])
+    out = tool(category=TSHIRTS_GID, attribute="fabric", value="Kevlar")
+
+    assert "not a <UNTRUSTED-DATA>Fabric</UNTRUSTED-DATA> value" in _head(out)
+    assert "not a Fabric value" in _tail(out)["errors"][0]["message"]
