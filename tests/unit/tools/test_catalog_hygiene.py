@@ -149,6 +149,7 @@ def test_register_adds_expected_tools():
         "delete_product_metafields",
         "get_product_metafields",
         "update_product_options",
+        "resolve_category_metafield_value",
     }
     assert fc.calls == []
 

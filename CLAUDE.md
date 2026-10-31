@@ -49,11 +49,13 @@ read_orders
 read_price_rules    write_price_rules
 read_discounts      write_discounts
 read_publications   write_publications
+read_metaobjects    write_metaobjects
 write_files
 ```
 
 Notes:
 - Media upload tools need both `write_files` and `write_products`.
+- `resolve_category_metafield_value` needs `read_metaobjects` to look up a value and `write_metaobjects` to create one (Story 9.28). Both were confirmed granted on the live token on 2026-10-30. `read_metaobject_definitions` is not granted, and no tool needs it.
 - Inventory zero-out works through the tools. `read_locations` is not needed.
   - `update_variant_inventory_quantity` sets **on-hand** stock at the locations that it reads from each variant's inventory levels (`GET_PRODUCT_INVENTORY` in `src/shopify_mcp/shopify/queries/inventory.py`). It reads only the first 10 levels per variant. If a variant has stock at more than 10 locations, check the other locations in Shopify admin.
   - Shopify shows available = on-hand − committed. To stop sales, set on-hand to 0. A variant with units committed to open orders then shows available below 0. With tracked = true and DENY, that variant cannot sell. Do not set on-hand to the committed count. If an order is cancelled, that stock becomes available and the product can sell again. The tool compares the target with on-hand (Story 10.111). It writes every variant whose on-hand is not the target, also when available is already 0. Example: a variant with on-hand 2 and 2 committed shows available 0, and a target of 0 writes on-hand 0. A variant whose on-hand equals the target is listed under `Unchanged (N):` as `— on-hand already at 0`. Read the stock back after the update. The preview line shows on-hand before and after, then committed and available: `— on-hand 2 → 0 (committed: 2, available: 0)`. `get_inventory` shows on-hand, committed and available for each location.

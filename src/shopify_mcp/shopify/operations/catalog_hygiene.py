@@ -25,8 +25,11 @@ from shopify_mcp.shopify.queries.catalog_hygiene import (
     GET_PRODUCT_VARIANTS_FOR_PRICING,
     METAFIELDS_DELETE_MUTATION,
     METAFIELDS_SET_MUTATION,
+    METAOBJECT_CREATE,
+    METAOBJECTS_BY_TYPE,
     PRODUCT_VARIANT_APPEND_MEDIA,
     PRODUCT_VARIANT_DETACH_MEDIA,
+    TAXONOMY_CATEGORY_ATTRIBUTES,
     TAXONOMY_SEARCH,
     UPDATE_PRODUCT_CATEGORY,
     UPDATE_PRODUCT_OPTION,
@@ -35,6 +38,11 @@ from shopify_mcp.shopify.queries.catalog_hygiene import (
     UPDATE_PRODUCT_VENDOR,
     _build_batch_resolve_query,
 )
+
+# Story 9.28: 250 is Shopify's page maximum; 10 pages is 2,500 entries of one
+# type, far above the 48 values the largest live attribute had.
+METAOBJECTS_PAGE_SIZE = 250
+METAOBJECTS_MAX_PAGES = 10
 
 # ---------- reads (return the raw Shopify response dict) ----------
 
@@ -57,6 +65,38 @@ def read_product_by_handle_min(client: GraphQLClient, handle: str) -> dict[str, 
 def search_taxonomy_categories(client: GraphQLClient, search: str) -> dict[str, Any]:
     """Run Shopify's Standard Product Taxonomy search for a free-text term."""
     return client.execute(TAXONOMY_SEARCH, {"search": search})
+
+
+def read_taxonomy_category_attributes(client: GraphQLClient, category_gid: str) -> dict[str, Any]:
+    """Read a taxonomy category's choice-list attributes and their values (Story 9.28)."""
+    return client.execute(TAXONOMY_CATEGORY_ATTRIBUTES, {"id": category_gid})
+
+
+def list_metaobjects_by_type(
+    client: GraphQLClient, metaobject_type: str
+) -> tuple[list[dict[str, Any]], bool]:
+    """List the shop's metaobjects of one type (Story 9.28).
+
+    Returns (nodes, capped). capped=True means the walk stopped before the end,
+    so a value missing from ``nodes`` may still exist in the shop.
+    """
+    _first, nodes, capped = client.paginate(
+        METAOBJECTS_BY_TYPE,
+        {"type": metaobject_type},
+        connection_path=["metaobjects"],
+        page_size=METAOBJECTS_PAGE_SIZE,
+        max_pages=METAOBJECTS_MAX_PAGES,
+    )
+    return nodes, capped
+
+
+def create_metaobject(
+    client: GraphQLClient, metaobject_type: str, fields: list[dict[str, str]]
+) -> dict[str, Any]:
+    """Execute a metaobjectCreate for one entry of ``metaobject_type`` (Story 9.28)."""
+    return client.execute(
+        METAOBJECT_CREATE, {"metaobject": {"type": metaobject_type, "fields": fields}}
+    )
 
 
 def read_product_snapshot_by_id(

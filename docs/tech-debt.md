@@ -8,6 +8,22 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-10-30 — Story 9.28: `resolve_category_metafield_value` (scope and API limits that shaped it)
+
+[Story 9.28](https://trello.com/c/Fwj3ujiY) adds a tool that maps a taxonomy value (fabric = Polyester on T-Shirts) to the shop metaobject GID that `set_product_metafields` takes for a `shopify.*` category metafield. If the shop has no entry yet, `confirm=True` creates it. Robert chose this approach (approach 2) on 2026-10-30, after a live read-only probe. The raw probe output is on the card.
+
+### Facts from the live probe (2026-10-30, API 2026-01)
+
+- **Scopes.** The token has `read_metaobjects` and `write_metaobjects`, so the app did not need a reinstall. The CLAUDE.md and README lists did not show them before this story. The token has 35 scopes, and those lists still show only the scopes that the tools need. `read_metaobject_definitions` is **not** granted: `metaobjectDefinitionByType` is refused. So the tool does not read the definition. It reads the entries (`metaobjects(type:)`) only.
+- **No attribute handle.** `TaxonomyChoiceListAttribute` has only `id`, `name` and `values`. The metaobject type (`shopify--fabric`) and the metafield key (`fabric`) are made from the attribute name. This rule was confirmed live for "Fabric" only. For a two-word name ("Decoration technique" → `decoration-technique`), it is an inference. If Shopify uses a different handle, the lookup finds no entries, and a create gets a `userErrors` refusal. It never gives a false GID.
+- **Match by link, not by name.** Each entry has a `taxonomy_reference` field that holds the TaxonomyValue GID. The tool matches on it. A shop can rename an entry, so its `displayName` is not a safe key.
+
+### Limits, recorded
+
+- **Values per attribute:** one page of 250. The largest live attribute had 85 values. A value past the first page is reported as not found, and the error says that only the first 250 values were read.
+- **Entries per type:** at most 10 pages of 250. If the walk stops before the end and the value is not found, the tool refuses to create, because a duplicate is worse than one admin step.
+- **Schema snapshot:** regenerated offline from the probe introspection. On `origin/main` documents, the fresh introspection added one line only: `CREATED_AT` in `ProductMediaSortKeys`. Shopify added it to 2026-01 after the 2026-09-26 capture. It does not change any document.
+
 ## 2026-10-30 — `graphql-core` (CVE-2026-119286)
 
 No SEC id of its own, same as the msgpack round below. The `dependency-audit` gate went red on the `requirements.lock` and `requirements-dev.lock` steps. `main` (`664e943`) pins the same version, so the advisory is new. It was found by the local gate run for Story 9.28.

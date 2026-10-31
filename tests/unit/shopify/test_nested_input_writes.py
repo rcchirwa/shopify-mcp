@@ -109,6 +109,7 @@ _VERDICTS: dict[str, str] = {
     f"{_OPS}.collections:create_collection": CREATE,
     f"{_OPS}.discounts:create_discount_code_basic": CREATE,
     f"{_OPS}.webhooks:create_webhook": CREATE,
+    f"{_OPS}.catalog_hygiene:create_metaobject": CREATE,
     f"{_OPS}.catalog_hygiene:set_metafields": ENTRY_LIST,
     f"{_OPS}.inventory:set_inventory_on_hand": ENTRY_LIST,
     f"{_MEDIA}._upload:_stage_upload": CREATE,

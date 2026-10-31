@@ -49,6 +49,7 @@ Requires `write_files` and `write_products` scopes. Local-file source paths are 
 | `delete_product_metafields` | Delete up to 25 metafields from Products or ProductVariants via `metafieldsDelete`; each entry addresses by either `metafieldId` GID or the `{ownerId, namespace, key}` triple (resolves to GID before the mutation); Shopify `NOT_FOUND` is treated as idempotent success-with-note so re-running is safe; per-entry errors surface in head + `errorsByIndex` map (preview + confirm; head + JSON tail) |
 | `get_product_metafields` | Read all metafields on a Shopify product, optionally filtered by `namespace` (e.g. `google` for Google Shopping feed diagnostics) and/or `keys`; accepts numeric ID, Product GID, or handle (pass an all-digit handle such as `2024` via `handle`, since a bare number in `product_id` always means a product ID; supplying both is refused before any network call — a **breaking change in Story 10.65**, which replaced the previous `product_id`-wins precedence that silently discarded the handle); `include_variants=true` also returns per-variant metafields; cursor-paginates both connections; returns dual head + JSON tail with `{product, metafields[], variantMetafields, totalFound}` (read-only — no new OAuth scopes; covered by existing `read_products`) |
 | `update_product_options` | Rename a product's variant option name (e.g., "Size") and/or its option values (e.g., "M-CRM" → "Medium") via `productOptionUpdate`; accepts numeric ID / GID / handle in `product_id`, or an unambiguous `handle` (pass an all-digit handle such as `2024` there, since a bare number in `product_id` always means a product ID; supplying both is refused before any network call rather than resolved by precedence — a write must never guess which product was meant); validates option + option-value GIDs against the product before mutating; idempotent no-op when target state already matches; defaults `variant_strategy` to `LEAVE_AS_IS` (preview + confirm; head + JSON tail per the Epic 9 amendment) |
+| `resolve_category_metafield_value` | Find the metaobject GID that a `shopify.*` category metafield takes for a taxonomy value (for example `category="T-Shirts"`, `attribute="fabric"`, `value="Polyester"`); `category` accepts a TaxonomyCategory GID or a search string with `resolve_strategy`; the match is by the metaobject's `taxonomy_reference`, not its name; an unknown attribute or value is an error that lists the valid choices; if the shop has no entry yet, the result says so and `confirm=True` creates it with `metaobjectCreate`; the JSON tail's `metafield` is the entry to send to `set_product_metafields` (preview + confirm when the entry is missing). Requires `read_metaobjects`, and `write_metaobjects` for the create |
 
 ### Inventory
 | Tool | Description |
@@ -403,6 +404,8 @@ read_discounts
 write_discounts
 read_publications
 write_publications
+read_metaobjects
+write_metaobjects
 write_files
 ```
 
