@@ -22,6 +22,7 @@ from shopify_mcp.shopify.queries.inventory import (
     SET_INVENTORY,
     UPDATE_INVENTORY_ITEM_TRACKED,
 )
+from shopify_mcp.tools._annotations import OVERWRITE, READ_ONLY
 from shopify_mcp.tools._filters import filter_variant_targets
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
@@ -109,7 +110,7 @@ def _quantity_range_error(quantity: int) -> str | None:
 
 def register(server: FastMCP, client: ShopifyClient) -> None:
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def get_inventory(product_id: str) -> str:
         """Get inventory levels for a product and all its variants."""
         err = product_id_error(product_id)
@@ -150,7 +151,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
         return "\n".join(lines)
 
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def update_inventory(
         inventory_item_id: str,
         location_id: str,
@@ -215,7 +216,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             log_description=f"item={inventory_item_id} location={location_id} | {current_qty} → {quantity}",
         )
 
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def update_variant_inventory_tracking(
         product_id: str,
         tracked: bool,
@@ -373,7 +374,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"{cap_block}"
         )
 
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def update_variant_inventory_quantity(
         product_id: str,
         quantity: int,

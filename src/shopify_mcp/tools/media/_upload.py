@@ -21,6 +21,7 @@ from mcp.server.fastmcp import FastMCP
 
 from shopify_mcp.client import ShopifyClient, poll_job
 from shopify_mcp.settings import Settings
+from shopify_mcp.tools._annotations import CREATE
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._http import default_headers
 from shopify_mcp.tools._log import log_write
@@ -364,7 +365,7 @@ def _maybe_reorder_new_media(
 
 
 def register(server: FastMCP, client: ShopifyClient) -> None:
-    @server.tool()
+    @server.tool(annotations=CREATE)
     def upload_product_image(
         product_id: str,
         source: str,

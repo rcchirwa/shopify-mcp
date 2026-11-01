@@ -20,6 +20,7 @@ from shopify_mcp.settings import idna_normalize
 from shopify_mcp.shopify._ids import INVALID_SUBSCRIPTION_ID_ERROR, webhook_subscription_gid
 from shopify_mcp.shopify.operations import webhooks as ops
 from shopify_mcp.shopify.queries.webhooks import CREATE_WEBHOOK, DELETE_WEBHOOK, LIST_WEBHOOKS
+from shopify_mcp.tools._annotations import CREATE, OVERWRITE, READ_ONLY
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._write_tool import _confirmed_from_preview, write_gate
 
@@ -86,7 +87,7 @@ def _endpoint_url(endpoint: dict | None) -> str:
 
 def register(server: FastMCP, client: ShopifyClient) -> None:
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def list_webhooks(limit: int = 50) -> str:
         """
         List active webhook subscriptions on the store.
@@ -107,7 +108,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
         return "\n".join(lines)
 
-    @server.tool()
+    @server.tool(annotations=CREATE)
     def register_webhook(
         topic: str,
         endpoint_url: str,
@@ -158,7 +159,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             ),
         )
 
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def delete_webhook(subscription_id: str, confirm: bool = False) -> str:
         """
         Delete a webhook subscription by numeric subscription id.

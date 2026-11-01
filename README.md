@@ -9,85 +9,89 @@ Enables Claude to read products, check inventory, manage collections, handle dis
 ## Tools exposed to Claude
 
 ### Products
-| Tool | Description |
-|------|-------------|
-| `get_products` | List products with id, title, handle, status, variants — cursor-paginated (up to 2500), optional `status` filter (ACTIVE / DRAFT / ARCHIVED / UNLISTED) and `limit`; appends an explicit WARNING when the page cap truncates the list. Each product's variants are capped at 50 and cannot be paginated from here; a product past that cap gets its own WARNING line — use `get_product` for its full variant list |
-| `get_product` | Fetch a single product by id or handle (one identifier only — see the note below the table) |
-| `get_product_description` | Fetch the raw `body_html` for a single product by id or handle (one identifier only — see the note below the table) |
-| `get_product_full` | Fetch a full product record — body_html, tags, type, vendor, seo, category, variants, options — by id or handle (one identifier only — see the note below the table) |
-| `update_product_title` | Update a product title (preview + confirm pattern) |
-| `update_product_description` | Update a product's HTML description |
-| `update_product_tags` | Update product tags — replace / append / remove modes (preview + confirm) |
-| `update_product_status` | Transition product status — ACTIVE / DRAFT / ARCHIVED / UNLISTED (preview + confirm) |
-| `update_variant_inventory_policy` | Set variant inventoryPolicy — DENY / CONTINUE (preview + confirm; defaults to all variants) |
-| `update_product_pricing` | Bulk update variant `price` / `compareAtPrice` via `productVariantsBulkUpdate`; resolves variant IDs from numeric / GID / SKU (preview + confirm) |
-| `get_products_by_collection` | List the products in a collection by handle — cursor-paginated (up to 2500), optional `limit`; appends an explicit WARNING and switches the header count to "shown" when the page cap truncates the list |
-| `get_products_with_descriptions` | Bulk read product `body_html`, optionally scoped to a collection handle — cursor-paginated with `limit` as a **total** across pages (clamped to 1–250); appends an explicit WARNING when more products exist than were returned. Each `body_html` is returned inside `<UNTRUSTED-DATA>` delimiters |
-| `get_product_collections` | List every collection a product belongs to (manual + smart, with type label) |
+| Tool | Description | Hint set |
+|------|-------------|----------|
+| `get_products` | List products with id, title, handle, status, variants — cursor-paginated (up to 2500), optional `status` filter (ACTIVE / DRAFT / ARCHIVED / UNLISTED) and `limit`; appends an explicit WARNING when the page cap truncates the list. Each product's variants are capped at 50 and cannot be paginated from here; a product past that cap gets its own WARNING line — use `get_product` for its full variant list | `READ_ONLY` |
+| `get_product` | Fetch a single product by id or handle (one identifier only — see the note below the table) | `READ_ONLY` |
+| `get_product_description` | Fetch the raw `body_html` for a single product by id or handle (one identifier only — see the note below the table) | `READ_ONLY` |
+| `get_product_full` | Fetch a full product record — body_html, tags, type, vendor, seo, category, variants, options — by id or handle (one identifier only — see the note below the table) | `READ_ONLY` |
+| `update_product_title` | Update a product title (preview + confirm pattern) | `OVERWRITE` |
+| `update_product_description` | Update a product's HTML description | `OVERWRITE` |
+| `update_product_seo` | Update a product's SEO title and/or meta description; the field you do not supply is kept (preview + confirm) | `OVERWRITE` |
+| `update_product_tags` | Update product tags — replace / append / remove modes (preview + confirm) | `OVERWRITE` |
+| `update_product_status` | Transition product status — ACTIVE / DRAFT / ARCHIVED / UNLISTED (preview + confirm) | `OVERWRITE` |
+| `update_variant_inventory_policy` | Set variant inventoryPolicy — DENY / CONTINUE (preview + confirm; defaults to all variants) | `OVERWRITE` |
+| `update_product_pricing` | Bulk update variant `price` / `compareAtPrice` via `productVariantsBulkUpdate`; resolves variant IDs from numeric / GID / SKU (preview + confirm) | `OVERWRITE` |
+| `get_products_by_collection` | List the products in a collection by handle — cursor-paginated (up to 2500), optional `limit`; appends an explicit WARNING and switches the header count to "shown" when the page cap truncates the list | `READ_ONLY` |
+| `get_products_with_descriptions` | Bulk read product `body_html`, optionally scoped to a collection handle — cursor-paginated with `limit` as a **total** across pages (clamped to 1–250); appends an explicit WARNING when more products exist than were returned. Each `body_html` is returned inside `<UNTRUSTED-DATA>` delimiters | `READ_ONLY` |
+| `get_product_collections` | List every collection a product belongs to (manual + smart, with type label) | `READ_ONLY` |
 
 **One identifier, not both.** `get_product`, `get_product_description` and `get_product_full` take `product_id` **or** `handle`. Supplying both is refused before any network call — a **breaking change in Story 10.68**, replacing the previous `product_id`-wins precedence that silently discarded the handle, so a caller naming one product by id and a *different* one by handle got the first with nothing indicating the second was ignored. The same rule governs the four Publications tools below and the six `get_product_metafields`-family tools (Story 10.65); it is now the single rule for this parameter pair across every product-resolving tool in the repo.
 
 ### Media
-| Tool | Description |
-|------|-------------|
-| `list_product_media` | List all media (images, videos, 3D) attached to a product with IDs, alt text, status, preview URLs (read-only) |
-| `upload_product_image` | Upload an image from a public https:// URL and attach it to a product; optional `position` for featured placement (preview + confirm) |
-| `reorder_product_media` | Change the display order of media on a product; 1-indexed for callers, polls the async job (preview + confirm) |
-| `update_product_media` | Update alt text on an existing piece of product media (preview + confirm) |
-| `delete_product_media` | Remove one or more media items from a product by media ID (preview + confirm) |
+| Tool | Description | Hint set |
+|------|-------------|----------|
+| `list_product_media` | List all media (images, videos, 3D) attached to a product with IDs, alt text, status, preview URLs (read-only) | `READ_ONLY` |
+| `upload_product_image` | Upload an image from a public https:// URL and attach it to a product; optional `position` for featured placement (preview + confirm) | `CREATE` |
+| `reorder_product_media` | Change the display order of media on a product; 1-indexed for callers, polls the async job (preview + confirm) | `OVERWRITE` |
+| `update_product_media` | Update alt text on an existing piece of product media (preview + confirm) | `OVERWRITE` |
+| `delete_product_media` | Remove one or more media items from a product by media ID (preview + confirm) | `OVERWRITE` |
 
 Requires `write_files` and `write_products` scopes. Local-file source paths are not accepted in v1 — URL only.
 
 ### Catalog hygiene
-| Tool | Description |
-|------|-------------|
-| `update_product_category` | Set or change a product's Standard Product Taxonomy category; accepts a TaxonomyCategory GID or a free-text search string with `resolve_strategy` (exact / best-match / reject-ambiguous); accepts numeric ID / GID / handle in `product_id`, or an unambiguous `handle` (pass an all-digit handle such as `2024` there, since a bare number in `product_id` always means a product ID; supplying both is refused before any network call rather than resolved by precedence — a write must never guess which product was meant) (preview + confirm) |
-| `update_product_vendor` | Set or clear a product's vendor / brand name; pass `None` to clear; trims whitespace and enforces ≤ 255 chars; accepts numeric ID / GID / handle in `product_id`, or an unambiguous `handle` (pass an all-digit handle such as `2024` there, since a bare number in `product_id` always means a product ID; supplying both is refused before any network call rather than resolved by precedence — a write must never guess which product was meant) (preview + confirm) |
-| `update_product_type` | Set or clear a product's legacy free-text `productType` field via `productUpdate`; accepts numeric ID / GID / handle in `product_id`, or an unambiguous `handle` (pass an all-digit handle such as `2024` there, since a bare number in `product_id` always means a product ID; supplying both is refused before any network call rather than resolved by precedence — a write must never guess which product was meant); empty or whitespace input clears the field (Shopify treats `""` as cleared, and omitting `product_type` entirely is rejected rather than treated as a clear) (preview + confirm; head + JSON tail per the Epic 9 amendment) |
-| `update_variant_image_binding` | Bind existing product media to one or more variants; resolves `variantId` (numeric / GID / SKU), rejects media GIDs not on the product, treats already-bound media as idempotent no-op, appends only the delta via `productVariantAppendMedia`; accepts numeric ID / GID / handle in `product_id`, or an unambiguous `handle` (pass an all-digit handle such as `2024` there, since a bare number in `product_id` always means a product ID; supplying both is refused before any network call rather than resolved by precedence — a write must never guess which product was meant) (preview + confirm; head + JSON tail per the Epic 9 amendment) |
-| `set_product_metafields` | Set or update up to 25 metafields on Products or ProductVariants in one `metafieldsSet` call; validates owner GID, namespace (rejects reserved `app--*`), and value shape per type (numeric regex, JSON parse for `json` / `list.*`); per-entry errors surface in head + `errorsByIndex` map; emits `remediation` block on Shopify `ACCESS_DENIED` (preview + confirm; head + JSON tail) |
-| `delete_product_metafields` | Delete up to 25 metafields from Products or ProductVariants via `metafieldsDelete`; each entry addresses by either `metafieldId` GID or the `{ownerId, namespace, key}` triple (resolves to GID before the mutation); Shopify `NOT_FOUND` is treated as idempotent success-with-note so re-running is safe; per-entry errors surface in head + `errorsByIndex` map (preview + confirm; head + JSON tail) |
-| `get_product_metafields` | Read all metafields on a Shopify product, optionally filtered by `namespace` (e.g. `google` for Google Shopping feed diagnostics) and/or `keys`; accepts numeric ID, Product GID, or handle (pass an all-digit handle such as `2024` via `handle`, since a bare number in `product_id` always means a product ID; supplying both is refused before any network call — a **breaking change in Story 10.65**, which replaced the previous `product_id`-wins precedence that silently discarded the handle); `include_variants=true` also returns per-variant metafields; cursor-paginates both connections; returns dual head + JSON tail with `{product, metafields[], variantMetafields, totalFound}` (read-only — no new OAuth scopes; covered by existing `read_products`) |
-| `update_product_options` | Rename a product's variant option name (e.g., "Size") and/or its option values (e.g., "M-CRM" → "Medium") via `productOptionUpdate`; accepts numeric ID / GID / handle in `product_id`, or an unambiguous `handle` (pass an all-digit handle such as `2024` there, since a bare number in `product_id` always means a product ID; supplying both is refused before any network call rather than resolved by precedence — a write must never guess which product was meant); validates option + option-value GIDs against the product before mutating; idempotent no-op when target state already matches; defaults `variant_strategy` to `LEAVE_AS_IS` (preview + confirm; head + JSON tail per the Epic 9 amendment) |
-| `resolve_category_metafield_value` | Find the metaobject GID that a `shopify.*` category metafield takes for a taxonomy value (for example `category="T-Shirts"`, `attribute="fabric"`, `value="Polyester"`); `category` accepts a TaxonomyCategory GID or a search string with `resolve_strategy`; the match is by the metaobject's `taxonomy_reference`, not its name; an unknown attribute or value is an error that lists the valid choices; if the shop has no entry yet, the result says so and `confirm=True` creates it with `metaobjectCreate`; the JSON tail's `metafield` is the entry to send to `set_product_metafields` (preview + confirm when the entry is missing). Requires `read_metaobjects`, and `write_metaobjects` for the create |
+| Tool | Description | Hint set |
+|------|-------------|----------|
+| `update_product_category` | Set or change a product's Standard Product Taxonomy category; accepts a TaxonomyCategory GID or a free-text search string with `resolve_strategy` (exact / best-match / reject-ambiguous); accepts numeric ID / GID / handle in `product_id`, or an unambiguous `handle` (pass an all-digit handle such as `2024` there, since a bare number in `product_id` always means a product ID; supplying both is refused before any network call rather than resolved by precedence — a write must never guess which product was meant) (preview + confirm) | `OVERWRITE` |
+| `update_product_vendor` | Set or clear a product's vendor / brand name; pass `None` to clear; trims whitespace and enforces ≤ 255 chars; accepts numeric ID / GID / handle in `product_id`, or an unambiguous `handle` (pass an all-digit handle such as `2024` there, since a bare number in `product_id` always means a product ID; supplying both is refused before any network call rather than resolved by precedence — a write must never guess which product was meant) (preview + confirm) | `OVERWRITE` |
+| `update_product_type` | Set or clear a product's legacy free-text `productType` field via `productUpdate`; accepts numeric ID / GID / handle in `product_id`, or an unambiguous `handle` (pass an all-digit handle such as `2024` there, since a bare number in `product_id` always means a product ID; supplying both is refused before any network call rather than resolved by precedence — a write must never guess which product was meant); empty or whitespace input clears the field (Shopify treats `""` as cleared, and omitting `product_type` entirely is rejected rather than treated as a clear) (preview + confirm; head + JSON tail per the Epic 9 amendment) | `OVERWRITE` |
+| `update_variant_image_binding` | Bind existing product media to one or more variants; resolves `variantId` (numeric / GID / SKU), rejects media GIDs not on the product, treats already-bound media as idempotent no-op, appends only the delta via `productVariantAppendMedia`; accepts numeric ID / GID / handle in `product_id`, or an unambiguous `handle` (pass an all-digit handle such as `2024` there, since a bare number in `product_id` always means a product ID; supplying both is refused before any network call rather than resolved by precedence — a write must never guess which product was meant) (preview + confirm; head + JSON tail per the Epic 9 amendment) | `OVERWRITE` |
+| `set_product_metafields` | Set or update up to 25 metafields on Products or ProductVariants in one `metafieldsSet` call; validates owner GID, namespace (rejects reserved `app--*`), and value shape per type (numeric regex, JSON parse for `json` / `list.*`); per-entry errors surface in head + `errorsByIndex` map; emits `remediation` block on Shopify `ACCESS_DENIED` (preview + confirm; head + JSON tail) | `OVERWRITE` |
+| `delete_product_metafields` | Delete up to 25 metafields from Products or ProductVariants via `metafieldsDelete`; each entry addresses by either `metafieldId` GID or the `{ownerId, namespace, key}` triple (resolves to GID before the mutation); Shopify `NOT_FOUND` is treated as idempotent success-with-note so re-running is safe; per-entry errors surface in head + `errorsByIndex` map (preview + confirm; head + JSON tail) | `OVERWRITE` |
+| `get_product_metafields` | Read all metafields on a Shopify product, optionally filtered by `namespace` (e.g. `google` for Google Shopping feed diagnostics) and/or `keys`; accepts numeric ID, Product GID, or handle (pass an all-digit handle such as `2024` via `handle`, since a bare number in `product_id` always means a product ID; supplying both is refused before any network call — a **breaking change in Story 10.65**, which replaced the previous `product_id`-wins precedence that silently discarded the handle); `include_variants=true` also returns per-variant metafields; cursor-paginates both connections; returns dual head + JSON tail with `{product, metafields[], variantMetafields, totalFound}` (read-only — no new OAuth scopes; covered by existing `read_products`) | `READ_ONLY` |
+| `update_product_options` | Rename a product's variant option name (e.g., "Size") and/or its option values (e.g., "M-CRM" → "Medium") via `productOptionUpdate`; accepts numeric ID / GID / handle in `product_id`, or an unambiguous `handle` (pass an all-digit handle such as `2024` there, since a bare number in `product_id` always means a product ID; supplying both is refused before any network call rather than resolved by precedence — a write must never guess which product was meant); validates option + option-value GIDs against the product before mutating; idempotent no-op when target state already matches; defaults `variant_strategy` to `LEAVE_AS_IS` (preview + confirm; head + JSON tail per the Epic 9 amendment) | `OVERWRITE` |
+| `resolve_category_metafield_value` | Find the metaobject GID that a `shopify.*` category metafield takes for a taxonomy value (for example `category="T-Shirts"`, `attribute="fabric"`, `value="Polyester"`); `category` accepts a TaxonomyCategory GID or a search string with `resolve_strategy`; the match is by the metaobject's `taxonomy_reference`, not its name; an unknown attribute or value is an error that lists the valid choices; if the shop has no entry yet, the result says so and `confirm=True` creates it with `metaobjectCreate`; the JSON tail's `metafield` is the entry to send to `set_product_metafields` (preview + confirm when the entry is missing). Requires `read_metaobjects`, and `write_metaobjects` for the create | `ADD` |
 
 ### Inventory
-| Tool | Description |
-|------|-------------|
-| `get_inventory` | Get inventory levels for all variants of a product (single query) |
-| `update_inventory` | Set quantity for a variant at a location (preview + confirm) |
-| `update_variant_inventory_tracking` | Toggle `InventoryItem.tracked` on variants — required on POD products before DENY + 0 take effect at the storefront (preview + confirm; defaults to all variants) |
+| Tool | Description | Hint set |
+|------|-------------|----------|
+| `get_inventory` | Get inventory levels for all variants of a product (single query) | `READ_ONLY` |
+| `update_inventory` | Set quantity for a variant at a location (preview + confirm) | `OVERWRITE` |
+| `update_variant_inventory_tracking` | Toggle `InventoryItem.tracked` on variants — required on POD products before DENY + 0 take effect at the storefront (preview + confirm; defaults to all variants) | `OVERWRITE` |
+| `update_variant_inventory_quantity` | Set the on-hand quantity on variants at one or more locations (preview + confirm; defaults to all variants and all their locations) | `OVERWRITE` |
 
 ### Collections
-| Tool | Description |
-|------|-------------|
-| `get_collection` | Get collection details by handle (works for both manual and smart collections) |
-| `create_collection` | Create a new **manual** collection — no rule-based (smart) collections. `handle` is optional and is always slugified; omit it and one is derived from the title, which the preview shows before you confirm. Refuses if a collection already exists at that handle. The collection is created **unpublished on every sales channel** (preview + confirm) |
-| `update_collection` | Update collection title or description (preview + confirm) |
+| Tool | Description | Hint set |
+|------|-------------|----------|
+| `get_collection` | Get collection details by handle (works for both manual and smart collections) | `READ_ONLY` |
+| `create_collection` | Create a new **manual** collection — no rule-based (smart) collections. `handle` is optional and is always slugified; omit it and one is derived from the title, which the preview shows before you confirm. Refuses if a collection already exists at that handle. The collection is created **unpublished on every sales channel** (preview + confirm) | `CREATE` |
+| `update_collection` | Update collection title or description (preview + confirm) | `OVERWRITE` |
+| `add_product_to_collection` | Add a product to a manual collection by handle (preview + confirm) | `ADD` |
+| `remove_product_from_collection` | Remove a product from a manual collection by handle (preview + confirm) | `OVERWRITE` |
 
 ### Discounts
-| Tool | Description |
-|------|-------------|
-| `get_discount_codes` | List all discount codes / price rules |
-| `create_discount_code` | Create a percentage-off code with usage limits (preview + confirm) |
+| Tool | Description | Hint set |
+|------|-------------|----------|
+| `get_discount_codes` | List all discount codes / price rules | `READ_ONLY` |
+| `create_discount_code` | Create a percentage-off code with usage limits (preview + confirm) | `CREATE` |
 
 ### Orders
-| Tool | Description |
-|------|-------------|
-| `get_orders` | List recent orders with line items and traffic source |
-| `get_order` | Fetch a single order by id |
+| Tool | Description | Hint set |
+|------|-------------|----------|
+| `get_orders` | List recent orders with line items and traffic source | `READ_ONLY` |
+| `get_order` | Fetch a single order by id | `READ_ONLY` |
 
 ### Sales channel publications
-| Tool | Description |
-|------|-------------|
-| `list_sales_channels` | List every sales channel (publication) on the store |
-| `get_product_publications` | Show which channels a product is published to, and which it is not |
-| `publish_product_to_channels` | Publish a product to one or more channels (idempotent, preview + confirm) |
-| `unpublish_product_from_channels` | Unpublish from one or more channels (idempotent, preview + confirm) |
-| `set_product_publications` | Declarative — diff current vs. desired channels, apply minimal publish/unpublish (preview + confirm) |
-| `get_collection_publications` | Show which channels a collection is published to, and which it is not (handle only) |
-| `publish_collection_to_channels` | Publish a collection to one or more channels (idempotent, preview + confirm; handle only) |
-| `unpublish_collection_from_channels` | Unpublish a collection from one or more channels (idempotent, preview + confirm; handle only) |
+| Tool | Description | Hint set |
+|------|-------------|----------|
+| `list_sales_channels` | List every sales channel (publication) on the store | `READ_ONLY` |
+| `get_product_publications` | Show which channels a product is published to, and which it is not | `READ_ONLY` |
+| `publish_product_to_channels` | Publish a product to one or more channels (idempotent, preview + confirm) | `ADD` |
+| `unpublish_product_from_channels` | Unpublish from one or more channels (idempotent, preview + confirm) | `OVERWRITE` |
+| `set_product_publications` | Declarative — diff current vs. desired channels, apply minimal publish/unpublish (preview + confirm) | `OVERWRITE` |
+| `get_collection_publications` | Show which channels a collection is published to, and which it is not (handle only) | `READ_ONLY` |
+| `publish_collection_to_channels` | Publish a collection to one or more channels (idempotent, preview + confirm; handle only) | `ADD` |
+| `unpublish_collection_from_channels` | Unpublish a collection from one or more channels (idempotent, preview + confirm; handle only) | `OVERWRITE` |
 
 **Collections are named by handle only** (Story 10.83). They are separate tools rather than a widening of the product tools, because `handle` on those means a *product* handle and a store can have a collection and a product sharing one handle — overloading it would create the wrong-resource hazard Story 10.68 exists to prevent. With a single identifier there is no pair to refuse, so the both-supplied rule below does not apply to the three collection tools. There is deliberately no `set_collection_publications`; adjust with publish/unpublish.
 
@@ -96,6 +100,15 @@ Publishing a collection to **Online Store** is what makes its storefront page re
 **One identifier, not both.** All four *product* tools above take `product_id` **or** `handle`. Supplying both is refused before the product is read and before any mutation — a **breaking change in Story 10.68**, replacing the previous `product_id`-wins precedence that silently discarded the handle. Three of these four are *writes*, so under the old precedence an ambiguous pair could publish, unpublish, or rewrite the channel set of the **wrong product**; the refusal is a plain, immediately-diagnosable error in its place, returned before any network call.
 
 Requires `read_publications` and `write_publications` scopes. If the app was installed before these were added, reinstall it on the store.
+
+### Webhooks
+| Tool | Description | Hint set |
+|------|-------------|----------|
+| `list_webhooks` | List webhook subscriptions on the store | `READ_ONLY` |
+| `register_webhook` | Register an HTTPS webhook subscription for a topic; the endpoint host must be on the allowlist — see [Webhook endpoint allowlist](#webhook-endpoint-allowlist) (preview + confirm) | `CREATE` |
+| `delete_webhook` | Delete a webhook subscription by numeric id or GID (preview + confirm) | `OVERWRITE` |
+
+**Hint set** is the MCP tool annotation set the tool declares (Story 10.73): `READ_ONLY`, `CREATE`, `ADD` or `OVERWRITE`. [docs/tool-annotations.md](docs/tool-annotations.md) gives the four hint values and the reason for each tool. Every tool that takes `confirm` declares `readOnlyHint: false`, because the hint describes the confirmed path, not the preview. These hints are advisory: the MCP specification says clients must not use them for security decisions. The `confirm` gate is the control.
 
 ---
 

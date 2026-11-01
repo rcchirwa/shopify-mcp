@@ -63,14 +63,15 @@ class _Capture:
     """Minimal stand-in for FastMCP that records tools registered via
     @server.tool() so the test can invoke them as plain callables.
 
-    Assumes the no-arg form @server.tool(); would need updating if webhooks.py
-    ever starts using @server.tool(name=..., description=...) or similar.
+    Accepts the `annotations=` keyword webhooks.py passes (Story 10.73) and
+    ignores it; would need updating if webhooks.py ever starts using
+    @server.tool(name=..., description=...) or similar.
     """
 
     def __init__(self):
         self.tools = {}
 
-    def tool(self):
+    def tool(self, *, annotations=None):
         def deco(fn):
             self.tools[fn.__name__] = fn
             return fn

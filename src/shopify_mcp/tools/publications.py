@@ -42,6 +42,7 @@ from shopify_mcp.shopify.queries.publications import (
     PUBLISHABLE_PUBLISH,
     PUBLISHABLE_UNPUBLISH,
 )
+from shopify_mcp.tools._annotations import ADD, OVERWRITE, READ_ONLY
 from shopify_mcp.tools._gid import from_gid, to_gid
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._product_resolver import identifier_error
@@ -572,7 +573,7 @@ def _render_channel_lines(
 def register(server: FastMCP, client: ShopifyClient) -> None:
     channel_cache: dict[str, Any] = {}
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def list_sales_channels() -> str:
         """List every sales channel (publication) on the store."""
         try:
@@ -590,7 +591,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
         return "\n".join(lines)
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def get_product_publications(product_id: str = "", handle: str = "") -> str:
         """Show which sales channels a product is published to, and which it is not.
 
@@ -652,7 +653,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return _resolve_ids(client, channel_cache, publication_ids)
         return None, [{"error": "provide channel_names or publication_ids"}]
 
-    @server.tool()
+    @server.tool(annotations=ADD)
     def publish_product_to_channels(
         product_id: str = "",
         handle: str = "",
@@ -722,7 +723,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             assigned_incomplete=assigned_incomplete,
         )
 
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def unpublish_product_from_channels(
         product_id: str = "",
         handle: str = "",
@@ -823,7 +824,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return "No collection found.", "", "", []
         return "", gid, f"Collection: {title} (handle: {col_handle}, id: {from_gid(gid)})", rps
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def get_collection_publications(handle: str = "") -> str:
         """
         Show which sales channels a collection is published to, and which it
@@ -899,7 +900,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             log_name=log_name,
         )
 
-    @server.tool()
+    @server.tool(annotations=ADD)
     def publish_collection_to_channels(
         handle: str = "",
         channel_names: list[str] | None = None,
@@ -926,7 +927,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             "publish_collection_to_channels",
         )
 
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def unpublish_collection_from_channels(
         handle: str = "",
         channel_names: list[str] | None = None,
@@ -950,7 +951,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             "unpublish_collection_from_channels",
         )
 
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def set_product_publications(
         product_id: str = "",
         handle: str = "",

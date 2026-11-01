@@ -22,6 +22,7 @@ from shopify_mcp.shopify.queries.collections import (
     REMOVE_PRODUCTS_FROM_COLLECTION,
     UPDATE_COLLECTION,
 )
+from shopify_mcp.tools._annotations import ADD, CREATE, OVERWRITE, READ_ONLY
 from shopify_mcp.tools._filters import (
     format_description_warning_block,
     format_strip_block,
@@ -89,7 +90,7 @@ def _resolve_collection(
 
 def register(server: FastMCP, client: ShopifyClient) -> None:
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def get_collection(handle: str) -> str:
         """Get collection details by handle — title and description."""
         col_type, col = _resolve_collection(client, handle)
@@ -109,7 +110,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
         return with_reminder(head)
 
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def update_collection(
         handle: str,
         new_title: str = "",
@@ -182,7 +183,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             log_description=f"handle={handle} | changes: {changed_fields}",
         )
 
-    @server.tool()
+    @server.tool(annotations=CREATE)
     def create_collection(
         title: str,
         handle: str = "",
@@ -432,7 +433,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # A poll failure's text is fenced at its source (Story 10.69).
         return with_reminder(body)
 
-    @server.tool()
+    @server.tool(annotations=ADD)
     def add_product_to_collection(
         handle: str,
         product_id: str,
@@ -444,7 +445,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         """
         return _membership_mutation("add", handle, product_id, confirm)
 
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def remove_product_from_collection(
         handle: str,
         product_id: str,

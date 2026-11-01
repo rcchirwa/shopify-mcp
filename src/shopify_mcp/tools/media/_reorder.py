@@ -3,6 +3,7 @@
 from mcp.server.fastmcp import FastMCP
 
 from shopify_mcp.client import ShopifyClient, poll_job
+from shopify_mcp.tools._annotations import OVERWRITE
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._response import poll_failed_note, with_confirm_hint
@@ -18,7 +19,7 @@ from shopify_mcp.tools.media._graphql import GET_PRODUCT_MEDIA, PRODUCT_REORDER_
 
 
 def register(server: FastMCP, client: ShopifyClient) -> None:
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def reorder_product_media(
         product_id: str,
         moves: list[dict] | None = None,
