@@ -507,10 +507,10 @@ def _channel_write(
         # Treated as all-or-nothing: any userError means none of `acting` applied.
         # Live-verified for a non-existent publication id (Story 9.26). Channel
         # apps are not documented to reject with a userError; they report later
-        # via ResourceFeedback (Story 9.27). The one documented refusal these
-        # tools can send, a requiresSellingPlan product on a channel that is not
-        # an online store, has an undocumented partial-apply result. No product
-        # had that flag on 2026-11-01. Sources: the 9.26 entry in tech-debt.md.
+        # via ResourceFeedback (Story 9.27). These tools can send one documented
+        # refusal: a requiresSellingPlan product on a non-online-store channel.
+        # Its partial-apply result is undocumented. No product had that flag on
+        # 2026-11-01. Sources: the 9.26 entry in tech-debt.md.
         if user_errors:
             for ue in user_errors:
                 apply_failed.append(_map_user_error(ue, acting))
