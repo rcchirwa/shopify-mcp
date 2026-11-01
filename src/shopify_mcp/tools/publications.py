@@ -505,14 +505,12 @@ def _channel_write(
             return with_reminder(f"Error: {cap(str(e))}\n{SCOPE_HINT}")
         user_errors = extract_user_errors(result, spec["result_key"])
         # Treated as all-or-nothing: any userError means none of `acting` applied.
-        # Live-verified for a non-existent publication id (2026-09-26, API
-        # 2026-01, Story 9.26), which this tool reaches only via a stale channel
-        # cache. Channel apps reject an ineligible product later, via
-        # ResourceFeedback, not as a userError, so that case never lands here
-        # (Story 9.27, docs). Shopify's one documented refusal, a
-        # requiresSellingPlan product sent to a non-online-store channel, has
-        # undocumented partial-apply behaviour; no product had that flag on
-        # 2026-11-01, so it is known but not reachable today.
+        # Live-verified for a non-existent publication id (Story 9.26). Channel
+        # apps are not documented to reject with a userError; they report later
+        # via ResourceFeedback (Story 9.27). The one documented refusal these
+        # tools can send, a requiresSellingPlan product on a channel that is not
+        # an online store, has an undocumented partial-apply result. No product
+        # had that flag on 2026-11-01. Sources: the 9.26 entry in tech-debt.md.
         if user_errors:
             for ue in user_errors:
                 apply_failed.append(_map_user_error(ue, acting))
