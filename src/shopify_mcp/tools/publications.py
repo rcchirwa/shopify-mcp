@@ -505,9 +505,14 @@ def _channel_write(
             return with_reminder(f"Error: {cap(str(e))}\n{SCOPE_HINT}")
         user_errors = extract_user_errors(result, spec["result_key"])
         # Treated as all-or-nothing: any userError means none of `acting` applied.
-        # Live-verified only for a non-existent publication id (2026-09-26, API
+        # Live-verified for a non-existent publication id (2026-09-26, API
         # 2026-01, Story 9.26), which this tool reaches only via a stale channel
-        # cache; eligibility-type rejections on an ACTIVE product are unverified.
+        # cache. Channel apps reject an ineligible product later, via
+        # ResourceFeedback, not as a userError, so that case never lands here
+        # (Story 9.27, docs). Shopify's one documented refusal, a
+        # requiresSellingPlan product sent to a non-online-store channel, has
+        # undocumented partial-apply behaviour; no product had that flag on
+        # 2026-11-01, so it is known but not reachable today.
         if user_errors:
             for ue in user_errors:
                 apply_failed.append(_map_user_error(ue, acting))
