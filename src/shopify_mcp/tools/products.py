@@ -33,6 +33,7 @@ from shopify_mcp.shopify.queries.products import (
     UPDATE_PRODUCT_TAGS,
     UPDATE_PRODUCT_VARIANTS_POLICY,
 )
+from shopify_mcp.tools._annotations import OVERWRITE, READ_ONLY
 from shopify_mcp.tools._filters import (
     filter_variant_targets,
     format_description_warning_block,
@@ -145,7 +146,7 @@ def _count_phrase(nodes: list[Any], capped: bool) -> str:
 
 def register(server: FastMCP, client: ShopifyClient) -> None:
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def get_products(status: str = "", limit: int = 0) -> str:
         """List products with id, title, handle, status, and variants.
 
@@ -228,7 +229,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             result += PRODUCTS_TRUNCATED_WARNING
         return result
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def get_product(product_id: str = "", handle: str = "") -> str:
         """Get a single product by id or handle.
 
@@ -259,7 +260,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             result += "\nWARNING: variant pagination stopped short — additional variants (if any) are not shown here."
         return result
 
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def update_product_title(
         product_id: str,
         new_title: str,
@@ -311,7 +312,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             log_description=f"id={product_id} | '{old_title}' → '{new_title}' | handle '{old_handle}' → '{target_handle}'",
         )
 
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def update_product_description(
         product_id: str,
         new_description: str,
@@ -377,7 +378,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             + _confirmed_from_preview(preview),
         )
 
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def update_product_seo(
         product_id: str,
         new_seo_title: str = "",
@@ -532,7 +533,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             done_text=with_reminder(f"CONFIRMED — Product SEO updated\n{body}"),
         )
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def get_products_by_collection(collection_handle: str, limit: int = 0) -> str:
         """List the products in a collection by collection handle.
 
@@ -570,7 +571,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
         return "\n".join(lines) + (PRODUCTS_TRUNCATED_WARNING if capped else "")
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def get_product_description(product_id: str = "", handle: str = "") -> str:
         """Get the body_html description for a single product by id or handle.
 
@@ -604,7 +605,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
         return with_reminder(head)
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def get_products_with_descriptions(collection_handle: str = "", limit: int = 50) -> str:
         """
         Bulk read product descriptions. If collection_handle is provided, scopes to that collection.
@@ -674,7 +675,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # asserts the index rather than the call shape.
         return with_reminder("\n".join(blocks)) + suffix
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def get_product_full(product_id: str = "", handle: str = "") -> str:
         """
         Get a full product record: id, title, handle, status, body_html, tags,
@@ -746,7 +747,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # the wrapped values above, not about where the string happens to end.
         return with_reminder(result)
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def get_product_collections(product_id: str) -> str:
         """List every collection this product belongs to — manual and smart."""
         err = product_id_error(product_id)
@@ -780,7 +781,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
         return "\n".join(lines)
 
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def update_product_tags(
         product_id: str,
         new_tags: list[str] | None = None,
@@ -853,7 +854,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             done_text=f"CONFIRMED — Product tags updated\n{body}",
         )
 
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def update_product_status(
         product_id: str,
         new_status: str,
@@ -905,7 +906,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             done_text=f"CONFIRMED — Product status updated\n{body}",
         )
 
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def update_variant_inventory_policy(
         product_id: str,
         new_policy: str,

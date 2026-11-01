@@ -23,6 +23,7 @@ from shopify_mcp.shopify.queries.discounts import (
     CREATE_DISCOUNT_CODE_BASIC,
     GET_CODE_DISCOUNTS,
 )
+from shopify_mcp.tools._annotations import CREATE, READ_ONLY
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._response import (
@@ -228,7 +229,7 @@ __all__ = [
 
 def register(server: FastMCP, client: ShopifyClient) -> None:
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def get_discount_codes() -> str:
         """List discount codes for the store."""
         nodes = ops.read_code_discounts(client)
@@ -294,7 +295,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
         return "\n".join(lines)
 
-    @server.tool()
+    @server.tool(annotations=CREATE)
     def create_discount_code(
         title: str,
         code: str,

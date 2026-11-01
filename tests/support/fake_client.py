@@ -17,6 +17,7 @@ test's behavior changes.
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from mcp.types import ToolAnnotations
 from pydantic import SecretStr
 
 from shopify_mcp.client import ShopifyClient
@@ -39,7 +40,12 @@ class CapturingServer:
     def __init__(self) -> None:
         self.tools: dict[str, Callable[..., Any]] = {}
 
-    def tool(self) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def tool(
+        self, *, annotations: ToolAnnotations | None = None
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        # Accepts FastMCP's `annotations=` (Story 10.73) and ignores it: the
+        # served hints are checked on a real server in
+        # tests/architecture/test_tool_annotations.py, not here.
         def deco(fn: Callable[..., Any]) -> Callable[..., Any]:
             self.tools[fn.__name__] = fn
             return fn

@@ -74,6 +74,7 @@ from shopify_mcp.shopify.queries.catalog_hygiene import (
     _build_get_product_metafields_query,
     _build_get_product_variant_metafields_page_query,
 )
+from shopify_mcp.tools._annotations import ADD, OVERWRITE, READ_ONLY
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._product_resolver import _resolve_product
@@ -1792,7 +1793,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
     Stories 9.1-9.7 each add one `@server.tool()` function to this body.
     """
 
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def update_product_pricing(
         product_id: str,
         variants: list[dict[str, Any]],
@@ -2056,7 +2057,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
         return _render(head, {"ok": True, "variants": list(updated), "errors": []})
 
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def update_product_category(
         product_id: str = "",
         *,
@@ -2291,7 +2292,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             confirm_hint=False,
         )
 
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def update_product_vendor(
         product_id: str = "",
         *,
@@ -2476,7 +2477,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
         )
 
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def update_product_type(
         product_id: str = "",
         *,
@@ -2666,7 +2667,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
         )
 
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def update_variant_image_binding(
         product_id: str = "",
         *,
@@ -3165,7 +3166,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             {"ok": True, "variants": success_variants, "errors": []},
         )
 
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def set_product_metafields(
         metafields: list[dict[str, Any]] | None = None,
         confirm: bool = False,
@@ -3403,7 +3404,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
         )
 
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def delete_product_metafields(
         metafields: list[dict[str, Any]] | None = None,
         confirm: bool = False,
@@ -3766,7 +3767,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
         )
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def get_product_metafields(
         product_id: str = "",
         handle: str = "",
@@ -4056,7 +4057,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # ```json``` block are unaffected.
         return _render("\n".join(head_lines), payload)
 
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def update_product_options(
         product_id: str = "",
         *,
@@ -4407,7 +4408,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
         )
 
-    @server.tool()
+    @server.tool(annotations=ADD)
     def resolve_category_metafield_value(
         category: str,
         attribute: str,

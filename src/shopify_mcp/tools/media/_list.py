@@ -5,6 +5,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from shopify_mcp.client import ShopifyClient
+from shopify_mcp.tools._annotations import READ_ONLY
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._scrub import cap, sanitize_control_chars
 from shopify_mcp.tools._untrusted import INJECTION_REMINDER, wrap
@@ -55,7 +56,7 @@ def _render_media_list(
 
 
 def register(server: FastMCP, client: ShopifyClient) -> None:
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def list_product_media(product_id: str) -> str:
         """
         List all media (images, videos, 3D models) attached to a product.

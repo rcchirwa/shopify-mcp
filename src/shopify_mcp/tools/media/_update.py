@@ -3,6 +3,7 @@
 from mcp.server.fastmcp import FastMCP
 
 from shopify_mcp.client import ShopifyClient
+from shopify_mcp.tools._annotations import OVERWRITE
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._response import extract_user_errors, with_confirm_hint
 from shopify_mcp.tools._scrub import cap, sanitize_control_chars
@@ -13,7 +14,7 @@ from shopify_mcp.tools.media._graphql import GET_PRODUCT_MEDIA, PRODUCT_UPDATE_M
 
 
 def register(server: FastMCP, client: ShopifyClient) -> None:
-    @server.tool()
+    @server.tool(annotations=OVERWRITE)
     def update_product_media(
         product_id: str,
         media_id: str,
