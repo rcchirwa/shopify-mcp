@@ -4,9 +4,21 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-10-27.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-10-30.
 
 ---
+
+## 2026-10-30 — `graphql-core` (CVE-2026-119286)
+
+No SEC id of its own, same as the msgpack round below. The `dependency-audit` gate went red on the `requirements.lock` and `requirements-dev.lock` steps. `main` (`664e943`) pins the same version, so the advisory is new. It was found by the local gate run for Story 9.28.
+
+### Closed
+
+| # | Item | How it closed |
+|---|------|----------------|
+| graphql-core-3.3.0 | ~~`requirements.lock` and `requirements-dev.lock` pinned `graphql-core==3.3.0` (direct, and via `gql`) for CVE-2026-119286, fixed in 3.3.1. The server imports it: `gql` uses it to parse every query that `ShopifyClient.execute` sends.~~ | Pinned `graphql-core==3.3.1`, the latest release, in both lockfiles. `pyproject.toml` already allows `>=3.3,<4`, so it did not change. |
+
+Both lockfiles were regenerated with the `pip-compile` command in their headers plus `--upgrade-package graphql-core==3.3.1`. Only the `graphql-core` block moved (version and hashes); the headers did not change. `pip-audit --strict` passes on all three lockfiles. The full offline suite passes on 3.3.1 with 100% coverage.
 
 ## 2026-10-27 — Story 10.104 (SEC-04-errors-transport — raw `requests` exceptions escaped `execute()` unfenced and unbounded)
 
