@@ -254,7 +254,8 @@ GRANTED_SCOPES_HINT = (
     "read_products, write_products, read_inventory, write_inventory, "
     "read_orders, read_price_rules, write_price_rules, "
     "read_discounts, write_discounts, "
-    "read_publications, write_publications, write_files"
+    "read_publications, write_publications, "
+    "read_metaobjects, write_metaobjects, write_files"
 )
 
 # Regex shape-checks for numeric metafield types. Anchored on both ends so a
@@ -1668,6 +1669,121 @@ def _format_options_payload(
         "preview": preview,
     }
     return "```json\n" + json.dumps(payload) + "\n```"
+
+
+# ---------------------------------------------------------------------------
+# Story 9.28 — resolve_category_metafield_value helpers.
+# ---------------------------------------------------------------------------
+
+# A standard category metafield is `shopify.<handle>`, and its values are shop
+# metaobjects of type `shopify--<handle>`. The taxonomy schema gives an
+# attribute no handle, so it comes from the name. Live on 2026-10-30, "Fabric"
+# was type `shopify--fabric` and metafield `shopify.fabric`.
+_CATEGORY_METAFIELD_NAMESPACE = "shopify"
+_CATEGORY_METAFIELD_TYPE = "list.metaobject_reference"
+# The `values(first: 250)` page size in TAXONOMY_CATEGORY_ATTRIBUTES.
+_TAXONOMY_VALUES_PAGE = 250
+
+
+def _taxonomy_key(text: str) -> str:
+    """Match key: casefolded, each run of spaces, hyphens and underscores as one space."""
+    return " ".join(part for part in re.split(r"[\s_-]+", text.casefold()) if part)
+
+
+def _attribute_handle(name: str) -> str:
+    """The metafield key / metaobject type suffix for an attribute name ("Fabric" → "fabric")."""
+    return re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
+
+
+def _category_value_payload(
+    *,
+    ok: bool,
+    preview: bool,
+    category: dict[str, Any] | None = None,
+    attribute: dict[str, Any] | None = None,
+    value: dict[str, Any] | None = None,
+    metaobject: dict[str, Any] | None = None,
+    found: bool = False,
+    created: bool = False,
+    errors: list[dict[str, Any]] | None = None,
+    alternates: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """JSON tail for resolve_category_metafield_value.
+
+    `metafield` is the entry `set_product_metafields` takes. It is set only
+    when there is a metaobject GID to put in it.
+    """
+    metafield = None
+    if metaobject is not None and attribute is not None:
+        metafield = {
+            "namespace": _CATEGORY_METAFIELD_NAMESPACE,
+            "key": _attribute_handle(attribute["name"]),
+            "type": _CATEGORY_METAFIELD_TYPE,
+            "value": json.dumps([metaobject["id"]]),
+        }
+    return {
+        "ok": ok,
+        "found": found,
+        "created": created,
+        "category": category,
+        "alternates": alternates or [],
+        "attribute": attribute,
+        "value": value,
+        "metaobject": metaobject,
+        "metafield": metafield,
+        "errors": errors or [],
+        "preview": preview,
+    }
+
+
+def _category_value_error(
+    head: str,
+    stage: str,
+    *,
+    preview: bool,
+    tail: str | None = None,
+    choices: list[str] | None = None,
+    category: dict[str, Any] | None = None,
+    alternates: list[dict[str, Any]] | None = None,
+) -> str:
+    """Render one error. `tail` is the unfenced copy when `head` carries a fence."""
+    error: dict[str, Any] = {"message": tail if tail is not None else head, "stage": stage}
+    if choices is not None:
+        error["choices"] = choices
+    body = f"Error — resolve_category_metafield_value\n  {head}\n{_alternates_line(alternates)}"
+    return _render(
+        body.rstrip("\n"),
+        _category_value_payload(
+            ok=False, preview=preview, category=category, alternates=alternates, errors=[error]
+        ),
+    )
+
+
+def _alternates_line(alternates: list[dict[str, Any]] | None) -> str:
+    """Head line for a category search with runner-ups, or "" when there are none.
+
+    Live on 2026-10-30, "T-Shirts" best-matched Baby & Children's T-Shirts, not
+    aa-1-13-8. The fabric values were the same, but a caller must see the pick.
+    """
+    if not alternates:
+        return ""
+    return (
+        f"  Alternates : {len(alternates)} runner-up(s) (see JSON tail). "
+        f"Pass a TaxonomyCategory GID to choose one.\n"
+    )
+
+
+def _metaobject_lines(metaobject: dict[str, Any], handle: str) -> str:
+    """Head lines naming the metaobject and how to send it to set_product_metafields."""
+    return (
+        f"  Metaobject : {metaobject['id']} "
+        f"(name {wrap(metaobject.get('displayName') or '')}, "
+        f"handle {wrap(metaobject.get('handle') or '')})\n"
+        f"  Use it in set_product_metafields: namespace "
+        f'"{_CATEGORY_METAFIELD_NAMESPACE}", key "{handle}", type '
+        f'"{_CATEGORY_METAFIELD_TYPE}", value \'["{metaobject["id"]}"]\'. '
+        f"Put all the GIDs for this attribute in one list."
+    )
 
 
 def register(server: FastMCP, client: ShopifyClient) -> None:
@@ -4289,4 +4405,224 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 preview=False,
                 errors=[],
             )
+        )
+
+    @server.tool()
+    def resolve_category_metafield_value(
+        category: str,
+        attribute: str,
+        value: str,
+        resolve_strategy: str = "best-match",
+        confirm: bool = False,
+    ) -> str:
+        """
+        Find the metaobject GID for a category metafield value, such as
+        fabric = Polyester on T-Shirts. `set_product_metafields` needs this GID
+        for a `shopify.*` category metafield (type `list.metaobject_reference`).
+
+        `category` accepts a TaxonomyCategory GID or a free-text search string
+        (`resolve_strategy` ∈ {"exact", "best-match", "reject-ambiguous"}, as
+        in `update_product_category`). `attribute` is the attribute name or
+        metafield key ("Fabric", "fabric", "decoration-technique"). `value` is
+        the taxonomy value name ("Polyester"). Names match without case.
+
+        If the shop already has the metaobject, the GID is returned and
+        `confirm` has no effect. If not, the result says "not in this shop
+        yet"; `confirm=True` then creates it (`metaobjectCreate`, linked to
+        the taxonomy value), the same entry Shopify admin creates. An unknown
+        attribute or value is an error that lists the valid choices.
+
+        Returns a human-readable head and a fenced ```json``` tail with
+        {ok, found, created, category, attribute, value, metaobject,
+        metafield, errors, preview}. `metafield` is the entry to send to
+        `set_product_metafields`.
+        """
+        preview = not confirm
+        for name, arg in (("attribute", attribute), ("value", value)):
+            if not isinstance(arg, str) or not arg.strip():
+                return _category_value_error(
+                    f"{name} must be a non-empty string.", "input", preview=preview
+                )
+        if resolve_strategy not in _VALID_RESOLVE_STRATEGIES:
+            return _category_value_error(
+                f"Invalid resolve_strategy {_cap(str(resolve_strategy))!r}. "
+                f"Must be one of: {', '.join(_VALID_RESOLVE_STRATEGIES)}.",
+                "input",
+                preview=preview,
+            )
+
+        # --- Category: GID passthrough or taxonomy search (shared with 9.1).
+        chosen, alternates, cat_err = _resolve_taxonomy_category(client, category, resolve_strategy)
+        if cat_err or chosen is None:
+            err = cat_err or "category resolve failed"
+            return _category_value_error(
+                err, "category-resolve", preview=preview, tail=_tail_text(err)
+            )
+
+        try:
+            data = ops.read_taxonomy_category_attributes(client, chosen["id"])
+        except Exception as e:
+            err = _transport_error("Taxonomy category read failed", e)
+            return _category_value_error(
+                err, "category-read", preview=preview, tail=_tail_text(err)
+            )
+        node = (data or {}).get("node") or {}
+        if not node.get("id"):
+            return _category_value_error(
+                f"No taxonomy category found for {_cap(chosen['id'])!r}.",
+                "category-read",
+                preview=preview,
+            )
+        category_info = {"id": node["id"], "fullName": node.get("fullName")}
+
+        # --- Attribute: only choice-list attributes carry a name and values.
+        attributes = [
+            a for a in ((node.get("attributes") or {}).get("nodes") or []) if a.get("name")
+        ]
+        attr_key = _taxonomy_key(attribute)
+        attr = next((a for a in attributes if _taxonomy_key(a["name"]) == attr_key), None)
+        if attr is None:
+            names = [a["name"] for a in attributes]
+            lead = f"Attribute {_cap(attribute.strip())!r} is not on this category. Valid choices: "
+            return _category_value_error(
+                lead + wrap(", ".join(names)),
+                "attribute",
+                preview=preview,
+                tail=lead + ", ".join(names),
+                choices=names,
+                category=category_info,
+                alternates=alternates,
+            )
+
+        # --- Value: matched by name within the attribute's taxonomy values.
+        values_conn = attr.get("values") or {}
+        values = values_conn.get("nodes") or []
+        value_key = _taxonomy_key(value)
+        match = next((v for v in values if _taxonomy_key(v["name"]) == value_key), None)
+        if match is None:
+            names = [v["name"] for v in values]
+            lead = f"Value {_cap(value.strip())!r} is not a "
+            rest = " value of this category. Valid choices: "
+            more = (
+                f" (only the first {_TAXONOMY_VALUES_PAGE} values were read)"
+                if (values_conn.get("pageInfo") or {}).get("hasNextPage")
+                else ""
+            )
+            return _category_value_error(
+                lead + wrap(attr["name"]) + rest + wrap(", ".join(names)) + more,
+                "value",
+                preview=preview,
+                tail=lead + attr["name"] + rest + ", ".join(names) + more,
+                choices=names,
+                category=category_info,
+                alternates=alternates,
+            )
+
+        handle = _attribute_handle(attr["name"])
+        metaobject_type = f"shopify--{handle}"
+        context: dict[str, Any] = {
+            "category": category_info,
+            "alternates": alternates,
+            "attribute": {"id": attr["id"], "name": attr["name"]},
+            "value": {"id": match["id"], "name": match["name"]},
+        }
+        lines = (
+            f"  Category   : {wrap(category_info['fullName'] or '')} ({category_info['id']})\n"
+            + _alternates_line(alternates)
+            + f"  Attribute  : {wrap(attr['name'])} "
+            f"(metafield {_CATEGORY_METAFIELD_NAMESPACE}.{handle})\n"
+            f"  Value      : {wrap(match['name'])} ({match['id']})\n"
+        )
+
+        # --- The shop's entry: matched by its taxonomy_reference, not its name.
+        try:
+            entries, capped = ops.list_metaobjects_by_type(client, metaobject_type)
+        except Exception as e:
+            err = _transport_error(f"Reading {metaobject_type} metaobjects failed", e)
+            return _category_value_error(
+                err, "metaobject-list", preview=preview, tail=_tail_text(err)
+            )
+        entry = next(
+            (m for m in entries if (m.get("taxonomyReference") or {}).get("value") == match["id"]),
+            None,
+        )
+        if entry is not None:
+            metaobject = {
+                "id": entry["id"],
+                "handle": entry.get("handle"),
+                "displayName": entry.get("displayName"),
+                "type": metaobject_type,
+            }
+            return _render(
+                "Category metafield value found\n" + lines + _metaobject_lines(metaobject, handle),
+                _category_value_payload(
+                    ok=True, preview=False, metaobject=metaobject, found=True, **context
+                ),
+            )
+        if capped:
+            return _category_value_error(
+                f"Read {len(entries)} {metaobject_type} metaobjects and stopped before the "
+                f"end, so the value may exist. Nothing was created, to avoid a duplicate. "
+                f"Find the value in Shopify admin.",
+                "metaobject-list",
+                preview=preview,
+            )
+
+        if not confirm:
+            return _render(
+                with_confirm_hint(
+                    "PREVIEW — Create category metafield value\n"
+                    + lines
+                    + f"  Metaobject : not in this shop yet. No {metaobject_type} entry links "
+                    f"to {match['id']}.\n"
+                    f"  Next step  : create it with confirm=True, or set the value once in "
+                    f"Shopify admin and look it up again."
+                ),
+                _category_value_payload(ok=True, preview=True, **context),
+            )
+
+        try:
+            result = ops.create_metaobject(
+                client,
+                metaobject_type,
+                [
+                    {"key": "label", "value": match["name"]},
+                    {"key": "taxonomy_reference", "value": match["id"]},
+                ],
+            )
+        except Exception as e:
+            err = _transport_error("metaobjectCreate failed", e)
+            return _category_value_error(
+                err, "metaobject-create", preview=False, tail=_tail_text(err)
+            )
+        user_err = format_user_errors(result, "metaobjectCreate")
+        if user_err:
+            return _render(
+                f"Error — resolve_category_metafield_value\n  {user_err}",
+                _category_value_payload(
+                    ok=False,
+                    preview=False,
+                    errors=extract_user_errors(result, "metaobjectCreate"),
+                    **context,
+                ),
+            )
+        created = (result.get("metaobjectCreate") or {}).get("metaobject") or {}
+        if not created.get("id"):
+            return _category_value_error(
+                "metaobjectCreate returned no metaobject and no userErrors, so nothing is "
+                "confirmed. Look the value up again before you retry.",
+                "metaobject-create",
+                preview=False,
+            )
+        log_write(
+            "resolve_category_metafield_value",
+            f"created {metaobject_type} {created['id']} for {match['id']}",
+        )
+        return _render(
+            "CONFIRMED — Create category metafield value\n"
+            + lines
+            + _metaobject_lines(created, handle),
+            _category_value_payload(
+                ok=True, preview=False, metaobject=created, created=True, **context
+            ),
         )

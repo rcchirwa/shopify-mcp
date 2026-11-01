@@ -1,5 +1,5 @@
 # Trimmed Admin GraphQL API schema. GENERATED: do not hand-edit.
-# api_version: 2026-01  captured: 2026-09-26
+# api_version: 2026-01  captured: 2026-10-30
 # Refresh: REFRESH_ADMIN_SCHEMA_SNAPSHOT=1 pytest tests/live/test_admin_schema_snapshot.py
 # (see README, 'Refreshing the Admin API schema snapshot').
 
@@ -1029,6 +1029,101 @@ enum MetafieldsSetUserErrorCode {
   TOO_SHORT
 }
 
+type Metaobject implements Node {
+  displayName: String!
+  field(key: String!): MetaobjectField
+  handle: String!
+  id: ID!
+  type: String!
+}
+
+input MetaobjectCapabilityDataInput {
+  onlineStore: MetaobjectCapabilityDataOnlineStoreInput
+  publishable: MetaobjectCapabilityDataPublishableInput
+}
+
+input MetaobjectCapabilityDataOnlineStoreInput {
+  templateSuffix: String
+}
+
+input MetaobjectCapabilityDataPublishableInput {
+  status: MetaobjectStatus!
+}
+
+type MetaobjectConnection {
+  nodes: [Metaobject!]!
+  pageInfo: PageInfo!
+}
+
+input MetaobjectCreateInput {
+  capabilities: MetaobjectCapabilityDataInput
+  fields: [MetaobjectFieldInput!]
+  handle: String
+  type: String!
+}
+
+type MetaobjectCreatePayload {
+  metaobject: Metaobject
+  userErrors: [MetaobjectUserError!]!
+}
+
+type MetaobjectField {
+  value: String
+}
+
+input MetaobjectFieldInput {
+  key: String!
+  value: String!
+}
+
+enum MetaobjectStatus {
+  ACTIVE
+  DRAFT
+}
+
+type MetaobjectUserError {
+  code: MetaobjectUserErrorCode
+  field: [String!]
+  message: String!
+}
+
+enum MetaobjectUserErrorCode {
+  ADMIN_ACCESS_INPUT_NOT_ALLOWED
+  APP_CONFIG_MANAGED
+  BLANK
+  CAPABILITY_NOT_ENABLED
+  DISPLAY_NAME_CONFLICT
+  DUPLICATE_FIELD_INPUT
+  FIELD_TYPE_INVALID
+  IMMUTABLE
+  INCLUSION
+  INPUT_LIMIT_EXCEEDED
+  INTERNAL_ERROR
+  INVALID
+  INVALID_OPTION
+  INVALID_TYPE
+  INVALID_VALUE
+  MAX_DEFINITIONS_EXCEEDED
+  MAX_OBJECTS_EXCEEDED
+  MISSING_REQUIRED_KEYS
+  NOT_AUTHORIZED
+  OBJECT_FIELD_REQUIRED
+  OBJECT_FIELD_TAKEN
+  PRESENT
+  RECORD_NOT_FOUND
+  REFERENCE_EXISTS_ERROR
+  RESERVED_NAME
+  STANDARD_METAOBJECT_DEFINITION_DEPENDENT_ON_APP
+  TAKEN
+  TOO_LONG
+  TOO_SHORT
+  UNDEFINED_OBJECT_FIELD
+  UNDEFINED_OBJECT_TYPE
+  URL_HANDLE_BLANK
+  URL_HANDLE_INVALID
+  URL_HANDLE_TAKEN
+}
+
 type Model3d implements Media & Node {
   alt: String
   id: ID!
@@ -1062,6 +1157,7 @@ type Mutation {
   inventorySetOnHandQuantities(input: InventorySetOnHandQuantitiesInput!): InventorySetOnHandQuantitiesPayload @deprecated(reason: "Use `inventorySetQuantities` to set on_hand or available quantites instead.")
   metafieldsDelete(metafields: [MetafieldIdentifierInput!]!): MetafieldsDeletePayload
   metafieldsSet(metafields: [MetafieldsSetInput!]!): MetafieldsSetPayload
+  metaobjectCreate(metaobject: MetaobjectCreateInput!): MetaobjectCreatePayload
   productCreateMedia(productId: ID!, media: [CreateMediaInput!]!): ProductCreateMediaPayload @deprecated(reason: "Use `productUpdate` or `productSet` instead.")
   productDeleteMedia(productId: ID!, mediaIds: [ID!]!): ProductDeleteMediaPayload @deprecated(reason: "Use `fileUpdate` instead.")
   productOptionUpdate(option: OptionUpdateInput!, productId: ID!, optionValuesToAdd: [OptionValueCreateInput!], optionValuesToUpdate: [OptionValueUpdateInput!], optionValuesToDelete: [ID!], variantStrategy: ProductOptionUpdateVariantStrategy): ProductOptionUpdatePayload
@@ -1253,6 +1349,7 @@ input ProductInput {
 }
 
 enum ProductMediaSortKeys {
+  CREATED_AT
   ID
   POSITION
 }
@@ -1511,6 +1608,7 @@ type QueryRoot {
   discountNodes(first: Int, after: String, last: Int, before: String, reverse: Boolean = false, sortKey: DiscountSortKeys = ID, query: String, savedSearchId: ID): DiscountNodeConnection!
   inventoryItem(id: ID!): InventoryItem
   job(id: ID!): Job
+  metaobjects(type: String!, sortKey: String, first: Int, after: String, last: Int, before: String, reverse: Boolean = false, query: String): MetaobjectConnection!
   node(id: ID!): Node
   order(id: ID!): Order
   orders(first: Int, after: String, last: Int, before: String, reverse: Boolean = false, sortKey: OrderSortKeys = PROCESSED_AT, query: String, savedSearchId: ID): OrderConnection!
@@ -1612,6 +1710,7 @@ type Taxonomy {
 }
 
 type TaxonomyCategory implements Node {
+  attributes(first: Int, after: String, last: Int, before: String): TaxonomyCategoryAttributeConnection!
   fullName: String!
   id: ID!
   isLeaf: Boolean!
@@ -1620,8 +1719,30 @@ type TaxonomyCategory implements Node {
   name: String!
 }
 
+union TaxonomyCategoryAttribute = TaxonomyChoiceListAttribute
+
+type TaxonomyCategoryAttributeConnection {
+  nodes: [TaxonomyCategoryAttribute!]!
+}
+
 type TaxonomyCategoryConnection {
   nodes: [TaxonomyCategory!]!
+}
+
+type TaxonomyChoiceListAttribute implements Node {
+  id: ID!
+  name: String!
+  values(first: Int, after: String, last: Int, before: String): TaxonomyValueConnection!
+}
+
+type TaxonomyValue implements Node {
+  id: ID!
+  name: String!
+}
+
+type TaxonomyValueConnection {
+  nodes: [TaxonomyValue!]!
+  pageInfo: PageInfo!
 }
 
 scalar URL

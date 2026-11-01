@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Any
 from unittest.mock import patch
 
+from shopify_mcp.shopify.queries.catalog_hygiene import METAOBJECT_CREATE
 from shopify_mcp.tools import _write_tool, catalog_hygiene, discounts, inventory, media, products
 from shopify_mcp.tools.catalog_hygiene import (
     METAFIELDS_DELETE_MUTATION,
@@ -235,6 +236,45 @@ def _set_metafields() -> list[Call]:
                     "type": "number_integer",
                 }
             ],
+            confirm=True,
+        ),
+    )
+
+
+def _category_metafield_value() -> list[Call]:
+    category = {
+        "node": {
+            "id": "gid://shopify/TaxonomyCategory/aa-1-13-8",
+            "fullName": "T-Shirts",
+            "attributes": {
+                "nodes": [
+                    {
+                        "id": "gid://shopify/TaxonomyAttribute/2777",
+                        "name": "Fabric",
+                        "values": {
+                            "nodes": [
+                                {"id": "gid://shopify/TaxonomyValue/16993", "name": "Polyester"}
+                            ],
+                            "pageInfo": {"hasNextPage": False},
+                        },
+                    }
+                ]
+            },
+        }
+    }
+    none_yet: dict[str, Any] = {
+        "metaobjects": {"nodes": [], "pageInfo": {"hasNextPage": False, "endCursor": None}}
+    }
+    ok: dict[str, Any] = {
+        "metaobjectCreate": {"metaobject": {"id": "gid://shopify/Metaobject/1"}, "userErrors": []}
+    }
+    return _drive(
+        catalog_hygiene.register,
+        [category, none_yet, ok],
+        lambda tools: tools["resolve_category_metafield_value"](
+            category="gid://shopify/TaxonomyCategory/aa-1-13-8",
+            attribute="fabric",
+            value="Polyester",
             confirm=True,
         ),
     )
@@ -478,6 +518,9 @@ TOOL_EMITTERS: dict[str, ToolEmitter] = {
     "set_product_metafields": ToolEmitter(_set_metafields, {METAFIELDS_SET_MUTATION: 1}),
     "delete_product_metafields": ToolEmitter(_delete_metafields, {METAFIELDS_DELETE_MUTATION: 1}),
     "update_product_options": ToolEmitter(_options, {UPDATE_PRODUCT_OPTION: 1}),
+    "resolve_category_metafield_value": ToolEmitter(
+        _category_metafield_value, {METAOBJECT_CREATE: 1}
+    ),
     "create_discount_code": ToolEmitter(_discount, {CREATE_DISCOUNT_CODE_BASIC: 1}),
     "update_inventory": ToolEmitter(_update_inventory, {SET_INVENTORY: 1}),
     "update_variant_inventory_quantity": ToolEmitter(

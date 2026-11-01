@@ -80,6 +80,41 @@ def test_search_taxonomy_categories():
     assert fc.calls[0][1] == {"search": "shirts"}
 
 
+def test_read_taxonomy_category_attributes():
+    fc = FakeClient([{"node": {"id": "t"}}])
+    out = ops.read_taxonomy_category_attributes(fc, "gid://shopify/TaxonomyCategory/aa-1")
+    assert out == {"node": {"id": "t"}}
+    assert fc.calls == [
+        (q.TAXONOMY_CATEGORY_ATTRIBUTES, {"id": "gid://shopify/TaxonomyCategory/aa-1"})
+    ]
+
+
+def test_list_metaobjects_by_type_walks_every_page():
+    def page(node_id, has_next, cursor):
+        return {
+            "metaobjects": {
+                "nodes": [{"id": node_id}],
+                "pageInfo": {"hasNextPage": has_next, "endCursor": cursor},
+            }
+        }
+
+    fc = FakeClient([page("m1", True, "c1"), page("m2", False, None)])
+    nodes, capped = ops.list_metaobjects_by_type(fc, "shopify--fabric")
+    assert nodes == [{"id": "m1"}, {"id": "m2"}]
+    assert capped is False
+    assert [c[0] for c in fc.calls] == [q.METAOBJECTS_BY_TYPE, q.METAOBJECTS_BY_TYPE]
+    assert fc.calls[1][1] == {"type": "shopify--fabric", "first": 250, "after": "c1"}
+
+
+def test_create_metaobject():
+    fc = FakeClient([{"metaobjectCreate": {"metaobject": {"id": "m"}, "userErrors": []}}])
+    fields = [{"key": "label", "value": "Polyester"}]
+    ops.create_metaobject(fc, "shopify--fabric", fields)
+    assert fc.calls == [
+        (q.METAOBJECT_CREATE, {"metaobject": {"type": "shopify--fabric", "fields": fields}})
+    ]
+
+
 def test_read_product_snapshot_by_id_uses_passed_query():
     fc = FakeClient([{"product": {"id": "g", "vendor": "Nike"}}])
     out = ops.read_product_snapshot_by_id(fc, q.GET_PRODUCT_VENDOR, "gid://shopify/Product/5")

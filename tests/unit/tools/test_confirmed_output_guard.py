@@ -105,6 +105,14 @@ from tests.unit.tools.test_catalog_hygiene import _build as _build_hygiene
 from tests.unit.tools.test_catalog_hygiene import _mutation_ok as _hygiene_pricing_mutation_ok
 from tests.unit.tools.test_catalog_hygiene import _read_response as _hygiene_pricing_read_response
 from tests.unit.tools.test_catalog_hygiene import _update_ok as _hygiene_vendor_update_ok
+from tests.unit.tools.test_category_metafield_value import (
+    TSHIRTS_GID,
+    _attributes_response,
+    _cotton_entry,
+    _create_ok,
+    _metaobjects_page,
+)
+from tests.unit.tools.test_category_metafield_value import _build as _build_category_value
 
 # ---- collections.py ----
 from tests.unit.tools.test_collections import _add_ok as _collections_add_ok
@@ -746,6 +754,14 @@ def _check_delete_product_metafields() -> tuple[str, FakeClient]:
     return out, fc
 
 
+def _check_resolve_category_metafield_value() -> tuple[str, FakeClient]:
+    tool, fc = _build_category_value(
+        [_attributes_response(), _metaobjects_page(_cotton_entry()), _create_ok()]
+    )
+    out = tool(category=TSHIRTS_GID, attribute="fabric", value="Polyester", confirm=True)
+    return out, fc
+
+
 def _check_update_product_options() -> tuple[str, FakeClient]:
     tools, fc = _build_hygiene(
         [
@@ -799,6 +815,7 @@ _TOOL_CHECKS: dict[str, Callable[[], tuple[str, FakeClient]]] = {
     "set_product_metafields": _check_set_product_metafields,
     "delete_product_metafields": _check_delete_product_metafields,
     "update_product_options": _check_update_product_options,
+    "resolve_category_metafield_value": _check_resolve_category_metafield_value,
 }
 
 

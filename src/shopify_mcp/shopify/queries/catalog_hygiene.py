@@ -196,6 +196,61 @@ query taxonomyCategories($search: String!) {
 }
 """
 
+# Story 9.28. A category's choice-list attributes and their values. Only
+# `TaxonomyChoiceListAttribute` carries `name` and `values`; the other two
+# members of the union come back as `{}`. Live on 2026-10-30, T-Shirts had 15
+# attributes and at most 85 values per attribute, all on one page.
+TAXONOMY_CATEGORY_ATTRIBUTES = """
+query taxonomyCategoryAttributes($id: ID!) {
+  node(id: $id) {
+    ... on TaxonomyCategory {
+      id
+      fullName
+      attributes(first: 50) {
+        nodes {
+          ... on TaxonomyChoiceListAttribute {
+            id
+            name
+            values(first: 250) {
+              nodes { id name }
+              pageInfo { hasNextPage }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+# Story 9.28. The shop's entries of one standard category-metafield type (for
+# example `shopify--fabric`). `taxonomy_reference` holds the TaxonomyValue GID
+# the entry stands for, so the match is by GID, not by a shop-editable name.
+METAOBJECTS_BY_TYPE = """
+query metaobjectsByType($type: String!, $first: Int!, $after: String) {
+  metaobjects(type: $type, first: $first, after: $after) {
+    nodes {
+      id
+      handle
+      displayName
+      taxonomyReference: field(key: "taxonomy_reference") { value }
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+"""
+
+# Story 9.28. Create the shop's entry for a taxonomy value, the same entry
+# Shopify admin creates the first time someone picks that value.
+METAOBJECT_CREATE = """
+mutation metaobjectCreate($metaobject: MetaobjectCreateInput!) {
+  metaobjectCreate(metaobject: $metaobject) {
+    metaobject { id handle displayName type }
+    userErrors { field message code }
+  }
+}
+"""
+
 # 2025+ Admin API takes `ProductUpdateInput` (singular `product:` argument).
 # Story 9.1 spec pins this shape. Story 9.18 moved `queries/products.py` onto
 # it too — the legacy `ProductInput` shape it used for title/handle/seo writes
