@@ -1,4 +1,4 @@
-"""MCP tool annotations: the four hint sets every registered tool declares (Story 10.73).
+"""MCP tool annotations: the hint sets every registered tool declares (Story 10.73).
 
 Each ``@server.tool(...)`` passes one of these as ``annotations=``. The table
 that gives every tool's hint set and the reason for it is
@@ -36,6 +36,12 @@ READ_ONLY = ToolAnnotations(
 # Creates a new resource; changes no existing data; a repeat is not a no-op.
 CREATE = ToolAnnotations(
     readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True
+)
+
+# Creates a new resource and can also overwrite existing data (for example,
+# which image is featured); a repeat is not a no-op.
+CREATE_OVERWRITE = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True
 )
 
 # Adds to existing data and removes nothing; a repeat converges.

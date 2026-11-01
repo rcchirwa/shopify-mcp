@@ -136,12 +136,16 @@ def test_docs_table_matches_served_hints(tools: list[Tool]) -> None:
 def test_docs_rows_match_their_hint_set() -> None:
     """Each row's four values equal the values of the hint set it names."""
     text = (_REPO_ROOT / "docs" / "tool-annotations.md").read_text(encoding="utf-8")
-    sets = {
-        m[1]: tuple(_flag(v.strip()) for v in m[2].split("|")[:4])
+    set_rows = {
+        m[1]: [v.strip() for v in m[2].split("|")]
         for m in re.finditer(r"^\| `([A-Z_]+)` \|(.*)\|\s*$", text, re.MULTILINE)
     }
-    assert sets, "no hint-set table found in docs/tool-annotations.md"
+    assert set_rows, "no hint-set table found in docs/tool-annotations.md"
+    sets = {name: tuple(_flag(v) for v in cells[:4]) for name, cells in set_rows.items()}
     rows = _table_rows(_REPO_ROOT / "docs" / "tool-annotations.md")
+    used = {name: sum(cells[0] == f"`{name}`" for cells in rows.values()) for name in sets}
+    stated = {name: int(cells[4]) for name, cells in set_rows.items()}
+    assert used == stated, f"hint-set 'Tools' counts {stated} differ from the table rows {used}"
     wrong = sorted(
         name
         for name, cells in rows.items()

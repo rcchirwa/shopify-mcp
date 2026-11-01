@@ -32,7 +32,7 @@ Enables Claude to read products, check inventory, manage collections, handle dis
 | Tool | Description | Hint set |
 |------|-------------|----------|
 | `list_product_media` | List all media (images, videos, 3D) attached to a product with IDs, alt text, status, preview URLs (read-only) | `READ_ONLY` |
-| `upload_product_image` | Upload an image from a public https:// URL and attach it to a product; optional `position` for featured placement (preview + confirm) | `CREATE` |
+| `upload_product_image` | Upload an image from a public https:// URL and attach it to a product; optional `position` for featured placement (preview + confirm) | `CREATE_OVERWRITE` |
 | `reorder_product_media` | Change the display order of media on a product; 1-indexed for callers, polls the async job (preview + confirm) | `OVERWRITE` |
 | `update_product_media` | Update alt text on an existing piece of product media (preview + confirm) | `OVERWRITE` |
 | `delete_product_media` | Remove one or more media items from a product by media ID (preview + confirm) | `OVERWRITE` |
@@ -108,7 +108,15 @@ Requires `read_publications` and `write_publications` scopes. If the app was ins
 | `register_webhook` | Register an HTTPS webhook subscription for a topic; the endpoint host must be on the allowlist — see [Webhook endpoint allowlist](#webhook-endpoint-allowlist) (preview + confirm) | `CREATE` |
 | `delete_webhook` | Delete a webhook subscription by numeric id or GID (preview + confirm) | `OVERWRITE` |
 
-**Hint set** is the MCP tool annotation set the tool declares (Story 10.73): `READ_ONLY`, `CREATE`, `ADD` or `OVERWRITE`. [docs/tool-annotations.md](docs/tool-annotations.md) gives the four hint values and the reason for each tool. Every tool that takes `confirm` declares `readOnlyHint: false`, because the hint describes the confirmed path, not the preview. These hints are advisory: the MCP specification says clients must not use them for security decisions. The `confirm` gate is the control.
+**Hint set** is the MCP tool annotation set the tool declares (Story 10.73):
+
+- `READ_ONLY`: reads the store and changes nothing.
+- `CREATE`: writes; creates a new resource and changes no existing data. A repeat call is not a no-op.
+- `CREATE_OVERWRITE`: writes; creates a new resource and can also change existing data. A repeat call is not a no-op.
+- `ADD`: writes; adds to existing data and removes nothing. A repeat call changes nothing more.
+- `OVERWRITE`: writes; can replace or delete existing data (destructive). A repeat call changes nothing more.
+
+[docs/tool-annotations.md](docs/tool-annotations.md) gives the four hint values and the reason for each tool. Every tool that takes `confirm` declares `readOnlyHint: false`, because the hint describes the confirmed path, not the preview. These hints are advisory: the MCP specification says clients must not use them for security decisions. The `confirm` gate is the control.
 
 ---
 

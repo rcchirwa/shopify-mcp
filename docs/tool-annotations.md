@@ -33,10 +33,13 @@ of them.
 
 ## Hint sets
 
+The "Tools" column is the number of tools that use each set. The test checks it.
+
 | Hint set | readOnly | destructive | idempotent | openWorld | Tools |
 |---|---|---|---|---|---|
 | `READ_ONLY` | true | false | true | true | 18 |
-| `CREATE` | false | false | false | true | 4 |
+| `CREATE` | false | false | false | true | 3 |
+| `CREATE_OVERWRITE` | false | true | false | true | 1 |
 | `ADD` | false | false | true | true | 4 |
 | `OVERWRITE` | false | true | true | true | 26 |
 
@@ -65,7 +68,7 @@ of them.
 | `create_collection` | `CREATE` | false | false | false | true | Creates a new collection; changes no existing data. A repeat is stopped only by the taken-handle refusal. |
 | `create_discount_code` | `CREATE` | false | false | false | true | Creates a new discount code; changes no existing data. A repeat is stopped only by Shopify's unique-code rule. |
 | `register_webhook` | `CREATE` | false | false | false | true | Creates a new webhook subscription; changes no existing data. Each call asks Shopify for a new subscription. |
-| `upload_product_image` | `CREATE` | false | false | false | true | Adds a new media item; each call adds one more copy. A `position` moves the new item only; the other media keep their relative order. |
+| `upload_product_image` | `CREATE_OVERWRITE` | false | true | false | true | Adds a new media item; each call adds one more copy. A `position` other than the end sends `productReorderMedia`, and `position=1` replaces the featured image, which `reorder_product_media` also counts as destructive. |
 | `add_product_to_collection` | `ADD` | false | false | true | true | Adds a membership; removes nothing. A repeat leaves the product in the collection. |
 | `publish_product_to_channels` | `ADD` | false | false | true | true | Adds channels; removes none. The tool reports a channel that is already published as unchanged. |
 | `publish_collection_to_channels` | `ADD` | false | false | true | true | Adds channels; removes none. The tool reports a channel that is already published as unchanged. |
