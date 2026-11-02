@@ -486,7 +486,7 @@ def _check_unpublish_product_from_channels() -> tuple[str, FakeClient]:
     tools, fc = _build_publications(
         [
             _pub_channels_response(),
-            _pub_product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3]),
+            _pub_product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3], write=True),
             _pub_unpublish_ok(),
         ]
     )
@@ -500,7 +500,9 @@ def _check_set_product_publications() -> tuple[str, FakeClient]:
     tools, fc = _build_publications(
         [
             _pub_channels_response(),
-            _pub_product_pubs(pid="123", published_ids=[1, 4], not_published_ids=[2, 3]),
+            _pub_product_pubs(
+                pid="123", published_ids=[1, 4], not_published_ids=[2, 3], write=True
+            ),
             _pub_publish_ok(),
             _pub_unpublish_ok(),
         ]
@@ -897,7 +899,7 @@ def _check_unpublish_product_from_channels_all_rejected() -> tuple[str, FakeClie
     tools, fc = _build_publications(
         [
             _pub_channels_response(),
-            _pub_product_pubs(pid="123", published_ids=[1], not_published_ids=[]),
+            _pub_product_pubs(pid="123", published_ids=[1], not_published_ids=[], write=True),
             {
                 "publishableUnpublish": {
                     "publishable": None,
@@ -953,7 +955,7 @@ def _check_set_product_publications_all_rejected() -> tuple[str, FakeClient]:
     tools, fc = _build_publications(
         [
             _pub_channels_response(),
-            _pub_product_pubs(pid="123", published_ids=[], not_published_ids=[1]),
+            _pub_product_pubs(pid="123", published_ids=[], not_published_ids=[1], write=True),
             _pub_publish_err("publicationId", "not authorized"),
         ]
     )
@@ -1051,7 +1053,7 @@ def _check_set_product_publications_empty_channel_names_rejected() -> tuple[str,
     tools, fc = _build_publications(
         [
             _pub_channels_response(),
-            _pub_product_pubs(pid="123", published_ids=[1], not_published_ids=[]),
+            _pub_product_pubs(pid="123", published_ids=[1], not_published_ids=[], write=True),
             {
                 "publishableUnpublish": {
                     "publishable": None,
@@ -1122,7 +1124,7 @@ def test_set_product_publications_all_unresolved_is_refused_before_mutation() ->
         [
             _pub_channels_response(),
             _pub_channels_response(),  # refresh on miss
-            _pub_product_pubs(pid="123", published_ids=[], not_published_ids=[1]),
+            _pub_product_pubs(pid="123", published_ids=[], not_published_ids=[1], write=True),
         ]
     )
     out = tools["set_product_publications"](
