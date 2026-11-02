@@ -3767,8 +3767,36 @@ _S10102_NOTE = (
             "\n"
             "To apply, call again with confirm=True.",
         ),
+        (
+            "unpublish_product_from_channels",
+            {"product_id": "123", "channel_names": ["Online Store"]},
+            [],
+            "PREVIEW — Unpublish product from channels\n"
+            "  Product: Tee (handle: tee, id: 123)\n"
+            "  Would unpublish from:\n"
+            "  • Online Store (id: 1)\n"
+            "  Not currently published (unchanged):\n"
+            "  (none)\n"
+            "\n" + _S10102_NOTE + "\n"
+            "\n"
+            "To apply, call again with confirm=True.",
+        ),
+        (
+            "set_product_publications",
+            {"product_id": "123", "channel_names": [], "confirm": True},
+            [_unpublish_ok()],
+            "CONFIRMED — Set product publications (declarative)\n"
+            "  Product: Tee (handle: tee, id: 123)\n"
+            "  Added (published):\n"
+            "  (none)\n"
+            "  Removed (unpublished):\n"
+            "  • Online Store (id: 1)\n"
+            "  Unchanged:\n"
+            "  (none)\n"
+            "\n" + _S10102_NOTE,
+        ),
     ],
-    ids=["unpublish-confirm", "set-read"],
+    ids=["unpublish-confirm", "set-read", "unpublish-read", "set-confirm"],
 )
 def test_s10102_an_incomplete_v2_read_on_a_non_draft_product_adds_the_scheduled_note(
     tool_name, kwargs, writes, expected, read
@@ -3777,4 +3805,19 @@ def test_s10102_an_incomplete_v2_read_on_a_non_draft_product_adds_the_scheduled_
     tools, fc = _build([_channels_response(), v1, read, *writes])
     assert tools[tool_name](**kwargs) == expected
     assert fc.calls[2][0] == publications.GET_PRODUCT_ASSIGNED_PUBLICATIONS
+    assert fc.responses == []
+
+
+def test_s10102_a_product_read_with_no_status_counts_as_scheduled():
+    """A response with no ``status`` counts as not DRAFT, in the operations
+    read and in the tools, so its not-live record gets the scheduled marks."""
+    tools, fc = _build(
+        [_channels_response(), _product_pubs(scheduled_ids=[1], write=True), _unpublish_ok()]
+    )
+    out = tools["unpublish_product_from_channels"](
+        product_id="123", channel_names=["Online Store"], confirm=True
+    )
+    assert fc.calls[2] == _V2_READ_123
+    assert fc.calls[3][0] == PUBLISHABLE_UNPUBLISH
+    assert "  • Online Store (id: 1) (was scheduled, not live)" in out
     assert fc.responses == []

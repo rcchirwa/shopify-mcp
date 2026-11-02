@@ -372,14 +372,38 @@ _SCHEDULED_INCOMPLETE_NOTE = (
     "fully read, so some may be missing above."
 )
 
+# The labels for a product's not-live channel, keyed on `scheduled`: False is a
+# DRAFT's assigned channel (Story 10.99), True is another product's scheduled
+# one (Story 10.102). One table, so the three render sites cannot drift. `mark`
+# suffixes the channel while it is on the product, `was_mark` after it is
+# removed, and `note` ends the output when the V2 read was incomplete.
+_NOT_LIVE_LABELS: dict[bool, dict[str, str]] = {
+    False: {
+        "mark": _ASSIGNED_NOTE,
+        "was_mark": _WAS_ASSIGNED_NOTE,
+        "note": _ASSIGNED_INCOMPLETE_NOTE,
+    },
+    True: {
+        "mark": _SCHEDULED_NOTE,
+        "was_mark": _WAS_SCHEDULED_NOTE,
+        "note": _SCHEDULED_INCOMPLETE_NOTE,
+    },
+}
+
+
+def _is_scheduled(status: str | None) -> bool:
+    """True when a product's not-live channels are scheduled, not assigned
+    (Story 10.102): any status but DRAFT. A response with no ``status`` counts
+    as not DRAFT, as it does in the operations read."""
+    return status != "DRAFT"
+
 
 def _with_incomplete_note(text: str, assigned_incomplete: bool, scheduled: bool = False) -> str:
-    """Append the incomplete-read note to ``text`` when the read was incomplete:
-    ``_SCHEDULED_INCOMPLETE_NOTE`` when ``scheduled``, else ``_ASSIGNED_INCOMPLETE_NOTE``."""
+    """Append the incomplete-read note for ``scheduled`` (see ``_NOT_LIVE_LABELS``)
+    to ``text`` when the read was incomplete."""
     if not assigned_incomplete:
         return text
-    note = _SCHEDULED_INCOMPLETE_NOTE if scheduled else _ASSIGNED_INCOMPLETE_NOTE
-    return f"{text}\n\n{note}"
+    return f"{text}\n\n{_NOT_LIVE_LABELS[scheduled]['note']}"
 
 
 # Direction table for the shared publish/unpublish body below. Single source of
@@ -389,9 +413,9 @@ def _with_incomplete_note(text: str, assigned_incomplete: bool, scheduled: bool 
 #
 # `acts_on_published` is the membership predicate: publish acts on targets the
 # resource is NOT yet on, unpublish acts on the ones it IS on. For a product,
-# "on" means published or assigned (Story 10.99). `done_mark` suffixes a
-# not-live channel in the done list: one publish only assigned (a DRAFT), or one
-# unpublish removed while it was assigned.
+# "on" means published or assigned (Story 10.99). `done_mark` names the
+# `_NOT_LIVE_LABELS` entry that suffixes a not-live channel in the done list: one
+# publish only assigned (a DRAFT), or one unpublish removed while it was not live.
 _CHANNEL_WRITE_OPS: dict[str, dict[str, Any]] = {
     "publish": {
         "verb": "Publish",
@@ -403,7 +427,7 @@ _CHANNEL_WRITE_OPS: dict[str, dict[str, Any]] = {
         "op_name": "publish",
         "result_key": "publishablePublish",
         "acts_on_published": False,
-        "done_mark": _ASSIGNED_NOTE,
+        "done_mark": "mark",
     },
     "unpublish": {
         "verb": "Unpublish",
@@ -415,7 +439,7 @@ _CHANNEL_WRITE_OPS: dict[str, dict[str, Any]] = {
         "op_name": "unpublish",
         "result_key": "publishableUnpublish",
         "acts_on_published": True,
-        "done_mark": _WAS_ASSIGNED_NOTE,
+        "done_mark": "was_mark",
     },
 }
 
@@ -489,8 +513,9 @@ def _channel_write(
     10.102). Its not-live records are future-scheduled channels, so they count
     as "on" in the same way, and the marks and the note say "scheduled"."""
     spec = _CHANNEL_WRITE_OPS[direction]
-    not_live_mark = _SCHEDULED_NOTE if scheduled else _ASSIGNED_NOTE
-    done_mark = _WAS_SCHEDULED_NOTE if scheduled else spec["done_mark"]
+    labels = _NOT_LIVE_LABELS[scheduled]
+    not_live_mark = labels["mark"]
+    done_mark = labels[spec["done_mark"]]
     published_ids, not_live_ids = _split_current(rps)
     assigned_ids = not_live_ids if with_assigned else set()
     on_ids = published_ids | assigned_ids
@@ -781,7 +806,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         line says some may be missing.
 
         On any other product, a channel it is scheduled to go live on later is
-        removed too, and the schedule is cleared. The preview marks it
+        removed too: an unpublish is sent for it. The preview marks it
         "(scheduled, not live)" and the result "(was scheduled, not live)"
         (Story 10.102). The same note applies if the scheduled channels could
         not be fully read. get_product_publications does not show scheduled
@@ -827,7 +852,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             log_name="unpublish_product_from_channels",
             with_assigned=True,
             assigned_incomplete=assigned_incomplete,
-            scheduled=status != "DRAFT",
+            scheduled=_is_scheduled(status),
         )
 
     # ---- collection publications (Story 10.83 / T-collection-publish) ----
@@ -1023,8 +1048,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         missing.
 
         On any other product, a channel it is scheduled to go live on later
-        also counts as current: an undesired one is removed and its schedule
-        cleared (the preview marks it "(scheduled, not live)", the result
+        also counts as current: an undesired one is removed, with an unpublish
+        sent for it (the preview marks it "(scheduled, not live)", the result
         "(was scheduled, not live)"); a desired one is unchanged and keeps
         its schedule, with no publish sent (Story 10.102). The same note
         applies if the scheduled channels could not be fully read.
@@ -1061,9 +1086,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # A non-DRAFT product's not-live channel is scheduled (Story 10.102) and
         # is handled the same way, so a desired one keeps its schedule.
         published_ids, assigned_ids = _split_current(rps)
-        scheduled = status != "DRAFT"
-        not_live_mark = _SCHEDULED_NOTE if scheduled else _ASSIGNED_NOTE
-        was_not_live_mark = _WAS_SCHEDULED_NOTE if scheduled else _WAS_ASSIGNED_NOTE
+        scheduled = _is_scheduled(status)
+        not_live_mark = _NOT_LIVE_LABELS[scheduled]["mark"]
+        was_not_live_mark = _NOT_LIVE_LABELS[scheduled]["was_mark"]
         current_ids = published_ids | assigned_ids
 
         add_ids = desired_ids - current_ids

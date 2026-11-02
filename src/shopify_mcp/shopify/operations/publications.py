@@ -71,9 +71,9 @@ def read_product_publications(
     false)`` by the resolved product's id, adds its ``isPublished: false``
     records. Every other product (ACTIVE, ARCHIVED, no ``status``) gets the v1
     read alone, as before this story, unless ``with_scheduled`` is True. V2 is
-    not the published source because
-    it omits published channels that are not in the ``publications`` roster
-    (Meta, Microsoft Copilot), which v1 returns. See :func:`_add_assigned`.
+    not the published source because it omits published channels that are not
+    in the ``publications`` roster (Meta, Microsoft Copilot), which v1 returns.
+    See :func:`_add_assigned`.
 
     ``with_scheduled`` (Story 10.102) runs the V2 read for a product of any
     status. The unpublish and set tools pass it. v1 also hides a non-DRAFT
