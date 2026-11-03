@@ -53,15 +53,20 @@ _MUST_CONTAIN: dict[str, tuple[str, ...]] = {
         "could not be fully read",
     ),
     "publish_product_to_channels": ("(assigned, not live)", "DRAFT", "could not be fully read"),
+    # The scheduled marks: a non-DRAFT product's not-live channel (Story 10.102).
     "unpublish_product_from_channels": (
         "(assigned, not live)",
         "(was assigned, not live)",
         "could not be fully read",
+        "(scheduled, not live)",
+        "(was scheduled, not live)",
     ),
     "set_product_publications": (
         "(assigned, not live)",
         "(was assigned, not live)",
         "could not be fully read",
+        "(scheduled, not live)",
+        "(was scheduled, not live)",
     ),
 }
 

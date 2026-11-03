@@ -193,15 +193,17 @@ def _map_user_error(user_error: dict, targets: list) -> dict:
 
 
 def _resolve_product_gid_and_meta(
-    client: ShopifyClient, product_id: str, handle: str
+    client: ShopifyClient, product_id: str, handle: str, *, with_scheduled: bool = False
 ) -> tuple[str | None, str | None, str | None, list[dict[str, Any]], str | None, bool]:
     """Returns (gid, title, handle, rps, status, assigned_incomplete); gid,
     title, handle and status are None when no product was resolved, rps is
     always a list. rps holds published and assigned records (see
     ``_split_current``). status is the product's ``status`` (e.g.
     ``"DRAFT"``), None when the response lacks it. assigned_incomplete is True
-    when a DRAFT's assigned-records read failed or stopped short; the tools
-    then end their output with ``_ASSIGNED_INCOMPLETE_NOTE``.
+    when the V2 read failed or stopped short; the tools then end their output
+    with ``_ASSIGNED_INCOMPLETE_NOTE`` (``_SCHEDULED_INCOMPLETE_NOTE`` for a
+    non-DRAFT product). ``with_scheduled`` passes through to the operations
+    read: the unpublish and set tools read V2 for every status (Story 10.102).
 
     Delegates the by-id/by-handle paginated read to
     ``shopify.operations.publications.read_product_publications`` and reshapes its
@@ -214,7 +216,9 @@ def _resolve_product_gid_and_meta(
     through this one funnel without a per-tool check. Each already wraps this
     call in ``try/except`` and renders the message through its structured error
     path, which is also where the reflection bound (``cap``) is applied."""
-    p, rps, _capped, assigned_incomplete = ops.read_product_publications(client, product_id, handle)
+    p, rps, _capped, assigned_incomplete = ops.read_product_publications(
+        client, product_id, handle, with_scheduled=with_scheduled
+    )
     if not p:
         return None, None, None, [], None, False
     return p["id"], p["title"], p["handle"], rps, p.get("status"), assigned_incomplete
@@ -348,6 +352,12 @@ def _render_publications_report(
 _ASSIGNED_NOTE = " (assigned, not live)"
 _WAS_ASSIGNED_NOTE = " (was assigned, not live)"
 
+# Suffixes for a non-DRAFT product's not-live channel: a future-scheduled one,
+# which v1 hides (Story 10.102, live-verified 2026-11-02). Only the unpublish
+# and set tools read it.
+_SCHEDULED_NOTE = " (scheduled, not live)"
+_WAS_SCHEDULED_NOTE = " (was scheduled, not live)"
+
 # Ends a product tool's output when a DRAFT's assigned-records read failed or
 # stopped short (Story 10.99). Placed before a preview's confirm hint.
 _ASSIGNED_INCOMPLETE_NOTE = (
@@ -356,9 +366,44 @@ _ASSIGNED_INCOMPLETE_NOTE = (
 )
 
 
-def _with_incomplete_note(text: str, assigned_incomplete: bool) -> str:
-    """Append ``_ASSIGNED_INCOMPLETE_NOTE`` to ``text`` when the read was incomplete."""
-    return f"{text}\n\n{_ASSIGNED_INCOMPLETE_NOTE}" if assigned_incomplete else text
+# The non-DRAFT twin of `_ASSIGNED_INCOMPLETE_NOTE` (Story 10.102).
+_SCHEDULED_INCOMPLETE_NOTE = (
+    "Note: this product's scheduled (not yet live) channels could not be "
+    "fully read, so some may be missing above."
+)
+
+# The labels for a product's not-live channel, keyed on `scheduled`: False is a
+# DRAFT's assigned channel (Story 10.99), True is another product's scheduled
+# one (Story 10.102). One table, so the three render sites cannot drift. `mark`
+# suffixes the channel while it is on the product, `was_mark` after it is
+# removed, and `note` ends the output when the V2 read was incomplete.
+_NOT_LIVE_LABELS: dict[bool, dict[str, str]] = {
+    False: {
+        "mark": _ASSIGNED_NOTE,
+        "was_mark": _WAS_ASSIGNED_NOTE,
+        "note": _ASSIGNED_INCOMPLETE_NOTE,
+    },
+    True: {
+        "mark": _SCHEDULED_NOTE,
+        "was_mark": _WAS_SCHEDULED_NOTE,
+        "note": _SCHEDULED_INCOMPLETE_NOTE,
+    },
+}
+
+
+def _is_scheduled(status: str | None) -> bool:
+    """True when a product's not-live channels are scheduled, not assigned
+    (Story 10.102): any status but DRAFT. A response with no ``status`` counts
+    as not DRAFT, as it does in the operations read."""
+    return status != "DRAFT"
+
+
+def _with_incomplete_note(text: str, assigned_incomplete: bool, scheduled: bool = False) -> str:
+    """Append the incomplete-read note for ``scheduled`` (see ``_NOT_LIVE_LABELS``)
+    to ``text`` when the read was incomplete."""
+    if not assigned_incomplete:
+        return text
+    return f"{text}\n\n{_NOT_LIVE_LABELS[scheduled]['note']}"
 
 
 # Direction table for the shared publish/unpublish body below. Single source of
@@ -368,9 +413,9 @@ def _with_incomplete_note(text: str, assigned_incomplete: bool) -> str:
 #
 # `acts_on_published` is the membership predicate: publish acts on targets the
 # resource is NOT yet on, unpublish acts on the ones it IS on. For a product,
-# "on" means published or assigned (Story 10.99). `done_mark` suffixes a
-# not-live channel in the done list: one publish only assigned (a DRAFT), or one
-# unpublish removed while it was assigned.
+# "on" means published or assigned (Story 10.99). `done_mark` names the
+# `_NOT_LIVE_LABELS` entry that suffixes a not-live channel in the done list: one
+# publish only assigned (a DRAFT), or one unpublish removed while it was not live.
 _CHANNEL_WRITE_OPS: dict[str, dict[str, Any]] = {
     "publish": {
         "verb": "Publish",
@@ -382,7 +427,7 @@ _CHANNEL_WRITE_OPS: dict[str, dict[str, Any]] = {
         "op_name": "publish",
         "result_key": "publishablePublish",
         "acts_on_published": False,
-        "done_mark": _ASSIGNED_NOTE,
+        "done_mark": "mark",
     },
     "unpublish": {
         "verb": "Unpublish",
@@ -394,7 +439,7 @@ _CHANNEL_WRITE_OPS: dict[str, dict[str, Any]] = {
         "op_name": "unpublish",
         "result_key": "publishableUnpublish",
         "acts_on_published": True,
-        "done_mark": _WAS_ASSIGNED_NOTE,
+        "done_mark": "was_mark",
     },
 }
 
@@ -435,6 +480,7 @@ def _channel_write(
     with_assigned: bool = False,
     draft: bool = False,
     assigned_incomplete: bool = False,
+    scheduled: bool = False,
 ) -> str:
     """Shared preview → confirm → mutate → map-userErrors → log → render flow for
     every channel write. `direction` and `resource_label` are the only variable
@@ -461,8 +507,15 @@ def _channel_write(
     and in the done list.
 
     ``assigned_incomplete`` ends the preview (before the confirm hint) and the
-    result with ``_ASSIGNED_INCOMPLETE_NOTE``."""
+    result with the incomplete-read note (see ``_NOT_LIVE_LABELS``).
+
+    ``scheduled`` is True when unpublishing from a non-DRAFT product (Story
+    10.102). Its not-live records are future-scheduled channels, so they count
+    as "on" in the same way, and the marks and the note say "scheduled"."""
     spec = _CHANNEL_WRITE_OPS[direction]
+    labels = _NOT_LIVE_LABELS[scheduled]
+    not_live_mark = labels["mark"]
+    done_mark = labels[spec["done_mark"]]
     published_ids, not_live_ids = _split_current(rps)
     assigned_ids = not_live_ids if with_assigned else set()
     on_ids = published_ids | assigned_ids
@@ -482,15 +535,15 @@ def _channel_write(
         f"PREVIEW — {heading}\n"
         f"  {meta_line}\n"
         f"  {spec['would_label']}:\n"
-        f"{_render_channel_lines(acting, marked=assigned_ids | newly_assigned, mark=_ASSIGNED_NOTE)}\n"
+        f"{_render_channel_lines(acting, marked=assigned_ids | newly_assigned, mark=not_live_mark)}\n"
         f"  {spec['unchanged_label']}:\n"
-        f"{_render_channel_lines(unchanged, marked=assigned_ids, mark=_ASSIGNED_NOTE)}"
+        f"{_render_channel_lines(unchanged, marked=assigned_ids, mark=not_live_mark)}"
     )
     if failed:
         preview += "\n  Failed to resolve:\n" + _render_failed(failed)
 
     if not confirm:
-        return with_confirm_hint(_with_incomplete_note(preview, assigned_incomplete))
+        return with_confirm_hint(_with_incomplete_note(preview, assigned_incomplete, scheduled))
 
     done: list[dict[str, Any]] = []
     apply_failed = list(failed)
@@ -542,14 +595,14 @@ def _channel_write(
         f"{header}\n"
         f"  {meta_line}\n"
         f"  {spec['done_label']}:\n"
-        f"{_render_channel_lines(done, marked=assigned_ids | newly_assigned, mark=spec['done_mark'])}\n"
+        f"{_render_channel_lines(done, marked=assigned_ids | newly_assigned, mark=done_mark)}\n"
         f"  Unchanged:\n"
-        f"{_render_channel_lines(unchanged, marked=assigned_ids, mark=_ASSIGNED_NOTE)}"
+        f"{_render_channel_lines(unchanged, marked=assigned_ids, mark=not_live_mark)}"
     )
     if apply_failed:
         body += "\n  Failed:\n" + _render_failed(apply_failed)
     # A failed line can carry fenced Shopify text (Story 10.69).
-    return with_reminder(_with_incomplete_note(body, assigned_incomplete))
+    return with_reminder(_with_incomplete_note(body, assigned_incomplete, scheduled))
 
 
 def _render_channel_lines(
@@ -751,6 +804,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         (Story 10.99). If the
         assigned channels could not be fully read, a trailing "Note: ..."
         line says some may be missing.
+
+        On any other product, a channel it is scheduled to go live on later is
+        removed too: an unpublish is sent for it. The preview marks it
+        "(scheduled, not live)" and the result "(was scheduled, not live)"
+        (Story 10.102). The same note applies if the scheduled channels could
+        not be fully read. get_product_publications does not show scheduled
+        channels.
         """
         # Story 10.68: vet the identifier pair FIRST — ahead of the sales-channel
         # reads below. Inheriting the refusal from the operations layer would let
@@ -771,8 +831,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return "Error: " + "; ".join(f.get("error", "") for f in failed)
 
         try:
-            gid, title, prod_handle, rps, _status, assigned_incomplete = (
-                _resolve_product_gid_and_meta(client, product_id, handle)
+            gid, title, prod_handle, rps, status, assigned_incomplete = (
+                _resolve_product_gid_and_meta(client, product_id, handle, with_scheduled=True)
             )
         except Exception as e:
             return with_reminder(f"Error: {cap(str(e))}\n{SCOPE_HINT}")
@@ -792,6 +852,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             log_name="unpublish_product_from_channels",
             with_assigned=True,
             assigned_incomplete=assigned_incomplete,
+            scheduled=_is_scheduled(status),
         )
 
     # ---- collection publications (Story 10.83 / T-collection-publish) ----
@@ -985,6 +1046,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         "(assigned, not live)" mark (Story 10.99). If the assigned channels
         could not be fully read, a trailing "Note: ..." line says some may be
         missing.
+
+        On any other product, a channel it is scheduled to go live on later
+        also counts as current: an undesired one is removed, with an unpublish
+        sent for it (the preview marks it "(scheduled, not live)", the result
+        "(was scheduled, not live)"); a desired one is unchanged and keeps
+        its schedule, with no publish sent (Story 10.102). The same note
+        applies if the scheduled channels could not be fully read.
         """
         # Story 10.68: vet the identifier pair FIRST — ahead of the sales-channel
         # reads below. Inheriting the refusal from the operations layer would let
@@ -1004,7 +1072,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         try:
             gid, title, prod_handle, rps, status, assigned_incomplete = (
-                _resolve_product_gid_and_meta(client, product_id, handle)
+                _resolve_product_gid_and_meta(client, product_id, handle, with_scheduled=True)
             )
         except Exception as e:
             return with_reminder(f"Error: {cap(str(e))}\n{SCOPE_HINT}")
@@ -1015,7 +1083,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         desired_ids = {n["id"] for n in desired_nodes}
         # A product is "on" a channel when published or assigned (Story 10.99):
         # an assigned channel not desired is removed, and one desired is unchanged.
+        # A non-DRAFT product's not-live channel is scheduled (Story 10.102) and
+        # is handled the same way, so a desired one keeps its schedule.
         published_ids, assigned_ids = _split_current(rps)
+        scheduled = _is_scheduled(status)
+        not_live_mark = _NOT_LIVE_LABELS[scheduled]["mark"]
+        was_not_live_mark = _NOT_LIVE_LABELS[scheduled]["was_mark"]
         current_ids = published_ids | assigned_ids
 
         add_ids = desired_ids - current_ids
@@ -1038,15 +1111,15 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"  Would add (publish):\n"
             f"{_render_channel_lines(added_nodes, marked=newly_assigned, mark=_ASSIGNED_NOTE)}\n"
             f"  Would remove (unpublish):\n"
-            f"{_render_channel_lines(removed_nodes, marked=assigned_ids, mark=_ASSIGNED_NOTE)}\n"
+            f"{_render_channel_lines(removed_nodes, marked=assigned_ids, mark=not_live_mark)}\n"
             f"  Unchanged:\n"
-            f"{_render_channel_lines(unchanged_nodes, marked=assigned_ids, mark=_ASSIGNED_NOTE)}"
+            f"{_render_channel_lines(unchanged_nodes, marked=assigned_ids, mark=not_live_mark)}"
         )
         if failed:
             preview += "\n  Failed to resolve:\n" + _render_failed(failed)
 
         if not confirm:
-            return with_confirm_hint(_with_incomplete_note(preview, assigned_incomplete))
+            return with_confirm_hint(_with_incomplete_note(preview, assigned_incomplete, scheduled))
 
         if failed:
             # A declarative set with an unresolved channel name must not run
@@ -1130,10 +1203,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"  Added (published):\n"
             f"{_render_channel_lines(added_applied, marked=newly_assigned, mark=_ASSIGNED_NOTE)}\n"
             f"  Removed (unpublished):\n"
-            f"{_render_channel_lines(removed_applied, marked=assigned_ids, mark=_WAS_ASSIGNED_NOTE)}\n"
+            f"{_render_channel_lines(removed_applied, marked=assigned_ids, mark=was_not_live_mark)}\n"
             f"  Unchanged:\n"
-            f"{_render_channel_lines(unchanged_nodes, marked=assigned_ids, mark=_ASSIGNED_NOTE)}"
+            f"{_render_channel_lines(unchanged_nodes, marked=assigned_ids, mark=not_live_mark)}"
         )
         if apply_failed:
             body += "\n  Failed:\n" + _render_failed(apply_failed)
-        return with_reminder(_with_incomplete_note(body, assigned_incomplete))
+        return with_reminder(_with_incomplete_note(body, assigned_incomplete, scheduled))

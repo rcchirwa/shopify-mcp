@@ -532,6 +532,10 @@ _PUB_PRODUCT = {"product_id": "123", "channel_names": ["Online Store"], "confirm
 _PUB_COLLECTION = {"handle": "all-copy", "channel_names": ["Online Store"], "confirm": True}
 _UNPUBLISHED = _product_pubs(pid="123", published_ids=[], not_published_ids=[1, 2, 3])
 _PUBLISHED = _product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3])
+# The unpublish and set tools also read V2 for a non-DRAFT product (Story
+# 10.102), so their scripted read carries that page too.
+_UNPUBLISHED_W = _product_pubs(pid="123", published_ids=[], not_published_ids=[1, 2, 3], write=True)
+_PUBLISHED_W = _product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3], write=True)
 
 # (id, runner, responses before the raising call)
 _PUBLICATIONS_EXCEPTION_SITES: list[tuple[str, Callable[[list[Any]], str], list[Any]]] = [
@@ -562,7 +566,7 @@ _PUBLICATIONS_EXCEPTION_SITES: list[tuple[str, Callable[[list[Any]], str], list[
     (
         "unpublish-mutation",
         _pub("unpublish_product_from_channels", **_PUB_PRODUCT),
-        [_channels_response(), _PUBLISHED],
+        [_channels_response(), _PUBLISHED_W],
     ),
     ("collection-pubs-channels", _pub("get_collection_publications", handle="all-copy"), []),
     (
@@ -586,12 +590,12 @@ _PUBLICATIONS_EXCEPTION_SITES: list[tuple[str, Callable[[list[Any]], str], list[
     (
         "set-publish",
         _pub("set_product_publications", **_PUB_PRODUCT),
-        [_channels_response(), _UNPUBLISHED],
+        [_channels_response(), _UNPUBLISHED_W],
     ),
     (
         "set-unpublish-alone",
         _pub("set_product_publications", product_id="123", channel_names=[], confirm=True),
-        [_channels_response(), _PUBLISHED],
+        [_channels_response(), _PUBLISHED_W],
     ),
     (
         "set-unpublish-after-publish",
@@ -603,7 +607,7 @@ _PUBLICATIONS_EXCEPTION_SITES: list[tuple[str, Callable[[list[Any]], str], list[
         ),
         [
             _channels_response(),
-            _product_pubs(pid="123", published_ids=[1, 4], not_published_ids=[2, 3]),
+            _product_pubs(pid="123", published_ids=[1, 4], not_published_ids=[2, 3], write=True),
             _publish_ok(),
         ],
     ),
@@ -645,7 +649,7 @@ def test_s1069_publications_local_exception_is_not_fenced(run, before) -> None:
             _pub("set_product_publications", **_PUB_PRODUCT),
             [
                 _channels_response(),
-                _UNPUBLISHED,
+                _UNPUBLISHED_W,
                 _publish_err(["input", "0", "publicationId"], ECHO),
             ],
         ),

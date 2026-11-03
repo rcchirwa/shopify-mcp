@@ -76,15 +76,18 @@ query GetProductPublicationsByHandle($handle: String!, $first: Int!, $after: Str
 """
 )
 
-# Story 10.99. A second product read, by id, made only for a DRAFT product,
-# that adds its assigned records. `resourcePublicationsV2(onlyPublished: false)`
-# is the only read that shows a DRAFT product's assigned channel (a record with
-# `isPublished: false`, which goes live when the product is activated). It is
-# not a superset of the v1 read above: it omits published channels that are
-# not in the `publications` roster (Meta, Microsoft Copilot), which v1 returns.
-# So v1 stays the published source and only this read's `isPublished: false`
-# records are used (live, 2026-09-26, API 2026-01). Other products skip it, so
-# an ACTIVE product's future-scheduled record is not labelled assigned.
+# Story 10.99. A second product read, by id, made for a DRAFT product, that
+# adds its assigned records. Story 10.102: the unpublish and set tools also make
+# it for a product of any other status, where an `isPublished: false` record is
+# a future-scheduled channel that v1 hides (live, 2026-11-02).
+# `resourcePublicationsV2(onlyPublished: false)` is the only read that shows a
+# DRAFT product's assigned channel (a record with `isPublished: false`, which
+# goes live when the product is activated). It is not a superset of the v1
+# read above: it omits published channels that are not in the `publications`
+# roster (Meta, Microsoft Copilot), which v1 returns. So v1 stays the published
+# source and only this read's `isPublished: false` records are used (live,
+# 2026-09-26, API 2026-01). The get and publish tools skip it for a non-DRAFT
+# product.
 GET_PRODUCT_ASSIGNED_PUBLICATIONS = """
 query ProductAssignedPublications($id: ID!, $first: Int!, $after: String) {
   product(id: $id) {

@@ -4,7 +4,33 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-10-31.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-11-02.
+
+---
+
+## 2026-11-02 — Story 10.102: the unpublish and set tools see a non-DRAFT product's scheduled channel (closes `T-10.99-scheduled-channels`)
+
+Trello: https://trello.com/c/PinIx6aQ (Story 10.102, Epic 10). A follow-up from Story 10.99 (entry below). The card has the full stage tables.
+
+**Live evidence (2026-11-02, main checkout, API `2026-01` requested and served).** Target: the DRAFT "MCP Test Product" `gid://shopify/Product/8743953137817` only. The card planned Inbox, but Inbox reports `supports_future_publishing: no`, so the probe used Online Store. Steps: `publishablePublish` to Online Store with `publishDate: 2099-01-01T00:00:00Z` while DRAFT; status ACTIVE (only after V2 showed exactly one Online Store record with `isPublished: false` and the 2099 date); reads; then, in `finally`, status DRAFT and `publishableUnpublish`. It ran twice (the first run stopped at a bug in the probe script, after the raw reads). Both runs ended DRAFT with no records in any read.
+- **While ACTIVE, v1 `resourcePublications` (default `onlyPublished: true`) returned no record.** v1 with `onlyPublished: false` and `resourcePublicationsV2(onlyPublished: false)` each returned the Online Store record, with `isPublished: false` and the 2099 `publishDate`.
+- So on main, `get_product_publications` listed Online Store under "Not published to", and the `unpublish_product_from_channels` preview listed it under "Not currently published (unchanged)". A confirm would send no mutation and report `CONFIRMED —`, and the product would go live on the scheduled date.
+- `publishableUnpublish` cleared the schedule (tested while DRAFT).
+- The docs say v1 `isPublished` is true for a scheduled record. Live, it was false.
+- An earlier read-only sweep (2026-11-01, 46 ACTIVE products) found no scheduled record on the store.
+
+**Decisions (Robert, 2026-11-02): approach 2.**
+- **Only the unpublish and set tools read V2 for a non-DRAFT product**, where a hidden schedule makes the result wrong. `get_product_publications` and `publish_product_to_channels` keep the v1 read alone, so `get` still does not show a schedule. `read_product_publications(..., with_scheduled=True)` runs the existing 10.99 V2 read (`GET_PRODUCT_ASSIGNED_PUBLICATIONS`) for any status. The cost is one more request on each unpublish or set call for a non-DRAFT product.
+- **V2, not v1 `onlyPublished: false`.** V2's meaning of `isPublished: false` (scheduled or staged) is documented, while v1's live result contradicts its docs. V2 also reuses the 10.99 query and its degrade path, so no query or schema snapshot changes. V2 still omits off-roster published channels (Meta, Copilot), so only its `isPublished: false` records are used and v1 stays the published source.
+- **Labels:** a non-DRAFT product's not-live channel is marked `(scheduled, not live)`, and `(was scheduled, not live)` after removal. A DRAFT keeps the 10.99 marks. One table, `_NOT_LIVE_LABELS` in `tools/publications.py`, holds both sets of marks and notes, and `_is_scheduled(status)` picks the set (code review). A response with no `status` counts as not DRAFT, as in the operations read. A failed or short V2 read ends the output with "Note: this product's scheduled (not yet live) channels could not be fully read, so some may be missing above."
+- **Unpublish and set remove a scheduled channel** (the mutation is sent). The tool descriptions say an unpublish is sent, not that the schedule is cleared, because that is verified only for a DRAFT (code review). **In set, a desired scheduled channel is unchanged**: the schedule stays, and no publish is sent for it.
+
+**Known limits (not addressed):**
+- `get_product_publications` does not show a schedule, and `publish_product_to_channels` on a scheduled channel still sends a publish. What that publish does to the schedule is not verified.
+- The label is used for every non-DRAFT status. A not-live record was seen only on DRAFT and ACTIVE products; on ARCHIVED or UNLISTED it may not be a schedule. Removing it is still correct for unpublish.
+- That `publishableUnpublish` clears a schedule on an ACTIVE product is not yet verified live (the probe cleared it while DRAFT). Card step 5 re-runs the check through the tool.
+
+**Tests:** RED first, in `tests/unit/shopify/operations/test_publications.py` (`test_s10102_*`) and `tests/unit/tools/test_publications.py` (`test_s10102_*`), plus the description pins in `test_publications_tool_descriptions.py`. The existing unpublish and set tests now script the V2 page (fixture `write=True`), and their call indices move by one. The 10.99 byte-identity strings (`_S1099_BYTE_IDENTICAL`) did not change. The incomplete-read note is pinned for the unpublish and set previews and confirms, and a test covers a read with no `status`. Mutation check after the code review (`PYTHONDONTWRITEBYTECODE=1`, `__pycache__` cleared, restored by sha256): 22 mutants, 21 killed, including a swap of each `_NOT_LIVE_LABELS` entry. The survivor (the unpublish Unchanged-line mark) is equivalent, because unpublish counts every not-live channel as on, so none is ever unchanged.
 
 ---
 
@@ -458,7 +484,7 @@ Trello: https://trello.com/c/Sj5k2EvB (Story 10.99, Epic 10). A side finding of 
 
 **Decisions (Robert, 2026-09-26): approach 1.**
 - **v1 remains the published source; a second V2 read adds only assigned records** (Robert, "v1 + V2 merge", after the re-check below). The product read (the shared `ProductPublicationsFields` fragment) is `resourcePublications(first: $first, after: $after)`, unchanged from main. Once it resolves a **DRAFT** product, `read_product_publications` paginates `GET_PRODUCT_ASSIGNED_PUBLICATIONS`, `resourcePublicationsV2(first:, after:, onlyPublished: false)` by that product's id, and appends only its `isPublished: false` records whose channel is not already a v1 record. V2's `isPublished: true` records are ignored. `capped` is true when either walk stopped short. When no product resolves, no second read is made.
-- **Only a DRAFT product gets the V2 read** (code review, 2026-09-26). Every other product (ACTIVE, ARCHIVED, no `status`) gets the v1 read alone and behaves as on main. Reading V2 for an ACTIVE product would label its future-scheduled `isPublished: false` record "assigned, goes live when ACTIVE" and make publish refuse it as unchanged, and it would cost a second request on every live-product call.
+- **Only a DRAFT product gets the V2 read** (code review, 2026-09-26). Every other product (ACTIVE, ARCHIVED, no `status`) gets the v1 read alone and behaves as on main. Reading V2 for an ACTIVE product would label its future-scheduled `isPublished: false` record "assigned, goes live when ACTIVE" and make publish refuse it as unchanged, and it would cost a second request on every live-product call. (Story 10.102, 2026-11-02, later added the V2 read for any status in the unpublish and set tools only, with its own label; see that entry.)
 - **A failed or short V2 read degrades, it does not fail the call** (code review, 2026-09-26). If the V2 read raises `ShopifyError` (including `ShopifyProtocolError`), `TransientShopifyError` or `requests.RequestException` (connection errors and timeouts, which the gql transport does not wrap), `read_product_publications` returns the v1 records alone; any other exception, such as a programming error, still propagates. That, or a V2 walk that stopped short, sets a fourth return value, `assigned_incomplete`. The four product tools then end their output (previews before the confirm hint) with `Note: this DRAFT product's assigned (not yet live) channels could not be fully read, so some may be missing above.` Headers are unchanged and the write is not refused.
 - A product channel has three states: published (`isPublished: true`), assigned but not live (a record with `isPublished: false`), or not on the channel (no record). `_split_current` returns `(published, assigned)`.
 - `get_product_publications` adds a section, `Assigned (goes live when the product is ACTIVE) (N):`, emitted only when non-empty. Those channels are not listed under "Not published to".

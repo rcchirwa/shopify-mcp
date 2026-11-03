@@ -57,7 +57,7 @@ def read_publications(client: GraphQLClient) -> list[dict[str, Any]]:
 
 
 def read_product_publications(
-    client: GraphQLClient, product_id: str, handle: str
+    client: GraphQLClient, product_id: str, handle: str, *, with_scheduled: bool = False
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], bool, bool]:
     """Read a product and all its publication records, paginated.
 
@@ -70,9 +70,17 @@ def read_product_publications(
     DRAFT product only, a second read, ``resourcePublicationsV2(onlyPublished:
     false)`` by the resolved product's id, adds its ``isPublished: false``
     records. Every other product (ACTIVE, ARCHIVED, no ``status``) gets the v1
-    read alone, as before this story. V2 is not the published source because
-    it omits published channels that are not in the ``publications`` roster
-    (Meta, Microsoft Copilot), which v1 returns. See :func:`_add_assigned`.
+    read alone, as before this story, unless ``with_scheduled`` is True. V2 is
+    not the published source because it omits published channels that are not
+    in the ``publications`` roster (Meta, Microsoft Copilot), which v1 returns.
+    See :func:`_add_assigned`.
+
+    ``with_scheduled`` (Story 10.102) runs the V2 read for a product of any
+    status. The unpublish and set tools pass it. v1 also hides a non-DRAFT
+    product's future-scheduled channel (live-verified 2026-11-02, API 2026-01:
+    an ACTIVE product scheduled on Online Store had no v1 record, and V2 had
+    one with ``isPublished: false`` and the future ``publishDate``). The read
+    and publish tools do not pass it, so they pay no second request.
 
     Resolves by ``product_id`` (coerced to a Product GID) when given, else by
     ``handle``. **Supplying both raises ``ValueError`` before any network
@@ -96,8 +104,8 @@ def read_product_publications(
     returning rather than raising, deliberately unchanged by 10.68. ``capped``
     is True when either walk stopped short of the end — see
     ``ShopifyClient.paginate`` for the three ways that can happen.
-    ``assigned_incomplete`` is True when a DRAFT's V2 read failed or stopped
-    short, so some assigned records may be missing."""
+    ``assigned_incomplete`` is True when the V2 read failed or stopped short,
+    so some not-live records may be missing."""
     reject_both_identifiers(product_id, handle)
     if product_id:
         data, rps, capped = client.paginate(
@@ -106,7 +114,7 @@ def read_product_publications(
             connection_path=["product", "resourcePublications"],
             page_size=PUBLICATIONS_PAGE_SIZE,
         )
-        return _add_assigned(client, data.get("product"), rps, capped)
+        return _add_assigned(client, data.get("product"), rps, capped, with_scheduled)
     if handle:
         data, rps, capped = client.paginate(
             GET_PRODUCT_PUBLICATIONS_BY_HANDLE,
@@ -114,7 +122,7 @@ def read_product_publications(
             connection_path=["productByHandle", "resourcePublications"],
             page_size=PUBLICATIONS_PAGE_SIZE,
         )
-        return _add_assigned(client, data.get("productByHandle"), rps, capped)
+        return _add_assigned(client, data.get("productByHandle"), rps, capped, with_scheduled)
     return None, [], False, False
 
 
@@ -123,13 +131,15 @@ def _add_assigned(
     product: dict[str, Any] | None,
     rps: list[dict[str, Any]],
     capped: bool,
+    with_scheduled: bool = False,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], bool, bool]:
-    """Append a DRAFT product's V2 assigned records to its v1 records.
+    """Append a product's V2 not-live records to its v1 records.
 
-    Only a DRAFT product gets the second read. For any other status, or no
-    product, the v1 result is returned untouched: an ACTIVE product's
-    future-scheduled ``isPublished: false`` record would otherwise be labelled
-    assigned, and every live-product call would pay a second request.
+    A DRAFT product gets the second read, and so does any product when
+    ``with_scheduled`` is True. Otherwise, or with no product, the v1 result is
+    returned untouched, so a live-product read pays no second request. A
+    DRAFT's not-live record is an assigned channel; another product's is a
+    scheduled one (Story 10.102). The tools label the two differently.
 
     Adds only V2 records with ``isPublished: false`` whose publication is not
     already a v1 record; V2's published records are ignored, because v1 is
@@ -137,7 +147,7 @@ def _add_assigned(
     short. The last element, ``assigned_incomplete``, is True when the V2 walk
     stopped short or raised one of ``_READ_FAILURES``; on a raise the v1
     records are returned alone."""
-    if not product or product.get("status") != "DRAFT":
+    if not product or (product.get("status") != "DRAFT" and not with_scheduled):
         return product, rps, capped, False
     v1_ids = {(rp.get("publication") or {}).get("id") for rp in rps}
     try:

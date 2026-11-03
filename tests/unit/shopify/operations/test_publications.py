@@ -241,6 +241,53 @@ def test_s1099_a_draft_product_makes_exactly_two_reads(product_id, handle, root_
     assert fc.calls[1][0] == q.GET_PRODUCT_ASSIGNED_PUBLICATIONS
 
 
+# ---------- Story 10.102: the write paths also read a non-DRAFT product's V2 ----
+#
+# Live, 2026-11-02 (API 2026-01): an ACTIVE product scheduled on Online Store
+# for 2099 had no v1 record. V2 had one, with isPublished false and the future
+# publishDate. `with_scheduled=True` (the unpublish and set tools) runs the V2
+# read for every status, so that record is added beside the v1 records.
+
+_S10102_SCHEDULED = {
+    "publication": {"id": "gid://shopify/Publication/4", "name": "Channel 4"},
+    "isPublished": False,
+    "publishDate": "2099-01-01T00:00:00Z",
+}
+
+
+@pytest.mark.parametrize("status", ["ACTIVE", "ARCHIVED", "UNLISTED", None])
+@pytest.mark.parametrize(
+    ("product_id", "handle", "root_key"), [("123", "", "product"), ("", "tee", "productByHandle")]
+)
+def test_s10102_with_scheduled_a_non_draft_product_gets_the_v2_read(
+    status, product_id, handle, root_key
+):
+    v1 = _product_pubs_response(root_key, status=status)
+    v1_nodes = v1[root_key]["resourcePublications"]["nodes"]
+    fc = FakeClient([v1, _v2_response([_rp("1", True), _S10102_SCHEDULED])])
+    product, rps, capped, incomplete = ops.read_product_publications(
+        fc, product_id, handle, with_scheduled=True
+    )
+    assert product == v1[root_key]
+    assert rps == [*v1_nodes, _S10102_SCHEDULED]
+    assert (capped, incomplete) == (False, False)
+    assert fc.calls[1] == (
+        q.GET_PRODUCT_ASSIGNED_PUBLICATIONS,
+        {"id": "gid://shopify/Product/123", "first": 50, "after": None},
+    )
+    assert fc.responses == []
+
+
+def test_s10102_with_scheduled_a_failed_v2_read_is_flagged_incomplete():
+    v1 = _product_pubs_response("product", status="ACTIVE")
+    fc = FakeClient([v1, ShopifyError("Shopify GraphQL error: boom")])
+    _product, rps, _capped, incomplete = ops.read_product_publications(
+        fc, "123", "", with_scheduled=True
+    )
+    assert rps == v1["product"]["resourcePublications"]["nodes"]
+    assert incomplete is True
+
+
 @pytest.mark.parametrize(
     "error",
     [
