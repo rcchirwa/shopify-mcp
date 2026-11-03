@@ -507,7 +507,7 @@ def _channel_write(
     and in the done list.
 
     ``assigned_incomplete`` ends the preview (before the confirm hint) and the
-    result with ``_ASSIGNED_INCOMPLETE_NOTE``.
+    result with the incomplete-read note (see ``_NOT_LIVE_LABELS``).
 
     ``scheduled`` is True when unpublishing from a non-DRAFT product (Story
     10.102). Its not-live records are future-scheduled channels, so they count
