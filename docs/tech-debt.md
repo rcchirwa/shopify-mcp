@@ -4,7 +4,7 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-11-02.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-11-03.
 
 ---
 
@@ -18,17 +18,17 @@ Trello: https://trello.com/c/PinIx6aQ (Story 10.102, Epic 10). A follow-up from 
 - `publishableUnpublish` cleared the schedule (tested while DRAFT).
 - The docs say v1 `isPublished` is true for a scheduled record. Live, it was false.
 - An earlier read-only sweep (2026-11-01, 46 ACTIVE products) found no scheduled record on the store.
+- **Update 2026-11-03 — card step 5 (branch code at `7757ddd`, PR #206).** The same setup ran through the tool, on Online Store. The test product was ACTIVE for 5.3 s. `unpublish_product_from_channels(confirm=True)` returned `CONFIRMED` with "(was scheduled, not live)". The reads after it, while the product was still ACTIVE, showed no record in v1, v1 `onlyPublished: false` or V2. This shows that **an unpublish clears a schedule on an ACTIVE product** (Online Store). The product ended DRAFT with no records.
 
 **Decisions (Robert, 2026-11-02): approach 2.**
 - **Only the unpublish and set tools read V2 for a non-DRAFT product**, where a hidden schedule makes the result wrong. `get_product_publications` and `publish_product_to_channels` keep the v1 read alone, so `get` still does not show a schedule. `read_product_publications(..., with_scheduled=True)` runs the existing 10.99 V2 read (`GET_PRODUCT_ASSIGNED_PUBLICATIONS`) for any status. The cost is one more request on each unpublish or set call for a non-DRAFT product.
 - **V2, not v1 `onlyPublished: false`.** V2's meaning of `isPublished: false` (scheduled or staged) is documented, while v1's live result contradicts its docs. V2 also reuses the 10.99 query and its degrade path, so no query or schema snapshot changes. V2 still omits off-roster published channels (Meta, Copilot), so only its `isPublished: false` records are used and v1 stays the published source.
 - **Labels:** a non-DRAFT product's not-live channel is marked `(scheduled, not live)`, and `(was scheduled, not live)` after removal. A DRAFT keeps the 10.99 marks. One table, `_NOT_LIVE_LABELS` in `tools/publications.py`, holds both sets of marks and notes, and `_is_scheduled(status)` picks the set (code review). A response with no `status` counts as not DRAFT, as in the operations read. A failed or short V2 read ends the output with "Note: this product's scheduled (not yet live) channels could not be fully read, so some may be missing above."
-- **Unpublish and set remove a scheduled channel** (the mutation is sent). The tool descriptions say an unpublish is sent, not that the schedule is cleared, because that is verified only for a DRAFT (code review). **In set, a desired scheduled channel is unchanged**: the schedule stays, and no publish is sent for it.
+- **Unpublish and set remove a scheduled channel** (the mutation is sent). The tool descriptions say an unpublish is sent, not that the schedule is cleared, because at code review the probe had cleared a schedule only on a DRAFT. Step 5 then cleared one on an ACTIVE product (above). We did not change the descriptions. **In set, a desired scheduled channel is unchanged**: the schedule stays, and no publish is sent for it.
 
 **Known limits (not addressed):**
 - `get_product_publications` does not show a schedule, and `publish_product_to_channels` on a scheduled channel still sends a publish. What that publish does to the schedule is not verified.
 - The label is used for every non-DRAFT status. A not-live record was seen only on DRAFT and ACTIVE products; on ARCHIVED or UNLISTED it may not be a schedule. Removing it is still correct for unpublish.
-- That `publishableUnpublish` clears a schedule on an ACTIVE product is not yet verified live (the probe cleared it while DRAFT). Card step 5 re-runs the check through the tool.
 
 **Tests:** RED first, in `tests/unit/shopify/operations/test_publications.py` (`test_s10102_*`) and `tests/unit/tools/test_publications.py` (`test_s10102_*`), plus the description pins in `test_publications_tool_descriptions.py`. The existing unpublish and set tests now script the V2 page (fixture `write=True`), and their call indices move by one. The 10.99 byte-identity strings (`_S1099_BYTE_IDENTICAL`) did not change. The incomplete-read note is pinned for the unpublish and set previews and confirms, and a test covers a read with no `status`. Mutation check after the code review (`PYTHONDONTWRITEBYTECODE=1`, `__pycache__` cleared, restored by sha256): 22 mutants, 21 killed, including a swap of each `_NOT_LIVE_LABELS` entry. The survivor (the unpublish Unchanged-line mark) is equivalent, because unpublish counts every not-live channel as on, so none is ever unchanged.
 
