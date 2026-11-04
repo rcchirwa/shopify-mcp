@@ -325,7 +325,8 @@ def test_no_tool_config_names_a_legacy_top_level_path():
     stale = {key: hits for key, hits in stale.items() if hits}
     assert not stale, f"Tool config still points at pre-move paths: {stale}"
 
-    assert configured["[tool.coverage.run] source"] == [_PACKAGE], (
+    # `scripts` (the ported helper scripts) is measured too, under the same 100% gate.
+    assert configured["[tool.coverage.run] source"] == [_PACKAGE, "scripts"], (
         f"coverage must measure the whole package: {configured['[tool.coverage.run] source']!r}"
     )
     assert f"src/{_PACKAGE}" in configured["[tool.mypy] files"], (

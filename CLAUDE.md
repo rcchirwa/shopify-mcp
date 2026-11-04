@@ -71,6 +71,14 @@ Notes:
 
 After confirming a PR merged (`gh pr view <n> --json state,mergedAt`, or the user reports it), run `/archive-merged-plan` to stamp the PR into the plan that scoped it and move that plan to `~/.claude/plans/archived_plans/`.
 
+## Deterministic helper scripts
+
+Run these scripts. Do not do their work by hand. Treat each exit code as the result.
+
+- **Session start:** run `python3 scripts/verify/arrival.py` (add `--expect <sha>` when a handoff names a commit). Run it from the system Python or a venv outside the repo: it refuses the repo's own `.venv`. Exit 1: stop and report the output.
+- **Worktree cleanup:** classify with `python3 scripts/maintenance/e32_s01_worktree_sweep.py --main-ref origin/main`. Use `origin/main`, not local `main`: local `main` is often behind, and then merged commits show as "not on the main ref". The script removes nothing. Remove only a worktree this session created, with `git worktree remove` and no `--force`. If the remove refuses, report it; never force it and never `rm -rf`.
+- **Local CI before push:** run `python3.11 scripts/verify/run_gates.py --root <worktree> --candidate <full HEAD sha> --evidence <new dir outside the worktree>`. It runs the jobs of `.github/workflows/test.yml` against that commit, in cached venvs from `scripts/verify/ci_venvs.py`, with the candidate's `src/` on `PYTHONPATH`; the package install runs as a `pip install --dry-run`. It refuses a dirty tree, so commit first. Exit 0 means every gate it ran passed on that exact tree. It does not run the `commit-messages` job (the `.githooks/commit-msg` hook does that check), so never report that job as passed. `summary.json` in the evidence dir is the record, and it lists each skipped job and step with the reason. Report a job you cannot run as unrun, never as passed. A refusal `unknown CI run step` means `test.yml` changed: add the step to `RUN_STEPS`, `INSTALL_STEPS` or `SKIP_STEPS` in `run_gates.py`.
+
 ## Secret handling
 
 - Never `cat`, Read, or otherwise print the full contents of files that hold credentials — `~/Library/Application Support/Claude/claude_desktop_config.json`, `.env`, `~/.aws/credentials`, any MCP config. To inspect structure, redact values first (e.g. `jq 'del(.mcpServers[].env.SHOPIFY_ACCESS_TOKEN)' <file>`) or grep only for the specific keys you need. A token printed to the transcript must be rotated — on 2026-04-19 a `cat` of the Claude Desktop config forced a `SHOPIFY_ACCESS_TOKEN` rotation.

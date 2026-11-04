@@ -110,7 +110,9 @@ testpaths = ["tests"]
 # only through the offline suites, not production code worth gating on.
 #
 # One name now that everything lives under one package (Story 10.47 / FS-3).
-source = ["shopify_mcp"]
+# `scripts` holds the helper scripts ported from Holocron (arrival, worktree sweep,
+# ci_venvs, run_gates); they are held to the same 100% gate.
+source = ["shopify_mcp", "scripts"]
 # The flat layout expressed "entry points aren't unit tested" by leaving
 # `shopify_mcp` (the old entry-point module) out of the `source` list above.
 # Folding seven names into one means that carve-out has to be an explicit omit.
@@ -156,7 +158,7 @@ python_version = "3.11"
 # One entry now that the whole package lives under src/ (Story 10.47 / FS-3);
 # the entry points (server.py, __main__.py) are inside it, so the gate covers
 # strictly more than the old per-module list did.
-files = ["src/shopify_mcp", "tests/support"]
+files = ["src/shopify_mcp", "tests/support", "scripts"]
 # src/ is not on sys.path, so mypy needs to be told where the package root is —
 # without this it reports every `import shopify_mcp.…` as unresolved.
 mypy_path = "src"
