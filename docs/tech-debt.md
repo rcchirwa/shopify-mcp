@@ -8,7 +8,7 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
-## 2026-11-05 — Story 10.103: caller ids echoed in other wordings, found by subject (closes `SEC-24-other-wordings`)
+## 2026-11-05 — Story 10.103: caller ids echoed in other wordings, found by subject (closes `SEC-24-other-wordings`, with two residuals: see review round 4)
 
 Trello: https://trello.com/c/48SvkwSI (Story 10.103, Epic 10). A residual of Story 10.75 (below). Defense-in-depth, not a live defect: the caller already knows what it sent, so nothing leaks. The risk is a flood of text and a CR/LF-forged second line in model context.
 
@@ -62,11 +62,18 @@ Trello: https://trello.com/c/48SvkwSI (Story 10.103, Epic 10). A residual of Sto
 - No mutant fails a test of another site.
 
 **Review round 3 (fix delta from `3927b6d`, same three skills).** Security: no findings. Standards: two Lows declined (the rows write `v[:200]`, so a change to `_GID_DISPLAY_MAX` fails them, which is the right signal; the line numbers in row ids are base-tree labels for traceability only, as the module states). The Spec review closed `product_ref` and found the caller-value class a third time: ids that a normalize helper returns and the reply joins into one list. The helpers only strip the ends and check the GID prefix, so a GID followed by CR/LF and text forged a line in `update_variant_image_binding`'s "media GIDs not on product" (only `_cap`) and in `update_product_options`' "option_values_to_update contains IDs not on option" (no bound). One Low declined: the class test skips names that start with `_`, and the two such `_product_ref` names are unused. The class came back, so it went to Robert: fix the two and make round 4 the last round.
-- **Census:** every join inside an f-string in `tools/` without a scrub, on `cd8e8ea`: 15. Only these two join caller ids. The rest join constants, Shopify's data (`utm_bits`, `old_tags`) or tags, which are not identifiers.
+- **Census:** every join inside an f-string in `tools/` without a scrub, on `cd8e8ea`: 15. Of those, only these two join caller ids. The rest join constants, Shopify's data (`utm_bits`, `old_tags`) or tags. Tags are caller text but not identifiers, so they are out of this story's scope (round 2); they are not safe: `update_product_tags` echoes a caller tag raw. The census did not look at joins built with `+` (see review round 4).
 - **Fixed:** each id is sanitized before the join, and `_cap` bounds the whole list (sanitize first, as the rule says). The guard's docstring states that its taint does not follow a helper's return value into a joined list.
 - **Tests:** 2 rows (over-long, CR/LF and ordinary values, whole reply and tail).
 
 **Mutation table, review round 3 fix delta (from `cd8e8ea`): 2 lines × 3 mutants = 6, all killed.** Same method. The guard does not see these lines, so the rows hold them. At the media-ids line the revert is the old `_cap` without sanitize, so it fails the CR/LF row as cap-only does; sanitize-only fails the over-long row. At the option-value-ids line a revert fails both rows, cap-only the CR/LF row and sanitize-only the over-long row. No mutant fails a test of another site.
+
+**Review round 4, the last round (fix delta from `cd8e8ea`, same three skills).** Security: no findings. Standards: one Low declined (the two scrubbed joins write the same expression; two sites are below the bar for a helper). Its Medium, that the census line read as if tags were safe, is corrected in the census line above. The Spec review found the class a fourth time, confirmed by probe: two more caller-id joins, built with `+`, which the census did not see. Round 4 was the cap, so no fix was made. **Robert chose (2026-11-06): record them as residuals, not fix them in this story.**
+- **Residual 1:** `catalog_hygiene.py` `update_variant_image_binding`, "variant GIDs not on product …: " `+ _cap(", ".join(from_gid(g) for g in unknown_variant_gids))`. It is bounded but not sanitized. A variantId `gid://shopify/ProductVariant/999` followed by CR/LF and text forges a line.
+- **Residual 2:** `catalog_hygiene.py` `update_product_pricing` with `confirm=True`, "Error: resolved variant(s) not found on product: " `+ ", ".join(from_gid(g) for g in unknown_gids)`. No bound and no sanitize. The same payload forges a line. The preview path is scrubbed; the row covers only the preview.
+- **Not checked:** two other `+` joins, `catalog_hygiene.py` `truncated_variants` (the image-binding CONFIRMED line) and `media/_reorder.py`'s "not attached to the product" list. Whether they hold caller values is not established. A follow-up should sweep every join, whatever the way it is built (`+`, f-string, a `tail=` argument).
+- **AC 1 is therefore not met at the two residual sites.** Both stay defense-in-depth, as for the rest of this story: the caller already knows what it sent.
+- **Spec Low, accepted:** the option-value list in `update_product_options` is now bounded at 200 as a whole, so a reply with many ordinary unknown ids ends inside an id, with no "(truncated)" marker. That marker is the 10.75 residual that stays OUT.
 
 **Mutation table, first pass (the implementation commit plus the written-path `Target loc` line): 24 scrub lines × 3 mutants = 72, all killed.** Each mutant ran alone, with a SHA-256 restore, `PYTHONDONTWRITEBYTECODE=1` and a cleared `__pycache__`. A revert (the raw value) ran the full suite; a cap-only or sanitize-only half-scrub ran the two test modules. The baseline had no failures.
 - At 18 lines, a revert fails 3 tests: the guard plus that site's CR/LF and over-long rows. Cap-only fails the guard and the CR/LF row. Sanitize-only fails the guard and the over-long row.

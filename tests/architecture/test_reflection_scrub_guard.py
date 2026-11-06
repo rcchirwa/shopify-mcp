@@ -169,7 +169,9 @@ def test_the_literal_match_sees_interpolated_and_multi_word_kinds():
 #   return value. Review round 3 found two (`update_variant_image_binding`'s
 #   media ids, `update_product_options`' option value ids); both are scrubbed
 #   and held by their unit rows. A census of every unscrubbed join inside an
-#   f-string on cd8e8ea found 15, and only these two joined caller ids.
+#   f-string on cd8e8ea found 15, and only these two joined caller ids. That
+#   census missed joins built with `+`: review round 4 found two more that
+#   are still raw, recorded as residuals in docs/tech-debt.md (Story 10.103).
 # - Audit-log text: interpolations inside `log_write(...)` arguments or a
 #   `log_description=` value are skipped, because `log_write` applies
 #   `cap(sanitize_control_chars(...))` itself (tools/_log.py).
