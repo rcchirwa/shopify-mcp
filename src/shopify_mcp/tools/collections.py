@@ -137,8 +137,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         preview_lines = [
             "PREVIEW — Collection update",
-            # reflect-exempt[handle]: post-lookup: collection found by this handle
-            f"  Handle : {handle}",
+            f"  Handle : {cap(sanitize_control_chars(handle))}",
             f"  ID     : {from_gid(col_id)}",
         ]
         if new_title:
@@ -366,8 +365,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return f"No collection found with handle '{cap(sanitize_control_chars(handle))}'."
         if col_type == "smart":
             return (
-                # reflect-exempt[handle]: post-lookup: collection found by this handle
-                f"Error: '{handle}' is a smart collection — membership is "
+                f"Error: '{cap(sanitize_control_chars(handle))}' is a smart collection — membership is "
                 f"rule-driven and cannot be changed directly."
             )
 
@@ -375,8 +373,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         preview = (
             f"PREVIEW — {op['present_verb']} product {op['preposition']} collection\n"
-            # reflect-exempt[handle]: post-lookup: collection found by this handle
-            f"  Collection : {col['title']} (handle: {handle}, id: {from_gid(col_id)})\n"
+            f"  Collection : {col['title']} (handle: {cap(sanitize_control_chars(handle))}, id: {from_gid(col_id)})\n"
             f"  Product    : {cap(sanitize_control_chars(product_id))}"
         )
 

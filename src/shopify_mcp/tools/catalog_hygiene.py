@@ -1906,8 +1906,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                     f"    • id: {cap(sanitize_control_chars(from_gid(gid)))} — (variant not found on product)"
                 )
                 not_found_messages.append(
-                    # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
-                    f"variant {cap(sanitize_control_chars(from_gid(gid)))} not found on product {product_id}"
+                    f"variant {cap(sanitize_control_chars(from_gid(gid)))} not found on product {cap(sanitize_control_chars(product_id))}"
                 )
                 continue
 
@@ -1920,8 +1919,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 all_match = False
 
             sku = existing.get("sku") or "(no SKU)"
-            # reflect-exempt[gid]: post-lookup: equals a variant GID from Shopify
-            block_lines = [f"    • id: {from_gid(gid)} — SKU: {sku}"]
+            block_lines = [f"    • id: {cap(sanitize_control_chars(from_gid(gid)))} — SKU: {sku}"]
             if target_price is not None:
                 block_lines.append(_format_old_new("price", existing.get("price"), target_price))
             if has_cap:
@@ -1937,8 +1935,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         warning_block = f"\n{at_cap_warning}" if at_cap_warning else ""
         preview = (
             f"PREVIEW — Product pricing update\n"
-            # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
-            f"  Product : {title} (id: {product_id})\n"
+            f"  Product : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
             f"  Targets ({len(entries)}):\n" + "\n".join(preview_lines) + warning_block
         )
 
@@ -1972,8 +1969,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
             head = (
                 f"CONFIRMED — Product pricing update (no-op)\n"
-                # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
-                f"  Product : {title} (id: {product_id})\n"
+                f"  Product : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
                 f"  Targets : {len(entries)} (all already at target values)"
                 f"{warning_block}"
             )
@@ -2059,8 +2055,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
         head = (
             f"CONFIRMED — Product pricing update\n"
-            # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
-            f"  Product : {title} (id: {product_id})\n"
+            f"  Product : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
             f"  Updated ({len(updated)}):\n{updated_lines}"
             f"{warning_block}"
         )
@@ -3275,7 +3270,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         def _entry_line(idx: int, entry: dict[str, Any]) -> str:
             return (
                 f"  [{idx}] {entry['ownerType']} {cap(sanitize_control_chars(entry['ownerId']))} | "
-                f"{entry['namespace']}.{entry['key']} = {_cap(entry['value'])!r} "
+                f"{cap(sanitize_control_chars(entry['namespace']))}.{cap(sanitize_control_chars(entry['key']))} = "
+                f"{_cap(entry['value'])!r} "
                 f"({entry['type']})"
             )
 
@@ -3636,11 +3632,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # ---- Per-entry preview line (used by preview AND post-mutation head). -
         def _entry_line(r: dict[str, Any]) -> str:
             ownership = (
-                # reflect-exempt[ownerId]: post-lookup: owner resolved, or id from Shopify
-                f"{r['ownerType']} {r['ownerId']}" if r.get("ownerType") else "(owner unknown)"
+                f"{r['ownerType']} {cap(sanitize_control_chars(r['ownerId']))}"
+                if r.get("ownerType")
+                else "(owner unknown)"
             )
             tag = (
-                f"  [{r['index']}] {ownership} | {r.get('namespace') or '?'}.{r.get('key') or '?'}"
+                f"  [{r['index']}] {ownership} | "
+                f"{cap(sanitize_control_chars(r.get('namespace') or '?'))}."
+                f"{cap(sanitize_control_chars(r.get('key') or '?'))}"
             )
             if r.get("note"):
                 tag += f"  ⚠ {r['note']}"
@@ -4046,6 +4045,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                     # wrap them as untrusted so the model reads them as data,
                     # not instructions (Story 10.41 / SEC-04). Key/type stay
                     # raw: they are schema-defined, not shopper free text.
+                    # reflect-exempt[key]: Shopify returned this metafield key
                     head_lines.append(f"  • {m['key']}  [{m['type']}]  →  {wrap(m['value'])}")
             if include_variants and variant_buckets:
                 head_lines.append("")
@@ -4058,6 +4058,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                     )
                     for m in v["metafields"]:
                         head_lines.append(
+                            # reflect-exempt[namespace]: Shopify returned this metafield namespace
+                            # reflect-exempt[key]: Shopify returned this metafield key
                             f"    • {m['namespace']}.{m['key']}  [{m['type']}]  →  {wrap(m['value'])}"
                         )
 

@@ -46,8 +46,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return f"No product found with id {cap(sanitize_control_chars(product_id))}."
         target = next((n for n in nodes if n.get("id") == media_id), None)
         if not target:
-            # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
-            return f"Error: media {cap(sanitize_control_chars(media_id))} is not attached to product {product_id}."
+            return f"Error: media {cap(sanitize_control_chars(media_id))} is not attached to product {cap(sanitize_control_chars(product_id))}."
         old_alt = target.get("alt") or ""
         # `old_alt` is stored store content read back over the wire — the same
         # `alt` field list_product_media has fenced since SEC-04 — so it is
@@ -59,10 +58,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         no_op_suffix = "  (no-op — alt unchanged)" if old_alt == alt else ""
         old_alt_display = wrap(old_alt) if old_alt else ""
         body = (
-            # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
-            f"  Product ID : {product_id}\n"
-            # reflect-exempt[media_id]: post-lookup: equals an attached media id
-            f"  Media ID   : {media_id}\n"
+            f"  Product ID : {cap(sanitize_control_chars(product_id))}\n"
+            f"  Media ID   : {cap(sanitize_control_chars(media_id))}\n"
             f"  Old alt    : {old_alt_display!r}\n"
             f"  New alt    : {alt!r}{no_op_suffix}"
         )

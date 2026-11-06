@@ -120,8 +120,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not product:
             return f"Product {cap(sanitize_control_chars(product_id))} not found."
 
-        # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
-        lines = [f"Inventory for: {product['title']} (id: {product_id})\n"]
+        lines = [
+            f"Inventory for: {product['title']} (id: {cap(sanitize_control_chars(product_id))})\n"
+        ]
         for variant in variants:
             inv_item = variant.get("inventoryItem") or {}
             levels = (inv_item.get("inventoryLevels") or {}).get("nodes", []) or []
@@ -291,8 +292,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         preview = (
             f"PREVIEW — Variant inventory tracking update\n"
-            # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
-            f"  Product : {title} (id: {product_id})\n"
+            f"  Product : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
             f"  Target  : tracked={tracked}\n"
             f"  Would change ({len(to_change)}):\n{change_lines}\n"
             f"  Unchanged ({len(unchanged)}):\n{unchanged_lines}"
@@ -370,8 +370,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # `failed_block` can carry fenced Shopify text (Story 10.69).
         return with_reminder(
             f"{header}\n"
-            # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
-            f"  Product : {title} (id: {product_id})\n"
+            f"  Product : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
             f"  Target  : tracked={tracked}\n"
             f"  Changed ({len(changed)}):\n{changed_lines}\n"
             f"  Unchanged ({len(unchanged)}):\n{unchanged_lines}"
@@ -513,8 +512,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         target_loc_label = location_id or "all locations"
         preview = (
             f"PREVIEW — Variant inventory quantity update\n"
-            # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
-            f"  Product     : {title} (id: {product_id})\n"
+            f"  Product     : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
             f"  Target qty  : {quantity}\n"
             f"  Target loc  : {cap(sanitize_control_chars(target_loc_label))}\n"
             f"  Would change ({len(to_write)}):\n{write_lines}\n"
@@ -556,8 +554,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 header += " (no-op)"
             return (
                 f"{header}\n"
-                # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
-                f"  Product     : {title} (id: {product_id})\n"
+                f"  Product     : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
                 f"  Target qty  : {quantity}\n"
                 f"  Target loc  : {cap(sanitize_control_chars(target_loc_label))}\n"
                 f"  Changed     : (none — nothing writable at target)\n"
@@ -603,11 +600,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         header = _outcome_header("Variant inventory quantity update", len(to_write), len(skipped))
         return (
             f"{header}\n"
-            # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
-            f"  Product     : {title} (id: {product_id})\n"
+            f"  Product     : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
             f"  Target qty  : {quantity}\n"
-            # reflect-exempt[target_loc_label]: post-lookup: runs only when the location matched
-            f"  Target loc  : {target_loc_label}\n"
+            f"  Target loc  : {cap(sanitize_control_chars(target_loc_label))}\n"
             f"  Changed ({len(to_write)}):\n{changed_lines}\n"
             f"  Unchanged ({len(unchanged)}):\n{unchanged_lines}"
             f"{skipped_block}"

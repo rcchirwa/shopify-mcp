@@ -159,7 +159,7 @@ def test_the_literal_match_sees_interpolated_and_multi_word_kinds():
 #
 # What this still does NOT see, stated so a green run isn't over-read:
 # - A caller value under a name that is not in `_SUBJECTS` (or, for the generic
-#   names `gid` and `mid`, outside the function `_SCOPED_SUBJECTS` names). The
+#   names `gid`, `mid` and `numeric_id`, outside the function `_SCOPED_SUBJECTS` names). The
 #   list is the step-1 sweep of 5418d9a; a new parameter name must be added.
 # - Text built by concatenation, `.format()` or `%`, as for the check above.
 # - A subject first copied into a local under another name, unless that name
@@ -186,12 +186,14 @@ _SUBJECTS = frozenset(
         "keys_display",
     }
 )
-# Dict keys whose value is caller input (`c["ownerId"]`, `entry["ownerId"]`).
-_SUBJECT_KEYS = frozenset({"ownerId"})
+# Dict keys whose value is caller input, read as `entry["ownerId"]` or
+# `r.get("namespace")`.
+_SUBJECT_KEYS = frozenset({"ownerId", "namespace", "key"})
 # Generic names that hold a caller value only inside these functions.
 _SCOPED_SUBJECTS = {
     "update_product_pricing": frozenset({"gid"}),
     "delete_product_media": frozenset({"mid"}),
+    "delete_webhook": frozenset({"numeric_id"}),
 }
 _LOG_CALLS = frozenset({"log_write"})
 _LOG_KEYWORDS = frozenset({"log_description"})
@@ -224,6 +226,16 @@ def _subjects_in(expr: ast.expr, functions: tuple[str, ...]) -> frozenset[str]:
         if isinstance(n, ast.Subscript)
         and isinstance(n.slice, ast.Constant)
         and n.slice.value in _SUBJECT_KEYS
+    }
+    found |= {
+        n.args[0].value
+        for n in ast.walk(expr)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "get"
+        and n.args
+        and isinstance(n.args[0], ast.Constant)
+        and n.args[0].value in _SUBJECT_KEYS
     }
     return frozenset(found)
 
@@ -351,14 +363,14 @@ def test_s10103_every_marker_has_a_reason_and_guards_a_raw_echo():
 def test_s10103_the_guard_sees_every_known_subject_site():
     """Proves the walk ran over real code, so the guard can't pass vacuously.
 
-    On the Story 10.103 tree (origin/main 5418d9a plus this story): 89 subject
-    interpolations, of which 48 carry a marker and 41 are scrubbed. A new site
+    On the Story 10.103 tree (origin/main 5418d9a plus this story): 97 subject
+    interpolations, of which 12 carry a marker and 85 are scrubbed. A new site
     raises the count and is checked above; a lower count means a site was
     removed or the walk stopped seeing it — re-derive before lowering a floor.
     """
     sites = _subject_sites()
-    assert len(sites) >= 89
-    assert sum(1 for s in sites if s.exempt) >= 48
+    assert len(sites) >= 97
+    assert sum(1 for s in sites if s.exempt) >= 12
 
 
 def _scan_snippet(body: str) -> list[SubjectSite]:
@@ -368,12 +380,14 @@ def _scan_snippet(body: str) -> list[SubjectSite]:
 
 def test_s10103_control_pair_raw_echo_is_caught_and_scrubbed_echo_passes():
     """One pair per shape the guard covers: a bare name, a listed derived name,
-    a subject inside a call, a subject dict key, and a scoped generic name."""
+    a subject inside a call, a subject dict key (subscript or `.get`), and a
+    scoped generic name."""
     raw = {
         "name": 'def f(product_id):\n    return f"Product {product_id} not found."\n',
         "derived": 'def f(vids):\n    return "\\n".join(f"• {vid}" for vid in vids)\n',
         "call": 'def f(handle):\n    return f"from {handle or title}"\n',
         "key": "def f(c):\n    return f\"Owner {c['ownerId']} not found\"\n",
+        "get": "def f(r):\n    return f\"{r.get('namespace') or '?'}.k\"\n",
         "scoped": 'def update_product_pricing(gid):\n    return f"id: {from_gid(gid)}"\n',
     }
     for shape, src in raw.items():
@@ -383,6 +397,7 @@ def test_s10103_control_pair_raw_echo_is_caught_and_scrubbed_echo_passes():
         "derived": 'def f(vids):\n    return "\\n".join(f"• {cap(sanitize_control_chars(vid))}" for vid in vids)\n',
         "call": 'def f(handle):\n    return f"from {cap(sanitize_control_chars(handle or title))}"\n',
         "key": 'def f(c):\n    return f"Owner {cap(sanitize_control_chars(c[\'ownerId\']))} not found"\n',
+        "get": "def f(r):\n    return f\"{cap(sanitize_control_chars(r.get('namespace') or '?'))}.k\"\n",
         "scoped": 'def update_product_pricing(gid):\n    return f"id: {cap(sanitize_control_chars(from_gid(gid)))}"\n',
     }  # fmt: skip
     for shape, src in scrubbed.items():

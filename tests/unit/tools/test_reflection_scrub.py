@@ -33,6 +33,7 @@ from shopify_mcp.shopify._ids import (
     INVALID_INVENTORY_ITEM_ID_ERROR,
     INVALID_LOCATION_ID_ERROR,
     INVALID_ORDER_ID_ERROR,
+    INVALID_SUBSCRIPTION_ID_ERROR,
 )
 from shopify_mcp.tools import catalog_hygiene
 from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
@@ -50,6 +51,7 @@ from tests.unit.tools.test_catalog_hygiene import (
     _s96_combined_response,
     _s97_entry,
     _s910_batch_resolve,
+    _s910_triple_alias,
     _s911_product_response,
 )
 from tests.unit.tools.test_catalog_hygiene import _build as _build_hygiene
@@ -62,6 +64,7 @@ from tests.unit.tools.test_inventory import (
     _inventory_item_response,
     _level,
     _product_with_variants,
+    _set_inventory_ok,
     _variant,
 )
 from tests.unit.tools.test_media import MEDIA_A, _media_node, _product_media_read
@@ -75,6 +78,7 @@ from tests.unit.tools.test_products import (
     _variant_policy,
     _variants_policy_read,
 )
+from tests.unit.tools.test_webhooks import _build as _build_webhooks
 
 _CR, _LF = "\r", "\n"
 
@@ -412,6 +416,11 @@ def _inv(tool: str, responses: list, **kw: Any) -> Callable[[str], str]:
     return lambda v: _build_inventory([dict(r) for r in responses])[0][tool](**{arg: v}, **kw)
 
 
+def _trailing(value: str) -> dict[str, str]:
+    """Payloads that survive a strip-then-look-up: CR/LF or spaces after a valid value."""
+    return {"crlf": value + _CR + _LF, "long": value + " " * 400}
+
+
 def _with_tail(out: str) -> tuple[str, Any]:
     """Split a reply into its text (head and any text after the tail) and its parsed tail."""
     head, sep, rest = out.partition("\n\n```json\n")
@@ -438,6 +447,9 @@ S10103_ROWS = [
     _Row("inventory:196 update_inventory location", _inv("update_inventory", [_inventory_item_response(5, "8")], arg="location_id", inventory_item_id="7", quantity=1), "4242", refused=f"Error: {INVALID_LOCATION_ID_ERROR}."),
     _Row("inventory:469/510 quantity location preview", _inv("update_variant_inventory_quantity", [_product_with_variants(_ONE_VARIANT)], arg="location_id", product_id="555", quantity=0), "4242", echoes=2, refused=f"Error: {INVALID_LOCATION_ID_ERROR}."),
     _Row("inventory:469/552 quantity location confirm", _inv("update_variant_inventory_quantity", [_product_with_variants(_ONE_VARIANT)], arg="location_id", product_id="555", quantity=0, confirm=True), "4242", echoes=2, refused=f"Error: {INVALID_LOCATION_ID_ERROR}."),
+    # The written path: the level matches the location. `typed_gid` strips before its
+    # digits check, so only trailing whitespace passes it and reaches this echo.
+    _Row("inventory:610 quantity location written", _inv("update_variant_inventory_quantity", [_product_with_variants([_variant("100", "S", "REEF-S", [_level(5, "gid://shopify/Location/4242")])]), _set_inventory_ok()], arg="location_id", product_id="555", quantity=0, confirm=True), "gid://shopify/Location/4242", crlf="gid://shopify/Location/4242" + _CR + _LF, long="gid://shopify/Location/4242" + " " * 400),
     _Row("inventory:276 tracking variant ids", lambda v: _build_inventory([_product_with_variants(_ONE_VARIANT)])[0]["update_variant_inventory_tracking"](product_id="555", tracked=True, variant_ids=["100", v]), "4242"),
     _Row("inventory:498 quantity variant ids", lambda v: _build_inventory([_product_with_variants(_ONE_VARIANT)])[0]["update_variant_inventory_quantity"](product_id="555", quantity=0, variant_ids=["100", v]), "4242"),
     _Row("products:951 policy variant ids", lambda v: _build_products([_variants_policy_read([_variant_policy("10", "S", "CONTINUE")])])[0]["update_variant_inventory_policy"](product_id="123", new_policy="DENY", variant_ids=["10", v]), "4242"),
@@ -453,6 +465,23 @@ S10103_ROWS = [
     _Row("catalog_hygiene:3592/3595 delete_product_metafields", lambda v: _build_hygiene([_s910_batch_resolve(None)])[0]["delete_product_metafields"](metafields=[{"ownerId": v, "namespace": "custom", "key": "k"}]), _PID, tail=True),
     _Row("catalog_hygiene:4016 get_product_metafields namespace", lambda v: _build_hygiene([_s911_product_response([])])[0]["get_product_metafields"](product_id=_S911_PRODUCT_GID, namespace=v), "ns4242", tail=True),
     _Row("catalog_hygiene:4019 get_product_metafields keys", lambda v: _build_hygiene([_s911_product_response([])])[0]["get_product_metafields"](product_id=_S911_PRODUCT_GID, keys=[v]), "key4242", tail=True, shown=lambda v: f'"{v}"'),
+    # Review round 1: caller metafield namespace / key, unknown reorder ids, webhook id.
+    _Row("catalog_hygiene:3273 set_product_metafields namespace", lambda v: _build_hygiene([])[0]["set_product_metafields"](metafields=[{**_s97_entry(), "namespace": v}]), "ns4242", tail=True, tail_raw=True),
+    _Row("catalog_hygiene:3273 set_product_metafields key", lambda v: _build_hygiene([])[0]["set_product_metafields"](metafields=[{**_s97_entry(), "key": v}]), "key4242", tail=True, tail_raw=True),
+    _Row("catalog_hygiene:3637 delete_product_metafields namespace", lambda v: _build_hygiene([_s910_batch_resolve(_s910_triple_alias(metafield_id=None))])[0]["delete_product_metafields"](metafields=[{"ownerId": _PID, "namespace": v, "key": "k"}]), "ns4242", tail=True, tail_raw=True),
+    _Row("catalog_hygiene:3637 delete_product_metafields key", lambda v: _build_hygiene([_s910_batch_resolve(_s910_triple_alias(metafield_id=None))])[0]["delete_product_metafields"](metafields=[{"ownerId": _PID, "namespace": "custom", "key": v}]), "key4242", tail=True, tail_raw=True),
+    _Row("media/_reorder:64 reorder_product_media unknown ids", lambda v: _build_media([_product_media_read([_media_node(MEDIA_A)])])[0]["reorder_product_media"](product_id="123", moves=[{"id": v, "newPosition": 1}]), "gid://shopify/MediaImage/4242"),
+    _Row("webhooks:176 delete_webhook", lambda v: _build_webhooks([])[0]["delete_webhook"](subscription_id=v), "4242", refused=f"Error: {INVALID_SUBSCRIPTION_ID_ERROR}."),
+    # Review round 1, the post-lookup class: `typed_gid` strips before the read, so a
+    # valid id followed by CR/LF or spaces is found, and the echo showed it raw.
+    # One row per module and reply shape; the guard holds every other site.
+    _Row("post-lookup inventory get_inventory", _inv("get_inventory", [_product_with_variants(_ONE_VARIANT)], arg="product_id"), _PID, **_trailing(_PID)),
+    _Row("post-lookup inventory tracking preview", _inv("update_variant_inventory_tracking", [_product_with_variants(_ONE_VARIANT)], arg="product_id", tracked=False), _PID, **_trailing(_PID)),
+    _Row("post-lookup products policy preview", lambda v: _build_products([_variants_policy_read([_variant_policy("10", "S", "CONTINUE")])])[0]["update_variant_inventory_policy"](product_id=v, new_policy="DENY"), _PID, **_trailing(_PID)),
+    _Row("post-lookup media update_product_media", lambda v: _build_media([_product_media_read([_media_node(MEDIA_A)])])[0]["update_product_media"](product_id=v, media_id=MEDIA_A, alt="x"), _PID, **_trailing(_PID)),
+    _Row("post-lookup media delete_product_media", lambda v: _build_media([_product_media_read([_media_node(MEDIA_A)])])[0]["delete_product_media"](product_id=v, media_ids=[MEDIA_A]), _PID, **_trailing(_PID)),
+    _Row("post-lookup collections handle", lambda v: _build_collections([_manual_collection()])[0]["add_product_to_collection"](handle=v, product_id="4242"), "vanish", **_trailing("vanish")),
+    _Row("post-lookup catalog_hygiene update_product_pricing", lambda v: _build_hygiene([_read_response()])[0]["update_product_pricing"](v, variants=[{"variantId": "gid://shopify/ProductVariant/201", "price": "49.99"}]), _PID, tail=True, **_trailing(_PID)),
 ]  # fmt: skip
 
 

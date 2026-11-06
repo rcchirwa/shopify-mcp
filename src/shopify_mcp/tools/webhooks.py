@@ -22,6 +22,7 @@ from shopify_mcp.shopify.operations import webhooks as ops
 from shopify_mcp.shopify.queries.webhooks import CREATE_WEBHOOK, DELETE_WEBHOOK, LIST_WEBHOOKS
 from shopify_mcp.tools._annotations import CREATE, OVERWRITE, READ_ONLY
 from shopify_mcp.tools._gid import from_gid
+from shopify_mcp.tools._scrub import cap, sanitize_control_chars
 from shopify_mcp.tools._write_tool import _confirmed_from_preview, write_gate
 
 # The GraphQL strings now live in shopify.queries.webhooks. They are re-exported
@@ -173,7 +174,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         except ValueError:
             return f"Error: {INVALID_SUBSCRIPTION_ID_ERROR}."
         numeric_id = from_gid(gid)
-        preview = f"PREVIEW — Delete webhook\n  Subscription ID : {numeric_id}"
+        preview = (
+            "PREVIEW — Delete webhook\n"
+            f"  Subscription ID : {cap(sanitize_control_chars(numeric_id))}"
+        )
 
         def _check_deleted(result: dict) -> str | None:
             payload = result.get("webhookSubscriptionDelete", {}) or {}

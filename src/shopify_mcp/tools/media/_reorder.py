@@ -63,7 +63,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         current_ids = [n.get("id") for n in current_nodes]
         unknown = [m["id"] for m in parsed_moves if m["id"] not in current_ids]
         if unknown:
-            return "Error: these media ids are not attached to the product: " + ", ".join(unknown)
+            return "Error: these media ids are not attached to the product: " + ", ".join(
+                cap(sanitize_control_chars(u)) for u in unknown
+            )
 
         # Every node's stored alt is echoed here, so this is a WIDER untrusted
         # surface than update_product_media's single `old_alt` — fence each one
@@ -80,8 +82,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"    • {m['id']} → position {m['newPosition']}" for m in parsed_moves
         )
         body = (
-            # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
-            f"  Product ID : {product_id}\n"
+            f"  Product ID : {cap(sanitize_control_chars(product_id))}\n"
             f"  Current order ({len(current_nodes)}):\n{current_lines}\n"
             f"  Moves ({len(parsed_moves)}):\n{moves_lines}"
         )

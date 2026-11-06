@@ -437,8 +437,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 pos_note += f" (exceeds current count — Shopify will clamp to {current_count + 1})"
         preview = (
             f"PREVIEW — Upload product image\n"
-            # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
-            f"  Product ID : {product_id}\n"
+            f"  Product ID : {cap(sanitize_control_chars(product_id))}\n"
             f"  Source     : {source}\n"
             f"  Alt        : {alt!r}\n"
             f"  Target     : {pos_note}\n"
@@ -501,13 +500,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"Error at stage=process: Shopify marked the media FAILED "
                 f"after processing. It is attached to the product and should "
                 f"be removed.\n"
-                # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
-                f"  Product ID : {product_id}\n"
+                f"  Product ID : {cap(sanitize_control_chars(product_id))}\n"
                 f"  Media ID   : {new_media_id}\n"
                 f"  Source     : {source}\n"
                 f"  Suggested cleanup: "
-                # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
-                f"delete_product_media(product_id={product_id!r}, "
+                f"delete_product_media(product_id={cap(sanitize_control_chars(product_id))!r}, "
                 f"media_ids=[{new_media_id!r}], confirm=True)"
             )
 
@@ -537,8 +534,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # `reorder_note` can carry fenced Shopify text (Story 10.69).
         return with_reminder(
             f"CONFIRMED — Upload product image\n"
-            # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
-            f"  Product ID : {product_id}\n"
+            f"  Product ID : {cap(sanitize_control_chars(product_id))}\n"
             f"  Media ID   : {new_media_id}\n"
             f"  Status     : {final_status}\n"
             f"  Position   : {pos_note}\n"
