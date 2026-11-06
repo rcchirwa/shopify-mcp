@@ -4,9 +4,44 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-11-03.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-11-05.
 
 ---
+
+## 2026-11-05 — Story 10.103: caller ids echoed in other wordings, found by subject (closes `SEC-24-other-wordings`)
+
+Trello: https://trello.com/c/48SvkwSI (Story 10.103, Epic 10). A residual of Story 10.75 (below). Defense-in-depth, not a live defect: the caller already knows what it sent, so nothing leaks. The risk is a flood of text and a CR/LF-forged second line in model context.
+
+**The rule is 10.75's, unchanged: `cap(sanitize_control_chars(x))`.** No second slicing or escaping helper.
+
+**Decisions (Robert, 2026-11-05, card comments).** Approach 2, a guard by subject, not by wording. A post-lookup echo carries an exemption marker that states its reason, one marker per site (not a scrub, and not one marker per function). The two 10.75 residuals stay OUT: the unbounded JSON-tail userErrors, and a "(truncated)" marker for `cap`.
+
+**Step 1 found more than the card.** The search was by subject: every f-string interpolation in `tools/` of a caller id parameter, or of a value derived from one. It found 89 interpolations on the reply path. The card and the handoff listed 13 site lines. Seven more site groups were reachable: `media/_delete.py`'s `Not attached` bullets, `collections.py` `create_collection`'s `Cannot form a collection handle from '…'`, `update_inventory`'s preview ids, the `Target loc` line of `update_variant_inventory_quantity`, the `update_product_title` and `update_product_description` previews (no not-found check before the preview), `add_product_to_collection`'s `Product :` preview line (only the collection is read), and `set_product_metafields`' preview `ownerId`. Interpolations inside `log_write(...)` or a `log_description=` value are not replies, and `log_write` already scrubs and caps them (`tools/_log.py`).
+
+**Fixed: 23 interpolations in 20 test rows,** each driven with an over-long value, a CR/LF value and an ordinary value, comparing the whole reply (text and parsed JSON tail):
+- `inventory.py`: `get_inventory` `Product {…} not found.`; `update_inventory` preview `inventory_item_id` and `location_id`; `update_variant_inventory_quantity` `Unresolved location:` and `Target loc` (preview and nothing-written paths); the `Unresolved variant ids:` bullets of the tracking and quantity tools.
+- `orders.py`: `get_order` `Order {…} not found.`
+- `products.py`: the `update_variant_inventory_policy` bullets; the `update_product_title` and `update_product_description` previews.
+- `media/_update.py`: `Error: media {…} is not attached …` (the `media_id` half). `media/_delete.py`: the `Not attached` bullets.
+- `collections.py`: `create_collection`'s handle message; `add_product_to_collection` / `remove_product_from_collection` preview `Product :` line.
+- `catalog_hygiene.py`: `update_product_pricing`'s `id: … — (variant not found on product)` and `variant … not found on product …` (the variant half); `set_product_metafields`' preview `ownerId`; `delete_product_metafields`' `Owner … not found` (head and error payload); `get_product_metafields`' `No metafields found for namespace: "…"` and `… for keys: …`.
+
+`order_id`, `inventory_item_id` and `location_id` already refuse CR/LF (Story 10.110, digits only), so at those sites the rule adds only the length bound; their CR/LF rows compare the whole refusal.
+
+**Lists of ids.** Each id in an `Unresolved variant ids:` or `Not attached` bullet is bounded on its own. The metafield keys line is one value (`keys_display`), so that whole line is bounded. The number of variant ids is not bounded (media ids are, at 25 by `MEDIA_IDS_MAX`). A count bound would be a new input refusal, not an echo scrub; it is recorded here, not fixed.
+
+**Exempt, with a marker: 48 interpolations.** The marker is `# reflect-exempt[<subject>]: <reason>`, on the line or on a comment line directly above it. Most are post-lookup echoes: `product_id` in PREVIEW / CONFIRMED headers after the product read by that id succeeded (`products.py`, `inventory.py`, `media/*`, `catalog_hygiene.py`), a collection `handle` after the collection was found by it, and a media id or variant GID that equals one Shopify returned. A product is found only when the id is valid after `.strip()`, so only surrounding whitespace can survive, and no text can follow it. The rest are not caller input: Shopify's attribute handle in `resolve_category_metafield_value`, Shopify's resolved handle in `publications.py`, Shopify's `deletedMediaIds`, a stderr-only line, an audit-log callable, a type name (`_product_resolver.py`), and `update_product_pricing`'s post-resolution duplicate check, which a forged GID cannot reach because `_normalize_entries` refuses a repeated raw id first.
+
+**Guard: `tests/architecture/test_reflection_scrub_guard.py`, still the only guard module.** Below 10.75's wording check, it walks every f-string in `tools/` and finds each interpolation that reads a subject: a listed name (`product_id`, `handle`, `collection_handle`, `caller_handle`, `order_id`, `location_id`, `inventory_item_id`, `media_id`, `vid`, `target_loc_label`, `ns_filter`, `keys_display`), the dict key `ownerId`, or a generic name inside the one function where it holds caller input (`gid` in `update_product_pricing`, `mid` in `delete_product_media`). Each must be scrubbed or carry a marker for that subject with a reason of at least three words. A marker with no reason, or one that no longer sits on a raw echo of its subject, fails. Control pairs cover each shape (bare name, derived name, subject inside a call, dict key, scoped name), the scoped name outside its function, log text against reply text, a marker with and without a reason, a marker for the wrong subject, two subjects on one line, and a marker separated from its line by code. A floor test binds it to real code: at least 89 sites, at least 48 exempt. Its docstring states what it still does not see: a caller value under an unlisted name, concatenation / `.format()` / `%`, and whether a marker's reason is true (review and this entry check that).
+
+**Tests.** Watched RED on the unfixed tree: 35 unit rows failed for the intended reason (20 over-long, 15 CR/LF; the 5 CR/LF rows that 10.110 refuses passed, as they should), and the guard listed 71 unguarded interpolations. Ordinary values render byte-for-byte as before: every existing exact-string test passes unmodified. `set_product_metafields` echoes the normalized input in its JSON tail; `json.dumps` escapes CR/LF there, and its length is the JSON-tail residual that stays OUT.
+
+**Mutation table: 23 scrub lines × 3 mutants = 69, all killed.** Each mutant ran alone, with a SHA-256 restore, `PYTHONDONTWRITEBYTECODE=1` and a cleared `__pycache__`. A revert (the raw value) ran the full suite; a cap-only or sanitize-only half-scrub ran the two test modules. The baseline had no failures.
+- At 17 lines, a revert fails 3 tests: the guard plus that site's CR/LF and over-long rows. Cap-only fails the guard and the CR/LF row. Sanitize-only fails the guard and the over-long row.
+- At `order_id`, `inventory_item_id` and `location_id` (6 lines), 10.110 already refuses CR/LF. A revert fails the guard and the over-long row. Cap-only is killed by the guard only. This is expected: at these sites the sanitize is defense in depth, and the guard is what keeps it.
+- The `Unresolved location:` line feeds both the preview and the nothing-written reply, so its revert and sanitize-only mutants fail both over-long rows.
+- The metafield keys line also fails `test_s10103_metafield_keys_line_is_bounded_as_a_whole`.
+- No mutant fails a test of another site.
 
 ## 2026-11-02 — Story 10.102: the unpublish and set tools see a non-DRAFT product's scheduled channel (closes `T-10.99-scheduled-channels`)
 
@@ -386,9 +421,9 @@ Trello: https://trello.com/c/Ol8n85Jl (Story 10.75, Epic 10). Surfaced by Story 
 - Pushed back, no change: a single `scrub(x)` composite for the 23 inline compositions. The rule was decided as written on the card, and the guard enforces the order at every not-found site.
 
 **Residuals, recorded not fixed** (outside the card's two classes; the card's scope guard forbids a general audit):
-- **Other wordings echo caller input raw**, uncapped, CR/LF intact (reproduced by the verifier): `inventory.py` `get_inventory`'s `Product {product_id} not found.`, `orders.py`'s `Order {order_id} not found.`, and `catalog_hygiene.py` `get_product_metafields`' `No metafields found for namespace: "…"` / `for keys: …`. By reading: the `Unresolved variant ids` lists in `inventory.py` and `products.py`, `inventory.py`'s `location_id` echo, `media/_update.py`'s `media_id` echo, `update_product_pricing`'s `variant … not found on product {product_id}`, and `catalog_hygiene.py`'s `ownerId` echo. Already safe: the `no product found for {product_ref!r}` sites (200-char `display_ref`, `!r`). Candidate follow-up card.
-- **JSON tails carry raw userErrors.** Several `catalog_hygiene.py` tools append `errors=list(user_errors)` in their JSON tail. `json.dumps` escapes CR/LF, so no line can be forged, but the length is unbounded.
-- **Truncation is silent.** A userError report past 300 characters is cut with no marker, which matches every other `cap` site in the repo (SEC-27, `poll_failed_note`). Where there is no JSON tail (`write_gate` tools, `update_variant_inventory_policy`), errors past the bound are not visible to the operator. The bound itself was the card's AC 2; a marker would be a repo-wide `cap` convention change.
+- **Other wordings echo caller input raw**, uncapped, CR/LF intact (reproduced by the verifier): `inventory.py` `get_inventory`'s `Product {product_id} not found.`, `orders.py`'s `Order {order_id} not found.`, and `catalog_hygiene.py` `get_product_metafields`' `No metafields found for namespace: "…"` / `for keys: …`. By reading: the `Unresolved variant ids` lists in `inventory.py` and `products.py`, `inventory.py`'s `location_id` echo, `media/_update.py`'s `media_id` echo, `update_product_pricing`'s `variant … not found on product {product_id}`, and `catalog_hygiene.py`'s `ownerId` echo. Already safe: the `no product found for {product_ref!r}` sites (200-char `display_ref`, `!r`). **Closed by Story 10.103** (2026-11-05 entry above), which found more sites by subject and added a subject guard.
+- **JSON tails carry raw userErrors.** Several `catalog_hygiene.py` tools append `errors=list(user_errors)` in their JSON tail. `json.dumps` escapes CR/LF, so no line can be forged, but the length is unbounded. **Kept OUT by Robert on 2026-11-05** (Story 10.103 entry above).
+- **Truncation is silent.** **Kept OUT by Robert on 2026-11-05** (Story 10.103 entry above). A userError report past 300 characters is cut with no marker, which matches every other `cap` site in the repo (SEC-27, `poll_failed_note`). Where there is no JSON tail (`write_gate` tools, `update_variant_inventory_policy`), errors past the bound are not visible to the operator. The bound itself was the card's AC 2; a marker would be a repo-wide `cap` convention change.
 - The joiner can cut inside an escape and end on a lone `\`. Cosmetic.
 
 **Scope, per the card.** Not a general f-string audit. `client.py`'s transport-level `_format_errors` is untouched (SEC-27, and Story 10.69's fence). `publications._map_user_error` renders through its own guarded path and is Story 10.69's to re-derive.

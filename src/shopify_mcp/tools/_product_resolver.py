@@ -175,6 +175,7 @@ def _resolve_product(
     module docstring above, don't re-enumerate either here.
     """
     if not isinstance(handle, str) and handle is not None:
+        # reflect-exempt[handle]: only the type name is shown, not the value
         raise ValueError(f"handle must be a string — got {type(handle).__name__}")
 
     handle_arg = handle.strip() if isinstance(handle, str) else ""

@@ -118,8 +118,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return err
         product, variants, capped = ops.read_product_inventory(client, product_id)
         if not product:
-            return f"Product {product_id} not found."
+            return f"Product {cap(sanitize_control_chars(product_id))} not found."
 
+        # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
         lines = [f"Inventory for: {product['title']} (id: {product_id})\n"]
         for variant in variants:
             inv_item = variant.get("inventoryItem") or {}
@@ -192,8 +193,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         preview = (
             f"PREVIEW — Inventory update\n"
-            f"  inventory_item_id : {inventory_item_id}\n"
-            f"  location_id       : {location_id}\n"
+            f"  inventory_item_id : {cap(sanitize_control_chars(inventory_item_id))}\n"
+            f"  location_id       : {cap(sanitize_control_chars(location_id))}\n"
             f"  Current on-hand   : {current_line}\n"
             f"  New on-hand       : {quantity}"
         )
@@ -273,7 +274,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             or "    (none)"
         )
         unresolved_block = (
-            ("\n  Unresolved variant ids:\n" + "\n".join(f"    • {vid}" for vid in unresolved))
+            (
+                "\n  Unresolved variant ids:\n"
+                + "\n".join(f"    • {cap(sanitize_control_chars(vid))}" for vid in unresolved)
+            )
             if unresolved
             else ""
         )
@@ -287,6 +291,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         preview = (
             f"PREVIEW — Variant inventory tracking update\n"
+            # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
             f"  Product : {title} (id: {product_id})\n"
             f"  Target  : tracked={tracked}\n"
             f"  Would change ({len(to_change)}):\n{change_lines}\n"
@@ -365,6 +370,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # `failed_block` can carry fenced Shopify text (Story 10.69).
         return with_reminder(
             f"{header}\n"
+            # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
             f"  Product : {title} (id: {product_id})\n"
             f"  Target  : tracked={tracked}\n"
             f"  Changed ({len(changed)}):\n{changed_lines}\n"
@@ -466,7 +472,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         unresolved_location_block = ""
         if location_unresolved:
             unresolved_location_block = (
-                f"\n  Unresolved location: {location_id} "
+                f"\n  Unresolved location: {cap(sanitize_control_chars(location_id or ''))} "
                 f"(not found on any of the targeted variants)"
             )
 
@@ -495,7 +501,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         unresolved_variants_block = (
             (
                 "\n  Unresolved variant ids:\n"
-                + "\n".join(f"    • {vid}" for vid in unresolved_variants)
+                + "\n".join(
+                    f"    • {cap(sanitize_control_chars(vid))}" for vid in unresolved_variants
+                )
             )
             if unresolved_variants
             else ""
@@ -505,9 +513,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         target_loc_label = location_id or "all locations"
         preview = (
             f"PREVIEW — Variant inventory quantity update\n"
+            # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
             f"  Product     : {title} (id: {product_id})\n"
             f"  Target qty  : {quantity}\n"
-            f"  Target loc  : {target_loc_label}\n"
+            f"  Target loc  : {cap(sanitize_control_chars(target_loc_label))}\n"
             f"  Would change ({len(to_write)}):\n{write_lines}\n"
             f"  Unchanged ({len(unchanged)}):\n{unchanged_lines}"
             f"{skipped_block}"
@@ -547,9 +556,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 header += " (no-op)"
             return (
                 f"{header}\n"
+                # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
                 f"  Product     : {title} (id: {product_id})\n"
                 f"  Target qty  : {quantity}\n"
-                f"  Target loc  : {target_loc_label}\n"
+                f"  Target loc  : {cap(sanitize_control_chars(target_loc_label))}\n"
                 f"  Changed     : (none — nothing writable at target)\n"
                 f"  Unchanged ({len(unchanged)}):\n{unchanged_lines}"
                 f"{skipped_block}"
@@ -593,8 +603,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         header = _outcome_header("Variant inventory quantity update", len(to_write), len(skipped))
         return (
             f"{header}\n"
+            # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
             f"  Product     : {title} (id: {product_id})\n"
             f"  Target qty  : {quantity}\n"
+            # reflect-exempt[target_loc_label]: post-lookup: runs only when the location matched
             f"  Target loc  : {target_loc_label}\n"
             f"  Changed ({len(to_write)}):\n{changed_lines}\n"
             f"  Unchanged ({len(unchanged)}):\n{unchanged_lines}"

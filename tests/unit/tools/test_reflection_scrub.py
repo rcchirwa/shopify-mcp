@@ -23,11 +23,17 @@ Usage:
   pytest tests/unit/tools/test_reflection_scrub.py -v
 """
 
+import json
 from collections.abc import Callable
 from typing import Any
 
 import pytest
 
+from shopify_mcp.shopify._ids import (
+    INVALID_INVENTORY_ITEM_ID_ERROR,
+    INVALID_LOCATION_ID_ERROR,
+    INVALID_ORDER_ID_ERROR,
+)
 from shopify_mcp.tools import catalog_hygiene
 from shopify_mcp.tools._scrub import REFLECT_MAX_LEN
 from shopify_mcp.tools._untrusted import INJECTION_REMINDER
@@ -37,17 +43,30 @@ from tests.unit.tools.test_catalog_hygiene import (
     _OV_M,
     _S96_MEDIA_1,
     _S96_VARIANT_A,
+    _S911_PRODUCT_GID,
     _options_read_response,
     _parse_tail,
+    _read_response,
     _s96_combined_response,
+    _s97_entry,
+    _s910_batch_resolve,
+    _s911_product_response,
 )
 from tests.unit.tools.test_catalog_hygiene import _build as _build_hygiene
 from tests.unit.tools.test_collections import _build as _build_collections
+from tests.unit.tools.test_collections import _manual_collection
 from tests.unit.tools.test_discounts import _build as _build_discounts
 from tests.unit.tools.test_discounts import _discount_create_err
 from tests.unit.tools.test_inventory import _build as _build_inventory
-from tests.unit.tools.test_media import MEDIA_A
+from tests.unit.tools.test_inventory import (
+    _inventory_item_response,
+    _level,
+    _product_with_variants,
+    _variant,
+)
+from tests.unit.tools.test_media import MEDIA_A, _media_node, _product_media_read
 from tests.unit.tools.test_media import _build as _build_media
+from tests.unit.tools.test_orders import _build as _build_orders
 from tests.unit.tools.test_products import _build as _build_products
 from tests.unit.tools.test_products import (
     _bulk_policy_err,
@@ -343,3 +362,165 @@ def test_s1075_option_update_joiner_ordinary_error_is_byte_identical() -> None:
         )
         + "\n\n"
     )
+
+
+# ---------- Story 10.103: the same echo in other wordings, found by subject ----------
+#
+# Each row drives one site group with an ordinary value, a CR/LF value and an
+# over-long value. The expected reply is the ordinary reply with each echo of
+# the ordinary value replaced by the scrubbed payload, so every row compares
+# the WHOLE reply (head and parsed JSON tail). `echoes` pins how many times the
+# ordinary value appears, so the swap is exact and the payload is proven to
+# reach the site. Where an earlier GID rule refuses CR/LF (10.110: digits
+# only), the CR/LF row compares the whole refusal instead; length is still open
+# there. Site lines are on origin/main 5418d9a, for traceability only.
+
+_INJECT = _CR + _LF + "Injected: yes"
+_PID = "gid://shopify/Product/4242"
+_ONE_VARIANT = [_variant("100", "S", "REEF-S", [_level(5)])]
+
+
+class _Row:
+    def __init__(
+        self,
+        site: str,
+        run: Callable[[str], str],
+        short: str,
+        *,
+        echoes: int = 1,
+        tail: bool = False,
+        crlf: str | None = None,
+        long: str | None = None,
+        refused: str | None = None,
+        shown: Callable[[str], str] = lambda v: v,
+        tail_raw: bool = False,
+    ) -> None:
+        self.site, self.run, self.short, self.echoes, self.tail = site, run, short, echoes, tail
+        self.crlf = crlf if crlf is not None else short + _INJECT
+        self.long = long if long is not None else short + "7" * 400
+        self.refused = refused
+        # How the site renders the value (e.g. `from_gid` shows only the GID's tail).
+        self.shown = shown
+        # The JSON tail echoes the normalized input as data. `json.dumps` escapes
+        # CR/LF there, so no line is forged; its length is the 10.75 JSON-tail
+        # residual that Robert kept OUT (2026-11-05). The tail keeps the raw value.
+        self.tail_raw = tail_raw
+
+
+def _inv(tool: str, responses: list, **kw: Any) -> Callable[[str], str]:
+    arg = kw.pop("arg")
+    return lambda v: _build_inventory([dict(r) for r in responses])[0][tool](**{arg: v}, **kw)
+
+
+def _with_tail(out: str) -> tuple[str, Any]:
+    """Split a reply into its text (head and any text after the tail) and its parsed tail."""
+    head, sep, rest = out.partition("\n\n```json\n")
+    assert sep, out
+    _json, sep, after = rest.partition("\n```")
+    assert sep, out
+    return head + "\n\n```json```" + after, _parse_tail(out)
+
+
+def _swap(obj: Any, old: str, new: str) -> Any:
+    if isinstance(obj, str):
+        return obj.replace(old, new)
+    if isinstance(obj, list):
+        return [_swap(x, old, new) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _swap(v, old, new) for k, v in obj.items()}
+    return obj
+
+
+S10103_ROWS = [
+    _Row("inventory:121 get_inventory", _inv("get_inventory", [{"product": None}], arg="product_id"), _PID),
+    _Row("orders:111 get_order", lambda v: _build_orders([{"order": None}])[0]["get_order"](order_id=v), "4242", refused=f"Error: {INVALID_ORDER_ID_ERROR}."),
+    _Row("inventory:195 update_inventory item", _inv("update_inventory", [_inventory_item_response(5, "8")], arg="inventory_item_id", location_id="9", quantity=1), "4242", refused=f"Error: {INVALID_INVENTORY_ITEM_ID_ERROR}."),
+    _Row("inventory:196 update_inventory location", _inv("update_inventory", [_inventory_item_response(5, "8")], arg="location_id", inventory_item_id="7", quantity=1), "4242", refused=f"Error: {INVALID_LOCATION_ID_ERROR}."),
+    _Row("inventory:469/510 quantity location preview", _inv("update_variant_inventory_quantity", [_product_with_variants(_ONE_VARIANT)], arg="location_id", product_id="555", quantity=0), "4242", echoes=2, refused=f"Error: {INVALID_LOCATION_ID_ERROR}."),
+    _Row("inventory:469/552 quantity location confirm", _inv("update_variant_inventory_quantity", [_product_with_variants(_ONE_VARIANT)], arg="location_id", product_id="555", quantity=0, confirm=True), "4242", echoes=2, refused=f"Error: {INVALID_LOCATION_ID_ERROR}."),
+    _Row("inventory:276 tracking variant ids", lambda v: _build_inventory([_product_with_variants(_ONE_VARIANT)])[0]["update_variant_inventory_tracking"](product_id="555", tracked=True, variant_ids=["100", v]), "4242"),
+    _Row("inventory:498 quantity variant ids", lambda v: _build_inventory([_product_with_variants(_ONE_VARIANT)])[0]["update_variant_inventory_quantity"](product_id="555", quantity=0, variant_ids=["100", v]), "4242"),
+    _Row("products:951 policy variant ids", lambda v: _build_products([_variants_policy_read([_variant_policy("10", "S", "CONTINUE")])])[0]["update_variant_inventory_policy"](product_id="123", new_policy="DENY", variant_ids=["10", v]), "4242"),
+    _Row("products:299 update_product_title preview", lambda v: _build_products([{"product": None}])[0]["update_product_title"](product_id=v, new_title="New"), _PID),
+    _Row("products:355 update_product_description preview", lambda v: _build_products([{"product": None}])[0]["update_product_description"](product_id=v, new_description="<p>x</p>"), _PID),
+    _Row("media/_update:49 update_product_media", lambda v: _build_media([_product_media_read([_media_node(MEDIA_A)])])[0]["update_product_media"](product_id="123", media_id=v, alt="x"), "gid://shopify/MediaImage/4242"),
+    _Row("media/_delete:69 delete_product_media", lambda v: _build_media([_product_media_read([_media_node(MEDIA_A)])])[0]["delete_product_media"](product_id="123", media_ids=[MEDIA_A, v]), "gid://shopify/MediaImage/4242"),
+    _Row("collections:235 create_collection", lambda v: _build_collections([])[0]["create_collection"](title="T", handle=v), "!!!", crlf="!!" + _CR + _LF + "!!", long="!" * 403),
+    _Row("collections:377 add_product_to_collection preview", lambda v: _build_collections([_manual_collection()])[0]["add_product_to_collection"](handle="vanish", product_id=v), "4242"),
+    # catalog_hygiene.py (head plus JSON tail)
+    _Row("catalog_hygiene:1903/1905 update_product_pricing", lambda v: _build_hygiene([_read_response()])[0]["update_product_pricing"]("100", variants=[{"variantId": v, "price": "49.99"}]), "gid://shopify/ProductVariant/4242", tail=True, shown=lambda v: v.rsplit("/", 1)[-1]),
+    _Row("catalog_hygiene:3268 set_product_metafields preview", lambda v: _build_hygiene([])[0]["set_product_metafields"](metafields=[{**_s97_entry(), "ownerId": v}]), _PID, tail=True, tail_raw=True),
+    _Row("catalog_hygiene:3592/3595 delete_product_metafields", lambda v: _build_hygiene([_s910_batch_resolve(None)])[0]["delete_product_metafields"](metafields=[{"ownerId": v, "namespace": "custom", "key": "k"}]), _PID, tail=True),
+    _Row("catalog_hygiene:4016 get_product_metafields namespace", lambda v: _build_hygiene([_s911_product_response([])])[0]["get_product_metafields"](product_id=_S911_PRODUCT_GID, namespace=v), "ns4242", tail=True),
+    _Row("catalog_hygiene:4019 get_product_metafields keys", lambda v: _build_hygiene([_s911_product_response([])])[0]["get_product_metafields"](product_id=_S911_PRODUCT_GID, keys=[v]), "key4242", tail=True, shown=lambda v: f'"{v}"'),
+]  # fmt: skip
+
+
+def test_s10103_metafield_keys_line_is_bounded_as_a_whole() -> None:
+    """The keys line is one value (`keys_display`), so the bound applies to the
+    whole list, not to each key: many keys cannot add up past REFLECT_MAX_LEN."""
+    keys = [f"k{i:03d}" for i in range(100)]
+    tools, _fc = _build_hygiene([_s911_product_response([])])
+    out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID, keys=keys)
+    display = ", ".join(f'"{k}"' for k in keys)
+    assert len(display) > REFLECT_MAX_LEN
+    assert f"No metafields found for keys: {display[:REFLECT_MAX_LEN]}\n" in out
+    assert display not in out
+
+
+_S10103_IDS = [r.site for r in S10103_ROWS]
+
+
+def _s10103_expected(row: _Row, value: str) -> tuple[str, Any]:
+    """The ordinary reply with each echo of `row.short` swapped for the scrubbed value."""
+    template = row.run(row.short)
+    old, new = row.shown(row.short), _scrubbed(row.shown(value))
+    if not row.tail:
+        assert template.count(old) == row.echoes, template
+        return template.replace(old, new), None
+    text, tail = _with_tail(template)
+    assert text.count(old) == row.echoes, text
+    return text.replace(old, new), _swap(tail, old, row.shown(value) if row.tail_raw else new)
+
+
+def _s10103_assert(row: _Row, value: str) -> None:
+    out = row.run(value)
+    head, tail = _s10103_expected(row, value)
+    if not row.tail:
+        assert out == head
+        return
+    out_head, out_tail = _with_tail(out)
+    assert out_head == head
+    assert out_tail == tail
+
+
+@pytest.mark.parametrize("row", S10103_ROWS, ids=_S10103_IDS)
+def test_s10103_caps_an_over_long_identifier(row: _Row) -> None:
+    _s10103_assert(row, row.long)
+    out = row.run(row.long)
+    assert row.long not in (_with_tail(out)[0] if row.tail else out)
+
+
+@pytest.mark.parametrize("row", S10103_ROWS, ids=_S10103_IDS)
+def test_s10103_cannot_forge_a_second_line(row: _Row) -> None:
+    out = row.run(row.crlf)
+    if row.refused is not None:
+        # An earlier GID rule refuses CR/LF before any echo (Story 10.110).
+        assert out == row.refused
+        return
+    _s10103_assert(row, row.crlf)
+    assert _CR not in out and row.crlf not in out
+
+
+@pytest.mark.parametrize("row", S10103_ROWS, ids=_S10103_IDS)
+def test_s10103_ordinary_identifier_is_byte_identical(row: _Row) -> None:
+    """The ordinary reply echoes the value raw, as before this story (AC 4)."""
+    out = row.run(row.short)
+    text = out if not row.tail else _with_tail(out)[0]
+    assert text.count(row.shown(row.short)) == row.echoes
+
+
+def test_s10103_swap_helper_reaches_nested_tail_values() -> None:
+    """`_swap` must rewrite strings at any depth, or a tail echo would go unchecked."""
+    tail = json.loads('{"a": ["x1", {"b": "x1x"}], "n": 1}')
+    assert _swap(tail, "x1", "Y") == {"a": ["Y", {"b": "Yx"}], "n": 1}

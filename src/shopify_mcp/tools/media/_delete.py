@@ -60,13 +60,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         def _fmt_line(mid: str) -> str:
             n = current_index.get(mid) or {}
             preview = ((n.get("preview") or {}).get("image") or {}).get("url") or "(no preview)"
+            # reflect-exempt[mid]: post-lookup: equals an attached media id
             return f"    • {mid}  alt={(n.get('alt') or '')!r}\n      preview: {preview}"
 
         matched_block = "\n".join(_fmt_line(mid) for mid in matched) or "    (none)"
         unmatched_block = (
             (
                 "\n  Not attached (will be skipped by Shopify):\n"
-                + "\n".join(f"    • {mid}" for mid in unmatched)
+                + "\n".join(f"    • {cap(sanitize_control_chars(mid))}" for mid in unmatched)
             )
             if unmatched
             else ""
@@ -74,6 +75,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         preview = (
             f"PREVIEW — Delete product media\n"
+            # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
             f"  Product ID : {product_id}\n"
             f"  To delete ({len(matched)}):\n{matched_block}"
             f"{unmatched_block}"
@@ -89,6 +91,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
             return (
                 f"CONFIRMED — Delete product media (no-op)\n"
+                # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
                 f"  Product ID : {product_id}\n"
                 f"  Nothing to delete — every requested id was unattached."
                 f"{unmatched_block}"
@@ -111,9 +114,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             "delete_product_media",
             f"product={product_id} deleted={len(deleted)} unmatched={len(unmatched)} ids={deleted}",
         )
+        # reflect-exempt[mid]: Shopify-returned deletedMediaIds, not caller input
         deleted_block = "\n".join(f"    • {mid}" for mid in deleted) or "    (none)"
         return (
             f"CONFIRMED — Delete product media\n"
+            # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
             f"  Product ID : {product_id}\n"
             f"  Deleted ({len(deleted)}):\n{deleted_block}"
             f"{unmatched_block}"

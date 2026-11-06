@@ -80,6 +80,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"    • {m['id']} → position {m['newPosition']}" for m in parsed_moves
         )
         body = (
+            # reflect-exempt[product_id]: post-lookup: the product read by this id succeeded
             f"  Product ID : {product_id}\n"
             f"  Current order ({len(current_nodes)}):\n{current_lines}\n"
             f"  Moves ({len(parsed_moves)}):\n{moves_lines}"
