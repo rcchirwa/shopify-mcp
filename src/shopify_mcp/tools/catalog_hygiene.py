@@ -2868,7 +2868,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 if mid not in product_media_set and mid not in unknown:
                     unknown.append(mid)
         if unknown:
-            msg = f"media GIDs not on product {cap(sanitize_control_chars(product_ref))}: {_cap(', '.join(unknown))}"
+            msg = f"media GIDs not on product {cap(sanitize_control_chars(product_ref))}: {_cap(', '.join(sanitize_control_chars(m) for m in unknown))}"
             return _render(f"Error: {msg}", _err_payload(msg))
 
         # Step 5a — collapse duplicate variantIds: same resolved variant appearing
@@ -4239,7 +4239,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if unknown_value_ids:
             msg = (
                 f"Error: option_values_to_update contains IDs not on option "
-                f"{_cap(normalized['option_id'])!r}: {', '.join(unknown_value_ids)}."
+                f"{_cap(normalized['option_id'])!r}: {_cap(', '.join(sanitize_control_chars(u) for u in unknown_value_ids))}."
             )
             return f"{msg}\n\n" + _format_options_payload(
                 product_snapshot=_shape_options_snapshot(product),

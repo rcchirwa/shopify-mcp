@@ -164,6 +164,12 @@ def test_the_literal_match_sees_interpolated_and_multi_word_kinds():
 # - Text built by concatenation, `.format()` or `%`, as for the check above.
 # - A subject first copied into a local under another name, unless that name
 #   is listed too (`vid`, `target_loc_label`, `keys_display` are).
+# - Ids that a helper returns (a normalize step) and the reply joins into one
+#   list, e.g. `', '.join(unknown)`: the taint does not follow a helper's
+#   return value. Review round 3 found two (`update_variant_image_binding`'s
+#   media ids, `update_product_options`' option value ids); both are scrubbed
+#   and held by their unit rows. A census of every unscrubbed join inside an
+#   f-string on cd8e8ea found 15, and only these two joined caller ids.
 # - Audit-log text: interpolations inside `log_write(...)` arguments or a
 #   `log_description=` value are skipped, because `log_write` applies
 #   `cap(sanitize_control_chars(...))` itself (tools/_log.py).

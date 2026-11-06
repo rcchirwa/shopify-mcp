@@ -503,6 +503,10 @@ S10103_ROWS = [
     _Row("catalog_hygiene:2371 update_product_vendor not found", lambda v: _build_hygiene([{"productByHandle": None}])[0]["update_product_vendor"](handle=v, vendor="V"), "vanish-tee", tail=True, shown=lambda v: v[:200], rep=True),
     _Row("catalog_hygiene:2560 update_product_type not found", lambda v: _build_hygiene([{"productByHandle": None}])[0]["update_product_type"](handle=v, product_type="T"), "vanish-tee", tail=True, shown=lambda v: v[:200], rep=True),
     _Row("catalog_hygiene:4181 update_product_options not found", lambda v: _build_hygiene([{"productByHandle": None}])[0]["update_product_options"](handle=v, option={"id": _OPT_GID, "name": "Size"}), "vanish-tee", tail=True, shown=lambda v: v[:200], rep=True),
+    # Review round 3: ids that a normalize helper returns and the reply joins
+    # into one list. The helpers only strip the ends and check the GID prefix.
+    _Row("catalog_hygiene:2870 image binding media ids joined", lambda v: _build_hygiene([_s96_combined_response([_S96_MEDIA_1], [(_S96_VARIANT_A, "sku-a", [])])])[0]["update_variant_image_binding"](product_id=_PID, variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [v]}]), "gid://shopify/MediaImage/94242", tail=True, shown=lambda v: v[:200]),
+    _Row("catalog_hygiene:4241 update_product_options value ids joined", lambda v: _build_hygiene([_options_read_response()])[0]["update_product_options"](product_id="100", option={"id": _OPT_GID}, option_values_to_update=[{"id": v, "name": "X"}]), "gid://shopify/ProductOptionValue/94242", tail=True, shown=lambda v: v[:200]),
 ]  # fmt: skip
 
 
