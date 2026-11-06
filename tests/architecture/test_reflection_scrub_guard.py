@@ -184,6 +184,7 @@ _SUBJECTS = frozenset(
         "target_loc_label",
         "ns_filter",
         "keys_display",
+        "product_ref",
     }
 )
 # Dict keys whose value is caller input, read as `entry["ownerId"]` or
@@ -194,6 +195,10 @@ _SCOPED_SUBJECTS = {
     "update_product_pricing": frozenset({"gid"}),
     "delete_product_media": frozenset({"mid"}),
     "delete_webhook": frozenset({"numeric_id"}),
+}
+# Generic dict keys that hold a caller value only inside these functions.
+_SCOPED_SUBJECT_KEYS = {
+    "reorder_product_media": frozenset({"id"}),
 }
 _LOG_CALLS = frozenset({"log_write"})
 _LOG_KEYWORDS = frozenset({"log_description"})
@@ -219,13 +224,16 @@ def _subjects_in(expr: ast.expr, functions: tuple[str, ...]) -> frozenset[str]:
     names = set(_SUBJECTS)
     for fn in functions:
         names |= _SCOPED_SUBJECTS.get(fn, frozenset())
+    keys = set(_SUBJECT_KEYS)
+    for fn in functions:
+        keys |= _SCOPED_SUBJECT_KEYS.get(fn, frozenset())
     found = {n.id for n in ast.walk(expr) if isinstance(n, ast.Name) and n.id in names}
     found |= {
         n.slice.value
         for n in ast.walk(expr)
         if isinstance(n, ast.Subscript)
         and isinstance(n.slice, ast.Constant)
-        and n.slice.value in _SUBJECT_KEYS
+        and n.slice.value in keys
     }
     found |= {
         n.args[0].value
@@ -235,7 +243,7 @@ def _subjects_in(expr: ast.expr, functions: tuple[str, ...]) -> frozenset[str]:
         and n.func.attr == "get"
         and n.args
         and isinstance(n.args[0], ast.Constant)
-        and n.args[0].value in _SUBJECT_KEYS
+        and n.args[0].value in keys
     }
     return frozenset(found)
 
@@ -363,14 +371,14 @@ def test_s10103_every_marker_has_a_reason_and_guards_a_raw_echo():
 def test_s10103_the_guard_sees_every_known_subject_site():
     """Proves the walk ran over real code, so the guard can't pass vacuously.
 
-    On the Story 10.103 tree (origin/main 5418d9a plus this story): 97 subject
-    interpolations, of which 12 carry a marker and 85 are scrubbed. A new site
+    On the Story 10.103 tree (origin/main 5418d9a plus this story): 110 subject
+    interpolations, of which 13 carry a marker and 97 are scrubbed. A new site
     raises the count and is checked above; a lower count means a site was
     removed or the walk stopped seeing it — re-derive before lowering a floor.
     """
     sites = _subject_sites()
-    assert len(sites) >= 97
-    assert sum(1 for s in sites if s.exempt) >= 12
+    assert len(sites) >= 110
+    assert sum(1 for s in sites if s.exempt) >= 13
 
 
 def _scan_snippet(body: str) -> list[SubjectSite]:
@@ -410,6 +418,34 @@ def test_s10103_control_pair_scoped_name_is_free_outside_its_function():
     """`gid` is a caller value only in update_product_pricing; elsewhere it is
     the GID Shopify returned, so the guard must not see it."""
     assert not _scan_snippet('def other(gid):\n    return f"id: {from_gid(gid)}"\n')
+
+
+def test_s10103_control_pair_scoped_key_is_seen_only_in_its_function():
+    """`m["id"]` is a caller media id in reorder_product_media; elsewhere `id`
+    is usually Shopify's, so the guard must not see it there."""
+    src = "def {fn}(moves):\n    return f\"{{m['id']}}\"\n"
+    assert any(s.unguarded for s in _scan_snippet(src.format(fn="reorder_product_media")))
+    assert not _scan_snippet(src.format(fn="other"))
+
+
+def test_s10103_every_identifier_channel_display_name_is_a_subject():
+    """`_identifier_channel` returns the caller's id for display as its third
+    value. Review round 2 found it echoed raw as `product_ref`, a name the list
+    did not have. Every name bound to it must be listed (or unused: `_name`)."""
+    names = set()
+    for path in sorted(_TOOLS_ROOT.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if (
+                isinstance(node, ast.Assign)
+                and isinstance(node.value, ast.Call)
+                and _name(node.value.func) == "_identifier_channel"
+                and isinstance(node.targets[0], ast.Tuple)
+            ):
+                display = node.targets[0].elts[2]
+                assert isinstance(display, ast.Name), ast.unparse(node)
+                names.add(display.id)
+    assert names  # the walk saw the helper's callers
+    assert {n for n in names if not n.startswith("_")} <= _SUBJECTS
 
 
 def test_s10103_control_pair_log_text_is_skipped_and_reply_text_is_not():

@@ -2368,7 +2368,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not product_gid:
             # Name the identifier actually queried, not a blank `product_id`,
             # now that the caller may have supplied only `handle`.
-            msg = f"Error: no product found for {product_ref!r}."
+            msg = f"Error: no product found for {cap(sanitize_control_chars(product_ref))!r}."
             return f"{msg}\n\n" + _format_vendor_payload(
                 product_gid="",
                 vendor=new_vendor,
@@ -2557,7 +2557,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not product_gid:
             # Name the identifier actually queried, not a blank `product_id`,
             # now that the caller may have supplied only `handle`.
-            msg = f"Error: no product found for {product_ref!r}."
+            msg = f"Error: no product found for {cap(sanitize_control_chars(product_ref))!r}."
             return f"{msg}\n\n" + _format_type_payload(
                 product_gid="",
                 product_type=new_type,
@@ -2855,8 +2855,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             if resolved_gid not in variant_media_map and resolved_gid not in unknown_variant_gids:
                 unknown_variant_gids.append(resolved_gid)
         if unknown_variant_gids:
-            msg = f"variant GIDs not on product {product_ref}: " + _cap(
-                ", ".join(from_gid(g) for g in unknown_variant_gids)
+            msg = (
+                f"variant GIDs not on product {cap(sanitize_control_chars(product_ref))}: "
+                + _cap(", ".join(from_gid(g) for g in unknown_variant_gids))
             )
             return _render(f"Error: {msg}", _err_payload(msg))
 
@@ -2867,7 +2868,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 if mid not in product_media_set and mid not in unknown:
                     unknown.append(mid)
         if unknown:
-            msg = f"media GIDs not on product {product_ref}: {_cap(', '.join(unknown))}"
+            msg = f"media GIDs not on product {cap(sanitize_control_chars(product_ref))}: {_cap(', '.join(unknown))}"
             return _render(f"Error: {msg}", _err_payload(msg))
 
         # Step 5a — collapse duplicate variantIds: same resolved variant appearing
@@ -2974,7 +2975,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         preview_blocks = [_variant_block(r) for r in routes]
         preview_head = (
             f"PREVIEW — Bind variant images\n"
-            f"  Product : {title} (id: {product_ref})\n"
+            f"  Product : {title} (id: {cap(sanitize_control_chars(product_ref))})\n"
             f"  Variants ({len(routes)}) — net-new media bindings: {total_new}"
             + (f" — WARNING: {will_lose_count} binding(s) will be lost" if will_lose_count else "")
             + "\n"
@@ -3017,7 +3018,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
             head = (
                 f"CONFIRMED — Bind variant images (no-op)\n"
-                f"  Product : {title} (id: {product_ref})\n"
+                f"  Product : {title} (id: {cap(sanitize_control_chars(product_ref))})\n"
                 f"  Variants ({len(routes)}) — all requested media already bound."
             )
             return _render(
@@ -3155,7 +3156,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
         head = (
             f"CONFIRMED — Bind variant images\n"
-            f"  Product : {title} (id: {product_ref})\n"
+            f"  Product : {title} (id: {cap(sanitize_control_chars(product_ref))})\n"
             f"  Variants ({len(routes)}) — net-new media bindings: {total_new}\n"
             + "\n".join(preview_blocks)
         )
@@ -4178,7 +4179,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not product_gid:
             # Name the identifier actually queried, not a blank `product_id`,
             # now that the caller may have supplied only `handle`.
-            msg = f"Error: no product found for {product_ref!r}."
+            msg = f"Error: no product found for {cap(sanitize_control_chars(product_ref))!r}."
             return f"{msg}\n\n" + _format_options_payload(
                 product_snapshot=_shape_options_snapshot(None),
                 ok=False,
@@ -4210,7 +4211,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if matching_option is None:
             msg = (
                 f"Error: option.id {_cap(normalized['option_id'])!r} is not on "
-                f"product {product_ref!r}."
+                f"product {cap(sanitize_control_chars(product_ref))!r}."
             )
             return f"{msg}\n\n" + _format_options_payload(
                 product_snapshot=_shape_options_snapshot(product),

@@ -47,7 +47,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             mid = m.get("id") if isinstance(m, dict) else None
             pos = m.get("newPosition") if isinstance(m, dict) else None
             if not mid or not isinstance(pos, int) or pos < 1:
-                return f"Error: each move needs id (string) and newPosition (int >= 1). Got: {m!r}"
+                return f"Error: each move needs id (string) and newPosition (int >= 1). Got: {cap(sanitize_control_chars(repr(m)))}"
             parsed_moves.append({"id": mid, "newPosition": pos})
 
         # Preview: show current order vs proposed, reject unknown ids.
@@ -76,10 +76,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         for i, n in enumerate(current_nodes):
             raw_alt = n.get("alt") or ""
             alt_display = wrap(raw_alt) if raw_alt else ""
+            # reflect-exempt[id]: Shopify returned this media node id
             alt_lines.append(f"    {i + 1}. {n.get('id')}  alt={alt_display!r}")
         current_lines = "\n".join(alt_lines) or "    (none)"
         moves_lines = "\n".join(
-            f"    • {m['id']} → position {m['newPosition']}" for m in parsed_moves
+            f"    • {cap(sanitize_control_chars(m['id']))} → position {m['newPosition']}"
+            for m in parsed_moves
         )
         body = (
             f"  Product ID : {cap(sanitize_control_chars(product_id))}\n"

@@ -43,12 +43,14 @@ from tests.unit.tools.test_catalog_hygiene import (
     _OPT_GID,
     _OV_M,
     _S96_MEDIA_1,
+    _S96_MEDIA_CROSS,
     _S96_VARIANT_A,
     _S911_PRODUCT_GID,
     _options_read_response,
     _parse_tail,
     _read_response,
     _s96_combined_response,
+    _s96_mutation_response,
     _s97_entry,
     _s910_batch_resolve,
     _s910_triple_alias,
@@ -398,6 +400,7 @@ class _Row:
         refused: str | None = None,
         shown: Callable[[str], str] = lambda v: v,
         tail_raw: bool = False,
+        rep: bool = False,
     ) -> None:
         self.site, self.run, self.short, self.echoes, self.tail = site, run, short, echoes, tail
         self.crlf = crlf if crlf is not None else short + _INJECT
@@ -409,6 +412,15 @@ class _Row:
         # CR/LF there, so no line is forged; its length is the 10.75 JSON-tail
         # residual that Robert kept OUT (2026-11-05). The tail keeps the raw value.
         self.tail_raw = tail_raw
+        # A `!r` site shows repr(value), which doubles the escape backslashes.
+        self.rep = rep
+
+    def old(self, value: str) -> str:
+        return repr(self.shown(value)) if self.rep else self.shown(value)
+
+    def new(self, value: str) -> str:
+        scrubbed = _scrubbed(self.shown(value))
+        return repr(scrubbed) if self.rep else scrubbed
 
 
 def _inv(tool: str, responses: list, **kw: Any) -> Callable[[str], str]:
@@ -482,7 +494,28 @@ S10103_ROWS = [
     _Row("post-lookup media delete_product_media", lambda v: _build_media([_product_media_read([_media_node(MEDIA_A)])])[0]["delete_product_media"](product_id=v, media_ids=[MEDIA_A]), _PID, **_trailing(_PID)),
     _Row("post-lookup collections handle", lambda v: _build_collections([_manual_collection()])[0]["add_product_to_collection"](handle=v, product_id="4242"), "vanish", **_trailing("vanish")),
     _Row("post-lookup catalog_hygiene update_product_pricing", lambda v: _build_hygiene([_read_response()])[0]["update_product_pricing"](v, variants=[{"variantId": "gid://shopify/ProductVariant/201", "price": "49.99"}]), _PID, tail=True, **_trailing(_PID)),
+    # Review round 2: `product_ref` (`_identifier_channel` caps it at 200, but did not sanitize it).
+    _Row("catalog_hygiene:2976 image binding preview product_ref", lambda v: _build_hygiene([_s96_combined_response([_S96_MEDIA_1], [(_S96_VARIANT_A, "sku-a", [])])])[0]["update_variant_image_binding"](product_id=v, **_BINDING), _PID, tail=True, shown=lambda v: v[:200]),
+    _Row("catalog_hygiene:2858 image binding variant not on product", lambda v: _build_hygiene([_s96_combined_response([_S96_MEDIA_1], [(_S96_VARIANT_A, "sku-a", [])])])[0]["update_variant_image_binding"](product_id=v, variant_media=[{"variantId": "gid://shopify/ProductVariant/999", "mediaIds": [_S96_MEDIA_1]}]), _PID, tail=True, shown=lambda v: v[:200]),
+    _Row("catalog_hygiene:2870 image binding media not on product", lambda v: _build_hygiene([_s96_combined_response([_S96_MEDIA_1], [(_S96_VARIANT_A, "sku-a", [])])])[0]["update_variant_image_binding"](product_id=v, variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_CROSS]}]), _PID, tail=True, shown=lambda v: v[:200]),
+    _Row("catalog_hygiene:3019 image binding no-op", lambda v: _build_hygiene([_s96_combined_response([_S96_MEDIA_1], [(_S96_VARIANT_A, "sku-a", [_S96_MEDIA_1])])])[0]["update_variant_image_binding"](product_id=v, confirm=True, **_BINDING), _PID, tail=True, shown=lambda v: v[:200]),
+    _Row("catalog_hygiene:3157 image binding confirmed", lambda v: _build_hygiene([_s96_combined_response([_S96_MEDIA_1], [(_S96_VARIANT_A, "sku-a", [])]), _s96_mutation_response(productVariants=[(_S96_VARIANT_A, [(_S96_MEDIA_1, "", None)])])])[0]["update_variant_image_binding"](product_id=v, confirm=True, **_BINDING), _PID, tail=True, shown=lambda v: v[:200]),
+    _Row("catalog_hygiene:2371 update_product_vendor not found", lambda v: _build_hygiene([{"productByHandle": None}])[0]["update_product_vendor"](handle=v, vendor="V"), "vanish-tee", tail=True, shown=lambda v: v[:200], rep=True),
+    _Row("catalog_hygiene:2560 update_product_type not found", lambda v: _build_hygiene([{"productByHandle": None}])[0]["update_product_type"](handle=v, product_type="T"), "vanish-tee", tail=True, shown=lambda v: v[:200], rep=True),
+    _Row("catalog_hygiene:4181 update_product_options not found", lambda v: _build_hygiene([{"productByHandle": None}])[0]["update_product_options"](handle=v, option={"id": _OPT_GID, "name": "Size"}), "vanish-tee", tail=True, shown=lambda v: v[:200], rep=True),
 ]  # fmt: skip
+
+
+@pytest.mark.parametrize("move_id", ["4242" + "7" * 400, "4242" + _INJECT], ids=["long", "crlf"])
+def test_s10103_malformed_move_echo_is_bounded(move_id: str) -> None:
+    """reorder_product_media echoes a malformed move whole (`repr`). `repr`
+    already escapes CR/LF; review round 2 bounds its length (media/_reorder.py)."""
+    move = {"id": move_id, "newPosition": 0}
+    tools, _fc = _build_media([])
+    out = tools["reorder_product_media"](product_id="123", moves=[move])
+    expected = "Error: each move needs id (string) and newPosition (int >= 1). Got: "
+    assert out == expected + _scrubbed(repr(move))
+    assert _CR not in out and len(out) <= len(expected) + REFLECT_MAX_LEN
 
 
 def test_s10103_metafield_keys_line_is_bounded_as_a_whole() -> None:
@@ -503,7 +536,7 @@ _S10103_IDS = [r.site for r in S10103_ROWS]
 def _s10103_expected(row: _Row, value: str) -> tuple[str, Any]:
     """The ordinary reply with each echo of `row.short` swapped for the scrubbed value."""
     template = row.run(row.short)
-    old, new = row.shown(row.short), _scrubbed(row.shown(value))
+    old, new = row.old(row.short), row.new(value)
     if not row.tail:
         assert template.count(old) == row.echoes, template
         return template.replace(old, new), None
@@ -546,7 +579,7 @@ def test_s10103_ordinary_identifier_is_byte_identical(row: _Row) -> None:
     """The ordinary reply echoes the value raw, as before this story (AC 4)."""
     out = row.run(row.short)
     text = out if not row.tail else _with_tail(out)[0]
-    assert text.count(row.shown(row.short)) == row.echoes
+    assert text.count(row.old(row.short)) == row.echoes
 
 
 def test_s10103_swap_helper_reaches_nested_tail_values() -> None:
