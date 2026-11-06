@@ -227,6 +227,7 @@ def _poll_media_ready(client: ShopifyClient, product_gid: str, media_id: str) ->
                 last["preview_url"] = ((node.get("preview") or {}).get("image") or {}).get("url")
         except Exception as e:
             print(
+                # reflect-exempt[media_id]: stderr only, and Shopify returned this media id
                 f"[media] poll warning for {media_id}: {type(e).__name__}: {cap(str(e))}",
                 file=sys.stderr,
             )
@@ -436,7 +437,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 pos_note += f" (exceeds current count — Shopify will clamp to {current_count + 1})"
         preview = (
             f"PREVIEW — Upload product image\n"
-            f"  Product ID : {product_id}\n"
+            f"  Product ID : {cap(sanitize_control_chars(product_id))}\n"
             f"  Source     : {source}\n"
             f"  Alt        : {alt!r}\n"
             f"  Target     : {pos_note}\n"
@@ -499,11 +500,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"Error at stage=process: Shopify marked the media FAILED "
                 f"after processing. It is attached to the product and should "
                 f"be removed.\n"
-                f"  Product ID : {product_id}\n"
+                f"  Product ID : {cap(sanitize_control_chars(product_id))}\n"
                 f"  Media ID   : {new_media_id}\n"
                 f"  Source     : {source}\n"
                 f"  Suggested cleanup: "
-                f"delete_product_media(product_id={product_id!r}, "
+                f"delete_product_media(product_id={cap(sanitize_control_chars(product_id))!r}, "
                 f"media_ids=[{new_media_id!r}], confirm=True)"
             )
 
@@ -533,7 +534,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # `reorder_note` can carry fenced Shopify text (Story 10.69).
         return with_reminder(
             f"CONFIRMED — Upload product image\n"
-            f"  Product ID : {product_id}\n"
+            f"  Product ID : {cap(sanitize_control_chars(product_id))}\n"
             f"  Media ID   : {new_media_id}\n"
             f"  Status     : {final_status}\n"
             f"  Position   : {pos_note}\n"

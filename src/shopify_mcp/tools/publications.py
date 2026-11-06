@@ -337,6 +337,7 @@ def _render_publications_report(
         for pid in sorted(not_published_ids, key=lambda p: cache["by_id"][p]["name"])
     ]
 
+    # reflect-exempt[handle]: Shopify returned this resolved handle
     meta = [f"{resource_label}: {title}", f"Handle: {handle}", f"ID: {from_gid(gid)}", *extra_meta]
     return (
         "\n".join(meta) + "\n\n"

@@ -296,7 +296,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         preview = (
             f"PREVIEW — Product title update\n"
-            f"  Product ID : {product_id}\n"
+            f"  Product ID : {cap(sanitize_control_chars(product_id))}\n"
             f"  Old title  : {old_title}\n"
             f"  New title  : {new_title}\n"
             f"{handle_block}\n\n"
@@ -352,7 +352,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
         preview = (
             f"PREVIEW — Product description update\n"
-            f"  Product ID   : {product_id}\n"
+            f"  Product ID   : {cap(sanitize_control_chars(product_id))}\n"
             f"  Old (excerpt): {old_shown}\n"
             f"  New (full)   :\n{new_description}" + warning_block + strip_block
         )
@@ -491,7 +491,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
 
         body = (
-            f"  Product ID          : {product_id}\n"
+            f"  Product ID          : {cap(sanitize_control_chars(product_id))}\n"
             f"  Old SEO title       : {old_title_line}\n"
             f"  New SEO title       : {new_title_line}\n"
             f"  Old SEO description : {old_desc_line}\n"
@@ -521,6 +521,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 parts.append(
                     f"description: {len(old_desc)} chars → {len(new_seo_description)} chars"
                 )
+            # reflect-exempt[product_id]: audit-log text for write_gate log_description
             return f"id={product_id} | " + " | ".join(parts)
 
         return write_gate(
@@ -560,11 +561,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             # pages that still report hasNextPage, or its endCursor-is-null
             # abort. Returning the bare message would discard the flag, which is
             # exactly the silent truncation this tool exists to stop doing.
-            return f"No products in collection '{collection_handle}'." + (
-                PRODUCTS_TRUNCATED_WARNING if capped else ""
+            return (
+                f"No products in collection '{cap(sanitize_control_chars(collection_handle))}'."
+                + (PRODUCTS_TRUNCATED_WARNING if capped else "")
             )
 
-        lines = [f"Products in '{collection_handle}' ({_count_phrase(product_nodes, capped)}):\n"]
+        lines = [
+            f"Products in '{cap(sanitize_control_chars(collection_handle))}' ({_count_phrase(product_nodes, capped)}):\n"
+        ]
         for p in product_nodes:
             lines.append(
                 f"  [{from_gid(p['id'])}] {p['title']} | handle: {p['handle']} | {p['status']}"
@@ -641,7 +645,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
             if not col:
                 return f"No collection found with handle '{cap(sanitize_control_chars(collection_handle))}'."
-            header = f"Products in '{collection_handle}' ({_count_phrase(product_nodes, capped)}):"
+            header = f"Products in '{cap(sanitize_control_chars(collection_handle))}' ({_count_phrase(product_nodes, capped)}):"
         else:
             product_nodes, capped = ops.read_products_with_descriptions(client, limit=limit)
             header = f"Products ({_count_phrase(product_nodes, capped)}):"
@@ -760,7 +764,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         collections = product.get("collections") or {}
         nodes = collections.get("nodes", []) or []
         has_more = (collections.get("pageInfo") or {}).get("hasNextPage", False)
-        header = f"Product: {product.get('title', '')} (id: {product_id})"
+        header = (
+            f"Product: {product.get('title', '')} (id: {cap(sanitize_control_chars(product_id))})"
+        )
 
         if not nodes:
             return f"{header}\nCollections (0 total): (none)"
@@ -826,7 +832,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         if mode == "replace":
             body = (
-                f"  Product ID : {product_id}\n"
+                f"  Product ID : {cap(sanitize_control_chars(product_id))}\n"
                 f"  Mode       : replace (no pre-read — overwrites verbatim)\n"
                 f"  New tags   : {', '.join(target) if target else '(none)'}"
             )
@@ -836,7 +842,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             added = [t for t in target if t.lower() not in old_lower]
             removed = [t for t in old_tags if t.lower() not in new_lower]
             body = (
-                f"  Product ID : {product_id}\n"
+                f"  Product ID : {cap(sanitize_control_chars(product_id))}\n"
                 f"  Mode       : {mode}\n"
                 f"  Old tags   : {', '.join(old_tags) if old_tags else '(none)'}\n"
                 f"  New tags   : {', '.join(target) if target else '(none)'}\n"
@@ -881,7 +887,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         no_op_suffix = "  (no-op — already at target status)" if old_status == new_status else ""
         body = (
-            f"  Product ID : {product_id}\n"
+            f"  Product ID : {cap(sanitize_control_chars(product_id))}\n"
             f"  Old status : {old_status}\n"
             f"  New status : {new_status}{no_op_suffix}"
         )
@@ -948,7 +954,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             or "    (none)"
         )
         unresolved_block = (
-            ("\n  Unresolved variant ids:\n" + "\n".join(f"    • {vid}" for vid in unresolved))
+            (
+                "\n  Unresolved variant ids:\n"
+                + "\n".join(f"    • {cap(sanitize_control_chars(vid))}" for vid in unresolved)
+            )
             if unresolved
             else ""
         )
@@ -956,7 +965,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         warning_block = f"\n{at_cap_warning}" if at_cap_warning else ""
         preview = (
             f"PREVIEW — Variant inventory policy update\n"
-            f"  Product    : {title} (id: {product_id})\n"
+            f"  Product    : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
             f"  New policy : {new_policy}\n"
             f"  Targets ({len(targets)}):\n{target_lines}"
             f"{unresolved_block}"
@@ -982,7 +991,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 header += " (no-op)"
             body = (
                 f"{header}\n"
-                f"  Product    : {title} (id: {product_id})\n"
+                f"  Product    : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
                 f"  New policy : {new_policy}\n"
                 f"  Targets    : (none — nothing to update)"
                 f"{unresolved_block}"
@@ -1019,7 +1028,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
         return (
             f"CONFIRMED — Variant inventory policy update\n"
-            f"  Product    : {title} (id: {product_id})\n"
+            f"  Product    : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
             f"  New policy : {new_policy}\n"
             f"  Updated ({len(updated)}):\n{updated_lines}"
             f"{unresolved_block}"
