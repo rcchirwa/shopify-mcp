@@ -172,17 +172,23 @@ def test_each_jobs_python_version_and_install_lines_are_read_from_the_document()
 
 
 def test_the_real_ci_workflow_yields_jobs_that_each_install_something() -> None:
-    # kills: Docker or Neo4j not recorded for the live integration job; a loader
-    # refusal that the real ci.yml would trip.
+    # kills: a job in test.yml renamed, added or removed; a loader refusal that the
+    # real test.yml would trip. commit-messages runs shell only, so it has no venv.
     pytest.importorskip("yaml")
     jobs = cv.jobs_from_document(cv.read_document(sys.executable, cv.DEFAULT_WORKFLOW))
-    assert [j.name for j in jobs] == ["offline-tests", "lint", "integration"]
-    for job in jobs:
+    assert [j.name for j in jobs] == [
+        "offline-tests",
+        "lint",
+        "commit-messages",
+        "dependency-audit",
+    ]
+    assert jobs[2] == cv.Job("commit-messages", "", (), ())
+    for job in (jobs[0], jobs[1], jobs[3]):
         assert job.python_version == "3.11"
         assert any(
             " install " in line and "--upgrade pip" not in line for line in job.install_lines
         )
-    assert jobs[2].services == ("Docker", "Neo4j")
+        assert job.services == ()
 
 
 def test_a_second_run_rebuilds_only_the_job_whose_install_line_changed(
