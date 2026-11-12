@@ -1781,6 +1781,7 @@ def _metaobject_lines(metaobject: dict[str, Any], handle: str) -> str:
         f"(name {wrap(metaobject.get('displayName') or '')}, "
         f"handle {wrap(metaobject.get('handle') or '')})\n"
         f"  Use it in set_product_metafields: namespace "
+        # reflect-exempt[handle]: Shopify attribute handle, not caller input
         f'"{_CATEGORY_METAFIELD_NAMESPACE}", key "{handle}", type '
         f'"{_CATEGORY_METAFIELD_TYPE}", value \'["{metaobject["id"]}"]\'. '
         f"Put all the GIDs for this attribute in one list."
@@ -1879,6 +1880,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             if gid in seen_gids:
                 msg = (
                     f"variantId {_cap(entry['variantId'])!r} resolves to the "
+                    # reflect-exempt[gid]: unreachable: _normalize_entries refuses a repeat first
                     f"same variant ({from_gid(gid)}) as an earlier entry; "
                     "merge price/compareAtPrice into a single entry"
                 )
@@ -1900,9 +1902,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 # Shopify reject after the network round-trip.
                 unknown_gids.append(gid)
                 all_match = False
-                preview_lines.append(f"    • id: {from_gid(gid)} — (variant not found on product)")
+                preview_lines.append(
+                    f"    • id: {cap(sanitize_control_chars(from_gid(gid)))} — (variant not found on product)"
+                )
                 not_found_messages.append(
-                    f"variant {from_gid(gid)} not found on product {product_id}"
+                    f"variant {cap(sanitize_control_chars(from_gid(gid)))} not found on product {cap(sanitize_control_chars(product_id))}"
                 )
                 continue
 
@@ -1915,7 +1919,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 all_match = False
 
             sku = existing.get("sku") or "(no SKU)"
-            block_lines = [f"    • id: {from_gid(gid)} — SKU: {sku}"]
+            block_lines = [f"    • id: {cap(sanitize_control_chars(from_gid(gid)))} — SKU: {sku}"]
             if target_price is not None:
                 block_lines.append(_format_old_new("price", existing.get("price"), target_price))
             if has_cap:
@@ -1931,7 +1935,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         warning_block = f"\n{at_cap_warning}" if at_cap_warning else ""
         preview = (
             f"PREVIEW — Product pricing update\n"
-            f"  Product : {title} (id: {product_id})\n"
+            f"  Product : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
             f"  Targets ({len(entries)}):\n" + "\n".join(preview_lines) + warning_block
         )
 
@@ -1965,7 +1969,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
             head = (
                 f"CONFIRMED — Product pricing update (no-op)\n"
-                f"  Product : {title} (id: {product_id})\n"
+                f"  Product : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
                 f"  Targets : {len(entries)} (all already at target values)"
                 f"{warning_block}"
             )
@@ -2051,7 +2055,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
         head = (
             f"CONFIRMED — Product pricing update\n"
-            f"  Product : {title} (id: {product_id})\n"
+            f"  Product : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
             f"  Updated ({len(updated)}):\n{updated_lines}"
             f"{warning_block}"
         )
@@ -2364,7 +2368,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not product_gid:
             # Name the identifier actually queried, not a blank `product_id`,
             # now that the caller may have supplied only `handle`.
-            msg = f"Error: no product found for {product_ref!r}."
+            msg = f"Error: no product found for {cap(sanitize_control_chars(product_ref))!r}."
             return f"{msg}\n\n" + _format_vendor_payload(
                 product_gid="",
                 vendor=new_vendor,
@@ -2553,7 +2557,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not product_gid:
             # Name the identifier actually queried, not a blank `product_id`,
             # now that the caller may have supplied only `handle`.
-            msg = f"Error: no product found for {product_ref!r}."
+            msg = f"Error: no product found for {cap(sanitize_control_chars(product_ref))!r}."
             return f"{msg}\n\n" + _format_type_payload(
                 product_gid="",
                 product_type=new_type,
@@ -2851,8 +2855,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             if resolved_gid not in variant_media_map and resolved_gid not in unknown_variant_gids:
                 unknown_variant_gids.append(resolved_gid)
         if unknown_variant_gids:
-            msg = f"variant GIDs not on product {product_ref}: " + _cap(
-                ", ".join(from_gid(g) for g in unknown_variant_gids)
+            msg = (
+                f"variant GIDs not on product {cap(sanitize_control_chars(product_ref))}: "
+                + _cap(", ".join(from_gid(g) for g in unknown_variant_gids))
             )
             return _render(f"Error: {msg}", _err_payload(msg))
 
@@ -2863,7 +2868,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 if mid not in product_media_set and mid not in unknown:
                     unknown.append(mid)
         if unknown:
-            msg = f"media GIDs not on product {product_ref}: {_cap(', '.join(unknown))}"
+            msg = f"media GIDs not on product {cap(sanitize_control_chars(product_ref))}: {_cap(', '.join(sanitize_control_chars(m) for m in unknown))}"
             return _render(f"Error: {msg}", _err_payload(msg))
 
         # Step 5a — collapse duplicate variantIds: same resolved variant appearing
@@ -2970,7 +2975,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         preview_blocks = [_variant_block(r) for r in routes]
         preview_head = (
             f"PREVIEW — Bind variant images\n"
-            f"  Product : {title} (id: {product_ref})\n"
+            f"  Product : {title} (id: {cap(sanitize_control_chars(product_ref))})\n"
             f"  Variants ({len(routes)}) — net-new media bindings: {total_new}"
             + (f" — WARNING: {will_lose_count} binding(s) will be lost" if will_lose_count else "")
             + "\n"
@@ -3013,7 +3018,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
             head = (
                 f"CONFIRMED — Bind variant images (no-op)\n"
-                f"  Product : {title} (id: {product_ref})\n"
+                f"  Product : {title} (id: {cap(sanitize_control_chars(product_ref))})\n"
                 f"  Variants ({len(routes)}) — all requested media already bound."
             )
             return _render(
@@ -3151,7 +3156,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
         head = (
             f"CONFIRMED — Bind variant images\n"
-            f"  Product : {title} (id: {product_ref})\n"
+            f"  Product : {title} (id: {cap(sanitize_control_chars(product_ref))})\n"
             f"  Variants ({len(routes)}) — net-new media bindings: {total_new}\n"
             + "\n".join(preview_blocks)
         )
@@ -3265,8 +3270,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # head, so the caller sees the same display regardless of dry-run state.
         def _entry_line(idx: int, entry: dict[str, Any]) -> str:
             return (
-                f"  [{idx}] {entry['ownerType']} {entry['ownerId']} | "
-                f"{entry['namespace']}.{entry['key']} = {_cap(entry['value'])!r} "
+                f"  [{idx}] {entry['ownerType']} {cap(sanitize_control_chars(entry['ownerId']))} | "
+                f"{cap(sanitize_control_chars(entry['namespace']))}.{cap(sanitize_control_chars(entry['key']))} = "
+                f"{_cap(entry['value'])!r} "
                 f"({entry['type']})"
             )
 
@@ -3589,10 +3595,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             # mode == "triple"
             if alias_data is None:
                 # Owner GID didn't resolve — hard error so the caller can fix.
-                msg = f"Error resolving metafields[{c['idx']}]: Owner {c['ownerId']} not found"
+                msg = f"Error resolving metafields[{c['idx']}]: Owner {cap(sanitize_control_chars(c['ownerId']))} not found"
                 return _render(
                     msg,
-                    _err_payload(f"Owner {c['ownerId']} not found", key="deleted"),
+                    _err_payload(
+                        f"Owner {cap(sanitize_control_chars(c['ownerId']))} not found",
+                        key="deleted",
+                    ),
                 )
             mf = alias_data.get("metafield")
             if not mf:
@@ -3624,10 +3633,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # ---- Per-entry preview line (used by preview AND post-mutation head). -
         def _entry_line(r: dict[str, Any]) -> str:
             ownership = (
-                f"{r['ownerType']} {r['ownerId']}" if r.get("ownerType") else "(owner unknown)"
+                f"{r['ownerType']} {cap(sanitize_control_chars(r['ownerId']))}"
+                if r.get("ownerType")
+                else "(owner unknown)"
             )
             tag = (
-                f"  [{r['index']}] {ownership} | {r.get('namespace') or '?'}.{r.get('key') or '?'}"
+                f"  [{r['index']}] {ownership} | "
+                f"{cap(sanitize_control_chars(r.get('namespace') or '?'))}."
+                f"{cap(sanitize_control_chars(r.get('key') or '?'))}"
             )
             if r.get("note"):
                 tag += f"  ⚠ {r['note']}"
@@ -4013,10 +4026,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         if total_found == 0:
             if filter_mode == "namespace":
-                head_lines.append(f'No metafields found for namespace: "{ns_filter}"')
+                head_lines.append(
+                    f'No metafields found for namespace: "{cap(sanitize_control_chars(ns_filter or ""))}"'
+                )
             elif filter_mode == "keys":
                 keys_display = ", ".join(f'"{k}"' for k in keys_filter or [])
-                head_lines.append(f"No metafields found for keys: {keys_display}")
+                head_lines.append(
+                    f"No metafields found for keys: {cap(sanitize_control_chars(keys_display))}"
+                )
             else:
                 head_lines.append("No metafields found.")
         else:
@@ -4029,6 +4046,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                     # wrap them as untrusted so the model reads them as data,
                     # not instructions (Story 10.41 / SEC-04). Key/type stay
                     # raw: they are schema-defined, not shopper free text.
+                    # reflect-exempt[key]: Shopify returned this metafield key
                     head_lines.append(f"  • {m['key']}  [{m['type']}]  →  {wrap(m['value'])}")
             if include_variants and variant_buckets:
                 head_lines.append("")
@@ -4041,6 +4059,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                     )
                     for m in v["metafields"]:
                         head_lines.append(
+                            # reflect-exempt[namespace]: Shopify returned this metafield namespace
+                            # reflect-exempt[key]: Shopify returned this metafield key
                             f"    • {m['namespace']}.{m['key']}  [{m['type']}]  →  {wrap(m['value'])}"
                         )
 
@@ -4159,7 +4179,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not product_gid:
             # Name the identifier actually queried, not a blank `product_id`,
             # now that the caller may have supplied only `handle`.
-            msg = f"Error: no product found for {product_ref!r}."
+            msg = f"Error: no product found for {cap(sanitize_control_chars(product_ref))!r}."
             return f"{msg}\n\n" + _format_options_payload(
                 product_snapshot=_shape_options_snapshot(None),
                 ok=False,
@@ -4191,7 +4211,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if matching_option is None:
             msg = (
                 f"Error: option.id {_cap(normalized['option_id'])!r} is not on "
-                f"product {product_ref!r}."
+                f"product {cap(sanitize_control_chars(product_ref))!r}."
             )
             return f"{msg}\n\n" + _format_options_payload(
                 product_snapshot=_shape_options_snapshot(product),
@@ -4219,7 +4239,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if unknown_value_ids:
             msg = (
                 f"Error: option_values_to_update contains IDs not on option "
-                f"{_cap(normalized['option_id'])!r}: {', '.join(unknown_value_ids)}."
+                f"{_cap(normalized['option_id'])!r}: {_cap(', '.join(sanitize_control_chars(u) for u in unknown_value_ids))}."
             )
             return f"{msg}\n\n" + _format_options_payload(
                 product_snapshot=_shape_options_snapshot(product),
@@ -4520,6 +4540,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
 
         handle = _attribute_handle(attr["name"])
+        # reflect-exempt[handle]: Shopify attribute handle, not caller input
         metaobject_type = f"shopify--{handle}"
         context: dict[str, Any] = {
             "category": category_info,
@@ -4531,6 +4552,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"  Category   : {wrap(category_info['fullName'] or '')} ({category_info['id']})\n"
             + _alternates_line(alternates)
             + f"  Attribute  : {wrap(attr['name'])} "
+            # reflect-exempt[handle]: Shopify attribute handle, not caller input
             f"(metafield {_CATEGORY_METAFIELD_NAMESPACE}.{handle})\n"
             f"  Value      : {wrap(match['name'])} ({match['id']})\n"
         )

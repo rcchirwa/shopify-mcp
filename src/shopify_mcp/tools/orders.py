@@ -17,6 +17,7 @@ from shopify_mcp.shopify.operations import orders as ops
 from shopify_mcp.shopify.queries.orders import GET_ORDER_BY_ID, GET_ORDERS
 from shopify_mcp.tools._annotations import READ_ONLY
 from shopify_mcp.tools._gid import from_gid
+from shopify_mcp.tools._scrub import cap, sanitize_control_chars
 from shopify_mcp.tools._untrusted import INJECTION_REMINDER, wrap
 
 # The GraphQL strings now live in shopify.queries.orders. They are re-exported
@@ -108,7 +109,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return f"Error: {INVALID_ORDER_ID_ERROR}."
         o, line_items, capped = ops.read_order(client, gid)
         if not o:
-            return f"Order {order_id} not found."
+            return f"Order {cap(sanitize_control_chars(order_id))} not found."
 
         total = ((o.get("totalPriceSet") or {}).get("shopMoney") or {}).get("amount", "N/A")
 
