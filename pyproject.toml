@@ -55,6 +55,9 @@ dev = [
     "mypy>=1.11,<2",
     "types-requests>=2.31,<3",
     "types-cachetools>=5,<7",
+    # Only the tests import PyYAML (Story 10.115); the scripts read YAML in the
+    # parser venv (scripts/verify/ci_venvs_parser.txt pins 6.0.3).
+    "pyyaml>=6.0.3,<7",
 ]
 
 [project.scripts]
