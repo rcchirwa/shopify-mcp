@@ -8,8 +8,13 @@ Usage:
   export SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST=1
   python3 tests/live/test_webhooks.py
 
-Guarantees cleanup: any webhook created by this test is deleted before exit,
-even on failure partway through.
+Cleanup contract: a subscription whose id the runner knows is deleted before
+exit, even on failure partway through. When the runner cannot learn the id after
+a create that may have landed (the confirmed reply has no id, or the call
+raised), it prints MANUAL CLEANUP REQUIRED with the topic and the endpoint and
+deletes nothing, because it cannot tell that subscription from any other one on
+the store. A create that Shopify refused (a reply that shows nothing was
+created) needs no cleanup: the runner fails Step 3 and prints no alarm.
 
 Guarded runner (SEC-16 / Story 10.49). This test registers a real webhook
 subscription on the configured store, so three checks run before anything is
@@ -43,6 +48,7 @@ from collections.abc import Mapping
 
 import shopify_mcp.tools.webhooks as webhooks_module
 from shopify_mcp.client import ShopifyClient
+from shopify_mcp.tools._untrusted import INJECTION_REMINDER
 
 ALLOW_ENV_VAR = "SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST"
 ENDPOINT_ENV_VAR = "WEBHOOK_RECEIVER_URL"
@@ -141,6 +147,31 @@ def _extract_subscription_id(output: str) -> str:
     return m.group(1)
 
 
+def _is_refused_create(reply: object) -> bool:
+    """True if ``reply`` shows that Shopify created nothing.
+
+    Review round 1 of Story 10.96 (Robert amended D12). Exactly two reply shapes
+    count, both from ``register_webhook(confirm=True)``:
+
+    (a) the reply starts with ``Error:``: a pre-create refusal from
+        ``tools/webhooks.py::_check_endpoint`` (scheme, allowlist, allowlist not
+        configured);
+    (b) the reply starts with ``INJECTION_REMINDER`` and the text after it starts
+        with ``Error:``: the userErrors reply of ``write_gate``
+        (``with_reminder(err)``).
+
+    Any other reply, for example ``Subscription ID : (unknown)``, may follow a
+    create that landed, so it is not a refusal. ``Error:`` later in the text does
+    not count.
+    """
+    if not isinstance(reply, str):
+        return False
+    return reply.startswith("Error:") or (
+        reply.startswith(INJECTION_REMINDER)
+        and reply[len(INJECTION_REMINDER) :].startswith("Error:")
+    )
+
+
 def _print_manual_cleanup(endpoint: str) -> None:
     """Tell the operator to delete by hand a subscription that may exist.
 
@@ -190,6 +221,13 @@ def run_round_trip(list_webhooks, register_webhook, delete_webhook, test_endpoin
             created = register_webhook(topic=TEST_TOPIC, endpoint_url=test_endpoint, confirm=True)
         except Exception as e:
             _fail("Step 3", f"register_webhook(confirm=True) raised {type(e).__name__}: {e}")
+        if _is_refused_create(created):
+            # Shopify created nothing, so there is nothing to clean up: disarm the
+            # manual-cleanup alarm, then fail Step 3. No delete runs.
+            created_id_unknown = False
+            _fail(
+                "Step 3", f"register_webhook(confirm=True) was refused; nothing created:\n{created}"
+            )
         # Extract the subscription id and arm cleanup BEFORE asserting on the
         # confirmed-label shape below. If the subscription was actually
         # created, it must be cleaned up regardless of whether the label
@@ -237,7 +275,13 @@ def run_round_trip(list_webhooks, register_webhook, delete_webhook, test_endpoin
     finally:
         if created_id_unknown:
             _print_manual_cleanup(test_endpoint)
-            sys.exit(1)
+            # Exit non-zero only when nothing else is in flight, or when it is the
+            # SystemExit that _fail raised. Any other exception (a KeyboardInterrupt,
+            # a TypeError from a non-str reply) must reach the caller unchanged:
+            # sys.exit here would replace it.
+            in_flight = sys.exc_info()[1]
+            if in_flight is None or isinstance(in_flight, SystemExit):
+                sys.exit(1)
         if needs_cleanup and sub_id:
             print(f"CLEANUP — deleting leftover test webhook {sub_id}...")
             try:

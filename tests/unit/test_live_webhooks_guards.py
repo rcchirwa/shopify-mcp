@@ -16,6 +16,8 @@ Usage:
 
 import pytest
 
+from shopify_mcp.tools._response import format_user_errors
+from shopify_mcp.tools._untrusted import INJECTION_REMINDER, with_reminder
 from tests.live import test_webhooks as live_webhooks
 from tests.support import FakeClient
 
@@ -139,7 +141,7 @@ class _FakeWebhookTools:
     """Fake list/register/delete tools. Every call is recorded in ``calls``.
 
     ``register_confirmed`` is the reply to ``register_webhook(confirm=True)``
-    (an Exception instance is raised instead). ``delete_replies`` is consumed
+    (a BaseException instance is raised instead). ``delete_replies`` is consumed
     one per ``delete_webhook`` call; running out fails the test, so a stray
     extra delete cannot pass unnoticed.
     """
@@ -162,7 +164,7 @@ class _FakeWebhookTools:
         self.calls.append(("register_webhook", topic, endpoint_url, confirm))
         if not confirm:
             return PREVIEW_OK
-        if isinstance(self._register_confirmed, Exception):
+        if isinstance(self._register_confirmed, BaseException):
             raise self._register_confirmed
         return self._register_confirmed
 
@@ -264,3 +266,104 @@ def test_run_round_trip_known_id_failed_step_5_delete_retries_once_in_finally(
     if expected != "CLEANUP done.":
         assert f"id={SUB_ID}" in out
     assert MANUAL_MARKER not in out
+
+
+# ---------- run_round_trip: a create Shopify refused needs no manual cleanup ----------
+#
+# Review round 1 (Robert amended D12, 2026-11-14). When register_webhook(confirm=True)
+# RETURNS a reply that shows Shopify created nothing, the runner still fails Step 3
+# (non-zero exit) but prints no manual-cleanup alarm and calls no delete. Exactly two
+# reply shapes count: (a) the reply starts with "Error:" (the pre-create refusals of
+# tools/webhooks.py::_check_endpoint); (b) INJECTION_REMINDER, then a line starting
+# "Error:" (write_gate's userErrors reply, built by with_reminder).
+
+REFUSED_ALLOWLIST = (
+    "Error: endpoint hostname 'receiver.example.com' is not in WEBHOOK_ALLOWLIST_HOSTS. "
+    "Add it to the allowlist or set WEBHOOK_ALLOW_ANY_HOST=true."
+)
+
+
+def _user_errors_reply() -> str:
+    """The reply write_gate returns when the create mutation reports userErrors,
+    built with the real helpers. The message carries a fenced value, so
+    with_reminder really prepends the reminder (it does so only for fenced text)."""
+    result = {
+        "webhookSubscriptionCreate": {
+            "userErrors": [
+                {"field": ["webhookSubscription", "callbackUrl"], "message": "is invalid"}
+            ]
+        }
+    }
+    err = format_user_errors(result, "webhookSubscriptionCreate")
+    assert err is not None and err.startswith("Error:")
+    return with_reminder(err)
+
+
+def _assert_refused_without_alarm(tools, excinfo, out):
+    assert excinfo.value.code not in (0, None)
+    # Prove the path ran: the confirmed register call was made and Step 3 failed.
+    assert ("register_webhook", live_webhooks.TEST_TOPIC, ENDPOINT, True) in tools.calls
+    assert "Step 3 FAILED" in out
+    assert MANUAL_MARKER not in out
+    assert "delete_webhook" not in tools.names()
+
+
+def test_run_round_trip_pre_create_refusal_fails_step_3_without_alarm(capsys):
+    tools = _FakeWebhookTools(REFUSED_ALLOWLIST)
+    with pytest.raises(SystemExit) as excinfo:
+        tools.run()
+    _assert_refused_without_alarm(tools, excinfo, capsys.readouterr().out)
+
+
+def test_run_round_trip_user_errors_reply_fails_step_3_without_alarm(capsys):
+    reply = _user_errors_reply()
+    # The reply is the reminder-first shape, not a bare "Error:" line.
+    assert reply.startswith(INJECTION_REMINDER)
+    assert not reply.startswith("Error:")
+    tools = _FakeWebhookTools(reply)
+    with pytest.raises(SystemExit) as excinfo:
+        tools.run()
+    _assert_refused_without_alarm(tools, excinfo, capsys.readouterr().out)
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        # "Error:" only later in the text: Shopify may have created the subscription.
+        f"{CONFIRMED}\n  Subscription ID : (unknown)\nError: x",
+        # The reminder is there, but no "Error:" line follows it.
+        f"{INJECTION_REMINDER}{CONFIRMED}\n  Subscription ID : (unknown)\nError: x",
+    ],
+    ids=["error-only-later", "reminder-then-non-error"],
+)
+def test_run_round_trip_error_not_at_the_start_still_prints_alarm(capsys, reply):
+    tools = _FakeWebhookTools(reply)
+    with pytest.raises(SystemExit) as excinfo:
+        tools.run()
+    _assert_manual_cleanup_and_no_delete(tools, excinfo, capsys.readouterr().out)
+
+
+# ---------- run_round_trip: the alarm never masks an in-flight exception ----------
+
+
+def test_run_round_trip_non_str_reply_prints_alarm_and_propagates_the_original_error(capsys):
+    tools = _FakeWebhookTools(None)
+    # Not SystemExit: the TypeError from reading an id out of None must survive.
+    with pytest.raises(TypeError):
+        tools.run()
+    out = capsys.readouterr().out
+    assert ("register_webhook", live_webhooks.TEST_TOPIC, ENDPOINT, True) in tools.calls
+    _manual_cleanup_text(out)
+    assert "delete_webhook" not in tools.names()
+
+
+def test_run_round_trip_keyboard_interrupt_prints_alarm_and_propagates(capsys):
+    tools = _FakeWebhookTools(KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        tools.run()
+    out = capsys.readouterr().out
+    assert ("register_webhook", live_webhooks.TEST_TOPIC, ENDPOINT, True) in tools.calls
+    manual = _manual_cleanup_text(out)
+    assert live_webhooks.TEST_TOPIC in manual
+    assert ENDPOINT in manual
+    assert "delete_webhook" not in tools.names()
