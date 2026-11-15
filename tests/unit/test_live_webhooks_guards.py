@@ -282,6 +282,22 @@ def test_run_round_trip_keyboard_interrupt_in_cleanup_delete_prints_cleanup_fail
     assert f"CLEANUP FAILED (manual deletion required for id={SUB_ID})" in out
 
 
+def test_run_round_trip_exception_in_cleanup_delete_prints_cleanup_failed_and_keeps_exit(capsys):
+    # Review round 4 (2026-11-15): an ordinary Exception from the finally-block
+    # delete is reported, not re-raised, so the SystemExit from Step 5's _fail
+    # still ends the run with a non-zero code.
+    step_5_reply = "Error: Shopify refused the delete"
+    tools = _FakeWebhookTools(_created(), delete_replies=[step_5_reply, RuntimeError("boom")])
+    with pytest.raises(SystemExit) as excinfo:
+        tools.run()
+    out = capsys.readouterr().out
+    assert excinfo.value.code not in (0, None)
+    # Prove the path ran: Step 5 failed and the finally block made its delete.
+    assert "Step 5 FAILED" in out
+    assert tools.names().count("delete_webhook") == 2
+    assert f"CLEANUP FAILED (manual deletion required for id={SUB_ID}): boom" in out
+
+
 # ---------- run_round_trip: a create Shopify refused needs no manual cleanup ----------
 #
 # Review round 1 (Robert amended D12, 2026-11-14). When register_webhook(confirm=True)
