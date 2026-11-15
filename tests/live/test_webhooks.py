@@ -297,8 +297,13 @@ def run_round_trip(list_webhooks, register_webhook, delete_webhook, test_endpoin
                         f"CLEANUP FAILED (manual deletion required for id={sub_id}): "
                         f"{cleanup_result}"
                     )
-            except Exception as e:
+            except BaseException as e:
+                # BaseException, so a Ctrl-C during this delete still prints the
+                # id to delete by hand. Then let a non-Exception (KeyboardInterrupt,
+                # SystemExit) propagate: swallowing it would hide the interrupt.
                 print(f"CLEANUP FAILED (manual deletion required for id={sub_id}): {e}")
+                if not isinstance(e, Exception):
+                    raise
 
 
 def main():

@@ -16,10 +16,10 @@ Usage:
 
 import pytest
 
-from shopify_mcp.tools._response import format_user_errors
-from shopify_mcp.tools._untrusted import INJECTION_REMINDER, with_reminder
+import shopify_mcp.tools.webhooks as webhooks_module
+from shopify_mcp.tools._untrusted import INJECTION_REMINDER
 from tests.live import test_webhooks as live_webhooks
-from tests.support import FakeClient
+from tests.support import CapturingServer, FakeClient
 
 # ---------- require_opt_in ----------
 
@@ -172,7 +172,7 @@ class _FakeWebhookTools:
         self.calls.append(("delete_webhook", subscription_id, confirm))
         assert self._delete_replies, "unexpected extra delete_webhook call"
         reply = self._delete_replies.pop(0)
-        if isinstance(reply, Exception):
+        if isinstance(reply, BaseException):
             raise reply
         return reply
 
@@ -268,6 +268,20 @@ def test_run_round_trip_known_id_failed_step_5_delete_retries_once_in_finally(
     assert MANUAL_MARKER not in out
 
 
+def test_run_round_trip_keyboard_interrupt_in_cleanup_delete_prints_cleanup_failed(capsys):
+    # Final review (2026-11-15): a Ctrl-C during the finally-block delete must
+    # still print the manual-deletion line with the id, then propagate.
+    step_5_reply = "Error: Shopify refused the delete"
+    tools = _FakeWebhookTools(_created(), delete_replies=[step_5_reply, KeyboardInterrupt()])
+    with pytest.raises(KeyboardInterrupt):
+        tools.run()
+    out = capsys.readouterr().out
+    # Prove the path ran: Step 5 failed and the finally block made its delete.
+    assert "Step 5 FAILED" in out
+    assert tools.names().count("delete_webhook") == 2
+    assert f"CLEANUP FAILED (manual deletion required for id={SUB_ID})" in out
+
+
 # ---------- run_round_trip: a create Shopify refused needs no manual cleanup ----------
 #
 # Review round 1 (Robert amended D12, 2026-11-14). When register_webhook(confirm=True)
@@ -277,26 +291,42 @@ def test_run_round_trip_known_id_failed_step_5_delete_retries_once_in_finally(
 # tools/webhooks.py::_check_endpoint); (b) INJECTION_REMINDER, then a line starting
 # "Error:" (write_gate's userErrors reply, built by with_reminder).
 
-REFUSED_ALLOWLIST = (
-    "Error: endpoint hostname 'receiver.example.com' is not in WEBHOOK_ALLOWLIST_HOSTS. "
-    "Add it to the allowlist or set WEBHOOK_ALLOW_ANY_HOST=true."
-)
+#
+# Final review (2026-11-15): both replies come from the REAL register_webhook tool
+# (FakeClient, no network), not from hand-typed text. If the tool or write_gate
+# changes the shape of a refused reply, these tests fail instead of the live
+# runner silently printing a false alarm again.
 
 
-def _user_errors_reply() -> str:
-    """The reply write_gate returns when the create mutation reports userErrors,
-    built with the real helpers. The message carries a fenced value, so
-    with_reminder really prepends the reminder (it does so only for fenced text)."""
+def _real_register_confirmed(monkeypatch, responses) -> str:
+    srv = CapturingServer()
+    webhooks_module.register(srv, FakeClient(responses))
+    return srv.tools["register_webhook"](
+        topic=live_webhooks.TEST_TOPIC, endpoint_url=ENDPOINT, confirm=True
+    )
+
+
+def _refused_allowlist_reply(monkeypatch) -> str:
+    """The real pre-create refusal: the endpoint host is not allowlisted, so the
+    tool returns before any mutation call (no FakeClient response is consumed)."""
+    monkeypatch.setenv("WEBHOOK_ALLOWLIST_HOSTS", "other.example.com")
+    monkeypatch.delenv("WEBHOOK_ALLOW_ANY_HOST", raising=False)
+    return _real_register_confirmed(monkeypatch, [])
+
+
+def _user_errors_reply(monkeypatch) -> str:
+    """The real reply when the create mutation reports userErrors."""
+    monkeypatch.setenv("WEBHOOK_ALLOWLIST_HOSTS", "receiver.example.com")
+    monkeypatch.delenv("WEBHOOK_ALLOW_ANY_HOST", raising=False)
     result = {
         "webhookSubscriptionCreate": {
+            "webhookSubscription": None,
             "userErrors": [
                 {"field": ["webhookSubscription", "callbackUrl"], "message": "is invalid"}
-            ]
+            ],
         }
     }
-    err = format_user_errors(result, "webhookSubscriptionCreate")
-    assert err is not None and err.startswith("Error:")
-    return with_reminder(err)
+    return _real_register_confirmed(monkeypatch, [result])
 
 
 def _assert_refused_without_alarm(tools, excinfo, out):
@@ -308,15 +338,18 @@ def _assert_refused_without_alarm(tools, excinfo, out):
     assert "delete_webhook" not in tools.names()
 
 
-def test_run_round_trip_pre_create_refusal_fails_step_3_without_alarm(capsys):
-    tools = _FakeWebhookTools(REFUSED_ALLOWLIST)
+def test_run_round_trip_pre_create_refusal_fails_step_3_without_alarm(capsys, monkeypatch):
+    reply = _refused_allowlist_reply(monkeypatch)
+    assert "WEBHOOK_ALLOWLIST_HOSTS" in reply  # the allowlist refusal, not another reply
+    tools = _FakeWebhookTools(reply)
     with pytest.raises(SystemExit) as excinfo:
         tools.run()
     _assert_refused_without_alarm(tools, excinfo, capsys.readouterr().out)
 
 
-def test_run_round_trip_user_errors_reply_fails_step_3_without_alarm(capsys):
-    reply = _user_errors_reply()
+def test_run_round_trip_user_errors_reply_fails_step_3_without_alarm(capsys, monkeypatch):
+    reply = _user_errors_reply(monkeypatch)
+    assert "is invalid" in reply  # the userErrors reply, not another refusal
     # The reply is the reminder-first shape, not a bare "Error:" line.
     assert reply.startswith(INJECTION_REMINDER)
     assert not reply.startswith("Error:")
