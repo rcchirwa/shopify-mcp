@@ -19,7 +19,7 @@ from urllib.parse import unquote, urlparse
 import requests
 from mcp.server.fastmcp import FastMCP
 
-from shopify_mcp.client import ShopifyClient, poll_job
+from shopify_mcp.client import ShopifyClient, ShopifyError, ShopifyProtocolError, poll_job
 from shopify_mcp.settings import Settings
 from shopify_mcp.tools._annotations import CREATE_OVERWRITE
 from shopify_mcp.tools._gid import from_gid
@@ -208,16 +208,38 @@ def _poll_media_ready(client: ShopifyClient, product_gid: str, media_id: str) ->
     provenance/logging but is no longer needed for the query itself.
 
     Returns dict: { status: str, preview_url: str or None, timed_out: bool,
-                    elapsed_s: float }
+                    elapsed_s: float, error: str or None }
 
-    Transient read failures during the loop are logged to stderr but don't
-    abort — the whole point of polling is to keep trying until the budget is
-    up. Logging makes a pathological "loop until timeout with no signal"
-    observable instead of silent.
+    `error` is the capped message of the last failed poll, and a later
+    successful poll clears it. It can be set with timed_out=False (Story
+    10.98): a permanent ShopifyError (validation, auth, schema drift) fails
+    fast on the first poll rather than retrying to budget, since retrying it
+    cannot help and reporting it as "still PROCESSING" hides the real cause.
+    The branches are the same, in the same order, as `client.py::poll_job`
+    (Story 10.89):
+
+      1. ShopifyProtocolError (a non-GraphQL response that may be transient,
+         and so its subclass ShopifyTransportError) retries to budget. It is
+         caught first because it is a ShopifyError subclass.
+      2. ShopifyError fails fast.
+      3. Anything else, TransientShopifyError included, retries to budget.
+         ShopifyError and TransientShopifyError are siblings under
+         RuntimeError, so branch 2 cannot swallow a transient failure.
+
+    Retried failures are logged to stderr but don't abort — the whole point of
+    polling is to keep trying until the budget is up. Logging makes a
+    pathological "loop until timeout with no signal" observable instead of
+    silent.
+
+    A null node, or one that matches none of the four media types, reads as
+    still PROCESSING and polls to budget with no error. Whether a null node
+    can ever be permanent is unresolved (docs/tech-debt.md, Story 10.98); this
+    keeps the behaviour that existed before.
     """
     del product_gid  # reserved for future provenance/logging
     start = time.monotonic()
     last = {"status": "PROCESSING", "preview_url": None}
+    error: str | None = None
     while True:
         try:
             data = client.execute(GET_MEDIA_STATUS, {"id": media_id})
@@ -225,18 +247,38 @@ def _poll_media_ready(client: ShopifyClient, product_gid: str, media_id: str) ->
             if node:
                 last["status"] = node.get("status") or "PROCESSING"
                 last["preview_url"] = ((node.get("preview") or {}).get("image") or {}).get("url")
-        except Exception as e:
+            error = None
+        except ShopifyProtocolError as e:
+            # Often transient (a WAF page, a garbage 200, a connection reset),
+            # unlike the permanent failures the next branch fast-fails on.
+            # Caught first because it is a ShopifyError subclass: retry to budget.
+            error = cap(str(e))
             print(
                 # reflect-exempt[media_id]: stderr only, and Shopify returned this media id
-                f"[media] poll warning for {media_id}: {type(e).__name__}: {cap(str(e))}",
+                f"[media] poll warning for {media_id}: {type(e).__name__}: {error}",
+                file=sys.stderr,
+            )
+        except ShopifyError as e:
+            # Permanent (validation, auth, schema drift): retrying cannot help.
+            return {
+                **last,
+                "timed_out": False,
+                "elapsed_s": time.monotonic() - start,
+                "error": cap(str(e)),
+            }
+        except Exception as e:
+            error = cap(str(e))
+            print(
+                # reflect-exempt[media_id]: stderr only, and Shopify returned this media id
+                f"[media] poll warning for {media_id}: {type(e).__name__}: {error}",
                 file=sys.stderr,
             )
 
         elapsed = time.monotonic() - start
         if last["status"] in ("READY", "FAILED"):
-            return {**last, "timed_out": False, "elapsed_s": elapsed}
+            return {**last, "timed_out": False, "elapsed_s": elapsed, "error": error}
         if elapsed + _MEDIA_PROCESSING_POLL_INTERVAL_S > _MEDIA_PROCESSING_POLL_TIMEOUT_S:
-            return {**last, "timed_out": True, "elapsed_s": elapsed}
+            return {**last, "timed_out": True, "elapsed_s": elapsed, "error": error}
         time.sleep(_MEDIA_PROCESSING_POLL_INTERVAL_S)
 
 
@@ -525,7 +567,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
 
         processing_note = ""
-        if poll["timed_out"] and final_status == "PROCESSING":
+        if poll["error"]:
+            # Story 10.98: the last poll failed, so the status above is only the
+            # last one seen. Show the cause, not the benign PROCESSING note.
+            processing_note = f"\n  Note       : {poll_failed_note(poll['error'])}"
+        elif poll["timed_out"] and final_status == "PROCESSING":
             processing_note = (
                 f"\n  Note       : media still PROCESSING after "
                 f"{_MEDIA_PROCESSING_POLL_TIMEOUT_S}s — Shopify will finish "
