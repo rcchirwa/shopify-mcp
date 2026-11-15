@@ -4,7 +4,68 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-11-05.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-11-14.
+
+---
+
+## 2026-11-14 — Story 10.113: caller ids joined into one list are scrubbed, and a guard sees the joins (closes `SEC-24-joined-ids`)
+
+Trello: https://trello.com/c/DlMXcL0b (Story 10.113, Epic 10). A residual of Story 10.103 (entry below, "Review round 4"). Defense-in-depth, not a live defect: the caller already knows what it sent, so nothing leaks. The risk is a flood of text and a CR/LF-forged second line in model context.
+
+**The rule is 10.103's, unchanged.** Sanitize each id, then bound the joined text: `_cap(", ".join(sanitize_control_chars(x) for x in ids))` in `catalog_hygiene.py` (its `_cap` is 200), `cap(...)` elsewhere (300). No second slicing or escaping helper.
+
+**Decisions (Robert, 2026-11-14, Approval package item 1).** Approach 2: fix every reachable caller-id join, then a guard with control pairs and stated limits. Caller channel names count as caller ids (this brought in `tools/publications.py`). The four per-line lists that already scrub each id stay out. `tools/products.py` is not changed. The census comment is on the card.
+
+**Census: every `.join(` in `src/shopify_mcp/tools/*.py` and `tools/media/*.py` on `origin/main` 99e2315.** 109 hits in 15 modules. Each hit was read in context. Verdicts:
+
+| Verdict | Joins (line on 99e2315) |
+|---|---|
+| **Fixed: caller ids** | `catalog_hygiene.py:1952` (F1), `:2860` (F2); `media/_reorder.py:66` (F3); `publications.py:466` (F4), `:457`–`:458` (F5) |
+| Already sanitized and bounded | `catalog_hygiene.py:2871` (media GIDs), `:4033` (`keys_display`, capped whole at :4035), `:4242` (option value ids), `:4397` (Shopify userErrors, fenced) |
+| Per-line list, each id already `cap(sanitize_control_chars(...))` (out of scope, D4 b) | `media/_reorder.py:82`, `media/_delete.py:69`, `inventory.py:280`, `inventory.py:503`, `products.py:959` |
+| Shopify-authored or Shopify-validated | `catalog_hygiene.py:3166` (only GIDs matched to the product); `catalog_hygiene.py:4509`, `:4512`, `:4533`, `:4536` (Shopify attribute and value names; the head wraps them); `_resolvers.py:93` (Shopify GIDs; see the held finding); `media/_delete.py:115` (Shopify `deletedMediaIds`, `reflect-exempt`); `discounts.py:151`, `:157`, `:247` (segment names, codes); `products.py:183`, `:248`, `:702`, `:706`; `orders.py:72`, `:121`; `webhooks.py:110`; `media/_list.py:48` |
+| Constant | `publications.py:756`, `:832`, `:949` (constant error strings); `products.py:170`, `:807`, `:881`, `:933`; `catalog_hygiene.py:2104`, `:2113`, `:4470` (enum lists) |
+| Caller text that is not an identifier | `products.py:436`, `:451`, `:456` (SEO fragments), `:837`, `:847`, `:848`, `:849`, `:850` (tags); `_filters.py:348`, `:364` (HTML strip and danger reports) |
+| Not reply text, or another story's scope | `_untrusted.py:785`, `:1007`, `:1066`; `discounts.py:82` (inside the one-line sanitizer); `catalog_hygiene.py:1691` (match key); `catalog_hygiene.py:3396` (log); `products.py:525` (audit-log text); `orders.py:52` (wrapped UTM values); `_response.py:55` (10.90/10.91), `:87` (10.75); `catalog_hygiene.py:3238` (values `repr`'d and `_cap`'d at source) |
+| Line assembly (joins lines already built upstream) | `catalog_hygiene.py:1931`, `:1939`, `:2044`, `:2933`, `:2936`, `:2942`, `:2943`, `:2946`, `:2982`, `:3161`, `:3239`, `:3284`, `:3399`, `:3655`, `:3769`, `:4078`, `:4335`; `products.py:196`, `:227`, `:468`, `:501`, `:576`, `:680`, `:726`, `:788`, `:949`, `:1017`; `inventory.py:154`, `:264`, `:274`, `:338`, `:342`, `:479`, `:487`, `:495`, `:587`; `publications.py:343`, `:627`, `:649`; `collections.py:162`, `:272`, `:331`; `discounts.py:296`; `orders.py:100`; `media/_delete.py:65` (each id scrubbed in `_fmt_line`); `media/_reorder.py:81` (Shopify ids, `reflect-exempt`) |
+
+Notes on the census:
+- The image-binding preview lines (`catalog_hygiene.py:2933`–`:2946`) show caller media ids, but only after `:2871` refused every id not in the product's media set. Each shown id is equal to a Shopify media id.
+- Two hits that the handoff's Appendix B did not name have the same verdict as their class: `discounts.py:82` and `inventory.py:503` (the quantity tool's unresolved variant ids; same shape as `inventory.py:280`). Neither needs a change.
+
+**Fixed: 5 sites.**
+- **F1** `catalog_hygiene.py` `update_product_pricing` with `confirm=True`: "Error: resolved variant(s) not found on product: …". Was no sanitize and no bound (10.103 residual 2). Now each `from_gid(g)` is sanitized and `_cap` bounds the list.
+- **F2** `catalog_hygiene.py` `update_variant_image_binding`: "variant GIDs not on product …: …". Was bounded, not sanitized (10.103 residual 1). Now each id is sanitized inside the `_cap`.
+- **F3** `media/_reorder.py` `reorder_product_media`: "Error: these media ids are not attached to the product: …". Each id was sanitized and capped, the list was not bounded. Now each id is sanitized and `cap` bounds the list (the per-item cap is gone: the outer bound covers a single id too).
+- **F4** `publications.py` `_render_unresolved_names` (the `set_product_publications` refusal): caller names were capped as a list, not sanitized. Now each name is sanitized inside the `cap`.
+- **F5** `publications.py` `_render_failed`: one row per failed channel, rows joined by `"\n"`. The name field was capped, not sanitized. Unresolved caller names reach it in every preview and, because `_channel_write` starts with `apply_failed = list(failed)`, in confirmed `FAILED` results too (product and collection tools). Now the name field is `cap(sanitize_control_chars(...))`. The row format (`  • <name>: <error>`), the `"\n"` separator and the error field (`cap(str(...))`) did not change. The whole block is not bounded or sanitized: that would escape the intended newlines or cut off rows. Shopify names that reach the same rows (apply failures) get the same field treatment.
+
+Ordinary values render byte-for-byte as before: every existing exact-string test passes unmodified, and the ordinary reply of each new row is pinned as literal text captured on 99e2315.
+
+**Guard: `tests/architecture/test_reflection_scrub_guard.py`, still the only guard module.** A new join check finds every `<sep>.join(...)` whose items come from a caller-derived list, wherever the result goes (`+`, an f-string, a return value). Lists are named per function in `_JOINED_LISTS` (`unknown_gids`, `unknown_variant_gids`, `unknown`, `unknown_value_ids`, `failed`), and row fields in `_ROW_FIELD_KEYS` (`channel_name` in `_render_failed`).
+- One line (no newline in the separator): each item must be `sanitize_control_chars(...)` (a per-item bound around it is allowed), and the join must be the only argument of `cap`/`_cap`. The two properties are checked and reported separately.
+- Rows (a newline in the separator): each read of a listed row field must be inside `cap(sanitize_control_chars(...))`. A row join that reads no listed field fails, so a renamed key cannot pass silently. No bound on the whole block is required.
+- Control pairs from the real F1–F5 expressions: each raw form fails for exactly its reason (F1 both; F2 and F4 sanitize only; F3 bound only; F5 the row field), and each fixed form passes. More pairs: a bare `sep.join(name)`, a bound with a raised limit (positional or `limit=`), a list comprehension, a sanitize around the joined text (refused: it is not per item), an unlisted function, log text, a row with a renamed key, and a row that also shows an unscrubbed copy of the field.
+- Floors: the check must see the six one-line joins and the one row join by module and function. The 10.103 subject floor was re-derived on this tree: 110 sites, 13 exempt, 97 scrubbed, unchanged.
+- **What it still does not see (in its docstring):** taint is by name and by scoped entry, so a new helper-returned list under a new name, or a join in a new function, is not seen until it is added; values passed through other variables or functions are not followed (a copied list, a join built in a helper, a joined string bounded later); Shopify-sourced lists that share a listed name are treated as caller lists; the per-line scrubbed lists are not listed; audit-log text is skipped. The 10.103 bullet about helper-returned joins now points at this check.
+
+**Tests (`tests/unit/tools/test_reflection_scrub.py`).** Watched RED on 99e2315 first: 12 unit tests failed for the intended reason, and the guard listed exactly F1–F5 with the expected property each.
+- 8 new `S10103_ROWS` rows, each with an ordinary, an over-long and a CR/LF value (built from escapes), comparing the whole reply and the parsed JSON tail. Each row's runner asserts that every scripted response was read. F1 is driven through `update_product_pricing` with `confirm=True`. F4 is the `set_product_publications(confirm=True)` refusal. F5 has one row per caller-name path: `set_product_publications(confirm=False)`, `publish_product_to_channels(confirm=False)`, `publish_product_to_channels(confirm=True)` (`FAILED —`), `unpublish_product_from_channels(confirm=True)` (`FAILED —`), and `publish_collection_to_channels(confirm=True)` (`FAILED —`, the same `_channel_write`). F3's single-value cases are the existing `media/_reorder:64` row.
+- `test_s10113_many_short_ids_are_bounded_as_a_whole`: for F1–F4, 25 ids (each tool's per-call cap) of 30 characters each, joined past `REFLECT_MAX_LEN`. Each item is short, so only a bound on the joined text keeps the reply short.
+- `test_s10113_two_unresolved_names_stay_on_their_own_rows`: F5 with two CR/LF names; each row stays on its own line, the whole reply compared.
+- `test_s10113_ordinary_value_reply_is_byte_identical_to_before` (8 cases) and the F3 counterpart: literal text from 99e2315.
+
+**Mutation table (on commit `4011def`): 20 mutants, all killed.** Each mutant ran alone, with a SHA-256 restore (proved after each run), `PYTHONDONTWRITEBYTECODE=1` and a cleared `__pycache__`. Each revert ran the full suite; the other mutants ran the six modules that touch these sites (`test_reflection_scrub`, the guard, `test_publications`, `test_catalog_hygiene`, `test_media`, `test_confirmed_output_guard`).
+- **F1:** revert fails the guard, the F1 CR/LF and over-long rows, and the F1 many-ids case. Cap-only fails the guard and the CR/LF row. Sanitize-only fails the guard, the over-long row and the many-ids case.
+- **F2:** the revert is the cap-only form (`_cap` without sanitize); both fail the guard and the F2 CR/LF row. Sanitize-only fails the guard, the over-long row and the many-ids case.
+- **F3:** the revert is the "keep per-item cap, drop the outer bound" form; both fail the guard and only the F3 many-ids case. This is expected: before the fix each id was already scrubbed, so a single long or CR/LF id was safe, and only the joined list was open. Cap-only fails the guard and the CR/LF row. Sanitize-only fails the guard, the over-long row and the many-ids case.
+- **F4:** the revert is the cap-only form; both fail the guard and the F4 CR/LF row. Sanitize-only fails the guard, the over-long row, the many-ids case and the existing `test_set_unresolved_name_refusal_is_capped` (same site).
+- **F5:** the revert is the cap-only form; both fail the guard, the five F5 CR/LF rows and the two-row case. An extra sanitize-only mutant fails the guard, the five F5 over-long rows and the existing `test_failed_channel_lines_cap_an_oversized_caller_channel_name` (same site).
+- **Guard, join rule removed:** the F1–F4 control pairs and the join-shapes pair fail. Extra mutants: dropping only the per-item sanitize property fails the F1, F2 and F4 pairs and the shapes pair; dropping only the outer-bound property fails the F1 and F3 pairs and the shapes pair.
+- **Guard, row-field rule removed:** the F5 pair and the row-field pair fail.
+- No mutant fails a test of another site.
+
+**Held finding (D13), not in scope.** `_resolvers.py`'s `ValueError` messages (:91, :95, also :34) include `{stripped!r}` (the caller SKU, `repr`-escaped, no length bound) and `{product_gid}`. Not checked: whether they reach a reply, whether a caller layer bounds them, and whether `product_gid` is caller text there. Held, not in scope for this story. No card filed (Robert, 2026-11-14).
 
 ---
 
@@ -88,10 +149,10 @@ Trello: https://trello.com/c/48SvkwSI (Story 10.103, Epic 10). A residual of Sto
 **Mutation table, review round 3 fix delta (from `cd8e8ea`): 2 lines × 3 mutants = 6, all killed.** Same method. The guard does not see these lines, so the rows hold them. At the media-ids line the revert is the old `_cap` without sanitize, so it fails the CR/LF row as cap-only does; sanitize-only fails the over-long row. At the option-value-ids line a revert fails both rows, cap-only the CR/LF row and sanitize-only the over-long row. No mutant fails a test of another site.
 
 **Review round 4, the last round (fix delta from `cd8e8ea`, same three skills).** Security: no findings. Standards: one Low declined (the two scrubbed joins write the same expression; two sites are below the bar for a helper). Its Medium, that the census line read as if tags were safe, is corrected in the census line above. The Spec review found the class a fourth time, confirmed by probe: two more caller-id joins, built with `+`, which the census did not see. Round 4 was the cap, so no fix was made. **Robert chose (2026-11-06): record them as residuals, not fix them in this story.**
-- **Residual 1:** `catalog_hygiene.py` `update_variant_image_binding`, "variant GIDs not on product …: " `+ _cap(", ".join(from_gid(g) for g in unknown_variant_gids))`. It is bounded but not sanitized. A variantId `gid://shopify/ProductVariant/999` followed by CR/LF and text forges a line.
-- **Residual 2:** `catalog_hygiene.py` `update_product_pricing` with `confirm=True`, "Error: resolved variant(s) not found on product: " `+ ", ".join(from_gid(g) for g in unknown_gids)`. No bound and no sanitize. The same payload forges a line. The preview path is scrubbed; the row covers only the preview.
-- **Not checked:** two other `+` joins, `catalog_hygiene.py` `truncated_variants` (the image-binding CONFIRMED line) and `media/_reorder.py`'s "not attached to the product" list. Whether they hold caller values is not established. A follow-up should sweep every join, whatever the way it is built (`+`, f-string, a `tail=` argument).
-- **AC 1 is therefore not met at the two residual sites.** Both stay defense-in-depth, as for the rest of this story: the caller already knows what it sent.
+- **Residual 1:** `catalog_hygiene.py` `update_variant_image_binding`, "variant GIDs not on product …: " `+ _cap(", ".join(from_gid(g) for g in unknown_variant_gids))`. It is bounded but not sanitized. A variantId `gid://shopify/ProductVariant/999` followed by CR/LF and text forges a line. **Closed by Story 10.113** (2026-11-14 entry above).
+- **Residual 2:** `catalog_hygiene.py` `update_product_pricing` with `confirm=True`, "Error: resolved variant(s) not found on product: " `+ ", ".join(from_gid(g) for g in unknown_gids)`. No bound and no sanitize. The same payload forges a line. The preview path is scrubbed; the row covers only the preview. **Closed by Story 10.113** (2026-11-14 entry above).
+- **Not checked:** two other `+` joins, `catalog_hygiene.py` `truncated_variants` (the image-binding CONFIRMED line) and `media/_reorder.py`'s "not attached to the product" list. Whether they hold caller values is not established. A follow-up should sweep every join, whatever the way it is built (`+`, f-string, a `tail=` argument). **Done by Story 10.113** (2026-11-14 entry above): `truncated_variants` holds only GIDs matched to the product (excluded), and the reorder list was fixed (F3).
+- **AC 1 is therefore not met at the two residual sites.** Both stay defense-in-depth, as for the rest of this story: the caller already knows what it sent. Both sites are fixed by Story 10.113 (2026-11-14 entry above).
 - **Spec Low, accepted:** the option-value list in `update_product_options` is now bounded at 200 as a whole, so a reply with many ordinary unknown ids ends inside an id, with no "(truncated)" marker. That marker is the 10.75 residual that stays OUT.
 
 **Mutation table, first pass (the implementation commit plus the written-path `Target loc` line): 24 scrub lines × 3 mutants = 72, all killed.** Each mutant ran alone, with a SHA-256 restore, `PYTHONDONTWRITEBYTECODE=1` and a cleared `__pycache__`. A revert (the raw value) ran the full suite; a cap-only or sanitize-only half-scrub ran the two test modules. The baseline had no failures.
