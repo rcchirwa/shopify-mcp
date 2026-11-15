@@ -1848,7 +1848,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         pid_arg, handle_arg, product_ref = _identifier_channel(product_id, handle)
         # Story 10.108's shared rule, so a bad GID on `product_id` keeps its
         # pre-9.29 message. A handle passes; `_resolve_product` adjudicates it.
-        pid_error = product_id_error(pid_arg) if pid_arg else None
+        # Skipped when `handle` is also set, so "not both" wins, as it does in
+        # `identifier_error`.
+        pid_error = product_id_error(pid_arg) if pid_arg and not handle_arg else None
         if pid_error:
             return _render(f"Error: {pid_error}", _err_payload(pid_error))
         try:

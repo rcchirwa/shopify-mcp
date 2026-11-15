@@ -1176,7 +1176,7 @@ def test_pricing_both_identifiers_refused_before_any_call():
 def test_pricing_neither_identifier_refused_before_any_call():
     tools, fc = _build([])
     out = tools["update_product_pricing"](variants=[{"variantId": "201", "price": "49.99"}])
-    assert out.startswith("Error:")
+    assert out.startswith("Error: product_id must be a non-empty string")
     assert fc.calls == []
     assert _parse_tail(out)["ok"] is False
 
@@ -1194,16 +1194,36 @@ def test_pricing_unknown_handle_is_a_structured_error():
     assert tail["errors"][0]["message"] == "No product found with id nope-handle."
 
 
-@pytest.mark.parametrize("kwarg", ["product_id", "handle"])
-def test_pricing_gid_of_another_type_refused_on_either_channel(kwarg):
+@pytest.mark.parametrize(
+    ("kwarg", "message"),
+    [
+        # Story 10.108's shared constant on product_id.
+        ("product_id", "Error: product_id must be a numeric ID or a full Product GID"),
+        # The resolver's own refusal on the handle channel.
+        ("handle", "Error: product_id must be a numeric ID, Product GID, or handle"),
+    ],
+)
+def test_pricing_gid_of_another_type_refused_on_either_channel(kwarg, message):
     tools, fc = _build([])
     out = tools["update_product_pricing"](
         **{kwarg: "gid://shopify/ProductVariant/201"},
         variants=[{"variantId": "201", "price": "49.99"}],
     )
-    assert out.startswith("Error:")
+    assert out.startswith(message)
     assert fc.calls == []
     assert _parse_tail(out)["ok"] is False
+
+
+def test_pricing_both_refusal_wins_over_a_wrong_type_gid():
+    # The "not both" diagnosis comes first, as in `identifier_error`.
+    tools, fc = _build([])
+    out = tools["update_product_pricing"](
+        "gid://shopify/ProductVariant/1",
+        handle="cool-tee",
+        variants=[{"variantId": "201", "price": "49.99"}],
+    )
+    assert out.startswith("Error: Supply product_id or handle, not both")
+    assert fc.calls == []
 
 
 def test_pricing_handle_read_failure_is_guarded():
