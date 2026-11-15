@@ -43,7 +43,6 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from shopify_mcp.client import ShopifyClient, unfenced_message
-from shopify_mcp.shopify import _ids
 from shopify_mcp.shopify._identifiers import is_supplied
 from shopify_mcp.shopify.operations import catalog_hygiene as ops
 from shopify_mcp.shopify.queries.catalog_hygiene import (
@@ -56,6 +55,7 @@ from shopify_mcp.shopify.queries.catalog_hygiene import (
     GET_PRODUCT_TYPE,
     GET_PRODUCT_TYPE_BY_HANDLE,
     GET_PRODUCT_VARIANTS_FOR_PRICING,
+    GET_PRODUCT_VARIANTS_FOR_PRICING_BY_HANDLE,
     GET_PRODUCT_VENDOR,
     GET_PRODUCT_VENDOR_BY_HANDLE,
     METAFIELDS_DELETE_MUTATION,
@@ -77,7 +77,7 @@ from shopify_mcp.shopify.queries.catalog_hygiene import (
 from shopify_mcp.tools._annotations import ADD, OVERWRITE, READ_ONLY
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
-from shopify_mcp.tools._product_resolver import _resolve_product
+from shopify_mcp.tools._product_resolver import _resolve_product, product_id_error
 from shopify_mcp.tools._resolvers import resolve_variant_ids_with_variants
 from shopify_mcp.tools._response import (
     extract_user_errors,
@@ -108,6 +108,7 @@ __all__ = [
     "GET_PRODUCT_TYPE",
     "GET_PRODUCT_TYPE_BY_HANDLE",
     "GET_PRODUCT_VARIANTS_FOR_PRICING",
+    "GET_PRODUCT_VARIANTS_FOR_PRICING_BY_HANDLE",
     "GET_PRODUCT_VENDOR",
     "GET_PRODUCT_VENDOR_BY_HANDLE",
     "METAFIELDS_DELETE_MUTATION",
@@ -1796,9 +1797,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
     @server.tool(annotations=OVERWRITE)
     def update_product_pricing(
-        product_id: str,
+        product_id: str = "",
+        *,
         variants: list[dict[str, Any]],
         confirm: bool = False,
+        handle: str = "",
     ) -> str:
         """
         Update price and/or compareAtPrice on one or more variants of a
@@ -1813,42 +1816,59 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         `{ok, variants[{id, sku, price, compareAtPrice}], errors[]}` per
         the spec.
 
-        product_id: numeric ID or GID. Handle-based resolution is not
-        supported in Story 9.3 — pass a numeric ID or GID.
+        product_id: Numeric ID, GID, or handle. A bare number here always
+            means a product ID — pass an all-digit *handle* (e.g. '2024')
+            via `handle` instead.
+        handle: Unambiguous by-handle channel — bare digits here always
+            mean a handle. Supply this *or* `product_id`, never both: a call
+            that names a product twice is refused before any network call.
         """
         # ---- Validate inputs --------------------------------------------
         try:
             entries = _normalize_entries(variants)
-            # Story 10.108: a full Product GID passes through; another type is refused here.
-            product_gid = _ids.product_gid(product_id)
         except ValueError as exc:
             return _render(f"Error: {cap(str(exc))}", _err_payload(cap(unfenced_message(exc))))
 
-        # ---- Read existing pricing state (one round-trip) ---------------
-        # Wide read pulls id+sku+price+compareAtPrice in one call. The same
-        # variants list feeds both SKU resolution and the old→new preview.
+        # ---- Resolve the product and read its pricing state -------------
+        # Story 9.29: one round-trip for every identifier form. The resolver
+        # runs the by-id read for a numeric ID or Product GID, and the
+        # by-handle twin for a handle; both share one selection set, so the
+        # same variants list feeds SKU resolution and the old→new preview.
+        # A wrong-type GID on `product_id` is refused by `product_id_error`
+        # below (Story 10.108 text). The resolver raises ValueError on other
+        # bad input (both identifiers, a wrong-type GID on `handle`) before any
+        # network call, rendered as "Error: ...". Any other exception is a read
+        # failure.
         #
         # Story 10.67 (SEC-27) added the guard. An unguarded ops call lets the
         # raw exception escape to FastMCP, which renders it uncapped — bypassing
-        # every reflection cap in this module. Capping the two local-validation
-        # sites above while leaving this open would have been a half-fix.
-        # Deliberate contract change: this tool now returns a structured error
-        # where it previously raised, matching every sibling.
-        #
-        # An earlier revision of this comment called it "the only product read
-        # in the module not wrapped". That was wrong — the round-2 review found
-        # three unguarded `ops.*` calls, two of them in
-        # `update_variant_image_binding`. `test_s1067_every_ops_call_in_
-        # catalog_hygiene_is_exception_guarded` now walks the AST so the claim
-        # is enforced rather than asserted; don't restate it in prose here.
+        # every reflection cap in this module.
+        # `test_s1067_every_ops_call_in_catalog_hygiene_is_exception_guarded`
+        # walks the AST so the claim is enforced rather than asserted; don't
+        # restate it in prose here.
+        pid_arg, handle_arg, product_ref = _identifier_channel(product_id, handle)
+        # Story 10.108's shared rule, so a bad GID on `product_id` keeps its
+        # pre-9.29 message. A handle passes; `_resolve_product` adjudicates it.
+        # Skipped when `handle` is also set, so "not both" wins, as it does in
+        # `identifier_error`.
+        pid_error = product_id_error(pid_arg) if pid_arg and not handle_arg else None
+        if pid_error:
+            return _render(f"Error: {pid_error}", _err_payload(pid_error))
         try:
-            data = ops.read_variants_for_pricing(client, product_gid)
+            product_gid, product = _resolve_product(
+                client,
+                pid_arg,
+                handle=handle_arg,
+                query_by_id=GET_PRODUCT_VARIANTS_FOR_PRICING,
+                query_by_handle=GET_PRODUCT_VARIANTS_FOR_PRICING_BY_HANDLE,
+            )
+        except ValueError as exc:
+            return _render(f"Error: {cap(str(exc))}", _err_payload(cap(unfenced_message(exc))))
         except Exception as exc:
             msg = f"Error reading variants ({type(exc).__name__}): {cap(str(exc))}"
             return _render(msg, _err_payload(cap(unfenced_message(exc))))
-        product = (data or {}).get("product")
-        if not product:
-            msg = f"No product found with id {cap(sanitize_control_chars(product_id))}."
+        if not product_gid:
+            msg = f"No product found with id {cap(sanitize_control_chars(product_ref))}."
             return _render(msg, _err_payload(msg))
 
         title = product.get("title", "")
@@ -1906,7 +1926,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                     f"    • id: {cap(sanitize_control_chars(from_gid(gid)))} — (variant not found on product)"
                 )
                 not_found_messages.append(
-                    f"variant {cap(sanitize_control_chars(from_gid(gid)))} not found on product {cap(sanitize_control_chars(product_id))}"
+                    f"variant {cap(sanitize_control_chars(from_gid(gid)))} not found on product {cap(sanitize_control_chars(product_ref))}"
                 )
                 continue
 
@@ -1935,7 +1955,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         warning_block = f"\n{at_cap_warning}" if at_cap_warning else ""
         preview = (
             f"PREVIEW — Product pricing update\n"
-            f"  Product : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
+            f"  Product : {title} (id: {cap(sanitize_control_chars(product_ref))})\n"
             f"  Targets ({len(entries)}):\n" + "\n".join(preview_lines) + warning_block
         )
 
@@ -1965,11 +1985,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if all_match:
             log_write(
                 "update_product_pricing",
-                f"product={product_id} variants={len(entries)} no-op",
+                f"product={product_ref} variants={len(entries)} no-op",
             )
             head = (
                 f"CONFIRMED — Product pricing update (no-op)\n"
-                f"  Product : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
+                f"  Product : {title} (id: {cap(sanitize_control_chars(product_ref))})\n"
                 f"  Targets : {len(entries)} (all already at target values)"
                 f"{warning_block}"
             )
@@ -2051,11 +2071,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         log_write(
             "update_product_pricing",
-            f"product={product_id} variants={len(entries)}",
+            f"product={product_ref} variants={len(entries)}",
         )
         head = (
             f"CONFIRMED — Product pricing update\n"
-            f"  Product : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
+            f"  Product : {title} (id: {cap(sanitize_control_chars(product_ref))})\n"
             f"  Updated ({len(updated)}):\n{updated_lines}"
             f"{warning_block}"
         )

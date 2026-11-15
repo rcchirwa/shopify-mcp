@@ -183,6 +183,8 @@ def _assert_reply(out: str, head: str, tail: bool) -> None:
 _PRODUCER_BOUND = {
     "catalog_hygiene:2620 update_variant_image_binding": 200,
     "catalog_hygiene:2640 update_variant_image_binding page 2": 200,
+    # Story 9.29: the pricing tool now echoes `_identifier_channel`'s `product_ref`.
+    "catalog_hygiene:1689 update_product_pricing": 200,
 }
 
 
@@ -493,7 +495,7 @@ S10103_ROWS = [
     _Row("post-lookup media update_product_media", lambda v: _build_media([_product_media_read([_media_node(MEDIA_A)])])[0]["update_product_media"](product_id=v, media_id=MEDIA_A, alt="x"), _PID, **_trailing(_PID)),
     _Row("post-lookup media delete_product_media", lambda v: _build_media([_product_media_read([_media_node(MEDIA_A)])])[0]["delete_product_media"](product_id=v, media_ids=[MEDIA_A]), _PID, **_trailing(_PID)),
     _Row("post-lookup collections handle", lambda v: _build_collections([_manual_collection()])[0]["add_product_to_collection"](handle=v, product_id="4242"), "vanish", **_trailing("vanish")),
-    _Row("post-lookup catalog_hygiene update_product_pricing", lambda v: _build_hygiene([_read_response()])[0]["update_product_pricing"](v, variants=[{"variantId": "gid://shopify/ProductVariant/201", "price": "49.99"}]), _PID, tail=True, **_trailing(_PID)),
+    _Row("post-lookup catalog_hygiene update_product_pricing", lambda v: _build_hygiene([_read_response()])[0]["update_product_pricing"](v, variants=[{"variantId": "gid://shopify/ProductVariant/201", "price": "49.99"}]), _PID, tail=True, shown=lambda v: v[:200], **_trailing(_PID)),
     # Review round 2: `product_ref` (`_identifier_channel` caps it at 200, but did not sanitize it).
     _Row("catalog_hygiene:2976 image binding preview product_ref", lambda v: _build_hygiene([_s96_combined_response([_S96_MEDIA_1], [(_S96_VARIANT_A, "sku-a", [])])])[0]["update_variant_image_binding"](product_id=v, **_BINDING), _PID, tail=True, shown=lambda v: v[:200]),
     _Row("catalog_hygiene:2858 image binding variant not on product", lambda v: _build_hygiene([_s96_combined_response([_S96_MEDIA_1], [(_S96_VARIANT_A, "sku-a", [])])])[0]["update_variant_image_binding"](product_id=v, variant_media=[{"variantId": "gid://shopify/ProductVariant/999", "mediaIds": [_S96_MEDIA_1]}]), _PID, tail=True, shown=lambda v: v[:200]),

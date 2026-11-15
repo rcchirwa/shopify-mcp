@@ -22,17 +22,40 @@ VARIANT_MEDIA_RESPONSE_CAP = 100
 # GraphQL — Story 9.3 (update_product_pricing)
 # ---------------------------------------------------------------------------
 
-GET_PRODUCT_VARIANTS_FOR_PRICING = """
-query GetProductVariantsForPricing($id: ID!) {
-  product(id: $id) {
-    id
-    title
-    variants(first: 250) {
-      nodes { id sku price compareAtPrice }
-    }
+# The by-id and by-handle reads share one selection set via the
+# ``ProductVariantsForPricingFields`` fragment (Story 9.29), so a handle input
+# still costs one round-trip and the two reads cannot drift.
+PRODUCT_VARIANTS_FOR_PRICING_FIELDS = """
+fragment ProductVariantsForPricingFields on Product {
+  id
+  title
+  variants(first: 250) {
+    nodes { id sku price compareAtPrice }
   }
 }
 """
+
+GET_PRODUCT_VARIANTS_FOR_PRICING = (
+    PRODUCT_VARIANTS_FOR_PRICING_FIELDS
+    + """
+query GetProductVariantsForPricing($id: ID!) {
+  product(id: $id) {
+    ...ProductVariantsForPricingFields
+  }
+}
+"""
+)
+
+GET_PRODUCT_VARIANTS_FOR_PRICING_BY_HANDLE = (
+    PRODUCT_VARIANTS_FOR_PRICING_FIELDS
+    + """
+query GetProductVariantsForPricingByHandle($handle: String!) {
+  productByHandle(handle: $handle) {
+    ...ProductVariantsForPricingFields
+  }
+}
+"""
+)
 
 UPDATE_PRODUCT_VARIANTS_PRICING = """
 mutation UpdateProductVariantsPricing(
