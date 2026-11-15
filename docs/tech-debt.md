@@ -167,6 +167,25 @@ An ordinary single value renders byte-for-byte as before: every existing exact-s
 
 ---
 
+## 2026-11-14 — Story 10.96: the live webhook runner no longer exits silently when it never learns the subscription id
+
+Trello: https://trello.com/c/CvAAtI35 (Story 10.96, Epic 10). A residual of Story 9.21. Review finding, not observed live. `tests/live/test_webhooks.py` cleaned up by subscription id only. Two paths created a subscription and never gave the runner its id: (a) the confirmed output said `Subscription ID : (unknown)`, so `_extract_subscription_id` called `_fail` and the runner exited with cleanup not armed; (b) `register_webhook(confirm=True)` raised after Shopify created the subscription. In both cases a live webhook could keep firing at the test endpoint with no message to the operator.
+
+**Decision (Robert, 2026-11-14): approach 3.** When the id is unknown, print a manual-cleanup instruction. The runner never deletes in this case. It cannot tell the subscription it made from any other one, and the card rules out deleting one the runner did not create.
+
+**Changed (test-only file, outside pytest collection and mypy; only ruff gates it):**
+- The round-trip control flow (Steps 1-6 and the `finally` block) moved out of `main()` into a module-level helper, `run_round_trip(list_webhooks, register_webhook, delete_webhook, test_endpoint)`. `main()` keeps the guards (`require_opt_in`, `require_endpoint`, `ShopifyClient()`, `require_development_store`, tool capture), calls the helper, then prints `All webhook tests passed.` Live behaviour of `main()` does not change. Offline tests call the helper with recording fakes.
+- A "created, id unknown" state is armed BEFORE `register_webhook(confirm=True)` and disarmed once an id parses. If the state is still armed when the `finally` block runs, the runner prints `MANUAL CLEANUP REQUIRED`, which names topic `PRODUCTS_UPDATE` and the exact endpoint and says a subscription may exist, calls no delete, and exits with code 1.
+- Two unknown-id paths: (a) id-less confirmed output (`_fail` as before, then the manual-cleanup output); (b) `register_webhook(confirm=True)` raises (the error is printed with `_fail`, then the manual-cleanup output).
+
+**Known-id behaviour is unchanged, and the tests pin it.** A successful Step 5 makes one delete call and prints no `CLEANUP` line. A failed Step 5 (reply without `CONFIRMED —`) calls `_fail`, then the `finally` block tries the delete once more: two delete calls in total, then `CLEANUP done.` or `CLEANUP FAILED (manual deletion required for id=…)`. Both retry replies are tested.
+
+**Card step 4 is partly N/A by Robert's ruling (2026-11-14).** Its "0, 1 and 2 matching subscriptions" cases belong to the list-matching approaches 1 and 2. Approach 3 builds no list matching, so those cases do not exist. The id-less, raise-after-create and `Error: …` delete cases are covered offline.
+
+**Tests** (`tests/unit/test_live_webhooks_guards.py`): fakes record every call; none builds a real `ShopifyClient`, calls `main()` or touches the network. Mutants M1-M6 (do not arm; delete in the fallback; omit the endpoint; exit 0 in the fallback; disarm on a failed Step 5; disarm before the Step 5 check) each fail at least one test.
+
+---
+
 ## 2026-11-05 — Story 10.103: caller ids echoed in other wordings, found by subject (closes `SEC-24-other-wordings`, with two residuals: see review round 4)
 
 Trello: https://trello.com/c/48SvkwSI (Story 10.103, Epic 10). A residual of Story 10.75 (below). Defense-in-depth, not a live defect: the caller already knows what it sent, so nothing leaks. The risk is a flood of text and a CR/LF-forged second line in model context.

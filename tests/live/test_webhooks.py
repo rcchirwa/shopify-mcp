@@ -49,6 +49,8 @@ ENDPOINT_ENV_VAR = "WEBHOOK_RECEIVER_URL"
 
 TEST_TOPIC = "PRODUCTS_UPDATE"
 
+MANUAL_CLEANUP_MARKER = "MANUAL CLEANUP REQUIRED"
+
 SHOP_PLAN_QUERY = """
 query {
   shop {
@@ -139,19 +141,27 @@ def _extract_subscription_id(output: str) -> str:
     return m.group(1)
 
 
-def main():
-    require_opt_in()
-    test_endpoint = require_endpoint()
-    client = ShopifyClient()
-    require_development_store(client)
+def _print_manual_cleanup(endpoint: str) -> None:
+    """Tell the operator to delete by hand a subscription that may exist.
 
-    capture = _Capture()
-    webhooks_module.register(capture, client)
+    Story 10.96. Used when ``register_webhook(confirm=True)`` may have created
+    the subscription but the runner never learned its id. Without an id the
+    runner cannot tell this subscription from any other one on the store, so
+    it never deletes: it names the topic and the exact endpoint instead.
+    """
+    print(
+        f"{MANUAL_CLEANUP_MARKER}: a {TEST_TOPIC} webhook subscription pointing at "
+        f"{endpoint} may exist on the store. This runner did not learn its id and "
+        f"deletes nothing it cannot identify. Run list_webhooks, find the "
+        f"subscription with topic {TEST_TOPIC} and endpoint {endpoint}, and delete it "
+        f"with delete_webhook if it is there."
+    )
 
-    list_webhooks = capture.tools["list_webhooks"]
-    register_webhook = capture.tools["register_webhook"]
-    delete_webhook = capture.tools["delete_webhook"]
 
+def run_round_trip(list_webhooks, register_webhook, delete_webhook, test_endpoint):
+    """Steps 1-6 and the cleanup ``finally`` block, with the three webhook tools
+    and the endpoint passed in so offline tests can drive them with fakes.
+    """
     print("Step 1 — list_webhooks (baseline)")
     baseline = list_webhooks()
     if not isinstance(baseline, str):
@@ -167,9 +177,19 @@ def main():
 
     sub_id = None
     needs_cleanup = False
+    # Story 10.96: "created, id unknown". Armed BEFORE register_webhook(confirm=True)
+    # because that call can create the subscription and then raise, or return
+    # output with no parseable id. Either way no id reaches `sub_id`, so cleanup
+    # by id cannot run; the `finally` block prints a manual-cleanup instruction
+    # instead. Disarmed as soon as an id is parsed.
+    created_id_unknown = False
     try:
         print("Step 3 — register_webhook confirm=True")
-        created = register_webhook(topic=TEST_TOPIC, endpoint_url=test_endpoint, confirm=True)
+        created_id_unknown = True
+        try:
+            created = register_webhook(topic=TEST_TOPIC, endpoint_url=test_endpoint, confirm=True)
+        except Exception as e:
+            _fail("Step 3", f"register_webhook(confirm=True) raised {type(e).__name__}: {e}")
         # Extract the subscription id and arm cleanup BEFORE asserting on the
         # confirmed-label shape below. If the subscription was actually
         # created, it must be cleaned up regardless of whether the label
@@ -177,6 +197,7 @@ def main():
         # "Done. PREVIEW — ..." defect Story 9.21 fixed) must never strand a
         # live webhook by exiting before this point.
         sub_id = _extract_subscription_id(created)
+        created_id_unknown = False
         needs_cleanup = True
         print(f"  Created subscription id: {sub_id}")
         # Story 9.21: the confirmed label is "CONFIRMED — ...", not
@@ -214,6 +235,9 @@ def main():
         print("Step 6 PASSED.\n")
 
     finally:
+        if created_id_unknown:
+            _print_manual_cleanup(test_endpoint)
+            sys.exit(1)
         if needs_cleanup and sub_id:
             print(f"CLEANUP — deleting leftover test webhook {sub_id}...")
             try:
@@ -232,6 +256,22 @@ def main():
             except Exception as e:
                 print(f"CLEANUP FAILED (manual deletion required for id={sub_id}): {e}")
 
+
+def main():
+    require_opt_in()
+    test_endpoint = require_endpoint()
+    client = ShopifyClient()
+    require_development_store(client)
+
+    capture = _Capture()
+    webhooks_module.register(capture, client)
+
+    run_round_trip(
+        capture.tools["list_webhooks"],
+        capture.tools["register_webhook"],
+        capture.tools["delete_webhook"],
+        test_endpoint,
+    )
     print("All webhook tests passed.")
 
 
