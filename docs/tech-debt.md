@@ -8,6 +8,23 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-11-14 — Story 10.101: error classes moved to `shopify_mcp.errors`; operations layer no longer loads `tools`
+
+**Defect.** `shopify.operations.publications` imported `ShopifyError` and `TransientShopifyError` from `shopify_mcp.client`. `client` imports `shopify_mcp.tools._http`, `_scrub`, `_untrusted` and `_url_safety`, so importing an operations module loaded `shopify_mcp.tools` and four submodules. The typed operations layer is meant to be callable without the MCP tools layer (Story 10.30 / A5, AC4).
+
+**Why the existing guard missed it.** `tests/architecture/test_layering.py` reads each file's import statements with an AST. The path is two hops (operations -> `client` -> `tools`), and no single file shows both edges, so the AST test passes. It stays unchanged and passing.
+
+**Change (approach 2, D1/D2).**
+- New `src/shopify_mcp/errors.py` holds `_CarriesUnfenced`, `ShopifyError`, `ShopifyProtocolError`, `ShopifyTransportError`, `TransientShopifyError` and `unfenced_message`. It imports nothing from `shopify_mcp.client` or `shopify_mcp.tools`.
+- `client.py` re-exports all six names. Every existing `from shopify_mcp.client import ...` keeps working and gets the identical object. `_upstream_error` stays in `client.py` because it calls `wrap_reflected`.
+- `operations/publications.py` imports from `shopify_mcp.errors`.
+
+**New guard.** `tests/architecture/test_operations_import_isolation.py` imports each `shopify_mcp.shopify.operations.*` module in a fresh interpreter and fails if any `shopify_mcp.tools` module was loaded. It also checks that `errors` loads neither `client` nor `tools`, that each of the six names is the same object through both paths, and that the hierarchy is unchanged. A control case shows the probe does see `tools` when `client` is imported. The check runs at run time, so it catches a transitive path of any length. It checks operations modules only. A new top-level package that imports `client` is not covered.
+
+**Residual.** New operations code must import errors from `shopify_mcp.errors`, not from `client`. The guard fails if it does not.
+
+---
+
 ## 2026-11-05 — Story 10.103: caller ids echoed in other wordings, found by subject (closes `SEC-24-other-wordings`, with two residuals: see review round 4)
 
 Trello: https://trello.com/c/48SvkwSI (Story 10.103, Epic 10). A residual of Story 10.75 (below). Defense-in-depth, not a live defect: the caller already knows what it sent, so nothing leaks. The risk is a flood of text and a CR/LF-forged second line in model context.
