@@ -1090,6 +1090,136 @@ def test_tail_product_not_found_marks_ok_false():
     assert tail["errors"][0]["message"] == "No product found with id 100."
 
 
+# Story 9.29: handle support (closes Story 9.3 AC 1) ---------------------------
+
+
+def _read_by_handle_response():
+    return {"productByHandle": _read_response()["product"]}
+
+
+@pytest.mark.parametrize("product_id", ["100", "gid://shopify/Product/100"])
+def test_pricing_numeric_and_gid_make_one_by_id_read(product_id):
+    tools, fc = _build([_read_response()])
+    out = tools["update_product_pricing"](
+        product_id, variants=[{"variantId": "201", "price": "49.99"}]
+    )
+    assert "PREVIEW — Product pricing update" in out
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == catalog_hygiene.GET_PRODUCT_VARIANTS_FOR_PRICING
+    assert fc.calls[0][1] == {"id": "gid://shopify/Product/100"}
+
+
+def test_pricing_handle_on_product_id_resolves_in_one_read():
+    tools, fc = _build([_read_by_handle_response()])
+    out = tools["update_product_pricing"](
+        "cool-tee", variants=[{"variantId": "201", "price": "49.99"}]
+    )
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == catalog_hygiene.GET_PRODUCT_VARIANTS_FOR_PRICING_BY_HANDLE
+    assert fc.calls[0][1] == {"handle": "cool-tee"}
+    assert "PREVIEW — Product pricing update" in out
+    assert "Test Product (id: cool-tee)" in out
+    assert "price: 39.99 → 49.99" in out
+    assert _parse_tail(out)["ok"] is True
+
+
+def test_pricing_handle_confirm_writes_to_the_resolved_gid():
+    tools, fc = _build(
+        [
+            _read_by_handle_response(),
+            _mutation_ok(
+                [
+                    {
+                        "id": "gid://shopify/ProductVariant/201",
+                        "sku": "SKU-A",
+                        "price": "49.99",
+                        "compareAtPrice": "50.00",
+                    }
+                ]
+            ),
+        ]
+    )
+    out = tools["update_product_pricing"](
+        "cool-tee", variants=[{"variantId": "SKU-A", "price": "49.99"}], confirm=True
+    )
+    assert len(fc.calls) == 2
+    assert fc.calls[1][1]["productId"] == "gid://shopify/Product/100"
+    assert fc.calls[1][1]["variants"] == [
+        {"id": "gid://shopify/ProductVariant/201", "price": "49.99"}
+    ]
+    assert _parse_tail(out)["ok"] is True
+
+
+def test_pricing_numeric_handle_on_handle_kwarg_is_a_handle():
+    # Story 10.64: bare digits on the handle channel always mean a handle.
+    tools, fc = _build([_read_by_handle_response()])
+    out = tools["update_product_pricing"](
+        handle="2024", variants=[{"variantId": "201", "price": "49.99"}]
+    )
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == catalog_hygiene.GET_PRODUCT_VARIANTS_FOR_PRICING_BY_HANDLE
+    assert fc.calls[0][1] == {"handle": "2024"}
+    assert "Test Product (id: 2024)" in out
+
+
+def test_pricing_both_identifiers_refused_before_any_call():
+    tools, fc = _build([])
+    out = tools["update_product_pricing"](
+        "100", handle="cool-tee", variants=[{"variantId": "201", "price": "49.99"}]
+    )
+    assert out.startswith("Error:")
+    assert "not both" in out
+    assert fc.calls == []
+    assert _parse_tail(out)["ok"] is False
+
+
+def test_pricing_neither_identifier_refused_before_any_call():
+    tools, fc = _build([])
+    out = tools["update_product_pricing"](variants=[{"variantId": "201", "price": "49.99"}])
+    assert out.startswith("Error:")
+    assert fc.calls == []
+    assert _parse_tail(out)["ok"] is False
+
+
+def test_pricing_unknown_handle_is_a_structured_error():
+    tools, fc = _build([{"productByHandle": None}])
+    out = tools["update_product_pricing"](
+        "nope-handle", variants=[{"variantId": "201", "price": "49.99"}], confirm=True
+    )
+    assert len(fc.calls) == 1
+    assert fc.calls[0][0] == catalog_hygiene.GET_PRODUCT_VARIANTS_FOR_PRICING_BY_HANDLE
+    assert out.startswith("No product found with id nope-handle.")
+    tail = _parse_tail(out)
+    assert tail["ok"] is False
+    assert tail["errors"][0]["message"] == "No product found with id nope-handle."
+
+
+@pytest.mark.parametrize("kwarg", ["product_id", "handle"])
+def test_pricing_gid_of_another_type_refused_on_either_channel(kwarg):
+    tools, fc = _build([])
+    out = tools["update_product_pricing"](
+        **{kwarg: "gid://shopify/ProductVariant/201"},
+        variants=[{"variantId": "201", "price": "49.99"}],
+    )
+    assert out.startswith("Error:")
+    assert fc.calls == []
+    assert _parse_tail(out)["ok"] is False
+
+
+def test_pricing_handle_read_failure_is_guarded():
+    class _Boom(FakeClient):
+        def execute(self, query, variables=None):
+            raise RuntimeError("network down")
+
+    srv = CapturingServer()
+    catalog_hygiene.register(srv, _Boom([]))
+    out = srv.tools["update_product_pricing"](
+        "cool-tee", variants=[{"variantId": "201", "price": "49.99"}]
+    )
+    assert out.startswith("Error reading variants (RuntimeError): network down")
+    assert _parse_tail(out)["ok"] is False
+
+
 def test_tail_resolver_error_pass_through():
     # Unknown SKU after the read → resolver error → tail mirrors the message.
     tools, _ = _build([_read_response()])

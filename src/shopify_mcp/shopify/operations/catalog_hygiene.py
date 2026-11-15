@@ -22,7 +22,6 @@ from shopify_mcp.shopify.queries.catalog_hygiene import (
     GET_PRODUCT_CATEGORY,
     GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA,
     GET_PRODUCT_MEDIA_PAGE,
-    GET_PRODUCT_VARIANTS_FOR_PRICING,
     METAFIELDS_DELETE_MUTATION,
     METAFIELDS_SET_MUTATION,
     METAOBJECT_CREATE,
@@ -45,11 +44,6 @@ METAOBJECTS_PAGE_SIZE = 250
 METAOBJECTS_MAX_PAGES = 10
 
 # ---------- reads (return the raw Shopify response dict) ----------
-
-
-def read_variants_for_pricing(client: GraphQLClient, product_gid: str) -> dict[str, Any]:
-    """Read a product's variants (id/sku/price/compareAtPrice) for the pricing tool."""
-    return client.execute(GET_PRODUCT_VARIANTS_FOR_PRICING, {"id": product_gid})
 
 
 def read_product_category(client: GraphQLClient, product_gid: str) -> dict[str, Any]:

@@ -31,6 +31,17 @@ def test_vendor_fragment_defined_once_and_reused():
     assert "...ProductVendorFields" in q.GET_PRODUCT_VENDOR_BY_HANDLE
 
 
+def test_pricing_fragment_defined_once_and_reused():
+    # Story 9.29: the by-id and by-handle pricing reads share one selection set.
+    by_id = q.GET_PRODUCT_VARIANTS_FOR_PRICING
+    by_handle = q.GET_PRODUCT_VARIANTS_FOR_PRICING_BY_HANDLE
+    assert "fragment ProductVariantsForPricingFields on Product" in by_id
+    assert "fragment ProductVariantsForPricingFields on Product" in by_handle
+    assert "...ProductVariantsForPricingFields" in by_id
+    assert "...ProductVariantsForPricingFields" in by_handle
+    assert "productByHandle(handle: $handle)" in by_handle
+
+
 def test_type_fragment_defined_once_and_reused():
     assert "fragment ProductTypeFields on Product" in q.GET_PRODUCT_TYPE
     assert "fragment ProductTypeFields on Product" in q.GET_PRODUCT_TYPE_BY_HANDLE
@@ -46,14 +57,6 @@ def test_options_fragment_defined_once_and_reused():
 
 
 # ---------- read operations (build vars + execute, return raw result) --------
-
-
-def test_read_variants_for_pricing():
-    fc = FakeClient([{"product": {"id": "g", "title": "T", "variants": {"nodes": []}}}])
-    out = ops.read_variants_for_pricing(fc, "gid://shopify/Product/5")
-    assert out["product"]["title"] == "T"
-    assert fc.calls[0][0] == q.GET_PRODUCT_VARIANTS_FOR_PRICING
-    assert fc.calls[0][1] == {"id": "gid://shopify/Product/5"}
 
 
 def test_read_product_category():
