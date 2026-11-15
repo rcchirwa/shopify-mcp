@@ -12,6 +12,9 @@ render byte-for-byte as before.
 - Class B: the userError routes that do their own framing around the shared
   joiner (`write_gate`, `create_discount_code`, `update_variant_inventory_policy`)
   and the one joiner that does not use it (`update_product_options`' `_fmt`).
+- Story 10.103 rows (`S10103_ROWS`): the same echo in other wordings. Story
+  10.113 adds the caller-id joins (F1-F4: each id sanitized, the joined list
+  bounded) and the channel-name field of `_render_failed`'s rows (F5).
 
 The structural guard against a 22nd unscrubbed site is
 `tests/architecture/test_reflection_scrub_guard.py`. CR/LF payloads are built
@@ -79,6 +82,12 @@ from tests.unit.tools.test_products import (
     _update_err,
     _variant_policy,
     _variants_policy_read,
+)
+from tests.unit.tools.test_publications import _build as _build_publications
+from tests.unit.tools.test_publications import (
+    _channels_response,
+    _collection_pubs,
+    _product_pubs,
 )
 from tests.unit.tools.test_webhooks import _build as _build_webhooks
 
@@ -403,6 +412,7 @@ class _Row:
         shown: Callable[[str], str] = lambda v: v,
         tail_raw: bool = False,
         rep: bool = False,
+        tail_shown: Callable[[str], str] | None = None,
     ) -> None:
         self.site, self.run, self.short, self.echoes, self.tail = site, run, short, echoes, tail
         self.crlf = crlf if crlf is not None else short + _INJECT
@@ -416,6 +426,10 @@ class _Row:
         self.tail_raw = tail_raw
         # A `!r` site shows repr(value), which doubles the escape backslashes.
         self.rep = rep
+        # How the JSON tail renders the value, when its bound differs from the
+        # head's (Story 10.113: the head's joined list is `_cap`ped at 200, the
+        # tail's per-variant messages at REFLECT_MAX_LEN).
+        self.tail_shown = tail_shown
 
     def old(self, value: str) -> str:
         return repr(self.shown(value)) if self.rep else self.shown(value)
@@ -452,6 +466,56 @@ def _swap(obj: Any, old: str, new: str) -> Any:
     if isinstance(obj, dict):
         return {k: _swap(v, old, new) for k, v in obj.items()}
     return obj
+
+
+def _drained(
+    build: Callable, script: Callable[[], list], call: Callable[[dict, str], str]
+) -> Callable[[str], str]:
+    """Run one tool call on a fresh script. Every scripted response must be
+    read, so the row proves the path it names ran (Story 10.113)."""
+
+    def run(value: str) -> str:
+        tools, fc = build(script())
+        out = call(tools, value)
+        assert fc.responses == [], fc.responses
+        return out
+
+    return run
+
+
+def _gid_tail(value: str) -> str:
+    """`from_gid`, spelled independently: the text after the last `/`."""
+    return value.rsplit("/", 1)[-1]
+
+
+_V97531 = "gid://shopify/ProductVariant/97531"
+_CHANNEL = "Typo Channel"
+
+
+def _binding_read() -> list:
+    return [_s96_combined_response([_S96_MEDIA_1], [(_S96_VARIANT_A, "sku-a", [])])]
+
+
+def _channel_reads(*, write: bool) -> list:
+    """Both channel reads (the second is the refresh on a missed name), then
+    the product read; `write` adds the V2 page the unpublish and set tools read."""
+    return [
+        _channels_response(),
+        _channels_response(),
+        _product_pubs(pid="123", published_ids=[1], not_published_ids=[2, 3, 4], write=write),
+    ]
+
+
+def _collection_reads() -> list:
+    return [_channels_response(), _channels_response(), _collection_pubs(published_ids=[1])]
+
+
+def _pub(tool: str, *, write: bool, **kw: Any) -> Callable[[str], str]:
+    return _drained(
+        _build_publications,
+        lambda: _channel_reads(write=write),
+        lambda t, v: t[tool](product_id="123", channel_names=[v], **kw),
+    )
 
 
 S10103_ROWS = [
@@ -509,6 +573,18 @@ S10103_ROWS = [
     # into one list. The helpers only strip the ends and check the GID prefix.
     _Row("catalog_hygiene:2870 image binding media ids joined", lambda v: _build_hygiene([_s96_combined_response([_S96_MEDIA_1], [(_S96_VARIANT_A, "sku-a", [])])])[0]["update_variant_image_binding"](product_id=_PID, variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [v]}]), "gid://shopify/MediaImage/94242", tail=True, shown=lambda v: v[:200]),
     _Row("catalog_hygiene:4241 update_product_options value ids joined", lambda v: _build_hygiene([_options_read_response()])[0]["update_product_options"](product_id="100", option={"id": _OPT_GID}, option_values_to_update=[{"id": v, "name": "X"}]), "gid://shopify/ProductOptionValue/94242", tail=True, shown=lambda v: v[:200]),
+    # Story 10.113 (SEC-24-joined-ids): caller ids joined into one list with `+`
+    # (F1-F4), and the caller channel-name field of `_render_failed`'s rows (F5).
+    # Site lines are on origin/main 99e2315. The many-short-ids bound is
+    # test_s10113_many_short_ids_are_bounded_as_a_whole, below.
+    _Row("F1 catalog_hygiene:1952 update_product_pricing confirm ids joined", _drained(_build_hygiene, lambda: [_read_response()], lambda t, v: t["update_product_pricing"]("100", variants=[{"variantId": v, "price": "49.99"}], confirm=True)), _V97531, tail=True, shown=lambda v: _gid_tail(v)[:200], tail_shown=_gid_tail),
+    _Row("F2 catalog_hygiene:2860 image binding variant ids joined", _drained(_build_hygiene, _binding_read, lambda t, v: t["update_variant_image_binding"](product_id=_PID, variant_media=[{"variantId": v, "mediaIds": [_S96_MEDIA_1]}])), _V97531, tail=True, shown=lambda v: _gid_tail(v)[:200]),
+    _Row("F4 publications:466 set_product_publications refusal", _pub("set_product_publications", write=True, confirm=True), _CHANNEL),
+    _Row("F5 publications:458 set_product_publications preview", _pub("set_product_publications", write=True, confirm=False), _CHANNEL),
+    _Row("F5 publications:458 publish_product_to_channels preview", _pub("publish_product_to_channels", write=False, confirm=False), _CHANNEL),
+    _Row("F5 publications:458 publish_product_to_channels FAILED", _pub("publish_product_to_channels", write=False, confirm=True), _CHANNEL),
+    _Row("F5 publications:458 unpublish_product_from_channels FAILED", _pub("unpublish_product_from_channels", write=True, confirm=True), _CHANNEL),
+    _Row("F5 publications:458 publish_collection_to_channels FAILED", _drained(_build_publications, _collection_reads, lambda t, v: t["publish_collection_to_channels"](handle="all-copy", channel_names=[v], confirm=True)), _CHANNEL),
 ]  # fmt: skip
 
 
@@ -548,6 +624,8 @@ def _s10103_expected(row: _Row, value: str) -> tuple[str, Any]:
         return template.replace(old, new), None
     text, tail = _with_tail(template)
     assert text.count(old) == row.echoes, text
+    if row.tail_shown is not None:
+        return text.replace(old, new), _swap(tail, old, _scrubbed(row.tail_shown(value)))
     return text.replace(old, new), _swap(tail, old, row.shown(value) if row.tail_raw else new)
 
 
@@ -592,3 +670,196 @@ def test_s10103_swap_helper_reaches_nested_tail_values() -> None:
     """`_swap` must rewrite strings at any depth, or a tail echo would go unchecked."""
     tail = json.loads('{"a": ["x1", {"b": "x1x"}], "n": 1}')
     assert _swap(tail, "x1", "Y") == {"a": ["Y", {"b": "Yx"}], "n": 1}
+
+
+# ---------- Story 10.113: the joined list is bounded as a whole ----------
+#
+# Each item is short (30 characters), so a per-item bound changes nothing; the
+# 25 items (the per-call cap of each tool) joined are far past REFLECT_MAX_LEN.
+# Only a bound on the joined text keeps the reply short.
+
+_MANY = 25
+_HYGIENE_BOUND = 200  # catalog_hygiene's `_cap` (`_GID_DISPLAY_MAX`)
+_REFUSAL_TAIL = (
+    ". Nothing was changed — a declarative set with an unknown name would "
+    "unpublish every channel not named. Correct the names and retry."
+)
+
+
+def _thirty_digit_tails() -> list[str]:
+    return [str(10**29 + i) for i in range(_MANY)]
+
+
+def _many_pricing() -> tuple[str, str, Any]:
+    tails = _thirty_digit_tails()
+    variants = [{"variantId": f"gid://shopify/ProductVariant/{t}", "price": "1.00"} for t in tails]
+    run = _drained(
+        _build_hygiene,
+        lambda: [_read_response()],
+        lambda t, _v: t["update_product_pricing"]("100", variants=variants, confirm=True),
+    )
+    joined = ", ".join(tails)
+    head = "Error: resolved variant(s) not found on product: " + joined[:_HYGIENE_BOUND]
+    errors = [{"message": f"variant {t} not found on product 100"} for t in tails]
+    return run(""), joined, (head, {"ok": False, "variants": [], "errors": errors})
+
+
+def _many_binding() -> tuple[str, str, Any]:
+    tails = _thirty_digit_tails()
+    entries = [
+        {"variantId": f"gid://shopify/ProductVariant/{t}", "mediaIds": [_S96_MEDIA_1]}
+        for t in tails
+    ]
+    run = _drained(
+        _build_hygiene,
+        _binding_read,
+        lambda t, _v: t["update_variant_image_binding"](product_id=_PID, variant_media=entries),
+    )
+    joined = ", ".join(tails)
+    msg = f"variant GIDs not on product {_PID}: " + joined[:_HYGIENE_BOUND]
+    return (
+        run(""),
+        joined,
+        ("Error: " + msg, {"ok": False, "variants": [], "errors": [{"message": msg}]}),
+    )
+
+
+def _many_reorder() -> tuple[str, str, Any]:
+    ids = [f"gid://shopify/MediaImage/{10000 + i}" for i in range(_MANY)]
+    moves = [{"id": m, "newPosition": i + 1} for i, m in enumerate(ids)]
+    run = _drained(
+        _build_media,
+        lambda: [_product_media_read([_media_node(MEDIA_A)])],
+        lambda t, _v: t["reorder_product_media"](product_id="123", moves=moves),
+    )
+    joined = ", ".join(ids)
+    head = "Error: these media ids are not attached to the product: " + joined[:REFLECT_MAX_LEN]
+    return run(""), joined, (head, None)
+
+
+def _many_channels() -> tuple[str, str, Any]:
+    names = [f"Typo Channel {i:017d}" for i in range(_MANY)]
+    run = _drained(
+        _build_publications,
+        lambda: _channel_reads(write=True),
+        lambda t, _v: t["set_product_publications"](
+            product_id="123", channel_names=names, confirm=True
+        ),
+    )
+    joined = ", ".join(names)
+    head = "Error: could not resolve channel name(s): " + joined[:REFLECT_MAX_LEN] + _REFUSAL_TAIL
+    return run(""), joined, (head, None)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [_many_pricing, _many_binding, _many_reorder, _many_channels],
+    ids=["F1 pricing confirm", "F2 image binding", "F3 reorder", "F4 set refusal"],
+)
+def test_s10113_many_short_ids_are_bounded_as_a_whole(case: Callable) -> None:
+    out, joined, (head, tail) = case()
+    item_lengths = {len(item) for item in joined.split(", ")}
+    assert item_lengths == {30}, item_lengths
+    assert len(joined) > REFLECT_MAX_LEN
+    if tail is None:
+        assert out == head
+    else:
+        assert _with_tail(out) == (head + "\n\n```json```", tail)
+    assert joined not in out
+
+
+def test_s10113_two_unresolved_names_stay_on_their_own_rows() -> None:
+    """F5: each failed channel is one row; a CR/LF in a name escapes inside its
+    row, and the `\\n` between rows is kept."""
+    names = ["Typo A" + _INJECT, "Typo B" + _INJECT]
+    tools, fc = _build_publications(_channel_reads(write=True))
+    out = tools["set_product_publications"](product_id="123", channel_names=names)
+    assert fc.responses == []
+    assert out == (
+        "PREVIEW — Set product publications (declarative)\n"
+        "  Product: Tee (handle: tee, id: 123)\n"
+        "  Would add (publish):\n"
+        "  (none)\n"
+        "  Would remove (unpublish):\n"
+        "  • Online Store (id: 1)\n"
+        "  Unchanged:\n"
+        "  (none)\n"
+        "  Failed to resolve:\n"
+        "  • Typo A\\r\\nInjected: yes: channel not found on this store\n"
+        "  • Typo B\\r\\nInjected: yes: channel not found on this store\n"
+        "\n"
+        "To apply, call again with confirm=True."
+    )
+    assert _CR not in out
+    assert not any(line.startswith("Injected") for line in out.split(_LF))
+
+
+# Ordinary values, pinned as literal text captured on origin/main 99e2315
+# before the fix: the scrub must not change a byte of them (AC 3).
+_ORDINARY_BEFORE = {
+    "F1": (
+        _S10103_IDS.index("F1 catalog_hygiene:1952 update_product_pricing confirm ids joined"),
+        "Error: resolved variant(s) not found on product: 97531\n\n```json\n"
+        '{\n  "ok": false,\n  "variants": [],\n  "errors": [\n    {\n'
+        '      "message": "variant 97531 not found on product 100"\n    }\n  ]\n}\n```',
+    ),
+    "F2": (
+        _S10103_IDS.index("F2 catalog_hygiene:2860 image binding variant ids joined"),
+        "Error: variant GIDs not on product gid://shopify/Product/4242: 97531\n\n```json\n"
+        '{\n  "ok": false,\n  "variants": [],\n  "errors": [\n    {\n'
+        '      "message": "variant GIDs not on product gid://shopify/Product/4242: 97531"\n'
+        "    }\n  ]\n}\n```",
+    ),
+    "F4": (
+        _S10103_IDS.index("F4 publications:466 set_product_publications refusal"),
+        "Error: could not resolve channel name(s): Typo Channel" + _REFUSAL_TAIL,
+    ),
+    "F5 set preview": (
+        _S10103_IDS.index("F5 publications:458 set_product_publications preview"),
+        "PREVIEW — Set product publications (declarative)\n  Product: Tee (handle: tee, id: 123)\n"
+        "  Would add (publish):\n  (none)\n  Would remove (unpublish):\n  • Online Store (id: 1)\n"
+        "  Unchanged:\n  (none)\n  Failed to resolve:\n"
+        "  • Typo Channel: channel not found on this store\n\nTo apply, call again with confirm=True.",
+    ),
+    "F5 publish preview": (
+        _S10103_IDS.index("F5 publications:458 publish_product_to_channels preview"),
+        "PREVIEW — Publish product to channels\n  Product: Tee (handle: tee, id: 123)\n"
+        "  Would publish to:\n  (none)\n  Already published (unchanged):\n  (none)\n"
+        "  Failed to resolve:\n  • Typo Channel: channel not found on this store\n\n"
+        "To apply, call again with confirm=True.",
+    ),
+    "F5 publish FAILED": (
+        _S10103_IDS.index("F5 publications:458 publish_product_to_channels FAILED"),
+        "FAILED — Publish product to channels\n  Product: Tee (handle: tee, id: 123)\n"
+        "  Now published to:\n  (none)\n  Unchanged:\n  (none)\n  Failed:\n"
+        "  • Typo Channel: channel not found on this store",
+    ),
+    "F5 unpublish FAILED": (
+        _S10103_IDS.index("F5 publications:458 unpublish_product_from_channels FAILED"),
+        "FAILED — Unpublish product from channels\n  Product: Tee (handle: tee, id: 123)\n"
+        "  Now unpublished from:\n  (none)\n  Unchanged:\n  (none)\n  Failed:\n"
+        "  • Typo Channel: channel not found on this store",
+    ),
+    "F5 collection FAILED": (
+        _S10103_IDS.index("F5 publications:458 publish_collection_to_channels FAILED"),
+        "FAILED — Publish collection to channels\n"
+        "  Collection: All (BACKUP) (handle: all-copy, id: 900)\n"
+        "  Now published to:\n  (none)\n  Unchanged:\n  (none)\n  Failed:\n"
+        "  • Typo Channel: channel not found on this store",
+    ),
+}
+
+
+@pytest.mark.parametrize("key", list(_ORDINARY_BEFORE), ids=list(_ORDINARY_BEFORE))
+def test_s10113_ordinary_value_reply_is_byte_identical_to_before(key: str) -> None:
+    index, before = _ORDINARY_BEFORE[key]
+    row = S10103_ROWS[index]
+    assert row.run(row.short) == before
+
+
+def test_s10113_ordinary_reorder_reply_is_byte_identical_to_before() -> None:
+    """F3: the existing unknown-ids row (`media/_reorder:64`), pinned as text."""
+    row = S10103_ROWS[_S10103_IDS.index("media/_reorder:64 reorder_product_media unknown ids")]
+    assert row.run(row.short) == (
+        "Error: these media ids are not attached to the product: gid://shopify/MediaImage/4242"
+    )
