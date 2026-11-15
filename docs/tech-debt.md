@@ -8,6 +8,61 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-11-14 — Story 10.98 (`upload_product_image`'s media poll retried permanent errors to budget and reported them as "still PROCESSING")
+
+Trello: https://trello.com/c/O38RE1dE (Story 10.98, Epic 10). The sibling of **Story 10.89** (entry of 2026-09-25, below). 10.89 fixed `poll_job` in `client.py`, and its open item (b) named this second poller as a follow-up. Found by 10.89's verifier. Not observed live.
+
+**The defect.** `tools/media/_upload.py::_poll_media_ready` polls the new media node after `productCreateMedia`. It had one `except Exception` around `client.execute(...)`. A permanent `ShopifyError` (validation, auth, the next schema drift of `GET_MEDIA_STATUS`) was retried for the full 15s budget. The result dict had no `error` key, so the cause went to stderr only. `upload_product_image` then printed `Status : PROCESSING` and `Note : media still PROCESSING after 15s — Shopify will finish server-side`, under `CONFIRMED — Upload product image`. The operator was told to wait for an upload whose state could never be confirmed.
+
+**Approach (Robert, 2026-11-14): approach 1, mirror `poll_job`.** `_poll_media_ready` now has the same three `except` branches, in the same order, as `poll_job`. It does not call `poll_job`: the two queries have different shapes (`job` node and `node(id:)` with four media fragments), so a shared helper (approach 2) would be a larger change for no gain here. `client.py` is not edited. `_upload.py` imports `ShopifyError` and `ShopifyProtocolError` from `shopify_mcp.client`.
+
+**Exception classification.**
+1. `ShopifyProtocolError` (this includes `ShopifyTransportError`) retries to budget. A WAF page, a garbage 200 or a connection reset is often transient. It is caught first because it is a `ShopifyError` subclass.
+2. `ShopifyError` fails fast. The function returns on the first poll with no sleep, `timed_out=False` and a capped `error`.
+3. Any other exception, `TransientShopifyError` included, retries to budget.
+
+**Why short-circuiting `ShopifyError` cannot catch a transient.** `ShopifyError` and `TransientShopifyError` are siblings under `RuntimeError` (the second is not a subclass of the first), so `except ShopifyError` never matches a `TransientShopifyError`. The transient reaches branch 3 and retries. The only subclasses of `ShopifyError` are `ShopifyProtocolError` and `ShopifyTransportError`, and branch 1 takes both before branch 2 can. Moving branch 2 above branch 1 would make both fail fast. Tests pin this (mutants M2 and M5 below).
+
+**Result contract.** The result gained `error: str or None`, the capped message of the last failed poll. A later successful poll clears it, as in `poll_job`. A failure that never clears before the budget ends is returned with `timed_out=True` and `error` set. The stderr warning stays on every retried failure. The docstring says all this.
+
+**Renderer change.** In `upload_product_image`, when `error` is set, the line is `Note       : (poll failed: <error> — underlying write succeeded, check server-side for completion)`. It uses the shared `poll_failed_note` (10.89's helper, which applies `cap`; SEC-27), and it replaces the PROCESSING note. Output for a READY upload and for a genuine processing timeout is byte for byte as before. Two exact-line tests pin both.
+
+**Null node: UNRESOLVED, behavior kept.** The question: is a `null` `node(id:)` for the just-created media ever permanent, or always eventual consistency? Local evidence only (Robert, 2026-11-14: no live query). What was checked:
+- `tests/unit/shopify/admin_schema_snapshot.graphql:1612`: `node(id: ID!): Node`. The field is nullable. This says a null is possible. It does not say when.
+- Story 10.89 (this file): says nothing about a null media node. Its open item (b) is the reason this story exists.
+- Story 9.18 (2026-09-15, below): `node(id:)` returned null for an unknown or expired id of type `Job`. `Job` is not a `Node`, so that is about a different type. It does not describe a just-created media id.
+- Tests: none touched a null node before this story.
+- One more fact from the code: a node that matches none of the four media fragments also comes back as `{}`. The poll reads `{}` and null the same way, so any decision would apply to both.
+
+Nothing here separates "not visible yet" from "will never exist". Settling it needs a live probe (a just-created id read at once, and a deleted id). That was out of scope by decision. **Accepted limitation:** a null node reads as still PROCESSING and polls to budget with no error. If a media id is permanently null (a deleted media or a wrong id), the operator waits the full 15s and then sees the PROCESSING note. This is the behavior that existed before this story. It is pinned offline by call count and by rendered output (`test_poll_null_node_keeps_polling_to_budget_without_error`, `test_poll_null_node_then_ready_returns_ready`, `test_upload_poll_null_node_renders_processing_note_unchanged`). Mutant M6 (a null node returns at once as READY, FAILED or an error) fails all three. No card filed.
+
+**Tests (`tests/unit/tools/test_media.py`).** TDD: 13 new tests were watched failing on the unfixed tree, 11 passed (the exact-string pins, the null-node render pin and the old tests). Each test asserts the exact `execute()` call count and how many scripted responses remain, because `FakeClient` raises `AssertionError` when its script runs out, and the poll's broad `except` would swallow that. `time.sleep` and `time.monotonic` are patched through `shopify_mcp.tools.media._upload.time`, and the clock moves 3s per read, so the budget ends on the fifth poll.
+- `test_poll_shopify_error_fails_fast_with_capped_error`: one call, the next response unused, no sleep, `timed_out=False`, `error` equal to `cap(...)` for a 5000-char message.
+- `test_poll_retryable_exceptions_poll_to_budget` (protocol, transport, transient, generic): five calls, four sleeps, `timed_out=True`, capped `error`, and the stderr warning once per poll.
+- `test_poll_recovers_after_retryable_error` (protocol, transport, transient): failure on poll 1, READY on poll 2, `error=None`, `timed_out=False`.
+- `test_poll_error_is_cleared_by_a_later_successful_poll`, and the three null-node tests named above.
+- `test_upload_poll_shopify_error_renders_poll_failed_not_processing_note` and `test_upload_poll_retryable_error_to_budget_renders_poll_failed`: the exact `Note` line is present. "still PROCESSING" and "Shopify will finish server-side" are not.
+- `test_upload_processing_timeout_output_is_pinned_by_exact_strings` and `test_upload_ready_output_is_pinned_by_exact_strings`: the whole reply, line by line.
+
+**Mutation check.** `PYTHONDONTWRITEBYTECODE=1`, `__pycache__` cleared, `_upload.py` restored by SHA-256 after each run (restore proved each time). Every mutant failed at least one test:
+| Mutant | Killed by |
+|---|---|
+| M1 delete the `ShopifyError` branch | `test_poll_shopify_error_fails_fast_with_capped_error`, `test_upload_poll_shopify_error_renders_poll_failed_not_processing_note` |
+| M2 widen the fast-fail branch to `TransientShopifyError` | the `[transient]` retry and recovery tests, `test_upload_poll_retryable_error_to_budget_renders_poll_failed` |
+| M3 drop `error` from the returned dict (fast-fail return only; both normal returns) | fail-fast tests (2); 26 tests for the normal returns |
+| M4 renderer ignores `error` | the two upload renderer tests |
+| M5 move the `ShopifyError` branch above `ShopifyProtocolError` | the `[protocol]` and `[transport]` retry tests, the recovery tests and `test_poll_error_is_cleared_by_a_later_successful_poll` |
+| M6 null node returns at once (READY, FAILED, or an error) | the three null-node tests |
+| Own: M7 `error` not cleared by a later success | the recovery tests and the cleared-error test |
+| Own: M8 fast-fail `error` not capped | `test_poll_shopify_error_fails_fast_with_capped_error` |
+| Own: M9 renderer checks the timeout note first | `test_upload_poll_retryable_error_to_budget_renders_poll_failed` |
+| Own: M10 no stderr warning in the generic branch | the `[generic]` and `[transient]` retry tests |
+| Own: M11 the protocol branch returns at once | the `[protocol]` and `[transport]` retry tests, recovery tests |
+
+**Out of scope.** As in 10.89, a `TransientShopifyError` that uses up its own retries inside `execute()` can take about 15s for one poll, which is the whole media budget. Pre-existing, unchanged, no card.
+
+---
+
 ## 2026-11-14 — Story 10.113: caller ids joined into one list are scrubbed, and a guard sees the joins (closes `SEC-24-joined-ids`)
 
 Trello: https://trello.com/c/DlMXcL0b (Story 10.113, Epic 10). A residual of Story 10.103 (entry below, "Review round 4"). Defense-in-depth, not a live defect: the caller already knows what it sent, so nothing leaks. The risk is a flood of text and a CR/LF-forged second line in model context.
