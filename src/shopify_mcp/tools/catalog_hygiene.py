@@ -1834,9 +1834,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # runs the by-id read for a numeric ID or Product GID, and the
         # by-handle twin for a handle; both share one selection set, so the
         # same variants list feeds SKU resolution and the old→new preview.
-        # The resolver raises ValueError on bad input (both identifiers, a GID
-        # of another type — Story 10.108) before any network call; that keeps
-        # its pre-9.29 "Error: ..." text. Any other exception is a read
+        # A wrong-type GID on `product_id` is refused by `product_id_error`
+        # below (Story 10.108 text). The resolver raises ValueError on other
+        # bad input (both identifiers, a wrong-type GID on `handle`) before any
+        # network call, rendered as "Error: ...". Any other exception is a read
         # failure.
         #
         # Story 10.67 (SEC-27) added the guard. An unguarded ops call lets the
