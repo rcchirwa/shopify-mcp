@@ -14,7 +14,7 @@ Usage:
 
 import itertools
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 import requests as _requests
@@ -1797,23 +1797,33 @@ def _poll_clock():
     return fake_monotonic
 
 
+def _module_time():
+    """Patch `_upload`'s own `time` binding with a stand-in, not the global
+    `time` module: only `_upload` sees the fake clock and the mocked sleep.
+
+    Returns (patcher, sleep_mock).
+    """
+    sleep = Mock()
+    fake = SimpleNamespace(sleep=sleep, monotonic=_poll_clock())
+    return patch("shopify_mcp.tools.media._upload.time", fake), sleep
+
+
 def _poll(responses):
     """Run `_poll_media_ready` against scripted responses with a fake clock.
 
     Returns (result, client, sleep_mock).
     """
     fc = FakeClient(responses)
-    with (
-        patch("shopify_mcp.tools.media._upload.time.sleep") as sleep,
-        patch("shopify_mcp.tools.media._upload.time.monotonic", side_effect=_poll_clock()),
-    ):
+    time_patch, sleep = _module_time()
+    with time_patch:
         result = _poll_media_ready(fc, PRODUCT_GID, MEDIA_C)
     return result, fc, sleep
 
 
-def test_poll_shopify_error_fails_fast_with_capped_error():
+def test_poll_shopify_error_fails_fast_with_capped_error(capsys):
     """A permanent ShopifyError returns after exactly one poll: no sleep, not a
-    timeout, and the capped error is in the result."""
+    timeout, the capped error is in the result, no status was read, and the
+    stderr warning is printed as for a retried failure."""
     long_message = "denied: " + "x" * 5000
     ready = _node_media_status(MEDIA_C, status="READY")
     result, fc, sleep = _poll([ShopifyError(long_message), ready])
@@ -1823,8 +1833,12 @@ def test_poll_shopify_error_fails_fast_with_capped_error():
     sleep.assert_not_called()
     assert result["timed_out"] is False
     assert result["status"] == "PROCESSING"
+    assert result["status_read"] is False
     assert result["error"] == cap(long_message)
     assert len(result["error"]) < len(long_message)
+    assert capsys.readouterr().err.splitlines() == [
+        f"[media] poll warning for {MEDIA_C}: ShopifyError: {cap(long_message)}"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1916,6 +1930,9 @@ def test_poll_null_node_keeps_polling_to_budget_without_error():
     assert result["preview_url"] is None
     assert result["timed_out"] is True
     assert result["error"] is None
+    # The reads succeeded, so the null node keeps the old PROCESSING render
+    # (test_upload_poll_null_node_renders_processing_note_unchanged).
+    assert result["status_read"] is True
 
 
 def test_poll_null_node_then_ready_returns_ready():
@@ -1943,13 +1960,13 @@ def _upload_with_poll(poll_responses):
             *poll_responses,
         ]
     )
+    time_patch, sleep = _module_time()
     with (
         patch(
             "shopify_mcp.tools.media._upload.requests.put",
             return_value=FakeHTTPResponse(status_code=200),
         ),
-        patch("shopify_mcp.tools.media._upload.time.sleep") as sleep,
-        patch("shopify_mcp.tools.media._upload.time.monotonic", side_effect=_poll_clock()),
+        time_patch,
     ):
         out = tools["upload_product_image"](
             product_id="123",
@@ -1970,7 +1987,8 @@ def test_upload_poll_shopify_error_renders_poll_failed_not_processing_note():
     benign PROCESSING note is not."""
     long_message = "ACCESS_DENIED: " + "y" * 5000
     ready = _node_media_status(MEDIA_C, status="READY")
-    out, fc, sleep = _upload_with_poll([ShopifyError(long_message), ready])
+    with patch("shopify_mcp.tools.media._upload.log_write") as log:
+        out, fc, sleep = _upload_with_poll([ShopifyError(long_message), ready])
 
     # The failing poll ran once, and the READY response behind it was not used.
     assert [c[0] for c in fc.calls].count(GET_MEDIA_STATUS) == 1
@@ -1978,7 +1996,10 @@ def test_upload_poll_shopify_error_renders_poll_failed_not_processing_note():
     sleep.assert_not_called()
 
     assert out.startswith("CONFIRMED —"), out
-    assert "Status     : PROCESSING" in out
+    # No media read succeeded, so no status is claimed, in the reply or the log.
+    assert "  Status     : unknown (no media read succeeded)" in out.splitlines()
+    assert "Status     : PROCESSING" not in out
+    assert log.call_args.args[1].endswith(" status=unknown"), log.call_args
     assert f"  Note       : {poll_failed_note(long_message)}" in out.splitlines()
     assert cap(long_message) in out
     assert cap(long_message) + "y" not in out  # bounded
@@ -1995,9 +2016,28 @@ def test_upload_poll_retryable_error_to_budget_renders_poll_failed():
     assert [c[0] for c in fc.calls].count(GET_MEDIA_STATUS) == _POLLS_TO_BUDGET
     assert len(fc.responses) == spare - _POLLS_TO_BUDGET
     assert out.startswith("CONFIRMED —"), out
+    assert "  Status     : unknown (no media read succeeded)" in out.splitlines()
     assert f"  Note       : {poll_failed_note('HTTP 503')}" in out.splitlines()
     assert "still PROCESSING" not in out
     assert "Shopify will finish server-side" not in out
+
+
+def test_upload_poll_status_read_then_errors_shows_the_read_status():
+    """A status read on poll 1 is a real status: when later polls fail to the
+    budget, the reply shows it, with the poll-failed note."""
+    spare = 20
+    processing = _node_media_status(MEDIA_C, status="PROCESSING")
+    with patch("shopify_mcp.tools.media._upload.log_write") as log:
+        out, fc, sleep = _upload_with_poll(
+            [processing] + [TransientShopifyError("HTTP 503")] * spare
+        )
+
+    assert [c[0] for c in fc.calls].count(GET_MEDIA_STATUS) == _POLLS_TO_BUDGET
+    assert len(fc.responses) == spare - (_POLLS_TO_BUDGET - 1)
+    assert "  Status     : PROCESSING" in out.splitlines()
+    assert log.call_args.args[1].endswith(" status=PROCESSING"), log.call_args
+    assert f"  Note       : {poll_failed_note('HTTP 503')}" in out.splitlines()
+    assert "still PROCESSING" not in out
 
 
 def test_upload_poll_null_node_renders_processing_note_unchanged():

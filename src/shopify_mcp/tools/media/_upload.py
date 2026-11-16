@@ -207,29 +207,33 @@ def _poll_media_ready(client: ShopifyClient, product_gid: str, media_id: str) ->
     product has. `product_gid` is retained in the signature for future
     provenance/logging but is no longer needed for the query itself.
 
-    Returns dict: { status: str, preview_url: str or None, timed_out: bool,
-                    elapsed_s: float, error: str or None }
+    Returns dict: { status: str, preview_url: str or None, status_read: bool,
+                    timed_out: bool, elapsed_s: float, error: str or None }
+
+    `status_read` is True once any poll succeeded. While it is False, `status`
+    is only the starting value "PROCESSING", not a status Shopify reported, so
+    the caller must not show it as one (Story 10.98 review).
 
     `error` is the capped message of the last failed poll, and a later
     successful poll clears it. It can be set with timed_out=False (Story
     10.98): a permanent ShopifyError (validation, auth, schema drift) fails
     fast on the first poll rather than retrying to budget, since retrying it
     cannot help and reporting it as "still PROCESSING" hides the real cause.
-    The branches are the same, in the same order, as `client.py::poll_job`
-    (Story 10.89):
+    The classification is the same as `client.py::poll_job` (Story 10.89):
 
       1. ShopifyProtocolError (a non-GraphQL response that may be transient,
-         and so its subclass ShopifyTransportError) retries to budget. It is
-         caught first because it is a ShopifyError subclass.
-      2. ShopifyError fails fast.
+         and so its subclass ShopifyTransportError) retries to budget, though
+         it is a ShopifyError subclass.
+      2. Any other ShopifyError fails fast.
       3. Anything else, TransientShopifyError included, retries to budget.
          ShopifyError and TransientShopifyError are siblings under
-         RuntimeError, so branch 2 cannot swallow a transient failure.
+         RuntimeError, so rule 2 cannot swallow a transient failure.
 
-    Retried failures are logged to stderr but don't abort — the whole point of
-    polling is to keep trying until the budget is up. Logging makes a
-    pathological "loop until timeout with no signal" observable instead of
-    silent.
+    One handler applies the three rules, so the retry paths share one body.
+    Every failed poll, the fast-fail one too, is logged to stderr. A retried
+    failure doesn't abort — the whole point of polling is to keep trying until
+    the budget is up. Logging makes a pathological "loop until timeout with no
+    signal" observable instead of silent.
 
     A null node, or one that matches none of the four media types, reads as
     still PROCESSING and polls to budget with no error. Whether a null node
@@ -238,7 +242,7 @@ def _poll_media_ready(client: ShopifyClient, product_gid: str, media_id: str) ->
     """
     del product_gid  # reserved for future provenance/logging
     start = time.monotonic()
-    last = {"status": "PROCESSING", "preview_url": None}
+    last: dict[str, Any] = {"status": "PROCESSING", "preview_url": None, "status_read": False}
     error: str | None = None
     while True:
         try:
@@ -247,25 +251,8 @@ def _poll_media_ready(client: ShopifyClient, product_gid: str, media_id: str) ->
             if node:
                 last["status"] = node.get("status") or "PROCESSING"
                 last["preview_url"] = ((node.get("preview") or {}).get("image") or {}).get("url")
+            last["status_read"] = True
             error = None
-        except ShopifyProtocolError as e:
-            # Often transient (a WAF page, a garbage 200, a connection reset),
-            # unlike the permanent failures the next branch fast-fails on.
-            # Caught first because it is a ShopifyError subclass: retry to budget.
-            error = cap(str(e))
-            print(
-                # reflect-exempt[media_id]: stderr only, and Shopify returned this media id
-                f"[media] poll warning for {media_id}: {type(e).__name__}: {error}",
-                file=sys.stderr,
-            )
-        except ShopifyError as e:
-            # Permanent (validation, auth, schema drift): retrying cannot help.
-            return {
-                **last,
-                "timed_out": False,
-                "elapsed_s": time.monotonic() - start,
-                "error": cap(str(e)),
-            }
         except Exception as e:
             error = cap(str(e))
             print(
@@ -273,6 +260,17 @@ def _poll_media_ready(client: ShopifyClient, product_gid: str, media_id: str) ->
                 f"[media] poll warning for {media_id}: {type(e).__name__}: {error}",
                 file=sys.stderr,
             )
+            # Permanent (validation, auth, schema drift): retrying cannot help.
+            # A ShopifyProtocolError is a ShopifyError subclass but is often
+            # transient (a WAF page, a garbage 200, a connection reset), so it
+            # retries with everything else.
+            if isinstance(e, ShopifyError) and not isinstance(e, ShopifyProtocolError):
+                return {
+                    **last,
+                    "timed_out": False,
+                    "elapsed_s": time.monotonic() - start,
+                    "error": error,
+                }
 
         elapsed = time.monotonic() - start
         if last["status"] in ("READY", "FAILED"):
@@ -526,6 +524,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         poll = _poll_media_ready(client, gid, new_media_id)
         final_status = poll["status"]
         final_preview = poll["preview_url"] or initial_preview
+        # No poll succeeded: `final_status` is only the starting value, not a
+        # status Shopify reported (Story 10.98 review). Say so in the reply and
+        # the log; the poll-failed note below gives the cause.
+        status_read = poll["status_read"]
+        shown_status = final_status if status_read else "unknown (no media read succeeded)"
+        logged_status = final_status if status_read else "unknown"
 
         # Shopify returned FAILED on processing: the media record is attached
         # to the product but unusable. Skip reorder (pointless) and surface as
@@ -563,7 +567,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             "upload_product_image",
             f"product={product_id} media={new_media_id} "
             f"pos={position or current_count + 1} bytes={len(image_bytes)} "
-            f"status={final_status}",
+            f"status={logged_status}",
         )
 
         processing_note = ""
@@ -582,7 +586,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"CONFIRMED — Upload product image\n"
             f"  Product ID : {cap(sanitize_control_chars(product_id))}\n"
             f"  Media ID   : {new_media_id}\n"
-            f"  Status     : {final_status}\n"
+            f"  Status     : {shown_status}\n"
             f"  Position   : {pos_note}\n"
             f"  Bytes      : {_format_bytes(len(image_bytes))} ({mime_type})\n"
             f"  Preview    : {final_preview or '(not yet available)'}"
