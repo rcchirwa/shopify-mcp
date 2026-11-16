@@ -283,7 +283,7 @@ def test_run_round_trip_keyboard_interrupt_in_cleanup_delete_prints_cleanup_fail
 
 
 def test_run_round_trip_exception_in_cleanup_delete_prints_cleanup_failed_and_keeps_exit(capsys):
-    # Review round 4 (2026-11-15): an ordinary Exception from the finally-block
+    # Story 10.96: an ordinary Exception from the finally-block
     # delete is reported, not re-raised, so the SystemExit from Step 5's _fail
     # still ends the run with a non-zero code.
     step_5_reply = "Error: Shopify refused the delete"
@@ -306,7 +306,6 @@ def test_run_round_trip_exception_in_cleanup_delete_prints_cleanup_failed_and_ke
 # reply shapes count: (a) the reply starts with "Error:" (the pre-create refusals of
 # tools/webhooks.py::_check_endpoint); (b) INJECTION_REMINDER, then a line starting
 # "Error:" (write_gate's userErrors reply, built by with_reminder).
-
 #
 # Final review (2026-11-15): both replies come from the REAL register_webhook tool
 # (FakeClient, no network), not from hand-typed text. If the tool or write_gate
@@ -314,7 +313,7 @@ def test_run_round_trip_exception_in_cleanup_delete_prints_cleanup_failed_and_ke
 # runner silently printing a false alarm again.
 
 
-def _real_register_confirmed(monkeypatch, responses) -> str:
+def _real_register_confirmed(responses) -> str:
     srv = CapturingServer()
     webhooks_module.register(srv, FakeClient(responses))
     return srv.tools["register_webhook"](
@@ -327,7 +326,7 @@ def _refused_allowlist_reply(monkeypatch) -> str:
     tool returns before any mutation call (no FakeClient response is consumed)."""
     monkeypatch.setenv("WEBHOOK_ALLOWLIST_HOSTS", "other.example.com")
     monkeypatch.delenv("WEBHOOK_ALLOW_ANY_HOST", raising=False)
-    return _real_register_confirmed(monkeypatch, [])
+    return _real_register_confirmed([])
 
 
 def _user_errors_reply(monkeypatch) -> str:
@@ -342,7 +341,7 @@ def _user_errors_reply(monkeypatch) -> str:
             ],
         }
     }
-    return _real_register_confirmed(monkeypatch, [result])
+    return _real_register_confirmed([result])
 
 
 def _assert_refused_without_alarm(tools, excinfo, out):
