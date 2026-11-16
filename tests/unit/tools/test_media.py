@@ -14,16 +14,23 @@ Usage:
 
 import itertools
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 import requests as _requests
 from pydantic import SecretStr
 
-from shopify_mcp.client import ShopifyClient, ShopifyError, TransientShopifyError
+from shopify_mcp.client import (
+    ShopifyClient,
+    ShopifyError,
+    ShopifyProtocolError,
+    ShopifyTransportError,
+    TransientShopifyError,
+)
 from shopify_mcp.settings import Settings
 from shopify_mcp.tools import media
 from shopify_mcp.tools._response import poll_failed_note
+from shopify_mcp.tools._scrub import cap
 from shopify_mcp.tools._untrusted import INJECTION_REMINDER
 from shopify_mcp.tools.media._common import _as_product_gid, _fmt_media_user_errors
 from shopify_mcp.tools.media._constants import _MAX_IMAGE_BYTES
@@ -35,7 +42,12 @@ from shopify_mcp.tools.media._graphql import (
     STAGED_UPLOADS_CREATE,
 )
 from shopify_mcp.tools.media._list import _render_media_list
-from shopify_mcp.tools.media._upload import _download_image, _format_bytes, _upload_bytes_to_target
+from shopify_mcp.tools.media._upload import (
+    _download_image,
+    _format_bytes,
+    _poll_media_ready,
+    _upload_bytes_to_target,
+)
 from tests.support import CapturingServer, FakeClient, fenced
 
 PRODUCT_GID = "gid://shopify/Product/123"
@@ -1754,6 +1766,368 @@ def test_upload_poll_transient_exception_is_swallowed():
         )
     assert out.startswith("CONFIRMED —"), out
     assert "Status     : READY" in out
+
+
+# ---------- _poll_media_ready: error classification (Story 10.98) ----------
+#
+# Same three branches, in the same order, as `client.py::poll_job` (Story 10.89):
+#   ShopifyProtocolError (incl. ShopifyTransportError) -> retry to budget
+#   ShopifyError                                       -> fail fast
+#   anything else (incl. TransientShopifyError)        -> retry to budget
+#
+# `FakeClient.execute` raises AssertionError when its script runs dry, and the
+# poll loop's broad `except` would swallow that. So every test here asserts the
+# exact call count and how many scripted responses were left, never just the
+# result dict: that proves each path ran and each response was consumed.
+
+_POLL_TICK_S = 3.0
+# With a 15s budget, a 2s interval and a clock that moves 3s per read, the loop
+# polls at elapsed 3, 6, 9, 12 and 15 and stops on the fifth.
+_POLLS_TO_BUDGET = 5
+
+
+def _poll_clock():
+    """A `time.monotonic` stand-in that advances `_POLL_TICK_S` on every read."""
+    tick = {"t": 0.0}
+
+    def fake_monotonic():
+        tick["t"] += _POLL_TICK_S
+        return tick["t"]
+
+    return fake_monotonic
+
+
+def _module_time():
+    """Patch `_upload`'s own `time` binding with a stand-in, not the global
+    `time` module: only `_upload` sees the fake clock and the mocked sleep.
+
+    Returns (patcher, sleep_mock).
+    """
+    sleep = Mock()
+    fake = SimpleNamespace(sleep=sleep, monotonic=_poll_clock())
+    return patch("shopify_mcp.tools.media._upload.time", fake), sleep
+
+
+def _poll(responses):
+    """Run `_poll_media_ready` against scripted responses with a fake clock.
+
+    Returns (result, client, sleep_mock).
+    """
+    fc = FakeClient(responses)
+    time_patch, sleep = _module_time()
+    with time_patch:
+        result = _poll_media_ready(fc, PRODUCT_GID, MEDIA_C)
+    return result, fc, sleep
+
+
+def test_poll_shopify_error_fails_fast_with_capped_error(capsys):
+    """A permanent ShopifyError returns after exactly one poll: no sleep, not a
+    timeout, the capped error is in the result, no status was read, and the
+    stderr warning is printed as for a retried failure."""
+    long_message = "denied: " + "x" * 5000
+    ready = _node_media_status(MEDIA_C, status="READY")
+    result, fc, sleep = _poll([ShopifyError(long_message), ready])
+
+    assert len(fc.calls) == 1
+    assert fc.responses == [ready]  # the second response was never consumed
+    sleep.assert_not_called()
+    assert result["timed_out"] is False
+    assert result["status"] == "PROCESSING"
+    assert result["status_read"] is False
+    assert result["error"] == cap(long_message)
+    assert len(result["error"]) < len(long_message)
+    assert capsys.readouterr().err.splitlines() == [
+        f"[media] poll warning for {MEDIA_C}: ShopifyError: {cap(long_message)}"
+    ]
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        ShopifyProtocolError("non-GraphQL body"),
+        ShopifyTransportError("connection reset"),
+        TransientShopifyError("HTTP 503"),
+        RuntimeError("boom"),
+    ],
+    ids=["protocol", "transport", "transient", "generic"],
+)
+def test_poll_retryable_exceptions_poll_to_budget(exc, capsys):
+    """Protocol, transport, transient and generic exceptions are retried until
+    the budget runs out, with the stderr warning kept for each failed poll."""
+    spare = 20
+    result, fc, sleep = _poll([exc] * spare)
+
+    assert len(fc.calls) == _POLLS_TO_BUDGET
+    assert len(fc.responses) == spare - _POLLS_TO_BUDGET  # every poll consumed one
+    assert sleep.call_count == _POLLS_TO_BUDGET - 1
+    assert result["timed_out"] is True
+    assert result["status"] == "PROCESSING"
+    assert result["error"] == cap(str(exc))
+    warnings = [
+        line for line in capsys.readouterr().err.splitlines() if "[media] poll warning" in line
+    ]
+    assert (
+        warnings
+        == [f"[media] poll warning for {MEDIA_C}: {type(exc).__name__}: {cap(str(exc))}"]
+        * _POLLS_TO_BUDGET
+    )
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        ShopifyProtocolError("non-GraphQL body"),
+        ShopifyTransportError("connection reset"),
+        TransientShopifyError("HTTP 503"),
+    ],
+    ids=["protocol", "transport", "transient"],
+)
+def test_poll_recovers_after_retryable_error(exc):
+    """A retryable failure on poll 1 and READY on poll 2 is READY with no error."""
+    result, fc, sleep = _poll(
+        [
+            exc,
+            _node_media_status(
+                MEDIA_C, status="READY", preview_url="https://cdn.shopify.com/r.jpg"
+            ),
+        ]
+    )
+
+    assert len(fc.calls) == 2
+    assert fc.responses == []
+    assert sleep.call_count == 1
+    assert result["status"] == "READY"
+    assert result["preview_url"] == "https://cdn.shopify.com/r.jpg"
+    assert result["timed_out"] is False
+    assert result["error"] is None
+
+
+def test_poll_error_is_cleared_by_a_later_successful_poll():
+    """Same as `poll_job`: only the last poll's failure is reported. A failure
+    followed by a PROCESSING read that then times out carries no error."""
+    spare = 20
+    result, fc, sleep = _poll(
+        [ShopifyProtocolError("blip")] + [_node_media_status(MEDIA_C, status="PROCESSING")] * spare
+    )
+
+    assert len(fc.calls) == _POLLS_TO_BUDGET
+    assert len(fc.responses) == spare + 1 - _POLLS_TO_BUDGET
+    assert result["timed_out"] is True
+    assert result["error"] is None
+
+
+def test_poll_null_node_keeps_polling_to_budget_without_error():
+    """Story 10.98 (null node, unresolved): `node(id:)` is nullable, and a null
+    node reads as still PROCESSING until the budget runs out. This pins that
+    behaviour. It is not a claim that a null node can never be permanent."""
+    spare = 20
+    result, fc, sleep = _poll([{"node": None}] * spare)
+
+    assert len(fc.calls) == _POLLS_TO_BUDGET
+    assert len(fc.responses) == spare - _POLLS_TO_BUDGET
+    assert sleep.call_count == _POLLS_TO_BUDGET - 1
+    assert result["status"] == "PROCESSING"
+    assert result["preview_url"] is None
+    assert result["timed_out"] is True
+    assert result["error"] is None
+    # A null node reports no status. With no error, the upload still renders
+    # the old PROCESSING lines (test_upload_poll_null_node_renders_processing_note_unchanged).
+    assert result["status_read"] is False
+
+
+def test_poll_error_then_null_nodes_clears_the_error():
+    """A failed poll, then null nodes to budget: a null read is a successful
+    poll, so it clears the error, and no status was read. The upload then
+    renders the ordinary PROCESSING note, not a poll-failed line."""
+    spare = 20
+    responses = [TransientShopifyError("HTTP 503")] + [{"node": None}] * spare
+    result, fc, sleep = _poll(responses)
+
+    assert len(fc.calls) == _POLLS_TO_BUDGET
+    assert len(fc.responses) == spare - (_POLLS_TO_BUDGET - 1)
+    assert result["timed_out"] is True
+    assert result["error"] is None
+    assert result["status_read"] is False
+
+    out, fc, sleep = _upload_with_poll(
+        [TransientShopifyError("HTTP 503")] + [{"node": None}] * spare
+    )
+    assert "  Status     : PROCESSING" in out.splitlines()
+    assert _PROCESSING_NOTE in out.splitlines()
+    assert "poll failed" not in out
+
+
+def test_poll_null_node_then_ready_returns_ready():
+    """A null node on poll 1 does not end the poll: poll 2 can still be READY."""
+    result, fc, sleep = _poll([{"node": None}, _node_media_status(MEDIA_C, status="READY")])
+
+    assert len(fc.calls) == 2
+    assert fc.responses == []
+    assert sleep.call_count == 1
+    assert result["status"] == "READY"
+    assert result["timed_out"] is False
+    assert result["error"] is None
+
+
+def _upload_with_poll(poll_responses):
+    """Run `upload_product_image` with scripted poll responses.
+
+    Returns (output, client, sleep_mock).
+    """
+    tools, fc = _build(
+        [
+            _product_media_read([]),
+            _staged_ok(),
+            _create_media_ok(mid=MEDIA_C, status="PROCESSING"),
+            *poll_responses,
+        ]
+    )
+    time_patch, sleep = _module_time()
+    with (
+        patch(
+            "shopify_mcp.tools.media._upload.requests.put",
+            return_value=FakeHTTPResponse(status_code=200),
+        ),
+        time_patch,
+    ):
+        out = tools["upload_product_image"](
+            product_id="123",
+            source="https://cdn.example.com/hero.jpg",
+            confirm=True,
+        )
+    return out, fc, sleep
+
+
+_PROCESSING_NOTE = (
+    "  Note       : media still PROCESSING after 15s — Shopify will finish "
+    "server-side; storefront renders PROCESSING media in most cases."
+)
+
+
+def test_upload_poll_shopify_error_renders_poll_failed_not_processing_note():
+    """A permanent poll error is shown as a capped `poll failed` line, and the
+    benign PROCESSING note is not."""
+    long_message = "ACCESS_DENIED: " + "y" * 5000
+    ready = _node_media_status(MEDIA_C, status="READY")
+    with patch("shopify_mcp.tools.media._upload.log_write") as log:
+        out, fc, sleep = _upload_with_poll([ShopifyError(long_message), ready])
+
+    # The failing poll ran once, and the READY response behind it was not used.
+    assert [c[0] for c in fc.calls].count(GET_MEDIA_STATUS) == 1
+    assert fc.responses == [ready]
+    sleep.assert_not_called()
+
+    assert out.startswith("CONFIRMED —"), out
+    # No media read succeeded, so no status is claimed, in the reply or the log.
+    assert "  Status     : unknown (no media read succeeded)" in out.splitlines()
+    assert "Status     : PROCESSING" not in out
+    assert log.call_args.args[1].endswith(" status=unknown"), log.call_args
+    assert f"  Note       : {poll_failed_note(long_message)}" in out.splitlines()
+    assert cap(long_message) in out
+    assert cap(long_message) + "y" not in out  # bounded
+    assert "still PROCESSING" not in out
+    assert "Shopify will finish server-side" not in out
+
+
+def test_upload_poll_retryable_error_to_budget_renders_poll_failed():
+    """A transient error that never clears is retried to budget, and the last
+    error then replaces the PROCESSING note."""
+    spare = 20
+    out, fc, sleep = _upload_with_poll([TransientShopifyError("HTTP 503")] * spare)
+
+    assert [c[0] for c in fc.calls].count(GET_MEDIA_STATUS) == _POLLS_TO_BUDGET
+    assert len(fc.responses) == spare - _POLLS_TO_BUDGET
+    assert out.startswith("CONFIRMED —"), out
+    assert "  Status     : unknown (no media read succeeded)" in out.splitlines()
+    assert f"  Note       : {poll_failed_note('HTTP 503')}" in out.splitlines()
+    assert "still PROCESSING" not in out
+    assert "Shopify will finish server-side" not in out
+
+
+def test_upload_poll_status_read_then_errors_shows_the_read_status():
+    """A status read on poll 1 is a real status: when later polls fail to the
+    budget, the reply shows it, with the poll-failed note."""
+    spare = 20
+    processing = _node_media_status(MEDIA_C, status="PROCESSING")
+    with patch("shopify_mcp.tools.media._upload.log_write") as log:
+        out, fc, sleep = _upload_with_poll(
+            [processing] + [TransientShopifyError("HTTP 503")] * spare
+        )
+
+    assert [c[0] for c in fc.calls].count(GET_MEDIA_STATUS) == _POLLS_TO_BUDGET
+    assert len(fc.responses) == spare - (_POLLS_TO_BUDGET - 1)
+    assert "  Status     : PROCESSING" in out.splitlines()
+    assert log.call_args.args[1].endswith(" status=PROCESSING"), log.call_args
+    assert f"  Note       : {poll_failed_note('HTTP 503')}" in out.splitlines()
+    assert "still PROCESSING" not in out
+
+
+def test_upload_poll_null_node_then_errors_shows_unknown_status():
+    """A null node reports no status, so when the later polls fail, the reply
+    and the log say `unknown`, not the starting value PROCESSING."""
+    spare = 20
+    with patch("shopify_mcp.tools.media._upload.log_write") as log:
+        out, fc, sleep = _upload_with_poll(
+            [{"node": None}] + [TransientShopifyError("HTTP 503")] * spare
+        )
+
+    assert [c[0] for c in fc.calls].count(GET_MEDIA_STATUS) == _POLLS_TO_BUDGET
+    assert len(fc.responses) == spare - (_POLLS_TO_BUDGET - 1)
+    assert "  Status     : unknown (no media read succeeded)" in out.splitlines()
+    assert "Status     : PROCESSING" not in out
+    assert log.call_args.args[1].endswith(" status=unknown"), log.call_args
+    assert f"  Note       : {poll_failed_note('HTTP 503')}" in out.splitlines()
+
+
+def test_upload_poll_null_node_renders_processing_note_unchanged():
+    """Null node (unresolved, behaviour kept): the output is the ordinary
+    PROCESSING note, not an error line."""
+    spare = 20
+    out, fc, sleep = _upload_with_poll([{"node": None}] * spare)
+
+    assert [c[0] for c in fc.calls].count(GET_MEDIA_STATUS) == _POLLS_TO_BUDGET
+    assert len(fc.responses) == spare - _POLLS_TO_BUDGET
+    assert out.startswith("CONFIRMED —"), out
+    assert "Status     : PROCESSING" in out
+    assert _PROCESSING_NOTE in out.splitlines()
+    assert "poll failed" not in out
+
+
+def test_upload_processing_timeout_output_is_pinned_by_exact_strings():
+    """A genuine processing timeout renders the same lines as before Story 10.98."""
+    spare = 20
+    out, fc, sleep = _upload_with_poll([_node_media_status(MEDIA_C, status="PROCESSING")] * spare)
+
+    assert [c[0] for c in fc.calls].count(GET_MEDIA_STATUS) == _POLLS_TO_BUDGET
+    assert out.splitlines() == [
+        "CONFIRMED — Upload product image",
+        "  Product ID : 123",
+        f"  Media ID   : {MEDIA_C}",
+        "  Status     : PROCESSING",
+        "  Position   : append to end",
+        f"  Bytes      : {_format_bytes(len(b'fakejpgbytes'))} (image/jpeg)",
+        f"  Preview    : https://cdn.shopify.com/{MEDIA_C}.jpg",
+        _PROCESSING_NOTE,
+    ]
+
+
+def test_upload_ready_output_is_pinned_by_exact_strings():
+    """A normal READY upload renders the same lines as before Story 10.98."""
+    out, fc, sleep = _upload_with_poll(
+        [_node_media_status(MEDIA_C, status="READY", preview_url="https://cdn.shopify.com/ok.jpg")]
+    )
+
+    assert [c[0] for c in fc.calls].count(GET_MEDIA_STATUS) == 1
+    sleep.assert_not_called()
+    assert out.splitlines() == [
+        "CONFIRMED — Upload product image",
+        "  Product ID : 123",
+        f"  Media ID   : {MEDIA_C}",
+        "  Status     : READY",
+        "  Position   : append to end",
+        f"  Bytes      : {_format_bytes(len(b'fakejpgbytes'))} (image/jpeg)",
+        "  Preview    : https://cdn.shopify.com/ok.jpg",
+    ]
 
 
 # ---------- Missing-input guards on each tool ----------
