@@ -8,8 +8,13 @@ Usage:
   export SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST=1
   python3 tests/live/test_webhooks.py
 
-Guarantees cleanup: any webhook created by this test is deleted before exit,
-even on failure partway through.
+Cleanup contract: a subscription whose id the runner knows is deleted before
+exit, even on failure partway through. When the runner cannot learn the id after
+a create that may have landed (the confirmed reply has no id, or the call
+raised), it prints MANUAL CLEANUP REQUIRED with the topic and the endpoint and
+deletes nothing, because it cannot tell that subscription from any other one on
+the store. A create that Shopify refused (a reply that shows nothing was
+created) needs no cleanup: the runner fails Step 3 and prints no alarm.
 
 Guarded runner (SEC-16 / Story 10.49). This test registers a real webhook
 subscription on the configured store, so three checks run before anything is
@@ -43,11 +48,14 @@ from collections.abc import Mapping
 
 import shopify_mcp.tools.webhooks as webhooks_module
 from shopify_mcp.client import ShopifyClient
+from shopify_mcp.tools._untrusted import INJECTION_REMINDER
 
 ALLOW_ENV_VAR = "SHOPIFY_MCP_ALLOW_LIVE_WEBHOOK_TEST"
 ENDPOINT_ENV_VAR = "WEBHOOK_RECEIVER_URL"
 
 TEST_TOPIC = "PRODUCTS_UPDATE"
+
+MANUAL_CLEANUP_MARKER = "MANUAL CLEANUP REQUIRED"
 
 SHOP_PLAN_QUERY = """
 query {
@@ -139,19 +147,52 @@ def _extract_subscription_id(output: str) -> str:
     return m.group(1)
 
 
-def main():
-    require_opt_in()
-    test_endpoint = require_endpoint()
-    client = ShopifyClient()
-    require_development_store(client)
+def _is_refused_create(reply: object) -> bool:
+    """True if ``reply`` shows that Shopify created nothing.
 
-    capture = _Capture()
-    webhooks_module.register(capture, client)
+    Review round 1 of Story 10.96 (Robert amended D12). Exactly two reply shapes
+    count, both from ``register_webhook(confirm=True)``:
 
-    list_webhooks = capture.tools["list_webhooks"]
-    register_webhook = capture.tools["register_webhook"]
-    delete_webhook = capture.tools["delete_webhook"]
+    (a) the reply starts with ``Error:``: a pre-create refusal from
+        ``tools/webhooks.py::_check_endpoint`` (scheme, allowlist, allowlist not
+        configured);
+    (b) the reply starts with ``INJECTION_REMINDER`` and the text after it starts
+        with ``Error:``: the userErrors reply of ``write_gate``
+        (``with_reminder(err)``).
 
+    Any other reply, for example ``Subscription ID : (unknown)``, may follow a
+    create that landed, so it is not a refusal. ``Error:`` later in the text does
+    not count.
+    """
+    if not isinstance(reply, str):
+        return False
+    return reply.startswith("Error:") or (
+        reply.startswith(INJECTION_REMINDER)
+        and reply[len(INJECTION_REMINDER) :].startswith("Error:")
+    )
+
+
+def _print_manual_cleanup(endpoint: str) -> None:
+    """Tell the operator to delete by hand a subscription that may exist.
+
+    Story 10.96. Used when ``register_webhook(confirm=True)`` may have created
+    the subscription but the runner never learned its id. Without an id the
+    runner cannot tell this subscription from any other one on the store, so
+    it never deletes: it names the topic and the exact endpoint instead.
+    """
+    print(
+        f"{MANUAL_CLEANUP_MARKER}: a {TEST_TOPIC} webhook subscription pointing at "
+        f"{endpoint} may exist on the store. This runner did not learn its id and "
+        f"deletes nothing it cannot identify. Run list_webhooks, find the "
+        f"subscription with topic {TEST_TOPIC} and endpoint {endpoint}, and delete it "
+        f"with delete_webhook if it is there."
+    )
+
+
+def run_round_trip(list_webhooks, register_webhook, delete_webhook, test_endpoint):
+    """Steps 1-6 and the cleanup ``finally`` block, with the three webhook tools
+    and the endpoint passed in so offline tests can drive them with fakes.
+    """
     print("Step 1 — list_webhooks (baseline)")
     baseline = list_webhooks()
     if not isinstance(baseline, str):
@@ -167,9 +208,26 @@ def main():
 
     sub_id = None
     needs_cleanup = False
+    # Story 10.96: "created, id unknown". Armed BEFORE register_webhook(confirm=True)
+    # because that call can create the subscription and then raise, or return
+    # output with no parseable id. Either way no id reaches `sub_id`, so cleanup
+    # by id cannot run; the `finally` block prints a manual-cleanup instruction
+    # instead. Disarmed as soon as an id is parsed.
+    created_id_unknown = False
     try:
         print("Step 3 — register_webhook confirm=True")
-        created = register_webhook(topic=TEST_TOPIC, endpoint_url=test_endpoint, confirm=True)
+        created_id_unknown = True
+        try:
+            created = register_webhook(topic=TEST_TOPIC, endpoint_url=test_endpoint, confirm=True)
+        except Exception as e:
+            _fail("Step 3", f"register_webhook(confirm=True) raised {type(e).__name__}: {e}")
+        if _is_refused_create(created):
+            # Shopify created nothing, so there is nothing to clean up: disarm the
+            # manual-cleanup alarm, then fail Step 3. No delete runs.
+            created_id_unknown = False
+            _fail(
+                "Step 3", f"register_webhook(confirm=True) was refused; nothing created:\n{created}"
+            )
         # Extract the subscription id and arm cleanup BEFORE asserting on the
         # confirmed-label shape below. If the subscription was actually
         # created, it must be cleaned up regardless of whether the label
@@ -177,6 +235,7 @@ def main():
         # "Done. PREVIEW — ..." defect Story 9.21 fixed) must never strand a
         # live webhook by exiting before this point.
         sub_id = _extract_subscription_id(created)
+        created_id_unknown = False
         needs_cleanup = True
         print(f"  Created subscription id: {sub_id}")
         # Story 9.21: the confirmed label is "CONFIRMED — ...", not
@@ -214,6 +273,15 @@ def main():
         print("Step 6 PASSED.\n")
 
     finally:
+        if created_id_unknown:
+            _print_manual_cleanup(test_endpoint)
+            # Exit non-zero only when nothing else is in flight, or when it is the
+            # SystemExit that _fail raised. Any other exception (a KeyboardInterrupt,
+            # a TypeError from a non-str reply) must reach the caller unchanged:
+            # sys.exit here would replace it.
+            in_flight = sys.exc_info()[1]
+            if in_flight is None or isinstance(in_flight, SystemExit):
+                sys.exit(1)
         if needs_cleanup and sub_id:
             print(f"CLEANUP — deleting leftover test webhook {sub_id}...")
             try:
@@ -229,9 +297,30 @@ def main():
                         f"CLEANUP FAILED (manual deletion required for id={sub_id}): "
                         f"{cleanup_result}"
                     )
-            except Exception as e:
+            except BaseException as e:
+                # BaseException, so a Ctrl-C during this delete still prints the
+                # id to delete by hand. Then let a non-Exception (KeyboardInterrupt,
+                # SystemExit) propagate: swallowing it would hide the interrupt.
                 print(f"CLEANUP FAILED (manual deletion required for id={sub_id}): {e}")
+                if not isinstance(e, Exception):
+                    raise
 
+
+def main():
+    require_opt_in()
+    test_endpoint = require_endpoint()
+    client = ShopifyClient()
+    require_development_store(client)
+
+    capture = _Capture()
+    webhooks_module.register(capture, client)
+
+    run_round_trip(
+        capture.tools["list_webhooks"],
+        capture.tools["register_webhook"],
+        capture.tools["delete_webhook"],
+        test_endpoint,
+    )
     print("All webhook tests passed.")
 
 
