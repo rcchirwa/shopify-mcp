@@ -18,7 +18,7 @@ Trello: https://trello.com/c/DlMXcL0b (Story 10.113, Epic 10). A residual of Sto
 
 **Census: every `.join(` in `src/shopify_mcp/tools/*.py` and `tools/media/*.py` on `origin/main` 99e2315.** 109 hits in 15 modules. Each hit was read in context. Verdicts:
 
-The line numbers below are on 99e2315. After the rebase onto `origin/main` ba0b195 (Story 9.29) the census still holds: the same 109 joins, and 9.29 changed no join line. Only `catalog_hygiene.py` moved: its `:1691` is `:1692` on ba0b195, and every join after it is 20 lines lower (for example F1 `:1952` is `:1972`, F2 `:2860` is `:2880`). The unit-test row ids use the lines on the rebased tree.
+The line numbers below are on 99e2315. After the rebase onto `origin/main` ba0b195 (Story 9.29) the census still holds: the same 109 joins, and 9.29 changed no join line. Only `catalog_hygiene.py` moved: its `:1691` is `:1692` on ba0b195, and every join after it is 20 lines further down (for example F1 `:1952` is `:1972`, F2 `:2860` is `:2880`). The unit-test row ids name the line of the `.join(` call on the rebased tree with this story's fix. That is the same line, except for F1: the fix moved its `.join(` to the next line, so its row id is `:1973`.
 
 | Verdict | Joins (line on 99e2315) |
 |---|---|
@@ -44,8 +44,9 @@ Notes on the census:
 
 An ordinary single value renders byte-for-byte as before: every existing exact-string test passes unmodified, and the ordinary reply of each new row is pinned as literal text captured on 99e2315. A list of ordinary ids whose joined text is longer than the bound does change:
 - **F3:** before, each media id was capped and the list was not bounded, so a long list printed in full. Now the joined list stops at 300 characters, partway into an id, with no "(truncated)" marker.
-- **F1 and F2:** before, F1 had no bound and F2 already had `_cap`. Now both stop at 200 characters, partway into an id, with no marker. The JSON tail still has one message for each variant.
-- This is the 10.103 Spec Low (the option-value list, below) at three more sites, and the marker is the same 10.75 residual that stays OUT. **Robert chose (2026-11-15, review of this story): record it, do not fix it.**
+- **F1:** before, the list had no bound. Now it stops at 200 characters, partway into an id, with no marker. The JSON tail still has one message for each variant, so no id is lost there.
+- **F2 did not change here:** it already had `_cap` at 200 before this story (only the sanitize is new). Its JSON tail is one message with the same capped list, so at F2 the cut ids are not in the head or the tail.
+- This is the 10.103 Spec Low (the option-value list, below) at three more sites (F1, F2 and F3), and the marker is the same 10.75 residual that stays OUT. **Robert chose (2026-11-15, review of this story): record it, do not fix it.**
 
 **Guard: `tests/architecture/test_reflection_scrub_guard.py`, still the only guard module.** A new join check finds every `<sep>.join(...)` whose items come from a caller-derived list, wherever the result goes (`+`, an f-string, a return value). Lists are named per function in `_JOINED_LISTS` (`unknown_gids`, `unknown_variant_gids`, `unknown`, `unknown_value_ids`, `failed`), and row fields in `_ROW_FIELD_KEYS` (`channel_name` in `_render_failed`).
 - One line (no newline in the separator): each item must be `sanitize_control_chars(...)` (a per-item bound around it is allowed), and the join must be the only argument of `cap`/`_cap`. The two properties are checked and reported separately.
