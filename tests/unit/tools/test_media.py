@@ -1935,6 +1935,28 @@ def test_poll_null_node_keeps_polling_to_budget_without_error():
     assert result["status_read"] is False
 
 
+def test_poll_error_then_null_nodes_clears_the_error():
+    """A failed poll, then null nodes to budget: a null read is a successful
+    poll, so it clears the error, and no status was read. The upload then
+    renders the ordinary PROCESSING note, not a poll-failed line."""
+    spare = 20
+    responses = [TransientShopifyError("HTTP 503")] + [{"node": None}] * spare
+    result, fc, sleep = _poll(responses)
+
+    assert len(fc.calls) == _POLLS_TO_BUDGET
+    assert len(fc.responses) == spare - (_POLLS_TO_BUDGET - 1)
+    assert result["timed_out"] is True
+    assert result["error"] is None
+    assert result["status_read"] is False
+
+    out, fc, sleep = _upload_with_poll(
+        [TransientShopifyError("HTTP 503")] + [{"node": None}] * spare
+    )
+    assert "  Status     : PROCESSING" in out.splitlines()
+    assert _PROCESSING_NOTE in out.splitlines()
+    assert "poll failed" not in out
+
+
 def test_poll_null_node_then_ready_returns_ready():
     """A null node on poll 1 does not end the poll: poll 2 can still be READY."""
     result, fc, sleep = _poll([{"node": None}, _node_media_status(MEDIA_C, status="READY")])

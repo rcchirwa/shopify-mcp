@@ -229,7 +229,8 @@ def _poll_media_ready(client: ShopifyClient, product_gid: str, media_id: str) ->
       2. Any other ShopifyError fails fast.
       3. Anything else, TransientShopifyError included, retries to budget.
          ShopifyError and TransientShopifyError are siblings under
-         RuntimeError, so rule 2 cannot swallow a transient failure.
+         `_CarriesUnfenced` (a RuntimeError subclass), so rule 2 cannot
+         swallow a transient failure.
 
     One handler applies the three rules, so the retry paths share one body.
     Every failed poll, the fast-fail one too, is logged to stderr. A retried
