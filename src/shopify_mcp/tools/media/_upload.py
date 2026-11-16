@@ -19,7 +19,8 @@ from urllib.parse import unquote, urlparse
 import requests
 from mcp.server.fastmcp import FastMCP
 
-from shopify_mcp.client import ShopifyClient, ShopifyError, ShopifyProtocolError, poll_job
+from shopify_mcp.client import ShopifyClient, poll_job
+from shopify_mcp.errors import ShopifyError, ShopifyProtocolError
 from shopify_mcp.settings import Settings
 from shopify_mcp.tools._annotations import CREATE_OVERWRITE
 from shopify_mcp.tools._gid import from_gid
