@@ -6,7 +6,12 @@ imported its error classes from ``shopify_mcp.client``, and ``client`` imports
 ``shopify_mcp.tools._http`` and friends: the path operations -> client -> tools
 is two hops, and no single file's AST shows it. This test closes the gap at
 run time. Each operations module is imported in a fresh interpreter, and the
-test fails if any ``shopify_mcp.tools`` module ended up in ``sys.modules``.
+test fails if ``shopify_mcp.client`` or any ``shopify_mcp.tools`` module ended
+up in ``sys.modules``.
+
+The probe sees only imports that run when the module loads. An import inside a
+function body is caught by the AST rule in ``test_layering.py``, which forbids
+``shopify/`` from importing ``shopify_mcp.client`` anywhere in the file.
 """
 
 import importlib
@@ -36,22 +41,29 @@ def _run_probe(code: str, *args: str) -> list[str]:
         text=True,
         check=False,
         env=_ENV,
+        # A hung import fails this test by name instead of stalling the run.
+        timeout=60,
     )
     assert result.returncode == 0, result.stderr
     loaded: list[str] = json.loads(result.stdout)
     return loaded
 
 
+# walk_packages, not iter_modules: a module in a future operations subpackage
+# must be probed too, not only the subpackage's __init__.
 _OPERATION_MODULES = sorted(
     m.name
-    for m in pkgutil.iter_modules(operations_pkg.__path__, prefix=f"{operations_pkg.__name__}.")
+    for m in pkgutil.walk_packages(operations_pkg.__path__, prefix=f"{operations_pkg.__name__}.")
 )
 
+# ``client`` is listed on its own: the defect is loading ``client``. Matching
+# only ``tools`` would pass again if ``client`` ever stopped importing it.
 _PROBE = (
     "import importlib, json, sys\n"
     "importlib.import_module(sys.argv[1])\n"
     "print(json.dumps(sorted(m for m in sys.modules "
-    "if m == 'shopify_mcp.tools' or m.startswith('shopify_mcp.tools.'))))\n"
+    "if m == 'shopify_mcp.client' or m == 'shopify_mcp.tools' "
+    "or m.startswith('shopify_mcp.tools.'))))\n"
 )
 
 # The moved names. ``client`` re-exports each one (Story 10.101), so existing
@@ -72,9 +84,9 @@ def test_operations_modules_were_discovered() -> None:
 
 
 @pytest.mark.parametrize("module_name", _OPERATION_MODULES)
-def test_operations_module_loads_no_tools_module(module_name: str) -> None:
+def test_operations_module_loads_no_client_or_tools_module(module_name: str) -> None:
     loaded = _run_probe(_PROBE, module_name)
-    assert loaded == [], f"{module_name} loads tools modules: {loaded}"
+    assert loaded == [], f"{module_name} loads client or tools modules: {loaded}"
 
 
 def test_errors_module_loads_no_client_or_tools_module() -> None:
@@ -104,6 +116,9 @@ def test_error_hierarchy_is_preserved() -> None:
 
 
 def test_isolation_probe_is_not_vacuous() -> None:
-    # Control: importing the client does load tools modules, so a "[]" result
-    # above means the guard looked and found nothing, not that it cannot see.
-    assert _run_probe(_PROBE, "shopify_mcp.client") != []
+    # Control: importing the client loads client and tools modules, so a "[]"
+    # result above means the guard looked and found nothing, not that it
+    # cannot see. Both halves of the filter must match.
+    loaded = _run_probe(_PROBE, "shopify_mcp.client")
+    assert "shopify_mcp.client" in loaded
+    assert any(m.startswith("shopify_mcp.tools") for m in loaded)
