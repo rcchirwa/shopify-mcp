@@ -22,6 +22,30 @@ from gql.transport.exceptions import (
 )
 from gql.transport.requests import RequestsHTTPTransport
 
+# Story 10.101: the error classes and ``unfenced_message`` live in
+# ``shopify_mcp.errors`` (which imports nothing from here or from tools) so the
+# operations layer can use them without loading this module. Re-exported under
+# the same names: every existing ``from shopify_mcp.client import ...`` keeps
+# working and gets the identical object. ``_CarriesUnfenced`` is private but
+# also re-exported, because ``_upstream_error`` and tests reach it from here.
+from shopify_mcp.errors import (
+    ShopifyError as ShopifyError,
+)
+from shopify_mcp.errors import (
+    ShopifyProtocolError as ShopifyProtocolError,
+)
+from shopify_mcp.errors import (
+    ShopifyTransportError as ShopifyTransportError,
+)
+from shopify_mcp.errors import (
+    TransientShopifyError as TransientShopifyError,
+)
+from shopify_mcp.errors import (
+    _CarriesUnfenced as _CarriesUnfenced,
+)
+from shopify_mcp.errors import (
+    unfenced_message as unfenced_message,
+)
 from shopify_mcp.logging_config import configure_logging
 from shopify_mcp.settings import Settings
 from shopify_mcp.shopify._cache import ShopifyMetadataCache
@@ -123,59 +147,6 @@ def _mask_token(token: str) -> str:
     # Shopify admin tokens start with `shpat_`; preserve that hint if present.
     prefix = "shpat_" if token.startswith("shpat_") else token[:4]
     return f"{prefix}…{token[-4:]}"
-
-
-class _CarriesUnfenced(RuntimeError):
-    """Base of the client's two error families: keeps an unfenced copy of the message.
-
-    Story 10.69 (SEC-04-errors). Text Shopify or the transport supplied is
-    fenced as untrusted in the message, which is right for a head the model
-    reads and wrong for a ```json tail a machine parses. ``unfenced`` is the
-    message as it read before the fence existed; :func:`unfenced_message`
-    returns it. Text this codebase writes is never fenced, so for it the two
-    are equal.
-    """
-
-    def __init__(self, message: str, *, unfenced: str | None = None) -> None:
-        super().__init__(message)
-        self.unfenced = message if unfenced is None else unfenced
-
-
-class ShopifyError(_CarriesUnfenced):
-    """Permanent Shopify failure — do not retry (4xx other than 429,
-    schema/permission errors, malformed mutations)."""
-
-
-class ShopifyProtocolError(ShopifyError):
-    """A non-GraphQL response (HTML error page, WAF interstitial, garbage
-    200), or no response at all (ShopifyTransportError), that may be
-    transient — still a ShopifyError for every existing caller."""
-
-
-class ShopifyTransportError(ShopifyProtocolError):
-    """The request failed in transport (a connection reset, a timeout, a
-    broken chunked body). A ShopifyProtocolError, so ``poll_job`` retries it
-    to budget; not a TransientShopifyError, so ``execute()`` never retries it,
-    because a reset can come after Shopify applied a mutation (Story 10.104)."""
-
-
-class TransientShopifyError(_CarriesUnfenced):
-    """Transient Shopify failure — safe to retry (THROTTLED, 429, 5xx).
-    Surfaces to callers only after retries are exhausted."""
-
-
-def unfenced_message(exc: BaseException) -> str:
-    """``str(exc)`` as it read before Story 10.69 fenced it, for a ```json tail.
-
-    A tail keeps raw values (the SEC-04 head/tail split), so it reads this
-    rather than the fenced message. Any exception the client did not build is
-    its own ``str``. Only the ``execute()`` constructors keep a distinct copy:
-    ``fetch_bytes``' errors were fenced by Story 10.95 before this existed,
-    have no unfenced form, and no tail reads them. Wire one before a tail does.
-    """
-    if isinstance(exc, _CarriesUnfenced):
-        return exc.unfenced
-    return str(exc)  # reflect-ok: every caller caps
 
 
 _E = TypeVar("_E", bound=_CarriesUnfenced)

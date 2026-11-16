@@ -12,7 +12,7 @@ preview/confirm flow, userError mapping, and string formatting on top.
 import logging
 from typing import Any
 
-from shopify_mcp.client import ShopifyError, TransientShopifyError
+from shopify_mcp.errors import ShopifyError, TransientShopifyError
 from shopify_mcp.shopify._client import GraphQLClient
 from shopify_mcp.shopify._identifiers import is_supplied, reject_both_identifiers
 from shopify_mcp.shopify._ids import product_gid

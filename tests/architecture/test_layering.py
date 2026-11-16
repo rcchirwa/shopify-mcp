@@ -148,26 +148,58 @@ def test_a_relative_import_that_escapes_shopify_is_detected(tmp_path):
     )
 
 
-def test_shopify_never_imports_tools():
-    # The tool surface is reached as ``shopify_mcp.tools`` since Story 10.47, so
-    # the top-level name an offending import contributes is ``shopify_mcp``.
-    # Matching on that alone would flag every legitimate intra-package import,
-    # so the check looks at the full dotted path instead.
-    forbidden_prefix = "shopify_mcp.tools"
+def test_a_client_import_inside_a_function_is_detected(tmp_path):
+    """Story 10.101: a lazy ``client`` import must not slip past the rule.
 
-    def _tool_imports(path: Path) -> list[str]:
-        return sorted(
-            name
-            for name in _imported_dotted_paths(path)
-            if name == forbidden_prefix or name.startswith(f"{forbidden_prefix}.")
-        )
+    ``_imported_dotted_paths`` walks the whole tree, so an import inside a
+    function body counts the same as one at the top of the file. A run-time
+    probe that only imports the module cannot see such an import; this rule
+    can. Written against a synthetic module, as above.
 
+    It calls the rule's own ``_forbidden_imports``, not only the resolver, so
+    the test also fails if ``client`` drops out of ``_FORBIDDEN_PREFIXES``: the
+    real tree has no ``client`` import, so the rule test alone would stay green.
+    """
+    module = _SRC_ROOT / "shopify_mcp" / "shopify" / "operations" / "_probe.py"
+    fake = tmp_path / "probe.py"
+    fake.write_text(
+        "def f():\n    from shopify_mcp.client import ShopifyError\n    return ShopifyError\n",
+        encoding="utf-8",
+    )
+    hits = _forbidden_imports(fake, package=_package_of(module))
+    assert "shopify_mcp.client" in hits, hits
+
+
+# The tool surface is reached as ``shopify_mcp.tools`` since Story 10.47, so
+# the top-level name an offending import contributes is ``shopify_mcp``.
+# Matching on that alone would flag every legitimate intra-package import, so
+# the rule looks at the full dotted path instead.
+#
+# ``shopify_mcp.client`` is forbidden too (Story 10.101): it imports
+# ``shopify_mcp.tools``, so a ``shopify/`` module that imports ``client`` loads
+# the tools layer through it. The error classes live in ``shopify_mcp.errors``
+# for that reason.
+_FORBIDDEN_PREFIXES = ("shopify_mcp.tools", "shopify_mcp.client")
+
+
+def _forbidden_imports(path: Path, package: str | None = None) -> list[str]:
+    """The forbidden dotted paths ``path`` imports. ``package`` defaults to the
+    file's own package; pass it for a synthetic file outside ``src/``."""
+    resolved = _imported_dotted_paths_for(path, package=package or _package_of(path))
+    return sorted(
+        name
+        for name in resolved
+        if any(name == p or name.startswith(f"{p}.") for p in _FORBIDDEN_PREFIXES)
+    )
+
+
+def test_shopify_never_imports_tools_or_client():
     offenders = {
         str(p.relative_to(_SHOPIFY_ROOT.parent)): hits
         for p in _shopify_sources()
-        if (hits := _tool_imports(p))
+        if (hits := _forbidden_imports(p))
     }
-    assert not offenders, f"shopify/ must not import tools/: {offenders}"
+    assert not offenders, f"shopify/ must not import tools/ or client: {offenders}"
 
 
 def test_operations_never_import_mcp():

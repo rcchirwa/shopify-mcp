@@ -8,6 +8,25 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-11-14 — Story 10.101: error classes moved to `shopify_mcp.errors`; operations layer no longer loads `tools`
+
+**Defect.** `shopify.operations.publications` imported `ShopifyError` and `TransientShopifyError` from `shopify_mcp.client`. `client` imports `shopify_mcp.tools._http`, `_scrub`, `_untrusted` and `_url_safety`, so importing an operations module loaded `shopify_mcp.tools` and four submodules. The typed operations layer is meant to be callable without the MCP tools layer (Story 10.30 / A5, AC4).
+
+**Why the existing guard missed it.** `tests/architecture/test_layering.py` reads each file's import statements with an AST. The path is two hops (operations -> `client` -> `tools`), and no single file shows both edges, so the AST test passed. It forbade `shopify/` -> `tools` only, not the direct `shopify/` -> `client` edge.
+
+**Change (approach 2, D1/D2).**
+- New `src/shopify_mcp/errors.py` holds `_CarriesUnfenced`, `ShopifyError`, `ShopifyProtocolError`, `ShopifyTransportError`, `TransientShopifyError` and `unfenced_message`. It imports nothing from `shopify_mcp.client` or `shopify_mcp.tools`.
+- `client.py` re-exports all six names. Every existing `from shopify_mcp.client import ...` keeps working and gets the identical object. `_upstream_error` stays in `client.py` because it calls `wrap_reflected`.
+- `operations/publications.py` imports from `shopify_mcp.errors`.
+
+**New guards.**
+- `tests/architecture/test_layering.py`: the AST rule now forbids `shopify/` from importing `shopify_mcp.client` as well as `shopify_mcp.tools` (`test_shopify_never_imports_tools_or_client`). The AST walk reads the whole file, so it catches an import inside a function body too. `test_a_client_import_inside_a_function_is_detected` pins that on a synthetic module, through the rule's own `_forbidden_imports`, so it also fails if `client` drops out of the forbidden set.
+- `tests/architecture/test_operations_import_isolation.py` imports each module under `shopify_mcp.shopify.operations` (subpackages included, through `pkgutil.walk_packages`) in a fresh interpreter. It fails if `shopify_mcp.client` or any `shopify_mcp.tools` module was loaded. It also checks that `errors` loads neither `client` nor `tools`, that each of the six names is the same object through both paths, and that the hierarchy is unchanged. A control case shows the probe sees both `client` and `tools` when `client` is imported. The check runs at run time, so it catches a transitive path of any length through code that runs at import. Each probe has a 60-second timeout.
+
+**Residual.** New `shopify/` code must import errors from `shopify_mcp.errors`, not from `client`. The AST rule fails on a direct `client` import anywhere in a `shopify/` file. The run-time probe fails on any path to `client` or `tools` that runs when an operations module loads. Neither catches a path of two or more hops that runs only inside a function body (for example, a lazy import of a non-`shopify/` module that imports `client`). The AST rule covers every file under `shopify/`. The run-time probe covers `shopify/operations/` only, so a module such as `shopify/_ids.py` that reaches `tools` through a module the AST rule does not forbid is not caught. Neither covers a new top-level package that imports `client`.
+
+---
+
 ## 2026-11-05 — Story 10.103: caller ids echoed in other wordings, found by subject (closes `SEC-24-other-wordings`, with two residuals: see review round 4)
 
 Trello: https://trello.com/c/48SvkwSI (Story 10.103, Epic 10). A residual of Story 10.75 (below). Defense-in-depth, not a live defect: the caller already knows what it sent, so nothing leaks. The risk is a flood of text and a CR/LF-forged second line in model context.
