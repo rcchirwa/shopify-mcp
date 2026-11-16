@@ -575,16 +575,17 @@ S10103_ROWS = [
     _Row("catalog_hygiene:4241 update_product_options value ids joined", lambda v: _build_hygiene([_options_read_response()])[0]["update_product_options"](product_id="100", option={"id": _OPT_GID}, option_values_to_update=[{"id": v, "name": "X"}]), "gid://shopify/ProductOptionValue/94242", tail=True, shown=lambda v: v[:200]),
     # Story 10.113 (SEC-24-joined-ids): caller ids joined into one list with `+`
     # (F1-F4), and the caller channel-name field of `_render_failed`'s rows (F5).
-    # Site lines are on origin/main 99e2315. The many-short-ids bound is
-    # test_s10113_many_short_ids_are_bounded_as_a_whole, below.
-    _Row("F1 catalog_hygiene:1952 update_product_pricing confirm ids joined", _drained(_build_hygiene, lambda: [_read_response()], lambda t, v: t["update_product_pricing"]("100", variants=[{"variantId": v, "price": "49.99"}], confirm=True)), _V97531, tail=True, shown=lambda v: _gid_tail(v)[:200], tail_shown=_gid_tail),
-    _Row("F2 catalog_hygiene:2860 image binding variant ids joined", _drained(_build_hygiene, _binding_read, lambda t, v: t["update_variant_image_binding"](product_id=_PID, variant_media=[{"variantId": v, "mediaIds": [_S96_MEDIA_1]}])), _V97531, tail=True, shown=lambda v: _gid_tail(v)[:200]),
-    _Row("F4 publications:466 set_product_publications refusal", _pub("set_product_publications", write=True, confirm=True), _CHANNEL),
-    _Row("F5 publications:458 set_product_publications preview", _pub("set_product_publications", write=True, confirm=False), _CHANNEL),
-    _Row("F5 publications:458 publish_product_to_channels preview", _pub("publish_product_to_channels", write=False, confirm=False), _CHANNEL),
-    _Row("F5 publications:458 publish_product_to_channels FAILED", _pub("publish_product_to_channels", write=False, confirm=True), _CHANNEL),
-    _Row("F5 publications:458 unpublish_product_from_channels FAILED", _pub("unpublish_product_from_channels", write=True, confirm=True), _CHANNEL),
-    _Row("F5 publications:458 publish_collection_to_channels FAILED", _drained(_build_publications, _collection_reads, lambda t, v: t["publish_collection_to_channels"](handle="all-copy", channel_names=[v], confirm=True)), _CHANNEL),
+    # Site lines are on this story rebased onto origin/main ba0b195. The
+    # many-short-ids bound is test_s10113_many_short_ids_are_bounded_as_a_whole,
+    # below.
+    _Row("F1 catalog_hygiene:1973 update_product_pricing confirm ids joined", _drained(_build_hygiene, lambda: [_read_response()], lambda t, v: t["update_product_pricing"]("100", variants=[{"variantId": v, "price": "49.99"}], confirm=True)), _V97531, tail=True, shown=lambda v: _gid_tail(v)[:200], tail_shown=_gid_tail),
+    _Row("F2 catalog_hygiene:2880 image binding variant ids joined", _drained(_build_hygiene, _binding_read, lambda t, v: t["update_variant_image_binding"](product_id=_PID, variant_media=[{"variantId": v, "mediaIds": [_S96_MEDIA_1]}])), _V97531, tail=True, shown=lambda v: _gid_tail(v)[:200]),
+    _Row("F4 publications:474 set_product_publications refusal", _pub("set_product_publications", write=True, confirm=True), _CHANNEL),
+    _Row("F5 publications:462 set_product_publications preview", _pub("set_product_publications", write=True, confirm=False), _CHANNEL),
+    _Row("F5 publications:462 publish_product_to_channels preview", _pub("publish_product_to_channels", write=False, confirm=False), _CHANNEL),
+    _Row("F5 publications:462 publish_product_to_channels FAILED", _pub("publish_product_to_channels", write=False, confirm=True), _CHANNEL),
+    _Row("F5 publications:462 unpublish_product_from_channels FAILED", _pub("unpublish_product_from_channels", write=True, confirm=True), _CHANNEL),
+    _Row("F5 publications:462 publish_collection_to_channels FAILED", _drained(_build_publications, _collection_reads, lambda t, v: t["publish_collection_to_channels"](handle="all-copy", channel_names=[v], confirm=True)), _CHANNEL),
 ]  # fmt: skip
 
 
@@ -798,50 +799,50 @@ def test_s10113_two_unresolved_names_stay_on_their_own_rows() -> None:
 # before the fix: the scrub must not change a byte of them (AC 3).
 _ORDINARY_BEFORE = {
     "F1": (
-        _S10103_IDS.index("F1 catalog_hygiene:1952 update_product_pricing confirm ids joined"),
+        _S10103_IDS.index("F1 catalog_hygiene:1973 update_product_pricing confirm ids joined"),
         "Error: resolved variant(s) not found on product: 97531\n\n```json\n"
         '{\n  "ok": false,\n  "variants": [],\n  "errors": [\n    {\n'
         '      "message": "variant 97531 not found on product 100"\n    }\n  ]\n}\n```',
     ),
     "F2": (
-        _S10103_IDS.index("F2 catalog_hygiene:2860 image binding variant ids joined"),
+        _S10103_IDS.index("F2 catalog_hygiene:2880 image binding variant ids joined"),
         "Error: variant GIDs not on product gid://shopify/Product/4242: 97531\n\n```json\n"
         '{\n  "ok": false,\n  "variants": [],\n  "errors": [\n    {\n'
         '      "message": "variant GIDs not on product gid://shopify/Product/4242: 97531"\n'
         "    }\n  ]\n}\n```",
     ),
     "F4": (
-        _S10103_IDS.index("F4 publications:466 set_product_publications refusal"),
+        _S10103_IDS.index("F4 publications:474 set_product_publications refusal"),
         "Error: could not resolve channel name(s): Typo Channel" + _REFUSAL_TAIL,
     ),
     "F5 set preview": (
-        _S10103_IDS.index("F5 publications:458 set_product_publications preview"),
+        _S10103_IDS.index("F5 publications:462 set_product_publications preview"),
         "PREVIEW — Set product publications (declarative)\n  Product: Tee (handle: tee, id: 123)\n"
         "  Would add (publish):\n  (none)\n  Would remove (unpublish):\n  • Online Store (id: 1)\n"
         "  Unchanged:\n  (none)\n  Failed to resolve:\n"
         "  • Typo Channel: channel not found on this store\n\nTo apply, call again with confirm=True.",
     ),
     "F5 publish preview": (
-        _S10103_IDS.index("F5 publications:458 publish_product_to_channels preview"),
+        _S10103_IDS.index("F5 publications:462 publish_product_to_channels preview"),
         "PREVIEW — Publish product to channels\n  Product: Tee (handle: tee, id: 123)\n"
         "  Would publish to:\n  (none)\n  Already published (unchanged):\n  (none)\n"
         "  Failed to resolve:\n  • Typo Channel: channel not found on this store\n\n"
         "To apply, call again with confirm=True.",
     ),
     "F5 publish FAILED": (
-        _S10103_IDS.index("F5 publications:458 publish_product_to_channels FAILED"),
+        _S10103_IDS.index("F5 publications:462 publish_product_to_channels FAILED"),
         "FAILED — Publish product to channels\n  Product: Tee (handle: tee, id: 123)\n"
         "  Now published to:\n  (none)\n  Unchanged:\n  (none)\n  Failed:\n"
         "  • Typo Channel: channel not found on this store",
     ),
     "F5 unpublish FAILED": (
-        _S10103_IDS.index("F5 publications:458 unpublish_product_from_channels FAILED"),
+        _S10103_IDS.index("F5 publications:462 unpublish_product_from_channels FAILED"),
         "FAILED — Unpublish product from channels\n  Product: Tee (handle: tee, id: 123)\n"
         "  Now unpublished from:\n  (none)\n  Unchanged:\n  (none)\n  Failed:\n"
         "  • Typo Channel: channel not found on this store",
     ),
     "F5 collection FAILED": (
-        _S10103_IDS.index("F5 publications:458 publish_collection_to_channels FAILED"),
+        _S10103_IDS.index("F5 publications:462 publish_collection_to_channels FAILED"),
         "FAILED — Publish collection to channels\n"
         "  Collection: All (BACKUP) (handle: all-copy, id: 900)\n"
         "  Now published to:\n  (none)\n  Unchanged:\n  (none)\n  Failed:\n"

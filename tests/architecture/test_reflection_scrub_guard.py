@@ -381,7 +381,8 @@ def test_s10103_the_guard_sees_every_known_subject_site():
     On the Story 10.103 tree (origin/main 5418d9a plus this story): 110 subject
     interpolations, of which 13 carry a marker and 97 are scrubbed. Re-derived
     on the Story 10.113 tree (origin/main 99e2315 plus that story): the same
-    110 / 13 / 97, since its fixes are joins, not subject interpolations; its
+    110 / 13 / 97, since its fixes are joins, not subject interpolations, and
+    the same again after the rebase onto origin/main ba0b195 (Story 9.29); its
     own floor is `test_s10113_the_join_check_sees_every_known_site`. A new site
     raises the count and is checked above; a lower count means a site was
     removed or the walk stopped seeing it — re-derive before lowering a floor.
@@ -539,7 +540,11 @@ def test_s10103_control_pair_marker_does_not_reach_past_a_code_line():
 #   `_ROW_FIELD_KEYS`.
 # - Values passed through other variables or functions are not followed: a
 #   list copied to a new name, a join built in a helper and returned to the
-#   tool, or a joined string stored in a variable and bounded later.
+#   tool, or a joined string stored in a variable and bounded later. One
+#   order/copy builtin around a listed name (`sorted`, `list`, `set`, `tuple`,
+#   `reversed`, `enumerate`) is seen; any other call around it is not.
+# - A separator held in a variable is seen, and gets the one-line rule. A
+#   separator built by an expression (`(", " if a else "; ").join(...)`) is not.
 # - Shopify-sourced lists that share a listed name are treated as caller
 #   lists: `_render_failed`'s `failed` also carries Shopify apply-failure
 #   names, and they get the same field rule.
@@ -562,6 +567,9 @@ _ROW_FIELD_KEYS = {
     "_render_failed": frozenset({"channel_name"}),
 }
 _COMPREHENSIONS = (ast.GeneratorExp, ast.ListComp, ast.SetComp)
+# Builtins that reorder or copy a list without changing its items. A listed
+# name inside one of these is still the caller's list (review of Story 10.113).
+_LIST_WRAPPERS = frozenset({"sorted", "list", "set", "tuple", "reversed", "enumerate"})
 
 
 class JoinSite(NamedTuple):
@@ -597,6 +605,7 @@ def _item_is_sanitized(elt: ast.expr) -> bool:
         isinstance(elt, ast.Call)
         and _name(elt.func) in _CAPS
         and len(elt.args) == 1
+        and not elt.keywords
         and _is_sanitize_call(elt.args[0])
     )
 
@@ -625,23 +634,38 @@ def _row_fields_scrubbed(elt: ast.expr, keys: frozenset[str]) -> bool:
     return bool(reads) and all(id(n) in inside for n in reads)
 
 
+def _unwrap_listed(node: ast.expr, lists: frozenset[str]) -> bool:
+    """`name`, or one order/copy builtin around it (`sorted(name)`, `list(name)`,
+    `enumerate(name)`, ...): the same items in the same reply."""
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in _LIST_WRAPPERS
+        and node.args
+    ):
+        node = node.args[0]
+    return isinstance(node, ast.Name) and node.id in lists
+
+
 def _join_over(node: ast.Call, lists: frozenset[str]) -> ast.expr | None:
-    """The per-item expression of `<str>.join(...)` over a listed name, else None.
-    A bare `sep.join(name)` has the name itself as its item."""
+    """The per-item expression of `<sep>.join(...)` over a listed name, else None.
+    A bare `sep.join(name)` has the name itself as its item. The separator is a
+    string literal or a variable (`sep.join(...)`); `_scan_joins` treats a
+    variable separator as one line, the stricter rule."""
     if not (
         isinstance(node.func, ast.Attribute)
         and node.func.attr == "join"
-        and isinstance(node.func.value, ast.Constant)
-        and isinstance(node.func.value.value, str)
+        and (
+            (isinstance(node.func.value, ast.Constant) and isinstance(node.func.value.value, str))
+            or isinstance(node.func.value, ast.Name)
+        )
         and len(node.args) == 1
     ):
         return None
     arg = node.args[0]
-    if isinstance(arg, ast.Name):
-        return arg if arg.id in lists else None
-    if isinstance(arg, _COMPREHENSIONS) and any(
-        isinstance(g.iter, ast.Name) and g.iter.id in lists for g in arg.generators
-    ):
+    if not isinstance(arg, _COMPREHENSIONS):
+        return arg if _unwrap_listed(arg, lists) else None
+    if any(_unwrap_listed(g.iter, lists) for g in arg.generators):
         return arg.elt
     return None
 
@@ -663,8 +687,9 @@ def _scan_joins(source: str, rel: str) -> list[JoinSite]:
             elt = _join_over(node, lists) if lists else None
             if elt is not None:
                 assert isinstance(node.func, ast.Attribute)
-                assert isinstance(node.func.value, ast.Constant)
-                rows = "\n" in node.func.value.value
+                sep = node.func.value
+                # A variable separator is unknown, so it gets the one-line rule.
+                rows = isinstance(sep, ast.Constant) and "\n" in sep.value
                 bounded = (
                     isinstance(parent, ast.Call)
                     and _name(parent.func) in _CAPS
@@ -714,7 +739,8 @@ def test_s10113_every_caller_list_join_is_sanitized_and_bounded():
 def test_s10113_the_join_check_sees_every_known_site():
     """Proves the walk ran over real code, so the check can't pass vacuously.
 
-    On the Story 10.113 tree (origin/main 99e2315 plus this story): six
+    On the Story 10.113 tree (origin/main 99e2315 plus this story, and again
+    after the rebase onto ba0b195): six
     one-line joins (F1 `update_product_pricing`, F2 and the media-id join in
     `update_variant_image_binding`, `update_product_options`' value ids, F3
     `reorder_product_media`, F4 `_render_unresolved_names`) and one row join
@@ -835,6 +861,53 @@ def test_s10113_control_pair_join_shapes_the_rule_must_tell_apart():
     assert not _join_problems(
         'def reorder_product_media(unknown):\n    log_write("t", ", ".join(unknown))\n'
     )
+
+
+@pytest.mark.parametrize("wrapper", ["sorted", "list", "set", "tuple", "reversed", "enumerate"])
+def test_s10113_control_pair_join_over_a_wrapped_list(wrapper):
+    """An order/copy builtin around the listed name does not hide the join:
+    the raw form fails, the fixed form passes. `enumerate` yields pairs."""
+    target = "(i, u)" if wrapper == "enumerate" else "u"
+    raw = (
+        "def reorder_product_media(unknown):\n"
+        f'    return ", ".join(u for {target} in {wrapper}(unknown))\n'
+    )
+    fixed = (
+        "def reorder_product_media(unknown):\n"
+        f'    return cap(", ".join(sanitize_control_chars(u) for {target} in {wrapper}(unknown)))\n'
+    )
+    assert _join_problems(raw) == [("item not sanitized", "joined list not bounded")]
+    assert _join_problems(fixed) == [()]
+
+
+def test_s10113_control_pair_bare_wrapped_list_and_variable_separator():
+    fn = "def reorder_product_media(unknown):\n    sep = ', '\n    return {}\n"
+    assert _join_problems(fn.format('", ".join(sorted(unknown))')) == [
+        ("item not sanitized", "joined list not bounded")
+    ]
+    assert _join_problems(fn.format("sep.join(unknown)")) == [
+        ("item not sanitized", "joined list not bounded")
+    ]
+    assert _join_problems(
+        fn.format("cap(sep.join(sanitize_control_chars(u) for u in unknown))")
+    ) == [()]
+    # A variable that holds a newline is unknown here, so it gets the stricter
+    # one-line rule, not the row rule.
+    assert _join_problems(
+        "def _render_failed(failed):\n    nl = '\\n'\n"
+        "    return nl.join(f\"{cap(sanitize_control_chars(f['channel_name']))}\" for f in failed)\n"
+    ) == [("item not sanitized", "joined list not bounded")]
+    # An unrelated call around the listed name is still not followed.
+    assert not _join_problems(fn.format('", ".join(dedupe(unknown))'))
+
+
+def test_s10113_per_item_bound_with_a_raised_limit_is_not_sanitized():
+    """`_item_is_sanitized` refuses `limit=`, as `_is_scrubbed` does."""
+    src = (
+        "def reorder_product_media(unknown):\n"
+        '    return cap(", ".join(cap(sanitize_control_chars(u), limit=9999) for u in unknown))\n'
+    )
+    assert _join_problems(src) == [("item not sanitized",)]
 
 
 def test_s10113_control_pair_row_join_needs_the_listed_field():
