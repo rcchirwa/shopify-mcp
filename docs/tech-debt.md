@@ -23,9 +23,9 @@ Trello: https://trello.com/c/O38RE1dE (Story 10.98, Epic 10). The sibling of **S
 
 **Why short-circuiting `ShopifyError` cannot catch a transient.** `ShopifyError` and `TransientShopifyError` are siblings under `RuntimeError` (the second is not a subclass of the first), so `except ShopifyError` never matches a `TransientShopifyError`. The transient falls under rule 3 and retries. The only subclasses of `ShopifyError` are `ShopifyProtocolError` and `ShopifyTransportError`, and the fast-fail test excludes both (`not isinstance(e, ShopifyProtocolError)`). Dropping that exclusion would make both fail fast. Tests pin this (mutants M2 and M5 below).
 
-**Result contract.** The result gained `error: str or None`, the capped message of the last failed poll. A later successful poll clears it, as in `poll_job`. A failure that never clears before the budget ends is returned with `timed_out=True` and `error` set. The result also gained `status_read: bool`, True once any poll succeeded (a null node counts as a successful read). Every failed poll prints the stderr warning, the fast-fail one too. The docstring says all this.
+**Result contract.** The result gained `error: str or None`, the capped message of the last failed poll. A later successful poll clears it, as in `poll_job`. A failure that never clears before the budget ends is returned with `timed_out=True` and `error` set. The result also gained `status_read: bool`, True once a poll returned a media node. A null node does not count: it reports no status. Every failed poll prints the stderr warning, the fast-fail one too. The docstring says all this.
 
-**Renderer change.** In `upload_product_image`, when `error` is set, the line is `Note       : (poll failed: <error> — underlying write succeeded, check server-side for completion)`. It uses the shared `poll_failed_note` (10.89's helper, which applies `cap`; SEC-27), and it replaces the PROCESSING note. When no poll succeeded (`status_read` is False), the `Status` line reads `unknown (no media read succeeded)` and the audit log records `status=unknown`: the loop's starting value `PROCESSING` is not a status Shopify reported. A status read before later polls failed is shown as read. Output for a READY upload, for a genuine processing timeout and for a null node is byte for byte as before. Exact-line tests pin each.
+**Renderer change.** In `upload_product_image`, when `error` is set, the line is `Note       : (poll failed: <error> — underlying write succeeded, check server-side for completion)`. It uses the shared `poll_failed_note` (10.89's helper, which applies `cap`; SEC-27), and it replaces the PROCESSING note. When `error` is set and no media node was read (`status_read` is False), the `Status` line reads `unknown (no media read succeeded)` and the audit log records `status=unknown`: the loop's starting value `PROCESSING` is not a status Shopify reported. This covers a fast-fail on the first poll, failures on every poll, and null nodes followed by failures. A status read before later polls failed is shown as read. A null node to budget with no error keeps the old PROCESSING render. Output for a READY upload, for a genuine processing timeout and for a null node is byte for byte as before. Exact-line tests pin each.
 
 **Null node: UNRESOLVED, behavior kept.** The question: is a `null` `node(id:)` for the just-created media ever permanent, or always eventual consistency? Local evidence only (Robert, 2026-11-14: no live query). What was checked:
 - `tests/unit/shopify/admin_schema_snapshot.graphql:1612`: `node(id: ID!): Node`. The field is nullable. This says a null is possible. It does not say when.
@@ -44,7 +44,7 @@ Nothing here separates "not visible yet" from "will never exist". Settling it ne
 - `test_upload_poll_shopify_error_renders_poll_failed_not_processing_note` and `test_upload_poll_retryable_error_to_budget_renders_poll_failed`: the exact `Note` line is present. "still PROCESSING" and "Shopify will finish server-side" are not.
 - `test_upload_processing_timeout_output_is_pinned_by_exact_strings` and `test_upload_ready_output_is_pinned_by_exact_strings`: the whole reply, line by line.
 
-**Mutation check.** `PYTHONDONTWRITEBYTECODE=1`, `__pycache__` cleared, `_upload.py` restored by SHA-256 after each run (restore proved each time). Every mutant failed at least one test:
+**Mutation check (on `4521477`, the code before the review fix; M1, M5, M10 and M11 name branches that the review fix merged into one handler).** `PYTHONDONTWRITEBYTECODE=1`, `__pycache__` cleared, `_upload.py` restored by SHA-256 after each run (restore proved each time). Every mutant failed at least one test:
 | Mutant | Killed by |
 |---|---|
 | M1 delete the `ShopifyError` branch | `test_poll_shopify_error_fails_fast_with_capped_error`, `test_upload_poll_shopify_error_renders_poll_failed_not_processing_note` |
@@ -59,7 +59,22 @@ Nothing here separates "not visible yet" from "will never exist". Settling it ne
 | Own: M10 no stderr warning in the generic branch | the `[generic]` and `[transient]` retry tests |
 | Own: M11 the protocol branch returns at once | the `[protocol]` and `[transport]` retry tests, recovery tests |
 
-**Code review (2026-11-15, high).** Six findings. Fixed: (1) the `Status` line and the audit log showed `PROCESSING` when no poll succeeded; now `unknown`, through the new `status_read`. (3) The fast-fail path printed no stderr warning; now every failed poll does. (4) The protocol and generic retry branches had the same body; one handler now applies the three rules. (6) The new tests patched the global `time` module; they now patch `_upload.time` only. Deferred to the rebase onto Story 10.101: (2) this entry conflicts with Story 10.113's entry at the top of this file, and (5) the error classes move to `shopify_mcp.errors`, which does not exist on this base. New test: `test_upload_poll_status_read_then_errors_shows_the_read_status`.
+**Code review (2026-11-15, high).** Six findings. Fixed: (1) the `Status` line and the audit log showed `PROCESSING` when no poll succeeded; now `unknown`, through the new `status_read`. (3) The fast-fail path printed no stderr warning; now every failed poll does. (4) The protocol and generic retry branches had the same body; one handler now applies the three rules. (6) The new tests patched the global `time` module; they now patch `_upload.time` only. A delta review then found that a null-node read counted as a reported status, so a null node followed by failures showed `PROCESSING`; now only a non-null node sets `status_read`, and `unknown` is shown only when `error` is set, so the null-node-only render is unchanged. Deferred to the rebase onto Story 10.101: (2) this entry conflicts with Story 10.113's entry at the top of this file, and (5) the error classes move to `shopify_mcp.errors`, which does not exist on this base. New tests: `test_upload_poll_status_read_then_errors_shows_the_read_status` and `test_upload_poll_null_node_then_errors_shows_unknown_status`.
+
+**Mutation check, review fix (same method).** 11 mutants of `_upload.py`, all killed:
+| Mutant | Killed by |
+|---|---|
+| R1 drop the `ShopifyProtocolError` exclusion (protocol errors fail fast) | the `[protocol]` and `[transport]` retry and recovery tests, `test_poll_error_is_cleared_by_a_later_successful_poll` |
+| R2 `TransientShopifyError` fails fast too | the `[transient]` retry and recovery tests, the retry-to-budget render test, the read-then-errors and null-then-errors render tests |
+| R3 nothing fails fast | the two fail-fast tests |
+| R4 `status_read` never set | `test_upload_poll_status_read_then_errors_shows_the_read_status` |
+| R5 `status_read` set for a null node too | `test_poll_null_node_keeps_polling_to_budget_without_error`, `test_upload_poll_null_node_then_errors_shows_unknown_status` |
+| R6 `status_read` starts True | `test_poll_shopify_error_fails_fast_with_capped_error`, `test_poll_null_node_keeps_polling_to_budget_without_error`, the fail-fast, retry-to-budget and null-then-errors render tests |
+| R7 status known whenever `status_read` (error ignored) | `test_upload_poll_null_node_renders_processing_note_unchanged` |
+| R8 status known whenever no error (`status_read` ignored) | `test_upload_poll_status_read_then_errors_shows_the_read_status` |
+| R9 the reply always shows the starting status | the fail-fast, retry-to-budget and null-then-errors render tests |
+| R10 the log always shows the starting status | the fail-fast and null-then-errors render tests |
+| R11 no stderr warning on any failure | the fail-fast test and the four retry-to-budget tests |
 
 **Out of scope.** As in 10.89, a `TransientShopifyError` that uses up its own retries inside `execute()` can take about 15s for one poll, which is the whole media budget. Pre-existing, unchanged, no card.
 

@@ -1930,9 +1930,9 @@ def test_poll_null_node_keeps_polling_to_budget_without_error():
     assert result["preview_url"] is None
     assert result["timed_out"] is True
     assert result["error"] is None
-    # The reads succeeded, so the null node keeps the old PROCESSING render
-    # (test_upload_poll_null_node_renders_processing_note_unchanged).
-    assert result["status_read"] is True
+    # A null node reports no status. With no error, the upload still renders
+    # the old PROCESSING lines (test_upload_poll_null_node_renders_processing_note_unchanged).
+    assert result["status_read"] is False
 
 
 def test_poll_null_node_then_ready_returns_ready():
@@ -2038,6 +2038,23 @@ def test_upload_poll_status_read_then_errors_shows_the_read_status():
     assert log.call_args.args[1].endswith(" status=PROCESSING"), log.call_args
     assert f"  Note       : {poll_failed_note('HTTP 503')}" in out.splitlines()
     assert "still PROCESSING" not in out
+
+
+def test_upload_poll_null_node_then_errors_shows_unknown_status():
+    """A null node reports no status, so when the later polls fail, the reply
+    and the log say `unknown`, not the starting value PROCESSING."""
+    spare = 20
+    with patch("shopify_mcp.tools.media._upload.log_write") as log:
+        out, fc, sleep = _upload_with_poll(
+            [{"node": None}] + [TransientShopifyError("HTTP 503")] * spare
+        )
+
+    assert [c[0] for c in fc.calls].count(GET_MEDIA_STATUS) == _POLLS_TO_BUDGET
+    assert len(fc.responses) == spare - (_POLLS_TO_BUDGET - 1)
+    assert "  Status     : unknown (no media read succeeded)" in out.splitlines()
+    assert "Status     : PROCESSING" not in out
+    assert log.call_args.args[1].endswith(" status=unknown"), log.call_args
+    assert f"  Note       : {poll_failed_note('HTTP 503')}" in out.splitlines()
 
 
 def test_upload_poll_null_node_renders_processing_note_unchanged():

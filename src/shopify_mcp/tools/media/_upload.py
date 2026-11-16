@@ -210,9 +210,11 @@ def _poll_media_ready(client: ShopifyClient, product_gid: str, media_id: str) ->
     Returns dict: { status: str, preview_url: str or None, status_read: bool,
                     timed_out: bool, elapsed_s: float, error: str or None }
 
-    `status_read` is True once any poll succeeded. While it is False, `status`
-    is only the starting value "PROCESSING", not a status Shopify reported, so
-    the caller must not show it as one (Story 10.98 review).
+    `status_read` is True once a poll returned a media node, so `status` is one
+    Shopify reported. While it is False, `status` is only the starting value
+    "PROCESSING" (no poll succeeded, or every successful poll read a null
+    node). The caller must not show that as a reported status when `error` is
+    set (Story 10.98 review).
 
     `error` is the capped message of the last failed poll, and a later
     successful poll clears it. It can be set with timed_out=False (Story
@@ -251,7 +253,7 @@ def _poll_media_ready(client: ShopifyClient, product_gid: str, media_id: str) ->
             if node:
                 last["status"] = node.get("status") or "PROCESSING"
                 last["preview_url"] = ((node.get("preview") or {}).get("image") or {}).get("url")
-            last["status_read"] = True
+                last["status_read"] = True
             error = None
         except Exception as e:
             error = cap(str(e))
@@ -524,12 +526,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         poll = _poll_media_ready(client, gid, new_media_id)
         final_status = poll["status"]
         final_preview = poll["preview_url"] or initial_preview
-        # No poll succeeded: `final_status` is only the starting value, not a
-        # status Shopify reported (Story 10.98 review). Say so in the reply and
-        # the log; the poll-failed note below gives the cause.
-        status_read = poll["status_read"]
-        shown_status = final_status if status_read else "unknown (no media read succeeded)"
-        logged_status = final_status if status_read else "unknown"
+        # A poll failed and no media node was ever read: `final_status` is only
+        # the starting value, not a status Shopify reported (Story 10.98
+        # review). Say so in the reply and the log; the poll-failed note below
+        # gives the cause. With no error (a null node to budget), the
+        # PROCESSING render is kept as it was.
+        status_known = poll["status_read"] or not poll["error"]
+        shown_status = final_status if status_known else "unknown (no media read succeeded)"
+        logged_status = final_status if status_known else "unknown"
 
         # Shopify returned FAILED on processing: the media record is attached
         # to the product but unusable. Skip reorder (pointless) and surface as
