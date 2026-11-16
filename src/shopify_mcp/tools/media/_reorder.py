@@ -63,8 +63,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         current_ids = [n.get("id") for n in current_nodes]
         unknown = [m["id"] for m in parsed_moves if m["id"] not in current_ids]
         if unknown:
-            return "Error: these media ids are not attached to the product: " + ", ".join(
-                cap(sanitize_control_chars(u)) for u in unknown
+            return "Error: these media ids are not attached to the product: " + cap(
+                ", ".join(sanitize_control_chars(u) for u in unknown)
             )
 
         # Every node's stored alt is echoed here, so this is a WIDER untrusted

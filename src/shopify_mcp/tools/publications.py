@@ -453,17 +453,25 @@ def _render_failed(failed: list[dict[str, Any]]) -> str:
     caller's own channel name or a Shopify `userError.message`; as one helper
     behind four tools it should match the bound every other reflection site in
     this module applies. The `error` half is the one that matters — it is
-    Shopify-authored text of unbounded length."""
+    Shopify-authored text of unbounded length.
+
+    The name half is also sanitized (Story 10.113): an unresolved caller name
+    reaches these rows in previews and in confirmed results, and a CR/LF in it
+    forged a line. Only that field is scrubbed. The rows stay joined by "\\n",
+    and the whole block is not bounded, so no row is cut off."""
     return "\n".join(
-        f"  • {cap(str(f.get('channel_name', '?')))}: {cap(str(f.get('error')))}" for f in failed
+        f"  • {cap(sanitize_control_chars(str(f.get('channel_name', '?'))))}: "
+        f"{cap(str(f.get('error')))}"
+        for f in failed
     )
 
 
 def _render_unresolved_names(failed: list[dict[str, Any]]) -> str:
-    """Comma-joined, capped channel names for the unresolved-name refusal in
+    """Comma-joined channel names for the unresolved-name refusal in
     `set_product_publications` — distinct from `_render_failed`'s per-line
-    "name: error" rendering, which this message doesn't need."""
-    return cap(", ".join(str(f.get("channel_name", "?")) for f in failed))
+    "name: error" rendering, which this message doesn't need. Each name is
+    sanitized, then the joined list is capped (Story 10.113)."""
+    return cap(", ".join(sanitize_control_chars(str(f.get("channel_name", "?"))) for f in failed))
 
 
 def _channel_write(

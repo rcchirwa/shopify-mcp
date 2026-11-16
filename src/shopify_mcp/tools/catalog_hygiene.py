@@ -1969,8 +1969,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         # ---- Reject if any resolved gid is unknown to the product -------
         if unknown_gids:
-            head = "Error: resolved variant(s) not found on product: " + ", ".join(
-                from_gid(g) for g in unknown_gids
+            head = "Error: resolved variant(s) not found on product: " + _cap(
+                ", ".join(sanitize_control_chars(from_gid(g)) for g in unknown_gids)
             )
             return _render(
                 head,
@@ -2877,7 +2877,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if unknown_variant_gids:
             msg = (
                 f"variant GIDs not on product {cap(sanitize_control_chars(product_ref))}: "
-                + _cap(", ".join(from_gid(g) for g in unknown_variant_gids))
+                + _cap(", ".join(sanitize_control_chars(from_gid(g)) for g in unknown_variant_gids))
             )
             return _render(f"Error: {msg}", _err_payload(msg))
 
