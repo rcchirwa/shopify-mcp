@@ -88,7 +88,14 @@ from shopify_mcp.tools._response import (
 )
 from shopify_mcp.tools._scrub import cap, sanitize_control_chars
 from shopify_mcp.tools._untrusted import with_reminder, wrap, wrap_reflected
+from shopify_mcp.tools._write_tool import _CONFIRMED_MARKER, _PREVIEW_MARKER
 from shopify_mcp.tools.media._constants import MEDIA_IDS_MAX
+
+
+def _mode_marker(confirm: bool) -> str:
+    """The header marker for a branch that answers before it reads `confirm`."""
+    return _CONFIRMED_MARKER if confirm else _PREVIEW_MARKER
+
 
 # The GraphQL strings + dynamic query builders now live in
 # shopify.queries.catalog_hygiene; the data-access wrappers in
@@ -2207,10 +2214,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 product=_shape_product_snapshot(current_product),
                 alternates=alternates,
                 errors=[],
-                preview=False,
+                preview=not confirm,
             )
             header = (
-                f"Done. Update product category (no-op, already set)\n"
+                f"{_mode_marker(confirm)}"
+                f"Update product category (no-op, already set)\n"
                 f"  Product ID : {from_gid(product_gid)}\n"
                 f"  Category   : {old_category_fullname or '(unknown)'} "
                 f"({old_category_id})"
@@ -2311,7 +2319,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"'{(updated_product.get('category') or {}).get('fullName') or target_full_name or target_category_gid}'",
         )
         return _format_payload(
-            f"Done. Update product category\n{header_body}",
+            f"{_CONFIRMED_MARKER}Update product category\n{header_body}",
             payload,
             confirm_hint=False,
         )
@@ -2408,7 +2416,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         current_norm = (old_vendor or "").strip() or None
         if current_norm == new_vendor:
             text = (
-                f"Done. Update product vendor (no-op, already set)\n"
+                f"{_mode_marker(confirm)}"
+                f"Update product vendor (no-op, already set)\n"
                 f"  Product ID : {from_gid(product_gid)}\n"
                 f"  Vendor     : {_vendor_text(new_vendor)}\n"
             )
@@ -2419,14 +2428,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                     product_gid=product_gid,
                     vendor=new_vendor,
                     ok=True,
-                    preview=False,
+                    preview=not confirm,
                     errors=[],
                 )
             )
 
-        header_text = "Done." if confirm else "PREVIEW —"
+        marker = _mode_marker(confirm)
         body = (
-            f"{header_text} Update product vendor\n"
+            f"{marker}Update product vendor\n"
             f"  Product ID : {from_gid(product_gid)}\n"
             f"  Old vendor : {_vendor_text(current_norm)}\n"
             f"  New vendor : {_vendor_text(new_vendor)}\n"
@@ -2598,7 +2607,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         current_norm = (old_type or "").strip()
         if current_norm == new_type:
             text = (
-                f"Done. Update product type (no-op, already set)\n"
+                f"{_mode_marker(confirm)}"
+                f"Update product type (no-op, already set)\n"
                 f"  Product ID   : {from_gid(product_gid)}\n"
                 f"  Product type : {_type_text(new_type)}\n"
             )
@@ -2609,14 +2619,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                     product_gid=product_gid,
                     product_type=new_type,
                     ok=True,
-                    preview=False,
+                    preview=not confirm,
                     errors=[],
                 )
             )
 
-        header_text = "Done." if confirm else "PREVIEW —"
+        marker = _mode_marker(confirm)
         body = (
-            f"{header_text} Update product type\n"
+            f"{marker}Update product type\n"
             f"  Product ID   : {from_gid(product_gid)}\n"
             f"  Old type     : {_type_text(current_norm)}\n"
             f"  New type     : {_type_text(new_type)}\n"
@@ -4280,7 +4290,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # the tool MAY short-circuit to success without calling the API."
         if normalized["option_name"] is None and not normalized["values"]:
             head = (
-                f"Done. Update product options (no-op, no changes requested)\n"
+                f"{_mode_marker(confirm)}"
+                f"Update product options (no-op, no changes requested)\n"
                 f"  Product ID : {from_gid(product_gid)}\n"
                 f"  Option     : {current_option_name} [id: {normalized['option_id']}]\n"
             )
@@ -4292,7 +4303,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 + _format_options_payload(
                     product_snapshot=_shape_options_snapshot(product),
                     ok=True,
-                    preview=False,
+                    preview=not confirm,
                     errors=[],
                 )
             )
@@ -4307,7 +4318,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
         if option_name_no_op and values_no_op:
             head = (
-                f"Done. Update product options (no-op, already set)\n"
+                f"{_mode_marker(confirm)}"
+                f"Update product options (no-op, already set)\n"
                 f"  Product ID : {from_gid(product_gid)}\n"
                 f"  Option     : {current_option_name} [id: {normalized['option_id']}]\n"
             )
@@ -4319,7 +4331,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 + _format_options_payload(
                     product_snapshot=_shape_options_snapshot(product),
                     ok=True,
-                    preview=False,
+                    preview=not confirm,
                     errors=[],
                 )
             )

@@ -502,7 +502,7 @@ def test_s1069_hygiene_success_output_is_unchanged_by_the_funnel() -> None:
         ]
     )
     out = tools["update_product_vendor"](product_id="123", vendor="V", confirm=True)
-    assert out.startswith("Done. Update product vendor"), out
+    assert out.splitlines()[0] == "CONFIRMED — Update product vendor", out
     assert_unmarked(out)
 
 

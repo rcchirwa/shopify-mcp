@@ -1528,6 +1528,14 @@ def _product_update_err(field=None, message="invalid category for product"):
     }
 
 
+def _extract_json_tail_text(output: str) -> str:
+    """The raw text of the fenced ```json ...``` block (for byte-exact tail checks)."""
+    marker = "```json\n"
+    start = output.rindex(marker) + len(marker)
+    end = output.rindex("\n```")
+    return output[start:end]
+
+
 def _extract_json_tail(output: str) -> dict:
     """Pull the fenced ```json ...``` block out of a Story 9.1 tool's hybrid output.
 
@@ -1535,10 +1543,7 @@ def _extract_json_tail(output: str) -> dict:
     single line. 9.3 uses `json.dumps(..., indent=2)` via `_parse_tail`. Both
     helpers coexist — each test uses the one matching its tool's emitter.
     """
-    marker = "```json\n"
-    start = output.rindex(marker) + len(marker)
-    end = output.rindex("\n```")
-    return json.loads(output[start:end])
+    return json.loads(_extract_json_tail_text(output))
 
 
 def test_update_product_category_numeric_id_resolved_to_gid_before_mutation():
@@ -2589,7 +2594,7 @@ def test_update_product_category_preview_old_block_shows_existing_category():
     assert "gid://shopify/TaxonomyCategory/aa-1-13-10" in out
 
 
-def test_update_product_category_done_branch_strips_preview_marker():
+def test_update_product_category_confirmed_branch_strips_preview_marker():
     tools, _fc = _build(
         [
             _taxonomy_response(
@@ -2608,7 +2613,8 @@ def test_update_product_category_done_branch_strips_preview_marker():
         category="sweatshirts",
         confirm=True,
     )
-    assert out.startswith("Done. Update product category"), out
+    assert out.splitlines()[0] == "CONFIRMED — Update product category", out
+    assert "Done." not in out
     assert "PREVIEW" not in out
     assert "Reply with confirm=True" not in out
     body = _extract_json_tail(out)
@@ -2731,7 +2737,9 @@ def test_update_product_vendor_numeric_id_resolved():
     assert payload["product"]["id"] == "gid://shopify/Product/5234567890"
     assert payload["product"]["vendor"] == "Vanish"
     assert payload["errors"] == []
-    assert out.startswith("Done.")
+    assert out.splitlines()[0] == "CONFIRMED — Update product vendor", out
+    assert "Done." not in out
+    assert "PREVIEW" not in out
 
 
 def test_update_product_vendor_gid_passthrough():
@@ -3202,7 +3210,9 @@ def test_update_product_type_numeric_id_resolved():
     assert payload["product"]["id"] == "gid://shopify/Product/5234567890"
     assert payload["product"]["productType"] == "Crewneck Sweatshirt"
     assert payload["errors"] == []
-    assert out.startswith("Done.")
+    assert out.splitlines()[0] == "CONFIRMED — Update product type", out
+    assert "Done." not in out
+    assert "PREVIEW" not in out
 
 
 def test_update_product_type_gid_passthrough():
@@ -6416,7 +6426,8 @@ def test_s95_empty_delta_short_circuit():
     assert len(fc.calls) == 1  # read only
     tail = _parse_tail(out)
     assert tail["ok"] is True
-    assert tail["preview"] is False
+    # Rev2-A2: confirm defaults to False here, so the no-op tail says preview.
+    assert tail["preview"] is True
     assert tail["product"]["options"][0]["name"] == "Size"
 
 
@@ -9880,3 +9891,310 @@ def test_s1067_append_exception_after_successful_detach_still_rolls_back():
     assert "appendFailedAfterDetach" in json.dumps(tail) or "zeroMediaVariants" in json.dumps(tail)
     # And the exception text is still bounded on this path.
     assert _S1067_HUGE[: REFLECT_MAX_LEN + 1] not in out
+
+
+# ---------- Story 9.23 — mode-aware no-op labels, CONFIRMED — headers ----------
+#
+# A no-op answers before the `if not confirm` branch, so it must read the mode
+# itself: "PREVIEW — … (no-op, …)" under confirm=False and
+# "CONFIRMED — … (no-op, …)" under confirm=True. Every assertion pins the EXACT
+# first line (no startswith / substring), the exact FakeClient call list (a
+# no-op never calls the mutation) and the JSON tail byte for byte.
+
+_S923_CAT_GID = "gid://shopify/TaxonomyCategory/aa-1-13-9"
+_S923_CAT_FULL = "Apparel & Accessories > Clothing > Shirts & Tops > Sweatshirts"
+
+
+def _s923_assert_tail(out: str, expected: dict) -> None:
+    text = _extract_json_tail_text(out)
+    assert json.loads(text) == expected
+    # The four tools emit a compact one-line tail: pin the bytes, not just the value.
+    assert text == json.dumps(expected)
+
+
+def _s923_category_noop():
+    tools, fc = _build(
+        [
+            _taxonomy_response(
+                {"id": _S923_CAT_GID, "fullName": _S923_CAT_FULL, "name": "Sweatshirts"}
+            ),
+            _product_read_response(
+                category_id=_S923_CAT_GID,
+                category_full_name=_S923_CAT_FULL,
+                category_name="Sweatshirts",
+            ),
+        ]
+    )
+    call = lambda confirm: tools["update_product_category"](  # noqa: E731
+        product_id="5234567890", category="sweatshirt", confirm=confirm
+    )
+    expected = {
+        "ok": True,
+        "product": {
+            "id": "gid://shopify/Product/5234567890",
+            "title": "MCP Test Product — DO NOT PUBLISH",
+            "category": {
+                "id": _S923_CAT_GID,
+                "fullName": _S923_CAT_FULL,
+                "name": "Sweatshirts",
+            },
+        },
+        "alternates": [],
+        "errors": [],
+        "preview": False,
+    }
+    body = [
+        "  Product ID : 5234567890",
+        f"  Category   : {_S923_CAT_FULL} ({_S923_CAT_GID})",
+    ]
+    return (
+        fc,
+        call,
+        "Update product category (no-op, already set)",
+        body,
+        expected,
+        [
+            TAXONOMY_SEARCH,
+            GET_PRODUCT_CATEGORY,
+        ],
+    )
+
+
+def _s923_vendor_noop():
+    tools, fc = _build([_vendor_read(pid="123", vendor="Vanish")])
+    call = lambda confirm: tools["update_product_vendor"](  # noqa: E731
+        product_id="123", vendor="Vanish", confirm=confirm
+    )
+    expected = {
+        "ok": True,
+        "product": {"id": "gid://shopify/Product/123", "vendor": "Vanish"},
+        "errors": [],
+        "preview": False,
+    }
+    body = ["  Product ID : 123", "  Vendor     : Vanish"]
+    return (
+        fc,
+        call,
+        "Update product vendor (no-op, already set)",
+        body,
+        expected,
+        [GET_PRODUCT_VENDOR],
+    )
+
+
+def _s923_type_noop():
+    tools, fc = _build([_type_read(pid="123", product_type="Crewneck")])
+    call = lambda confirm: tools["update_product_type"](  # noqa: E731
+        product_id="123", product_type="Crewneck", confirm=confirm
+    )
+    expected = {
+        "ok": True,
+        "product": {"id": "gid://shopify/Product/123", "productType": "Crewneck"},
+        "errors": [],
+        "preview": False,
+    }
+    body = ["  Product ID   : 123", "  Product type : Crewneck"]
+    return fc, call, "Update product type (no-op, already set)", body, expected, [GET_PRODUCT_TYPE]
+
+
+_S923_OPTIONS_SNAPSHOT = {
+    "id": "gid://shopify/Product/100",
+    "options": [
+        {
+            "id": _OPT_GID,
+            "name": "Size",
+            "optionValues": [
+                {"id": _OV_M, "name": "M-CRM"},
+                {"id": _OV_L, "name": "L-CRM"},
+            ],
+        }
+    ],
+    "variants": [
+        {
+            "id": "gid://shopify/ProductVariant/501",
+            "title": "M-CRM / Cream",
+            "selectedOptions": [{"name": "Size", "value": "M-CRM"}],
+        }
+    ],
+    "variants_capped": False,
+}
+
+
+def _s923_options_noop(option):
+    def make():
+        tools, fc = _build([_options_read_response()])
+        call = lambda confirm: tools["update_product_options"](  # noqa: E731
+            product_id="100", option=option, confirm=confirm
+        )
+        expected = {
+            "ok": True,
+            "product": _S923_OPTIONS_SNAPSHOT,
+            "errors": [],
+            "preview": False,
+        }
+        body = ["  Product ID : 100", f"  Option     : Size [id: {_OPT_GID}]"]
+        label = (
+            "Update product options (no-op, no changes requested)"
+            if "name" not in option
+            else "Update product options (no-op, already set)"
+        )
+        return fc, call, label, body, expected, [GET_PRODUCT_OPTIONS]
+
+    return make
+
+
+_S923_NOOP_SITES = {
+    "category": _s923_category_noop,
+    "vendor": _s923_vendor_noop,
+    "type": _s923_type_noop,
+    "options_no_changes": _s923_options_noop({"id": _OPT_GID}),
+    "options_already_set": _s923_options_noop({"id": _OPT_GID, "name": "Size"}),
+}
+
+
+@pytest.mark.parametrize("confirm,marker", [(False, "PREVIEW — "), (True, "CONFIRMED — ")])
+@pytest.mark.parametrize("site", sorted(_S923_NOOP_SITES))
+def test_s923_noop_header_follows_the_mode(site, confirm, marker):
+    fc, call, label, body, expected, expected_calls = _S923_NOOP_SITES[site]()
+    out = call(confirm)
+    # The path ran: read happened, mutation never did, every scripted reply used.
+    assert [c[0] for c in fc.calls] == expected_calls
+    assert fc.responses == []
+    lines = out.splitlines()
+    assert lines[0] == marker + label
+    assert lines[1 : 1 + len(body)] == body
+    assert "Done." not in out
+    other = "CONFIRMED — " if confirm is False else "PREVIEW — "
+    assert other not in out
+    # No confirm hint on a no-op in either mode: nothing is left to confirm.
+    assert "Reply with confirm=True" not in out
+    # Rev2-A2: a no-op tail reports `preview` by mode. Nothing else in it changes.
+    _s923_assert_tail(out, {**expected, "preview": not confirm})
+
+
+def test_s923_markers_are_the_shared_ones_with_literal_text():
+    # One copy of the marker text: the names catalog_hygiene uses ARE the ones in
+    # tools/_write_tool.py, and the text is pinned here as literals.
+    from shopify_mcp.tools import _write_tool
+
+    assert catalog_hygiene._PREVIEW_MARKER is _write_tool._PREVIEW_MARKER
+    assert catalog_hygiene._CONFIRMED_MARKER is _write_tool._CONFIRMED_MARKER
+    assert _write_tool._PREVIEW_MARKER == "PREVIEW — "
+    assert _write_tool._CONFIRMED_MARKER == "CONFIRMED — "
+    assert catalog_hygiene._mode_marker(False) == "PREVIEW — "
+    assert catalog_hygiene._mode_marker(True) == "CONFIRMED — "
+
+
+def test_s923_options_confirmed_success_header_and_calls():
+    tools, fc = _build(
+        [
+            _options_read_response(),
+            _options_mutation_ok(
+                option_name="Sizing",
+                values=[{"id": _OV_M, "name": "Medium"}, {"id": _OV_L, "name": "L-CRM"}],
+            ),
+        ]
+    )
+    out = tools["update_product_options"](
+        product_id="100",
+        option={"id": _OPT_GID, "name": "Sizing"},
+        option_values_to_update=[{"id": _OV_M, "name": "Medium"}],
+        confirm=True,
+    )
+    assert [c[0] for c in fc.calls] == [GET_PRODUCT_OPTIONS, UPDATE_PRODUCT_OPTION]
+    assert fc.responses == []
+    assert out.splitlines()[0] == "CONFIRMED — Update product options"
+    assert "Done." not in out
+    assert "PREVIEW" not in out
+
+
+def test_s923_vendor_confirmed_success_header_and_calls():
+    tools, fc = _build([_vendor_read(pid="123", vendor="Nike"), _update_ok(pid="123")])
+    out = tools["update_product_vendor"](product_id="123", vendor="Vanish", confirm=True)
+    assert [c[0] for c in fc.calls] == [GET_PRODUCT_VENDOR, UPDATE_PRODUCT_VENDOR]
+    assert fc.responses == []
+    lines = out.splitlines()
+    assert lines[0] == "CONFIRMED — Update product vendor"
+    assert lines[1:4] == [
+        "  Product ID : 123",
+        "  Old vendor : Nike",
+        "  New vendor : Vanish",
+    ]
+    _s923_assert_tail(
+        out,
+        {
+            "ok": True,
+            "product": {"id": "gid://shopify/Product/123", "vendor": "Vanish"},
+            "errors": [],
+            "preview": False,
+        },
+    )
+
+
+def test_s923_vendor_preview_header_unchanged():
+    tools, fc = _build([_vendor_read(pid="123", vendor="Nike")])
+    out = tools["update_product_vendor"](product_id="123", vendor="Vanish", confirm=False)
+    assert [c[0] for c in fc.calls] == [GET_PRODUCT_VENDOR]
+    assert fc.responses == []
+    assert out.splitlines()[0] == "PREVIEW — Update product vendor"
+    assert "Done." not in out
+
+
+def test_s923_type_confirmed_success_header_and_calls():
+    tools, fc = _build([_type_read(pid="123", product_type="Old"), _type_update_ok(pid="123")])
+    out = tools["update_product_type"](
+        product_id="123", product_type="Crewneck Sweatshirt", confirm=True
+    )
+    assert [c[0] for c in fc.calls] == [GET_PRODUCT_TYPE, UPDATE_PRODUCT_TYPE]
+    assert fc.responses == []
+    lines = out.splitlines()
+    assert lines[0] == "CONFIRMED — Update product type"
+    assert lines[1:4] == [
+        "  Product ID   : 123",
+        "  Old type     : Old",
+        "  New type     : Crewneck Sweatshirt",
+    ]
+    _s923_assert_tail(
+        out,
+        {
+            "ok": True,
+            "product": {"id": "gid://shopify/Product/123", "productType": "Crewneck Sweatshirt"},
+            "errors": [],
+            "preview": False,
+        },
+    )
+
+
+def test_s923_type_preview_header_unchanged():
+    tools, fc = _build([_type_read(pid="123", product_type="Old")])
+    out = tools["update_product_type"](
+        product_id="123", product_type="Crewneck Sweatshirt", confirm=False
+    )
+    assert [c[0] for c in fc.calls] == [GET_PRODUCT_TYPE]
+    assert fc.responses == []
+    assert out.splitlines()[0] == "PREVIEW — Update product type"
+    assert "Done." not in out
+
+
+def test_s923_category_confirmed_success_header_and_calls():
+    tools, fc = _build(
+        [
+            _taxonomy_response(
+                {"id": _S923_CAT_GID, "fullName": _S923_CAT_FULL, "name": "Sweatshirts"}
+            ),
+            _product_read_response(),
+            _product_update_ok(),
+        ]
+    )
+    out = tools["update_product_category"](
+        product_id="5234567890", category="sweatshirts", confirm=True
+    )
+    assert [c[0] for c in fc.calls] == [
+        TAXONOMY_SEARCH,
+        GET_PRODUCT_CATEGORY,
+        UPDATE_PRODUCT_CATEGORY,
+    ]
+    assert fc.responses == []
+    assert out.splitlines()[0] == "CONFIRMED — Update product category"
+    assert "Done." not in out
+    assert "PREVIEW" not in out
