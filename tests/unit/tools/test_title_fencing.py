@@ -1486,8 +1486,15 @@ _CODES_LINE = (
 )
 
 
-def test_t5_discount_title_is_collapsed_then_fenced():
-    out, fc = _run(_DISCOUNT_CASE, {"D01": MULTILINE})
+@pytest.mark.parametrize(
+    "payload",
+    [MULTILINE, chr(10) + MULTILINE + chr(10)],
+    ids=["inner-break", "outer-breaks"],
+)
+def test_t5_discount_title_is_collapsed_then_fenced(payload):
+    # The outer line breaks tell the order apart: collapse-then-fence strips
+    # them, fence-then-collapse leaves a space inside each tag.
+    out, fc = _run(_DISCOUNT_CASE, {"D01": payload})
     _assert_path_ran(_DISCOUNT_CASE, out, fc)
     lines = out.splitlines()
     title_line = "  [1] " + OPEN + "Sale " + FORGED_LINE + CLOSE
