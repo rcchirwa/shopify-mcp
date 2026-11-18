@@ -16,11 +16,11 @@ Trello: https://trello.com/c/TPSaF5LN (Story 9.23, Epic 9). A follow-up to **Sto
 
 **Decision (Robert, 2026-11-17): approach 1, mode-aware labels. `create_collection` stays out.** A no-op says `PREVIEW — … (no-op, …)` under confirm=False and `CONFIRMED — … (no-op, …)` under confirm=True. The three confirmed headers say `CONFIRMED —`. Eight sites changed in `tools/catalog_hygiene.py` (line numbers on `05d69cf`): `:2213`, `:2314`, `:2411`, `:2427`, `:2601`, `:2617`, `:4283`, `:4310`. The options confirmed header (`:4350`) already said `CONFIRMED —`. The two other no-op returns in the module (`update_product_pricing` and `update_variant_image_binding`) come after `if not confirm`, so they were not part of this defect.
 
-**Changed.** Each site builds its label from `_PREVIEW_MARKER` / `_CONFIRMED_MARKER` in `tools/_write_tool.py` (import only; no third copy of the text). Payloads and JSON tails are byte-identical. A no-op still never calls a mutation. The operator-facing text changes on purpose.
+**Changed.** Each site builds its label from `_PREVIEW_MARKER` / `_CONFIRMED_MARKER` in `tools/_write_tool.py` (import only; no third copy of the text). A no-op still never calls a mutation. One small helper in `catalog_hygiene.py`, `_mode_marker(confirm)`, picks the marker at the seven sites that read the mode. Payloads and JSON tails are byte-identical, with one exception (Robert, amendment rev2-A2, 2026-11-18, found in code review): the five no-op tails now report `"preview": not confirm`. Before, they said `"preview": false` even under confirm=False, which disagreed with the `PREVIEW —` header. Every other tail is unchanged. The operator-facing and the machine-facing output change on purpose.
 
 **Tests.** For each of the five no-op sites, both modes: the exact first line, the body lines, the exact FakeClient call list (no mutation), `fake.responses == []`, and the JSON tail compared to an expected dict and to `json.dumps(expected)` byte for byte. (These four tools emit a compact one-line tail, not `indent=2`.) The old `startswith("Done…")` pins now assert the exact `CONFIRMED —` first line. 9.22's guard is unchanged and green.
 
-**Open (not in this story):** `create_collection` (`collections.py`, `Done. Created collection.`) has the same pattern. 9.22 and this story both left it out.
+**Open (not in this story):** the `resolve_category_metafield_value` "found" return answers before `if not confirm` with a neutral header and `"preview": false`. It has no PREVIEW or CONFIRMED label, so no header disagrees; recorded, not changed. `create_collection` (`collections.py`, `Done. Created collection.`) has the same pattern. 9.22 and this story both left it out.
 
 ---
 

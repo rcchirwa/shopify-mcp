@@ -91,6 +91,12 @@ from shopify_mcp.tools._untrusted import with_reminder, wrap, wrap_reflected
 from shopify_mcp.tools._write_tool import _CONFIRMED_MARKER, _PREVIEW_MARKER
 from shopify_mcp.tools.media._constants import MEDIA_IDS_MAX
 
+
+def _mode_marker(confirm: bool) -> str:
+    """The header marker for a branch that answers before it reads `confirm`."""
+    return _CONFIRMED_MARKER if confirm else _PREVIEW_MARKER
+
+
 # The GraphQL strings + dynamic query builders now live in
 # shopify.queries.catalog_hygiene; the data-access wrappers in
 # shopify.operations.catalog_hygiene (Story 10.25 / A5, the catalog_hygiene
@@ -2208,10 +2214,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 product=_shape_product_snapshot(current_product),
                 alternates=alternates,
                 errors=[],
-                preview=False,
+                preview=not confirm,
             )
             header = (
-                f"{_CONFIRMED_MARKER if confirm else _PREVIEW_MARKER}"
+                f"{_mode_marker(confirm)}"
                 f"Update product category (no-op, already set)\n"
                 f"  Product ID : {from_gid(product_gid)}\n"
                 f"  Category   : {old_category_fullname or '(unknown)'} "
@@ -2410,7 +2416,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         current_norm = (old_vendor or "").strip() or None
         if current_norm == new_vendor:
             text = (
-                f"{_CONFIRMED_MARKER if confirm else _PREVIEW_MARKER}"
+                f"{_mode_marker(confirm)}"
                 f"Update product vendor (no-op, already set)\n"
                 f"  Product ID : {from_gid(product_gid)}\n"
                 f"  Vendor     : {_vendor_text(new_vendor)}\n"
@@ -2422,12 +2428,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                     product_gid=product_gid,
                     vendor=new_vendor,
                     ok=True,
-                    preview=False,
+                    preview=not confirm,
                     errors=[],
                 )
             )
 
-        marker = _CONFIRMED_MARKER if confirm else _PREVIEW_MARKER
+        marker = _mode_marker(confirm)
         body = (
             f"{marker}Update product vendor\n"
             f"  Product ID : {from_gid(product_gid)}\n"
@@ -2601,7 +2607,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         current_norm = (old_type or "").strip()
         if current_norm == new_type:
             text = (
-                f"{_CONFIRMED_MARKER if confirm else _PREVIEW_MARKER}"
+                f"{_mode_marker(confirm)}"
                 f"Update product type (no-op, already set)\n"
                 f"  Product ID   : {from_gid(product_gid)}\n"
                 f"  Product type : {_type_text(new_type)}\n"
@@ -2613,12 +2619,12 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                     product_gid=product_gid,
                     product_type=new_type,
                     ok=True,
-                    preview=False,
+                    preview=not confirm,
                     errors=[],
                 )
             )
 
-        marker = _CONFIRMED_MARKER if confirm else _PREVIEW_MARKER
+        marker = _mode_marker(confirm)
         body = (
             f"{marker}Update product type\n"
             f"  Product ID   : {from_gid(product_gid)}\n"
@@ -4284,7 +4290,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # the tool MAY short-circuit to success without calling the API."
         if normalized["option_name"] is None and not normalized["values"]:
             head = (
-                f"{_CONFIRMED_MARKER if confirm else _PREVIEW_MARKER}"
+                f"{_mode_marker(confirm)}"
                 f"Update product options (no-op, no changes requested)\n"
                 f"  Product ID : {from_gid(product_gid)}\n"
                 f"  Option     : {current_option_name} [id: {normalized['option_id']}]\n"
@@ -4297,7 +4303,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 + _format_options_payload(
                     product_snapshot=_shape_options_snapshot(product),
                     ok=True,
-                    preview=False,
+                    preview=not confirm,
                     errors=[],
                 )
             )
@@ -4312,7 +4318,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
         if option_name_no_op and values_no_op:
             head = (
-                f"{_CONFIRMED_MARKER if confirm else _PREVIEW_MARKER}"
+                f"{_mode_marker(confirm)}"
                 f"Update product options (no-op, already set)\n"
                 f"  Product ID : {from_gid(product_gid)}\n"
                 f"  Option     : {current_option_name} [id: {normalized['option_id']}]\n"
@@ -4325,7 +4331,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 + _format_options_payload(
                     product_snapshot=_shape_options_snapshot(product),
                     ok=True,
-                    preview=False,
+                    preview=not confirm,
                     errors=[],
                 )
             )

@@ -1528,6 +1528,14 @@ def _product_update_err(field=None, message="invalid category for product"):
     }
 
 
+def _extract_json_tail_text(output: str) -> str:
+    """The raw text of the fenced ```json ...``` block (for byte-exact tail checks)."""
+    marker = "```json\n"
+    start = output.rindex(marker) + len(marker)
+    end = output.rindex("\n```")
+    return output[start:end]
+
+
 def _extract_json_tail(output: str) -> dict:
     """Pull the fenced ```json ...``` block out of a Story 9.1 tool's hybrid output.
 
@@ -1535,10 +1543,7 @@ def _extract_json_tail(output: str) -> dict:
     single line. 9.3 uses `json.dumps(..., indent=2)` via `_parse_tail`. Both
     helpers coexist — each test uses the one matching its tool's emitter.
     """
-    marker = "```json\n"
-    start = output.rindex(marker) + len(marker)
-    end = output.rindex("\n```")
-    return json.loads(output[start:end])
+    return json.loads(_extract_json_tail_text(output))
 
 
 def test_update_product_category_numeric_id_resolved_to_gid_before_mutation():
@@ -2589,7 +2594,7 @@ def test_update_product_category_preview_old_block_shows_existing_category():
     assert "gid://shopify/TaxonomyCategory/aa-1-13-10" in out
 
 
-def test_update_product_category_done_branch_strips_preview_marker():
+def test_update_product_category_confirmed_branch_strips_preview_marker():
     tools, _fc = _build(
         [
             _taxonomy_response(
@@ -6421,7 +6426,8 @@ def test_s95_empty_delta_short_circuit():
     assert len(fc.calls) == 1  # read only
     tail = _parse_tail(out)
     assert tail["ok"] is True
-    assert tail["preview"] is False
+    # Rev2-A2: confirm defaults to False here, so the no-op tail says preview.
+    assert tail["preview"] is True
     assert tail["product"]["options"][0]["name"] == "Size"
 
 
@@ -9899,15 +9905,8 @@ _S923_CAT_GID = "gid://shopify/TaxonomyCategory/aa-1-13-9"
 _S923_CAT_FULL = "Apparel & Accessories > Clothing > Shirts & Tops > Sweatshirts"
 
 
-def _s923_tail_text(out: str) -> str:
-    marker = "```json\n"
-    start = out.rindex(marker) + len(marker)
-    end = out.rindex("\n```")
-    return out[start:end]
-
-
 def _s923_assert_tail(out: str, expected: dict) -> None:
-    text = _s923_tail_text(out)
+    text = _extract_json_tail_text(out)
     assert json.loads(text) == expected
     # The four tools emit a compact one-line tail: pin the bytes, not just the value.
     assert text == json.dumps(expected)
@@ -10069,19 +10068,44 @@ def test_s923_noop_header_follows_the_mode(site, confirm, marker):
     assert other not in out
     # No confirm hint on a no-op in either mode: nothing is left to confirm.
     assert "Reply with confirm=True" not in out
-    _s923_assert_tail(out, expected)
+    # Rev2-A2: a no-op tail reports `preview` by mode. Nothing else in it changes.
+    _s923_assert_tail(out, {**expected, "preview": not confirm})
 
 
-@pytest.mark.parametrize("confirm", [False, True])
-def test_s923_noop_labels_are_the_shared_markers(confirm):
-    # The label is built from tools/_write_tool.py's markers, not a third copy.
-    from shopify_mcp.tools._write_tool import _CONFIRMED_MARKER, _PREVIEW_MARKER
+def test_s923_markers_are_the_shared_ones_with_literal_text():
+    # One copy of the marker text: the names catalog_hygiene uses ARE the ones in
+    # tools/_write_tool.py, and the text is pinned here as literals.
+    from shopify_mcp.tools import _write_tool
 
-    fc, call, label, _body, _expected, _calls = _s923_vendor_noop()
-    out = call(confirm)
-    marker = _CONFIRMED_MARKER if confirm else _PREVIEW_MARKER
-    assert out.splitlines()[0] == marker + label
+    assert catalog_hygiene._PREVIEW_MARKER is _write_tool._PREVIEW_MARKER
+    assert catalog_hygiene._CONFIRMED_MARKER is _write_tool._CONFIRMED_MARKER
+    assert _write_tool._PREVIEW_MARKER == "PREVIEW — "
+    assert _write_tool._CONFIRMED_MARKER == "CONFIRMED — "
+    assert catalog_hygiene._mode_marker(False) == "PREVIEW — "
+    assert catalog_hygiene._mode_marker(True) == "CONFIRMED — "
+
+
+def test_s923_options_confirmed_success_header_and_calls():
+    tools, fc = _build(
+        [
+            _options_read_response(),
+            _options_mutation_ok(
+                option_name="Sizing",
+                values=[{"id": _OV_M, "name": "Medium"}, {"id": _OV_L, "name": "L-CRM"}],
+            ),
+        ]
+    )
+    out = tools["update_product_options"](
+        product_id="100",
+        option={"id": _OPT_GID, "name": "Sizing"},
+        option_values_to_update=[{"id": _OV_M, "name": "Medium"}],
+        confirm=True,
+    )
+    assert [c[0] for c in fc.calls] == [GET_PRODUCT_OPTIONS, UPDATE_PRODUCT_OPTION]
     assert fc.responses == []
+    assert out.splitlines()[0] == "CONFIRMED — Update product options"
+    assert "Done." not in out
+    assert "PREVIEW" not in out
 
 
 def test_s923_vendor_confirmed_success_header_and_calls():
