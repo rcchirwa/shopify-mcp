@@ -52,7 +52,7 @@ from shopify_mcp.tools._response import (
     with_confirm_hint,
 )
 from shopify_mcp.tools._scrub import cap, sanitize_control_chars
-from shopify_mcp.tools._untrusted import with_reminder, wrap_reflected
+from shopify_mcp.tools._untrusted import with_reminder, wrap, wrap_reflected
 from shopify_mcp.tools._write_tool import _outcome_header
 
 # The GraphQL strings now live in shopify.queries.publications. They are re-exported
@@ -337,8 +337,16 @@ def _render_publications_report(
         for pid in sorted(not_published_ids, key=lambda p: cache["by_id"][p]["name"])
     ]
 
-    # reflect-exempt[handle]: Shopify returned this resolved handle
-    meta = [f"{resource_label}: {title}", f"Handle: {handle}", f"ID: {from_gid(gid)}", *extra_meta]
+    # The store title is fenced here, once (Story 10.112); each read tool
+    # adds the reminder to the value it returns.
+    shown_title = wrap(title) if title else title
+    meta = [
+        f"{resource_label}: {shown_title}",
+        # reflect-exempt[handle]: Shopify returned this resolved handle
+        f"Handle: {handle}",
+        f"ID: {from_gid(gid)}",
+        *extra_meta,
+    ]
     return (
         "\n".join(meta) + "\n\n"
         f"Published to ({len(published_nodes)}):\n"
@@ -552,7 +560,10 @@ def _channel_write(
         preview += "\n  Failed to resolve:\n" + _render_failed(failed)
 
     if not confirm:
-        return with_confirm_hint(_with_incomplete_note(preview, assigned_incomplete, scheduled))
+        # `meta_line` holds a fenced store title (Story 10.112).
+        return with_confirm_hint(
+            with_reminder(_with_incomplete_note(preview, assigned_incomplete, scheduled))
+        )
 
     done: list[dict[str, Any]] = []
     apply_failed = list(failed)
@@ -704,7 +715,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             cache=channel_cache,
             with_assigned=True,
         )
-        return _with_incomplete_note(report, assigned_incomplete)
+        return with_reminder(_with_incomplete_note(report, assigned_incomplete))
 
     def _resolve_target_nodes(
         channel_names: list[str], publication_ids: list[str]
@@ -776,7 +787,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             client,
             direction="publish",
             resource_label="product",
-            meta_line=f"Product: {title} (handle: {prod_handle}, id: {from_gid(gid)})",
+            meta_line=f"Product: {wrap(title) if title else title} (handle: {prod_handle}, id: {from_gid(gid)})",
             gid=gid,
             rps=rps,
             targets=targets,
@@ -852,7 +863,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             client,
             direction="unpublish",
             resource_label="product",
-            meta_line=f"Product: {title} (handle: {prod_handle}, id: {from_gid(gid)})",
+            meta_line=f"Product: {wrap(title) if title else title} (handle: {prod_handle}, id: {from_gid(gid)})",
             gid=gid,
             rps=rps,
             targets=targets,
@@ -895,7 +906,13 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return with_reminder(f"Error: {cap(str(e))}\n{SCOPE_HINT}"), "", "", []
         if not gid:
             return "No collection found.", "", "", []
-        return "", gid, f"Collection: {title} (handle: {col_handle}, id: {from_gid(gid)})", rps
+        shown_title = wrap(title) if title else title
+        return (
+            "",
+            gid,
+            f"Collection: {shown_title} (handle: {col_handle}, id: {from_gid(gid)})",
+            rps,
+        )
 
     @server.tool(annotations=READ_ONLY)
     def get_collection_publications(handle: str = "") -> str:
@@ -919,14 +936,16 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not gid:
             return "No collection found."
 
-        return _render_publications_report(
-            resource_label="Collection",
-            title=title,
-            handle=col_handle,
-            gid=gid,
-            rps=rps,
-            cache=channel_cache,
-            extra_meta=(f"Type: {kind}",),
+        return with_reminder(
+            _render_publications_report(
+                resource_label="Collection",
+                title=title,
+                handle=col_handle,
+                gid=gid,
+                rps=rps,
+                cache=channel_cache,
+                extra_meta=(f"Type: {kind}",),
+            )
         )
 
     def _collection_channel_write(
@@ -1116,7 +1135,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         preview = (
             f"PREVIEW — Set product publications (declarative)\n"
-            f"  Product: {title} (handle: {prod_handle}, id: {from_gid(gid)})\n"
+            f"  Product: {wrap(title) if title else title} (handle: {prod_handle}, id: {from_gid(gid)})\n"
             f"  Would add (publish):\n"
             f"{_render_channel_lines(added_nodes, marked=newly_assigned, mark=_ASSIGNED_NOTE)}\n"
             f"  Would remove (unpublish):\n"
@@ -1128,7 +1147,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             preview += "\n  Failed to resolve:\n" + _render_failed(failed)
 
         if not confirm:
-            return with_confirm_hint(_with_incomplete_note(preview, assigned_incomplete, scheduled))
+            return with_confirm_hint(
+                with_reminder(_with_incomplete_note(preview, assigned_incomplete, scheduled))
+            )
 
         if failed:
             # A declarative set with an unresolved channel name must not run
@@ -1208,7 +1229,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
         body = (
             f"{header}\n"
-            f"  Product: {title} (handle: {prod_handle}, id: {from_gid(gid)})\n"
+            f"  Product: {wrap(title) if title else title} (handle: {prod_handle}, id: {from_gid(gid)})\n"
             f"  Added (published):\n"
             f"{_render_channel_lines(added_applied, marked=newly_assigned, mark=_ASSIGNED_NOTE)}\n"
             f"  Removed (unpublished):\n"

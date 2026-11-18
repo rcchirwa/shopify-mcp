@@ -175,8 +175,11 @@ def test_list_product_media_all_empty_alts_omit_reminder():
         [_product_media_read([_media_node(MEDIA_A, alt=""), _media_node(MEDIA_B, alt="")])]
     )
     out = tools["list_product_media"](product_id="123")
-    assert INJECTION_REMINDER not in out
-    assert "<UNTRUSTED-DATA>" not in out
+    # Story 10.112 fences the product title, which brings one reminder. With
+    # that fence and reminder taken out, the empty alts add nothing.
+    rest = out.removeprefix(INJECTION_REMINDER).replace(fenced("Hoodie"), "Hoodie")
+    assert INJECTION_REMINDER not in rest
+    assert "<UNTRUSTED-DATA>" not in rest
 
 
 def test_list_product_media_empty():

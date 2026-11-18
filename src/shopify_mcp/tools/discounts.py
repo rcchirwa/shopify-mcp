@@ -32,7 +32,7 @@ from shopify_mcp.tools._response import (
     with_confirm_hint,
 )
 from shopify_mcp.tools._scrub import cap, sanitize_control_chars
-from shopify_mcp.tools._untrusted import _NON_CF_DEFAULT_IGNORABLE, with_reminder
+from shopify_mcp.tools._untrusted import _NON_CF_DEFAULT_IGNORABLE, with_reminder, wrap
 from shopify_mcp.tools._write_tool import _confirmed_from_preview
 
 # Shopify rejects a 0% or negative discount, and a >100% value would zero out
@@ -285,15 +285,20 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             # all customers" line would otherwise forge its own eligibility
             # line, the exact wrong-finding class this story exists to
             # prevent.
+            #
+            # Collapse first, then fence (Story 10.112, R5): the fence marks
+            # the title as store text, and the collapse still keeps it on one
+            # line. An empty title renders as before, with no fence.
             title = _collapse_to_single_line(discount.get("title", ""))
+            shown_title = wrap(title) if title else title
             lines.append(
-                f"  [{from_gid(node['id'])}] {title}\n"
+                f"  [{from_gid(node['id'])}] {shown_title}\n"
                 f"    Codes: {codes_str} | {value_line} | Status: {discount.get('status', '')} | "
                 f"Usage limit: {usage_text} | "
                 f"Ends: {discount.get('endsAt') or 'no expiry'}\n"
                 f"    Eligibility: {_eligibility_text(discount.get('context'))}"
             )
-        return "\n".join(lines)
+        return with_reminder("\n".join(lines))
 
     @server.tool(annotations=CREATE)
     def create_discount_code(

@@ -33,7 +33,7 @@ from shopify_mcp.tools._response import (
     with_confirm_hint,
 )
 from shopify_mcp.tools._scrub import cap, sanitize_control_chars
-from shopify_mcp.tools._untrusted import with_reminder
+from shopify_mcp.tools._untrusted import with_reminder, wrap
 from shopify_mcp.tools._write_tool import _CONFIRMED_MARKER, _outcome_header, write_gate
 
 # The GraphQL strings now live in shopify.queries.inventory. They are re-exported
@@ -82,15 +82,19 @@ def _tracked_display(current: bool | None) -> bool | str:
 def _variant_label(v: dict) -> str:
     # Fall back to the numeric variant id when a variant has no title,
     # so the Failed list stays actionable instead of printing "None".
-    return v.get("title") or f"variant {from_gid(v.get('id', ''))}"
+    # A store title is fenced here, once (Story 10.112); the fallback is ours
+    # and stays raw. Callers render the result as-is.
+    title = v.get("title")
+    return wrap(title) if title else f"variant {from_gid(v.get('id', ''))}"
 
 
 def _pair_prefix(variant: dict, level: dict, loc_gid: str | None) -> str:
     """Render the leading identity segment of a (variant, location) pair line."""
     loc = level.get("location") or {}
     loc_name = loc.get("name") or f"id {from_gid(loc_gid or '')}"
+    title = wrap(variant["title"]) if variant["title"] else variant["title"]
     return (
-        f"    • {variant['title']} @ {loc_name} — "
+        f"    • {title} @ {loc_name} — "
         f"variant_id: {from_gid(variant['id'])}, "
         f"location: {from_gid(loc_gid or '')}"
     )
@@ -120,14 +124,16 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not product:
             return f"Product {cap(sanitize_control_chars(product_id))} not found."
 
+        product_title = wrap(product["title"]) if product["title"] else product["title"]
         lines = [
-            f"Inventory for: {product['title']} (id: {cap(sanitize_control_chars(product_id))})\n"
+            f"Inventory for: {product_title} (id: {cap(sanitize_control_chars(product_id))})\n"
         ]
         for variant in variants:
             inv_item = variant.get("inventoryItem") or {}
             levels = (inv_item.get("inventoryLevels") or {}).get("nodes", []) or []
+            variant_title = wrap(variant["title"]) if variant["title"] else variant["title"]
             lines.append(
-                f"  • {variant['title']} — SKU: {variant.get('sku', 'N/A')} "
+                f"  • {variant_title} — SKU: {variant.get('sku', 'N/A')} "
                 f"— variant_id: {from_gid(variant['id'])}"
             )
             if not levels:
@@ -151,7 +157,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 "  WARNING: variant pagination stopped short — "
                 "additional variants (if any) are not shown here."
             )
-        return "\n".join(lines)
+        return with_reminder("\n".join(lines))
 
     @server.tool(annotations=OVERWRITE)
     def update_inventory(
@@ -255,8 +261,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         def _variant_line(v: dict[str, Any], suffix: str) -> str:
             inv_item = v.get("inventoryItem") or {}
+            v_title = wrap(v["title"]) if v["title"] else v["title"]
             return (
-                f"    • {v['title']} — variant_id: {from_gid(v['id'])}, "
+                f"    • {v_title} — variant_id: {from_gid(v['id'])}, "
                 f"inventory_item: {from_gid(inv_item.get('id', ''))} — {suffix}"
             )
 
@@ -292,7 +299,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         preview = (
             f"PREVIEW — Variant inventory tracking update\n"
-            f"  Product : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
+            f"  Product : {wrap(title) if title else title} (id: {cap(sanitize_control_chars(product_id))})\n"
             f"  Target  : tracked={tracked}\n"
             f"  Would change ({len(to_change)}):\n{change_lines}\n"
             f"  Unchanged ({len(unchanged)}):\n{unchanged_lines}"
@@ -301,7 +308,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
 
         if not confirm:
-            return with_confirm_hint(preview)
+            return with_confirm_hint(with_reminder(preview))
 
         changed = []
         failed = []
@@ -370,7 +377,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # `failed_block` can carry fenced Shopify text (Story 10.69).
         return with_reminder(
             f"{header}\n"
-            f"  Product : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
+            f"  Product : {wrap(title) if title else title} (id: {cap(sanitize_control_chars(product_id))})\n"
             f"  Target  : tracked={tracked}\n"
             f"  Changed ({len(changed)}):\n{changed_lines}\n"
             f"  Unchanged ({len(unchanged)}):\n{unchanged_lines}"
@@ -512,7 +519,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         target_loc_label = location_id or "all locations"
         preview = (
             f"PREVIEW — Variant inventory quantity update\n"
-            f"  Product     : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
+            f"  Product     : {wrap(title) if title else title} (id: {cap(sanitize_control_chars(product_id))})\n"
             f"  Target qty  : {quantity}\n"
             f"  Target loc  : {cap(sanitize_control_chars(target_loc_label))}\n"
             f"  Would change ({len(to_write)}):\n{write_lines}\n"
@@ -524,7 +531,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
 
         if not confirm:
-            return with_confirm_hint(preview)
+            return with_confirm_hint(with_reminder(preview))
 
         # Fast path: nothing writable. Happens when every pair is already at
         # the target, or the only pairs needing change all had missing ids.
@@ -552,9 +559,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
             if header.startswith(_CONFIRMED_MARKER):
                 header += " (no-op)"
-            return (
+            return with_reminder(
                 f"{header}\n"
-                f"  Product     : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
+                f"  Product     : {wrap(title) if title else title} (id: {cap(sanitize_control_chars(product_id))})\n"
                 f"  Target qty  : {quantity}\n"
                 f"  Target loc  : {cap(sanitize_control_chars(target_loc_label))}\n"
                 f"  Changed     : (none — nothing writable at target)\n"
@@ -598,9 +605,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # Story 9.25: a skipped pair is a requested change that was not
         # written, so writes plus skips read PARTIAL (as in 9.24's tracking tool).
         header = _outcome_header("Variant inventory quantity update", len(to_write), len(skipped))
-        return (
+        return with_reminder(
             f"{header}\n"
-            f"  Product     : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
+            f"  Product     : {wrap(title) if title else title} (id: {cap(sanitize_control_chars(product_id))})\n"
             f"  Target qty  : {quantity}\n"
             f"  Target loc  : {cap(sanitize_control_chars(target_loc_label))}\n"
             f"  Changed ({len(to_write)}):\n{changed_lines}\n"

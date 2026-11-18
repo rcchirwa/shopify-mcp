@@ -102,7 +102,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         raw_desc = col.get("descriptionHtml") or ""
         desc = wrap(raw_desc) if raw_desc else "(no description)"
         head = (
-            f"Collection: {col['title']}\n"
+            f"Collection: {wrap(col['title']) if col['title'] else col['title']}\n"
             f"Handle: {col['handle']}\n"
             f"ID: {from_gid(col['id'])}\n"
             f"Type: {col_type}\n"
@@ -141,7 +141,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"  ID     : {from_gid(col_id)}",
         ]
         if new_title:
-            preview_lines.append(f"  Title  : '{col['title']}' → '{new_title}'")
+            # Old title is store content (fenced); new_title is the caller's
+            # own input (raw). Story 10.112.
+            old_title = wrap(col["title"]) if col["title"] else col["title"]
+            preview_lines.append(f"  Title  : '{old_title}' → '{new_title}'")
         if new_description:
             # Old half is stored store content (fenced); the new half is the
             # caller's own input (left raw). The truncation marker stays outside
@@ -371,14 +374,18 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         col_id = col["id"]
 
+        col_title = wrap(col["title"]) if col["title"] else col["title"]
+        # No reminder on `preview` itself: the confirmed body below embeds it
+        # and gets its own with_reminder(), and one response carries one
+        # reminder (Story 10.112, R10). The preview return adds it once.
         preview = (
             f"PREVIEW — {op['present_verb']} product {op['preposition']} collection\n"
-            f"  Collection : {col['title']} (handle: {cap(sanitize_control_chars(handle))}, id: {from_gid(col_id)})\n"
+            f"  Collection : {col_title} (handle: {cap(sanitize_control_chars(handle))}, id: {from_gid(col_id)})\n"
             f"  Product    : {cap(sanitize_control_chars(product_id))}"
         )
 
         if not confirm:
-            return with_confirm_hint(preview)
+            return with_confirm_hint(with_reminder(preview))
 
         result = op["op"](client, col_id, product_id)
         payload = result.get(op["result_key"], {}) or {}

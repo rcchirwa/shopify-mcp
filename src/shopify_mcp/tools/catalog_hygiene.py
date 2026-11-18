@@ -1962,7 +1962,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         warning_block = f"\n{at_cap_warning}" if at_cap_warning else ""
         preview = (
             f"PREVIEW — Product pricing update\n"
-            f"  Product : {title} (id: {cap(sanitize_control_chars(product_ref))})\n"
+            f"  Product : {wrap(title) if title else title} (id: {cap(sanitize_control_chars(product_ref))})\n"
             f"  Targets ({len(entries)}):\n" + "\n".join(preview_lines) + warning_block
         )
 
@@ -1996,7 +1996,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
             head = (
                 f"CONFIRMED — Product pricing update (no-op)\n"
-                f"  Product : {title} (id: {cap(sanitize_control_chars(product_ref))})\n"
+                f"  Product : {wrap(title) if title else title} (id: {cap(sanitize_control_chars(product_ref))})\n"
                 f"  Targets : {len(entries)} (all already at target values)"
                 f"{warning_block}"
             )
@@ -2082,7 +2082,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
         head = (
             f"CONFIRMED — Product pricing update\n"
-            f"  Product : {title} (id: {cap(sanitize_control_chars(product_ref))})\n"
+            f"  Product : {wrap(title) if title else title} (id: {cap(sanitize_control_chars(product_ref))})\n"
             f"  Updated ({len(updated)}):\n{updated_lines}"
             f"{warning_block}"
         )
@@ -3005,7 +3005,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         preview_blocks = [_variant_block(r) for r in routes]
         preview_head = (
             f"PREVIEW — Bind variant images\n"
-            f"  Product : {title} (id: {cap(sanitize_control_chars(product_ref))})\n"
+            f"  Product : {wrap(title) if title else title} (id: {cap(sanitize_control_chars(product_ref))})\n"
             f"  Variants ({len(routes)}) — net-new media bindings: {total_new}"
             + (f" — WARNING: {will_lose_count} binding(s) will be lost" if will_lose_count else "")
             + "\n"
@@ -3048,7 +3048,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             )
             head = (
                 f"CONFIRMED — Bind variant images (no-op)\n"
-                f"  Product : {title} (id: {cap(sanitize_control_chars(product_ref))})\n"
+                f"  Product : {wrap(title) if title else title} (id: {cap(sanitize_control_chars(product_ref))})\n"
                 f"  Variants ({len(routes)}) — all requested media already bound."
             )
             return _render(
@@ -3186,7 +3186,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
         head = (
             f"CONFIRMED — Bind variant images\n"
-            f"  Product : {title} (id: {cap(sanitize_control_chars(product_ref))})\n"
+            f"  Product : {wrap(title) if title else title} (id: {cap(sanitize_control_chars(product_ref))})\n"
             f"  Variants ({len(routes)}) — net-new media bindings: {total_new}\n"
             + "\n".join(preview_blocks)
         )
@@ -4046,7 +4046,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         total_found = len(metafields_out) + variant_mf_count
 
         # ----- Head text -------------------------------------------------
-        title = product_summary["title"] or "(untitled)"
+        # Store title fenced, "(untitled)" fallback raw (Story 10.112). The
+        # JSON tail keeps the raw product_summary.
+        raw_title = product_summary["title"]
+        title = wrap(raw_title) if raw_title else "(untitled)"
         pid_display = from_gid(product_summary["id"]) if product_summary["id"] else "(unknown)"
         handle_display = product_summary["handle"] or "(unknown)"
         head_lines = [
@@ -4084,9 +4087,8 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 for v in variant_buckets:
                     if not v["metafields"]:
                         continue
-                    head_lines.append(
-                        f"  Variant {v['variantTitle'] or '(untitled)'} [{v['sku'] or 'no-sku'}]:"
-                    )
+                    v_title = wrap(v["variantTitle"]) if v["variantTitle"] else "(untitled)"
+                    head_lines.append(f"  Variant {v_title} [{v['sku'] or 'no-sku'}]:")
                     for m in v["metafields"]:
                         head_lines.append(
                             # reflect-exempt[namespace]: Shopify returned this metafield namespace

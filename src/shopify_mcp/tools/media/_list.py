@@ -8,7 +8,7 @@ from shopify_mcp.client import ShopifyClient
 from shopify_mcp.tools._annotations import READ_ONLY
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._scrub import cap, sanitize_control_chars
-from shopify_mcp.tools._untrusted import INJECTION_REMINDER, wrap
+from shopify_mcp.tools._untrusted import with_reminder, wrap
 from shopify_mcp.tools.media._common import _as_product_gid
 from shopify_mcp.tools.media._constants import _MEDIA_PAGE_CAP
 from shopify_mcp.tools.media._graphql import GET_PRODUCT_MEDIA
@@ -21,9 +21,11 @@ def _render_media_list(
     if not product:
         return "No product found."
     pid = from_gid(product.get("id", ""))
-    header = f"Media for product {pid} ({product.get('title', '')}) — {len(nodes)} item(s):"
+    # The store title is fenced; an empty one renders as before (Story 10.112).
+    title = product.get("title", "")
+    header = f"Media for product {pid} ({wrap(title) if title else title}) — {len(nodes)} item(s):"
     if not nodes:
-        return header + "\n  (no media)"
+        return with_reminder(header + "\n  (no media)")
 
     lines = [header]
     for idx, n in enumerate(nodes, start=1):
@@ -45,14 +47,10 @@ def _render_media_list(
             f"  WARNING: media pagination stopped short ({len(nodes)} media shown) — "
             f"additional media exist but are not listed here."
         )
-    body = "\n".join(lines)
-    # Prefix the injection reminder only when at least one node actually has a
-    # non-empty alt (so a wrapped <UNTRUSTED-DATA> value is present). Node
-    # presence alone doesn't imply alt presence — the same rule `with_reminder`
-    # derives from the body, so the reminder never references an absent tag.
-    if any(n.get("alt") for n in nodes):
-        body = INJECTION_REMINDER + body
-    return body
+    # with_reminder derives the condition from the body: the reminder appears
+    # only when a fenced title or alt is present (Story 10.112 replaced the
+    # hand-rolled alt gate that was here).
+    return with_reminder("\n".join(lines))
 
 
 def register(server: FastMCP, client: ShopifyClient) -> None:

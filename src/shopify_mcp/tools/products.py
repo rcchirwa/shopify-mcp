@@ -180,8 +180,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return "No products found." + (PRODUCTS_TRUNCATED_WARNING if capped else "")
         lines = []
         for p in products:
+            # Store titles are fenced; a falsy one renders as before (Story 10.112).
             variants = ", ".join(
-                f"{v['title']} (id:{from_gid(v['id'])})"
+                f"{wrap(v['title']) if v['title'] else v['title']} (id:{from_gid(v['id'])})"
                 # `or {}`, not `.get("variants", {})`: a null connection is a
                 # present key holding None, which the default form does not
                 # catch — it raised AttributeError here while
@@ -189,8 +190,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 # same shape. Found in review; the two now agree.
                 for v in (p.get("variants") or {}).get("nodes", [])
             )
+            title = wrap(p["title"]) if p["title"] else p["title"]
             lines.append(
-                f"[{from_gid(p['id'])}] {p['title']} | handle: {p['handle']} | status: {p['status']}\n"
+                f"[{from_gid(p['id'])}] {title} | handle: {p['handle']} | status: {p['status']}\n"
                 f"  Variants: {variants}"
             )
         result = "\n\n".join(lines)
@@ -206,11 +208,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # PRODUCTS_TRUNCATED_WARNING, which is a different truncation with a
         # different remedy and must stay the final text.
         #
-        # This placement does NOT put the warnings out of reach of store text —
-        # the last product's title still abuts the block, exactly as it already
-        # abuts PRODUCTS_TRUNCATED_WARNING. Titles are unfenced everywhere in
-        # this repo, so no placement is forgery-proof; see the 10.77 entry in
-        # docs/tech-debt.md for why fencing them is a convention-wide change.
+        # Store titles are fenced since Story 10.112, so a title that holds a
+        # line break stays inside its own <UNTRUSTED-DATA> region and cannot
+        # write a bare line next to these warnings. The output then starts
+        # with the injection reminder. Placement is still not the defence;
+        # the fence is. See the 10.112 entry in docs/tech-debt.md.
         #
         # Collected then joined, rather than concatenated in the loop, matching
         # the shape get_orders uses. The blank line keeps the first warning from
@@ -227,7 +229,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             result += "\n\n" + "\n".join(variant_warnings)
         if capped:
             result += PRODUCTS_TRUNCATED_WARNING
-        return result
+        return with_reminder(result)
 
     @server.tool(annotations=READ_ONLY)
     def get_product(product_id: str = "", handle: str = "") -> str:
@@ -246,19 +248,19 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return "No product found."
 
         variants = "\n".join(
-            f"  • {v['title']} — SKU: {v.get('sku', 'N/A')} — id: {from_gid(v['id'])}"
+            f"  • {wrap(v['title']) if v['title'] else v['title']} — SKU: {v.get('sku', 'N/A')} — id: {from_gid(v['id'])}"
             for v in variants_nodes
         )
         result = (
             f"ID: {from_gid(p['id'])}\n"
-            f"Title: {p['title']}\n"
+            f"Title: {wrap(p['title']) if p['title'] else p['title']}\n"
             f"Handle: {p['handle']}\n"
             f"Status: {p['status']}\n"
             f"Variants:\n{variants}"
         )
         if capped:
             result += "\nWARNING: variant pagination stopped short — additional variants (if any) are not shown here."
-        return result
+        return with_reminder(result)
 
     @server.tool(annotations=OVERWRITE)
     def update_product_title(
@@ -292,12 +294,17 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             target_handle = old_handle
             handle_block = "  Handle     : UNCHANGED (preserved; change_handle=False)"
 
+        # The raw old title feeds the validation diff and the audit log (R9 of
+        # Story 10.112); only the displayed copy is fenced. new_title is the
+        # caller's own text, so it stays raw.
         validation = format_validation_diff(old_title, new_title)
 
-        preview = (
+        # The reminder goes on the preview once, before write_gate: its
+        # confirmed path relabels this same string.
+        preview = with_reminder(
             f"PREVIEW — Product title update\n"
             f"  Product ID : {cap(sanitize_control_chars(product_id))}\n"
-            f"  Old title  : {old_title}\n"
+            f"  Old title  : {wrap(old_title) if old_title else old_title}\n"
             f"  New title  : {new_title}\n"
             f"{handle_block}\n\n"
             f"Naming validation:\n{validation}"
@@ -570,10 +577,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"Products in '{cap(sanitize_control_chars(collection_handle))}' ({_count_phrase(product_nodes, capped)}):\n"
         ]
         for p in product_nodes:
-            lines.append(
-                f"  [{from_gid(p['id'])}] {p['title']} | handle: {p['handle']} | {p['status']}"
-            )
-        return "\n".join(lines) + (PRODUCTS_TRUNCATED_WARNING if capped else "")
+            title = wrap(p["title"]) if p["title"] else p["title"]
+            lines.append(f"  [{from_gid(p['id'])}] {title} | handle: {p['handle']} | {p['status']}")
+        return with_reminder("\n".join(lines) + (PRODUCTS_TRUNCATED_WARNING if capped else ""))
 
     @server.tool(annotations=READ_ONLY)
     def get_product_description(product_id: str = "", handle: str = "") -> str:
@@ -603,7 +609,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         body = p.get("bodyHtml") or ""
         head = (
             f"ID: {from_gid(p['id'])}\n"
-            f"Title: {p['title']}\n"
+            f"Title: {wrap(p['title']) if p['title'] else p['title']}\n"
             f"Handle: {p['handle']}\n"
             f"body_html:\n{wrap(body) if body else ''}"
         )
@@ -660,7 +666,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             blocks.append(
                 f"\n---\n"
                 f"ID: {from_gid(p['id'])}\n"
-                f"Title: {p['title']}\n"
+                f"Title: {wrap(p['title']) if p['title'] else p['title']}\n"
                 f"Handle: {p['handle']}\n"
                 f"Status: {p['status']}\n"
                 f"body_html:\n{wrap(body) if body else ''}"
@@ -700,7 +706,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return "No product found."
 
         variants = "\n".join(
-            f"  • {v['title']} — SKU: {v.get('sku', 'N/A')} — id: {from_gid(v['id'])}"
+            f"  • {wrap(v['title']) if v['title'] else v['title']} — SKU: {v.get('sku', 'N/A')} — id: {from_gid(v['id'])}"
             for v in variants_nodes
         )
         tags = ", ".join(p.get("tags") or []) or "(none)"
@@ -730,7 +736,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         body = p.get("bodyHtml") or ""
         result = (
             f"ID: {from_gid(p['id'])}\n"
-            f"Title: {p['title']}\n"
+            f"Title: {wrap(p['title']) if p['title'] else p['title']}\n"
             f"Handle: {p['handle']}\n"
             f"Status: {p['status']}\n"
             f"Product type: {p.get('productType') or '(none)'}\n"
@@ -764,20 +770,23 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         collections = product.get("collections") or {}
         nodes = collections.get("nodes", []) or []
         has_more = (collections.get("pageInfo") or {}).get("hasNextPage", False)
+        product_title = product.get("title", "")
         header = (
-            f"Product: {product.get('title', '')} (id: {cap(sanitize_control_chars(product_id))})"
+            f"Product: {wrap(product_title) if product_title else product_title} "
+            f"(id: {cap(sanitize_control_chars(product_id))})"
         )
 
         if not nodes:
-            return f"{header}\nCollections (0 total): (none)"
+            return with_reminder(f"{header}\nCollections (0 total): (none)")
 
         lines = [header, f"Collections ({len(nodes)} total):"]
         for c in nodes:
             # Match the type rule in tools/collections.py:_resolve_collection —
             # presence of ruleSet means smart (rule-driven), absence means manual.
             col_type = "smart" if c.get("ruleSet") else "manual"
+            col_title = c.get("title", "")
             lines.append(
-                f"  • {c.get('title', '')} (handle: {c.get('handle', '')}, "
+                f"  • {wrap(col_title) if col_title else col_title} (handle: {c.get('handle', '')}, "
                 f"id: {from_gid(c.get('id', ''))}, type: {col_type})"
             )
         if has_more:
@@ -785,7 +794,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 "  WARNING: product has more than 250 collection memberships — "
                 "additional collections exist but are not listed here."
             )
-        return "\n".join(lines)
+        return with_reminder("\n".join(lines))
 
     @server.tool(annotations=OVERWRITE)
     def update_product_tags(
@@ -947,7 +956,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         target_lines = (
             "\n".join(
-                f"    • {v['title']} — id: {from_gid(v['id'])} — "
+                f"    • {wrap(v['title']) if v['title'] else v['title']} — id: {from_gid(v['id'])} — "
                 f"{v.get('inventoryPolicy', '(unknown)')} → {new_policy}"
                 for v in targets
             )
@@ -965,7 +974,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         warning_block = f"\n{at_cap_warning}" if at_cap_warning else ""
         preview = (
             f"PREVIEW — Variant inventory policy update\n"
-            f"  Product    : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
+            f"  Product    : {wrap(title) if title else title} (id: {cap(sanitize_control_chars(product_id))})\n"
             f"  New policy : {new_policy}\n"
             f"  Targets ({len(targets)}):\n{target_lines}"
             f"{unresolved_block}"
@@ -973,7 +982,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         )
 
         if not confirm:
-            return with_confirm_hint(preview)
+            return with_confirm_hint(with_reminder(preview))
 
         if not targets:
             # Story 9.25: when every requested id is unresolved, nothing the
@@ -991,7 +1000,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 header += " (no-op)"
             body = (
                 f"{header}\n"
-                f"  Product    : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
+                f"  Product    : {wrap(title) if title else title} (id: {cap(sanitize_control_chars(product_id))})\n"
                 f"  New policy : {new_policy}\n"
                 f"  Targets    : (none — nothing to update)"
                 f"{unresolved_block}"
@@ -1001,7 +1010,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 "update_variant_inventory_policy",
                 f"product={product_id} policy={new_policy} variants=0 unresolved={len(unresolved)}",
             )
-            return body
+            return with_reminder(body)
 
         variants_input = [{"id": v["id"], "inventoryPolicy": new_policy} for v in targets]
         result = ops.update_variant_inventory_policy(client, product_id, variants_input)
@@ -1026,9 +1035,9 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"product={product_id} policy={new_policy} variants={len(targets)} "
             f"unresolved={len(unresolved)}",
         )
-        return (
+        return with_reminder(
             f"CONFIRMED — Variant inventory policy update\n"
-            f"  Product    : {title} (id: {cap(sanitize_control_chars(product_id))})\n"
+            f"  Product    : {wrap(title) if title else title} (id: {cap(sanitize_control_chars(product_id))})\n"
             f"  New policy : {new_policy}\n"
             f"  Updated ({len(updated)}):\n{updated_lines}"
             f"{unresolved_block}"
