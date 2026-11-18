@@ -95,7 +95,7 @@ def test_get_collection_smart_has_rule_set():
         ]
     )
     out = tools["get_collection"](handle="smart-vanish")
-    assert "Collection: Smart Vanish" in out
+    assert "Collection: " + fenced("Smart Vanish") in out
     assert "Handle: smart-vanish" in out
     assert "Type: smart" in out
     assert "<p>auto-populated</p>" in out
@@ -195,7 +195,7 @@ def test_add_product_preview_does_not_mutate():
     )
     assert "PREVIEW" in out
     assert "Add product to collection" in out
-    assert "Collection : Vanish" in out
+    assert "Collection : " + fenced("Vanish") in out
     assert "Product    : 777" in out
     assert "confirm=True" in out
     # Only the resolve-collection read; no mutation call.
@@ -689,7 +689,7 @@ def test_update_collection_confirm_title_only_sends_only_title_field():
         new_title="Renamed",
         confirm=True,
     )
-    assert out.startswith("CONFIRMED —")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED —")
     assert "PREVIEW" not in out
     # Mutation call: input must carry id + title only — description absent.
     query, vars_ = fc.calls[1]
@@ -902,8 +902,11 @@ def test_s1063_get_collection_absent_description_adds_no_wrapper_or_reminder():
     """The '(no description)' placeholder is our own text, not store content."""
     tools, fc = _build([_collection("bare", "Bare", description_html=None, rule_set=None)])
     out = tools["get_collection"](handle="bare")
-    assert "UNTRUSTED-DATA" not in out
-    assert INJECTION_REMINDER not in out
+    # Story 10.112 fences the title; without that fence and its reminder the
+    # placeholder adds nothing.
+    rest = out.removeprefix(INJECTION_REMINDER).replace(fenced("Bare"), "Bare")
+    assert "UNTRUSTED-DATA" not in rest
+    assert INJECTION_REMINDER not in rest
     assert "Description: (no description)" in out
 
 
@@ -914,7 +917,8 @@ def test_s1063_get_collection_neutralizes_forged_closing_tag():
     )
     out = tools["get_collection"](handle="v")
     assert "x<\\/UNTRUSTED-DATA>y" in out
-    assert out.count("</UNTRUSTED-DATA>") == 1
+    # One closer for the fenced title "V" (Story 10.112), one for the description.
+    assert out.count("</UNTRUSTED-DATA>") == 2
 
 
 def test_s1063_get_collection_full_output_is_pinned():
@@ -924,7 +928,7 @@ def test_s1063_get_collection_full_output_is_pinned():
     )
     out = tools["get_collection"](handle="vanish")
     assert out == (
-        INJECTION_REMINDER + "Collection: Vanish\n"
+        INJECTION_REMINDER + "Collection: <UNTRUSTED-DATA>Vanish</UNTRUSTED-DATA>\n"
         "Handle: vanish\n"
         "ID: 123\n"
         "Type: manual\n"
@@ -968,8 +972,11 @@ def test_s1063_update_collection_title_only_adds_no_wrapper_or_reminder():
         [_collection("vanish", "Vanish", description_html=_S1063_PAYLOAD, rule_set=None)]
     )
     out = tools["update_collection"](handle="vanish", new_title="Renamed")
-    assert "UNTRUSTED-DATA" not in out
-    assert INJECTION_REMINDER not in out
+    # Story 10.112: the old title is fenced. The old description is still
+    # never rendered.
+    rest = out.removeprefix(INJECTION_REMINDER).replace(fenced("Vanish"), "Vanish")
+    assert "UNTRUSTED-DATA" not in rest
+    assert INJECTION_REMINDER not in rest
 
 
 # ---------- create_collection (Story 10.82 / T-collection-create) ----------

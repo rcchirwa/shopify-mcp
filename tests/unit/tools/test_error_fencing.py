@@ -631,7 +631,7 @@ def test_s1069_publications_exception_is_fenced_with_one_reminder(run, before) -
 def test_s1069_publications_local_exception_is_not_fenced(run, before) -> None:
     out = run([*before, RuntimeError(LOCAL)])
     assert LOCAL in out
-    assert_unmarked(out)
+    assert_unmarked(out.removeprefix(INJECTION_REMINDER).replace(fenced("Tee"), "Tee"))
 
 
 @pytest.mark.parametrize(
@@ -725,7 +725,11 @@ def test_s1069_inventory_tracking_local_exception_is_not_fenced() -> None:
     tools, _fc = _build_inventory([_untracked(), RuntimeError(LOCAL)])
     out = tools["update_variant_inventory_tracking"](product_id="555", tracked=True, confirm=True)
     assert LOCAL in out
-    assert_unmarked(out)
+    assert_unmarked(
+        out.removeprefix(INJECTION_REMINDER)
+        .replace(fenced("Luminous Reef Tee"), "Luminous Reef Tee")
+        .replace(fenced("S"), "S")
+    )
 
 
 def test_s1069_inventory_tracking_user_error_is_fenced_with_one_reminder() -> None:
@@ -778,7 +782,7 @@ def test_s1069_collection_poll_failure_is_fenced_with_one_reminder() -> None:
 def test_s1069_collection_success_is_unchanged() -> None:
     out = _add_to_collection([_manual_collection(), _add_ok()])
     assert "CONFIRMED —" in out, out
-    assert_unmarked(out)
+    assert_unmarked(out.removeprefix(INJECTION_REMINDER).replace(fenced("Vanish"), "Vanish"))
 
 
 # ---------- media ----------

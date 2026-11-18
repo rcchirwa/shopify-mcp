@@ -131,12 +131,12 @@ def test_get_inventory_renders_on_hand_committed_and_available_per_location():
     )
     out = tools["get_inventory"](product_id="555")
     assert out == (
-        "Inventory for: Luminous Reef Tee (id: 555)\n"
+        INJECTION_REMINDER + "Inventory for: " + fenced("Luminous Reef Tee") + " (id: 555)\n"
         "\n"
-        "  • Small — SKU: REEF-S — variant_id: 100\n"
+        "  • " + fenced("Small") + " — SKU: REEF-S — variant_id: 100\n"
         "      @ Main (location: 9) — on-hand: 12 — committed: 0 — available: 12\n"
         "      @ Annex (location: 77) — on-hand: 2 — committed: 2 — available: 0\n"
-        "  • Medium — SKU: REEF-M — variant_id: 101\n"
+        "  • " + fenced("Medium") + " — SKU: REEF-M — variant_id: 101\n"
         "      @ Main (location: 9) — on-hand: 0 — committed: 0 — available: 0"
     ), out
     # Query is the new 2024-07+ shape and was called with a full GID
@@ -155,9 +155,9 @@ def test_get_inventory_says_so_when_a_variant_has_no_levels():
         ]
     )
     out = tools["get_inventory"](product_id="555")
-    assert out.endswith("  • OneSize — SKU: ONE — variant_id: 200\n      (no inventory levels)"), (
-        out
-    )
+    assert out.endswith(
+        "  • " + fenced("OneSize") + " — SKU: ONE — variant_id: 200\n      (no inventory levels)"
+    ), out
 
 
 def test_get_inventory_names_a_location_by_id_when_its_name_is_missing():
@@ -228,8 +228,16 @@ def test_get_inventory_handles_null_nested_fields_without_crashing():
     )
     out = tools["get_inventory"](product_id="555")
     assert "Tracking Off" in out
-    assert "  • NoTrack — SKU: NOTRACK — variant_id: 500\n      (no inventory levels)" in out
-    assert "  • NullLevels — SKU: NULL — variant_id: 501\n      (no inventory levels)" in out
+    assert (
+        "  • "
+        + fenced("NoTrack")
+        + " — SKU: NOTRACK — variant_id: 500\n      (no inventory levels)"
+    ) in out
+    assert (
+        "  • "
+        + fenced("NullLevels")
+        + " — SKU: NULL — variant_id: 501\n      (no inventory levels)"
+    ) in out
 
 
 def test_get_inventory_returns_not_found_on_missing_product():
@@ -517,11 +525,11 @@ def test_tracking_confirm_issues_one_mutation_per_changed_variant():
         tracked=True,
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
     # Story 9.24 round 2 (verifier finding): pin the exact first line so a
     # suffixed header (e.g. " (ok)") — which still satisfies `startswith` —
     # is caught here.
-    assert out.split("\n", 1)[0] == "CONFIRMED — Variant inventory tracking update"
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED — Variant inventory tracking update\n")
     assert "Changed (2):" in out
     # First call is the read; mutations come after with the right GIDs.
     mutation_calls = fc.calls[1:]
@@ -592,7 +600,7 @@ def test_tracking_all_already_at_target_issues_no_mutations():
         tracked=True,
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
     assert "Changed (0):" in out
     assert "Unchanged (2):" in out
     # Only the initial read ran
@@ -655,7 +663,10 @@ def test_tracking_partial_failure_reports_per_variant():
     assert "Failed (1):" in out
     # Full 'field: message' shape — locks in format_user_errors_joined output
     # so a regression in the helper surfaces here.
-    assert "    • M: " + fenced("input.tracked: locked by another process") in out.splitlines()
+    assert (
+        "    • " + fenced("M") + ": " + fenced("input.tracked: locked by another process")
+        in out.splitlines()
+    )
 
 
 def test_tracking_failed_bullet_renders_list_field_as_dotted_path():
@@ -674,7 +685,10 @@ def test_tracking_failed_bullet_renders_list_field_as_dotted_path():
         confirm=True,
     )
     assert len(fc.calls) == 2, "the mutation must have run"
-    assert "    • M: " + fenced("input.tracked: locked by another process") in out.splitlines()
+    assert (
+        "    • " + fenced("M") + ": " + fenced("input.tracked: locked by another process")
+        in out.splitlines()
+    )
 
 
 def test_tracking_all_rejected_is_not_confirmed():
@@ -730,7 +744,7 @@ def test_tracking_all_variant_ids_unresolved_is_not_confirmed():
         variant_ids=["999"],
         confirm=True,
     )
-    assert out.startswith("FAILED — Variant inventory tracking update")
+    assert out.startswith(INJECTION_REMINDER + "FAILED — Variant inventory tracking update")
     assert "CONFIRMED" not in out
     assert "Changed (0):" in out
     assert "999" in out[out.index("Unresolved variant ids:") :]
@@ -761,7 +775,7 @@ def test_tracking_some_variant_ids_unresolved_success_reads_confirmed():
         variant_ids=["100", "999"],
         confirm=True,
     )
-    assert out.split("\n", 1)[0] == "CONFIRMED — Variant inventory tracking update"
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED — Variant inventory tracking update\n")
     assert "999" in out[out.index("Unresolved variant ids:") :]
     assert len(fc.calls) == 2
     assert fc.responses == []
@@ -786,7 +800,7 @@ def test_tracking_unchanged_variant_alongside_unresolved_reads_confirmed():
         variant_ids=["100", "999"],
         confirm=True,
     )
-    assert out.split("\n", 1)[0] == "CONFIRMED — Variant inventory tracking update"
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED — Variant inventory tracking update\n")
     assert "999" in out[out.index("Unresolved variant ids:") :]
     # No mutation was possible or needed (100 already matches) — prove the
     # read actually ran and nothing else was scripted or left unconsumed.
@@ -815,7 +829,7 @@ def test_tracking_product_with_no_variants_issues_no_mutations():
         tracked=True,
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
     assert "Changed (0):" in out
     assert "Unchanged (0):" in out
     assert len(fc.calls) == 1, "only the read should run when there are no targets"
@@ -856,9 +870,9 @@ def test_tracking_transport_error_mid_loop_does_not_abort_batch():
         confirm=True,
     )
     # Story 9.24: 2 changed / 1 failed is a partial write, not a confirmed one.
-    assert out.startswith("PARTIAL — Variant inventory tracking update (2 succeeded, 1 failed)"), (
-        out
-    )
+    assert out.startswith(
+        INJECTION_REMINDER + "PARTIAL — Variant inventory tracking update (2 succeeded, 1 failed)"
+    ), out
     assert "CONFIRMED" not in out
     assert "Changed (2):" in out
     assert "Failed (1):" in out
@@ -965,7 +979,9 @@ def test_tracking_variant_missing_inventory_item_id_is_reported_failed():
         confirm=True,
     )
     # Story 9.24: 1 changed / 1 failed is a partial write, not a confirmed one.
-    assert out.startswith("PARTIAL — Variant inventory tracking update (1 succeeded, 1 failed)")
+    assert out.startswith(
+        INJECTION_REMINDER + "PARTIAL — Variant inventory tracking update (1 succeeded, 1 failed)"
+    )
     assert "CONFIRMED" not in out
     assert "Changed (1):" in out
     assert "Failed (1):" in out
@@ -1076,7 +1092,7 @@ def test_quantity_confirm_issues_single_batch_set_inventory_call():
         quantity=0,
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
     assert "Changed (2):" in out
     # Exactly one mutation call (one read + one SET).
     assert len(fc.calls) == 2
@@ -1133,15 +1149,15 @@ def test_quantity_all_already_at_target_issues_no_mutation():
     )
     # Story 9.25 pin: the genuine no-op keeps its exact text, byte for byte.
     assert out == (
-        "CONFIRMED — Variant inventory quantity update (no-op)\n"
-        "  Product     : Luminous Reef Tee (id: 555)\n"
+        INJECTION_REMINDER + "CONFIRMED — Variant inventory quantity update (no-op)\n"
+        "  Product     : " + fenced("Luminous Reef Tee") + " (id: 555)\n"
         "  Target qty  : 0\n"
         "  Target loc  : all locations\n"
         "  Changed     : (none — nothing writable at target)\n"
         "  Unchanged (2):\n"
-        "    • S @ Main — variant_id: 100, location: 9 — on-hand already at 0 "
+        "    • " + fenced("S") + " @ Main — variant_id: 100, location: 9 — on-hand already at 0 "
         "(committed: 0, available: 0)\n"
-        "    • M @ Main — variant_id: 101, location: 9 — on-hand already at 0 "
+        "    • " + fenced("M") + " @ Main — variant_id: 101, location: 9 — on-hand already at 0 "
         "(committed: 0, available: 0)"
     ), out
     assert len(fc.calls) == 1
@@ -1162,13 +1178,13 @@ def test_quantity_successful_write_output_pins_exact_text():
         confirm=True,
     )
     assert out == (
-        "CONFIRMED — Variant inventory quantity update\n"
-        "  Product     : Luminous Reef Tee (id: 555)\n"
+        INJECTION_REMINDER + "CONFIRMED — Variant inventory quantity update\n"
+        "  Product     : " + fenced("Luminous Reef Tee") + " (id: 555)\n"
         "  Target qty  : 0\n"
         "  Target loc  : all locations\n"
         "  Changed (2):\n"
-        "    • S @ Main — variant_id: 100, location: 9 — on-hand 5 → 0\n"
-        "    • M @ Main — variant_id: 101, location: 9 — on-hand 3 → 0\n"
+        "    • " + fenced("S") + " @ Main — variant_id: 100, location: 9 — on-hand 5 → 0\n"
+        "    • " + fenced("M") + " @ Main — variant_id: 101, location: 9 — on-hand 3 → 0\n"
         "  Unchanged (0):\n"
         "    (none)"
     ), out
@@ -1182,17 +1198,21 @@ def test_quantity_zero_out_writes_a_variant_whose_committed_units_hide_its_on_ha
     preview = tools["update_variant_inventory_quantity"](product_id="555", quantity=0)
     assert (
         "  Would change (1):\n"
-        "    • Butter / 4XL @ Main — variant_id: 100, location: 9 — on-hand 2 → 0 "
+        "    • "
+        + fenced("Butter / 4XL")
+        + " @ Main — variant_id: 100, location: 9 — on-hand 2 → 0 "
         "(committed: 2, available: 0)\n"
         "  Unchanged (0):\n"
     ) in preview, preview
 
     tools, fc = _build([_product_with_variants(variants), _set_inventory_ok()])
     out = tools["update_variant_inventory_quantity"](product_id="555", quantity=0, confirm=True)
-    assert out.split("\n")[0] == "CONFIRMED — Variant inventory quantity update", out
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED — Variant inventory quantity update\n")
     assert (
         "  Changed (1):\n"
-        "    • Butter / 4XL @ Main — variant_id: 100, location: 9 — on-hand 2 → 0\n"
+        "    • "
+        + fenced("Butter / 4XL")
+        + " @ Main — variant_id: 100, location: 9 — on-hand 2 → 0\n"
         "  Unchanged (0):\n"
     ) in out, out
     assert [q for q, _ in fc.calls] == [GET_PRODUCT_INVENTORY, SET_INVENTORY]
@@ -1227,7 +1247,9 @@ def test_quantity_on_hand_at_target_with_committed_units_is_unchanged():
     variants = [_variant("100", "S", "REEF-S", [_level(3, committed=3)])]
     tools, fc = _build([_product_with_variants(variants)])
     out = tools["update_variant_inventory_quantity"](product_id="555", quantity=3, confirm=True)
-    assert out.split("\n")[0] == "CONFIRMED — Variant inventory quantity update (no-op)", out
+    assert out.startswith(
+        INJECTION_REMINDER + "CONFIRMED — Variant inventory quantity update (no-op)\n"
+    ), out
     assert "— on-hand already at 3 (committed: 3, available: 0)" in out, out
     assert [q for q, _ in fc.calls] == [GET_PRODUCT_INVENTORY]
 
@@ -1257,8 +1279,8 @@ def test_quantity_all_variant_ids_unresolved_reads_failed_and_sends_no_mutation(
         confirm=True,
     )
     assert out == (
-        "FAILED — Variant inventory quantity update\n"
-        "  Product     : Luminous Reef Tee (id: 555)\n"
+        INJECTION_REMINDER + "FAILED — Variant inventory quantity update\n"
+        "  Product     : " + fenced("Luminous Reef Tee") + " (id: 555)\n"
         "  Target qty  : 0\n"
         "  Target loc  : all locations\n"
         "  Changed     : (none — nothing writable at target)\n"
@@ -1281,7 +1303,7 @@ def test_quantity_unresolved_location_on_confirm_reads_failed_and_sends_no_mutat
         location_id="9999",
         confirm=True,
     )
-    assert out.split("\n")[0] == "FAILED — Variant inventory quantity update", out
+    assert out.startswith(INJECTION_REMINDER + "FAILED — Variant inventory quantity update\n"), out
     assert out.endswith(
         "\n  Unresolved location: 9999 (not found on any of the targeted variants)"
     ), out
@@ -1300,7 +1322,9 @@ def test_quantity_some_variant_ids_unresolved_and_rest_at_target_stays_confirmed
         variant_ids=["100", "999"],
         confirm=True,
     )
-    assert out.split("\n")[0] == "CONFIRMED — Variant inventory quantity update (no-op)", out
+    assert out.startswith(
+        INJECTION_REMINDER + "CONFIRMED — Variant inventory quantity update (no-op)\n"
+    ), out
     assert out.endswith("\n  Unresolved variant ids:\n    • 999"), out
     assert len(fc.calls) == 1
 
@@ -1527,7 +1551,7 @@ def test_quantity_accepts_boundary_quantity(quantity):
         quantity=quantity,
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
 
 
 def test_quantity_variant_with_missing_inventory_item_id_is_skipped_not_batched():
@@ -1605,8 +1629,8 @@ def test_quantity_skipped_pair_when_location_id_is_null_on_level():
     )
     # Story 9.25: one pair written and one needed change skipped reads
     # PARTIAL, the same as 9.24's tracking tool for a missing inventoryItem id.
-    assert out.split("\n")[0] == (
-        "PARTIAL — Variant inventory quantity update (1 succeeded, 1 failed)"
+    assert out.startswith(
+        INJECTION_REMINDER + "PARTIAL — Variant inventory quantity update (1 succeeded, 1 failed)\n"
     ), out
     assert "Changed (1):" in out
     assert "Skipped (1):" in out
@@ -1647,7 +1671,7 @@ def test_quantity_every_needed_change_skipped_reads_failed_and_sends_no_mutation
         quantity=0,
         confirm=True,
     )
-    assert out.split("\n")[0] == "FAILED — Variant inventory quantity update", out
+    assert out.startswith(INJECTION_REMINDER + "FAILED — Variant inventory quantity update\n"), out
     assert "  Changed     : (none — nothing writable at target)\n" in out
     assert "\n  Skipped (1):\n" in out
     assert "missing inventoryItem.id or location.id, not written" in out
@@ -1667,7 +1691,9 @@ def test_quantity_resolved_variant_without_levels_plus_typo_stays_confirmed_no_o
         variant_ids=["100", "999"],
         confirm=True,
     )
-    assert out.split("\n")[0] == "CONFIRMED — Variant inventory quantity update (no-op)", out
+    assert out.startswith(
+        INJECTION_REMINDER + "CONFIRMED — Variant inventory quantity update (no-op)\n"
+    ), out
     assert out.endswith("\n  Unresolved variant ids:\n    • 999"), out
     assert len(fc.calls) == 1
 
@@ -1683,7 +1709,7 @@ def test_quantity_skipped_pair_plus_typo_reads_failed():
         variant_ids=["101", "999"],
         confirm=True,
     )
-    assert out.split("\n")[0] == "FAILED — Variant inventory quantity update", out
+    assert out.startswith(INJECTION_REMINDER + "FAILED — Variant inventory quantity update\n"), out
     assert "\n  Skipped (1):\n" in out
     assert out.endswith("\n  Unresolved variant ids:\n    • 999"), out
     assert len(fc.calls) == 1
@@ -1702,7 +1728,7 @@ def test_quantity_skipped_pair_plus_unchanged_pair_reads_failed():
         quantity=0,
         confirm=True,
     )
-    assert out.split("\n")[0] == "FAILED — Variant inventory quantity update", out
+    assert out.startswith(INJECTION_REMINDER + "FAILED — Variant inventory quantity update\n"), out
     assert "  Unchanged (1):\n" in out
     assert "\n  Skipped (1):\n" in out
     assert len(fc.calls) == 1

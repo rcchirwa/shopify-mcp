@@ -222,7 +222,7 @@ def test_pricing_at_cap_accepted():
     tools, fc = _build([_read_response(read_variants), _mutation_ok(mutation_variants)])
     at_cap = [{"variantId": v["id"], "price": "11.00"} for v in read_variants]
     out = tools["update_product_pricing"]("100", variants=at_cap, confirm=True)
-    assert out.startswith("CONFIRMED"), out
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED"), out
     assert "exceeds the" not in out
 
 
@@ -251,7 +251,7 @@ def test_variant_id_with_whitespace_is_trimmed_before_resolution():
         variants=[{"variantId": "  SKU-A  ", "price": "49.99"}],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
     # Mutation targets the resolved GID.
     assert fc.calls[1][1]["variants"][0]["id"] == "gid://shopify/ProductVariant/201"
 
@@ -415,7 +415,7 @@ def test_confirm_path_sends_correct_mutation_input():
         ],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED — Product pricing update")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED — Product pricing update")
     assert "price: 49.99" in out
     assert "compareAtPrice: 65.00" in out
     mutation_call = fc.calls[1]
@@ -581,7 +581,7 @@ def test_confirm_summary_unchanged_compare_at_price_null_is_not_cleared():
         variants=[{"variantId": "201", "price": "63.93"}],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED — Product pricing update")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED — Product pricing update")
     assert "price: 63.93" in out
     # The bug printed "(cleared)" here. Post-fix, the head shows the caller-
     # neutral "(unchanged)" token — caller didn't touch compareAtPrice.
@@ -623,7 +623,7 @@ def test_confirm_summary_unchanged_compare_at_price_with_value_shows_unchanged()
         variants=[{"variantId": "201", "price": "63.93"}],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED — Product pricing update")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED — Product pricing update")
     assert "price: 63.93" in out
     assert "(cleared)" not in out
     assert "compareAtPrice: 10.00 (unchanged)" in out
@@ -735,7 +735,7 @@ def test_confirm_summary_mixed_batch_keys_intent_per_variant():
         ],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED — Product pricing update")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED — Product pricing update")
     # SKU-A: caller didn't touch compareAtPrice → "<current> (unchanged)".
     assert "SKU: SKU-A — price: 63.93 — compareAtPrice: 10.00 (unchanged)" in out
     # SKU-B: caller explicitly set 12.00 → echo caller's value (no label).
@@ -812,7 +812,7 @@ def test_sku_path_reads_once_then_mutates():
         variants=[{"variantId": "SKU-A", "price": "49.99"}],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
     # Single read + single mutation — no extra resolver round-trip.
     assert len(fc.calls) == 2
     assert fc.calls[0][0] == catalog_hygiene.GET_PRODUCT_VARIANTS_FOR_PRICING
@@ -896,7 +896,7 @@ def test_three_distinct_variants_with_mixed_forms_single_read():
         ],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
     assert len(fc.calls) == 2  # read + mutation only
 
 
@@ -1118,7 +1118,7 @@ def test_pricing_handle_on_product_id_resolves_in_one_read():
     assert fc.calls[0][0] == catalog_hygiene.GET_PRODUCT_VARIANTS_FOR_PRICING_BY_HANDLE
     assert fc.calls[0][1] == {"handle": "cool-tee"}
     assert "PREVIEW — Product pricing update" in out
-    assert "Test Product (id: cool-tee)" in out
+    assert fenced("Test Product") + " (id: cool-tee)" in out
     assert "price: 39.99 → 49.99" in out
     assert _parse_tail(out)["ok"] is True
 
@@ -1159,7 +1159,7 @@ def test_pricing_numeric_handle_on_handle_kwarg_is_a_handle():
     assert len(fc.calls) == 1
     assert fc.calls[0][0] == catalog_hygiene.GET_PRODUCT_VARIANTS_FOR_PRICING_BY_HANDLE
     assert fc.calls[0][1] == {"handle": "2024"}
-    assert "Test Product (id: 2024)" in out
+    assert fenced("Test Product") + " (id: 2024)" in out
 
 
 def test_pricing_both_identifiers_refused_before_any_call():
@@ -5125,7 +5125,7 @@ def test_s99_zero_existing_one_desired_appends_one_entry():
         variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1]}],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED —"), out
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED —"), out
     assert len(fc.calls) == 2
     assert fc.calls[0][0] == GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA
     assert fc.calls[1][0] == PRODUCT_VARIANT_APPEND_MEDIA
@@ -5162,7 +5162,7 @@ def test_s99_zero_existing_four_desired_expands_to_four_entries():
         ],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED —"), out
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED —"), out
     assert len(fc.calls) == 2
     sent = fc.calls[1][1]["variantMedia"]
     # Every entry must carry exactly one mediaId — the core of Fix A.
@@ -5198,7 +5198,7 @@ def test_s99_one_existing_four_desired_detach_then_reattach():
         ],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED —"), out
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED —"), out
     assert len(fc.calls) == 3
     assert fc.calls[0][0] == GET_PRODUCT_MEDIA_AND_VARIANT_MEDIA
     assert fc.calls[1][0] == PRODUCT_VARIANT_DETACH_MEDIA
@@ -5229,7 +5229,7 @@ def test_s99_dryrun_willlose_shows_warning():
         variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_2, _S96_MEDIA_3]}],
         confirm=False,
     )
-    assert out.startswith("PREVIEW —"), out
+    assert out.startswith(INJECTION_REMINDER + "PREVIEW —"), out
     assert len(fc.calls) == 1
     tail = _parse_tail(out)
     assert tail["dryRun"] is True
@@ -5254,7 +5254,7 @@ def test_s99_confirm_detach_reattach_drops_old_image():
         variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_2, _S96_MEDIA_3]}],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED —"), out
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED —"), out
     assert len(fc.calls) == 3
     # Detach must include M1 (the dropped binding)
     det_sent = fc.calls[1][1]["variantMedia"]
@@ -5281,7 +5281,7 @@ def test_s99_exact_set_match_is_noop():
         variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]}],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED — Bind variant images (no-op)"), out
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED — Bind variant images (no-op)"), out
     assert len(fc.calls) == 1  # read only — no detach, no append
     tail = _parse_tail(out)
     assert tail["ok"] is True
@@ -5314,7 +5314,7 @@ def test_s99_mixed_batch_one_append_only_one_detach_reattach():
         ],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED —"), out
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED —"), out
     assert len(fc.calls) == 3
     assert fc.calls[1][0] == PRODUCT_VARIANT_DETACH_MEDIA
     assert fc.calls[2][0] == PRODUCT_VARIANT_APPEND_MEDIA
@@ -5363,7 +5363,7 @@ def test_s99_dryrun_detach_reattach_payload_shape():
         ],
         confirm=False,
     )
-    assert out.startswith("PREVIEW —"), out
+    assert out.startswith(INJECTION_REMINDER + "PREVIEW —"), out
     assert len(fc.calls) == 1  # no mutations during dryRun
     tail = _parse_tail(out)
     assert tail["dryRun"] is True
@@ -5465,7 +5465,7 @@ def test_s99_detach_reattach_variant_missing_from_append_response_uses_desired_f
         variant_media=[{"variantId": _S96_VARIANT_A, "mediaIds": [_S96_MEDIA_1, _S96_MEDIA_2]}],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED —"), out
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED —"), out
     tail = _parse_tail(out)
     assert tail["ok"] is True
     # Fallback synthesises from desired set via product_media_index.
@@ -8402,8 +8402,13 @@ def test_s1041_no_reminder_when_no_metafields():
     """The empty-state head has no wrapped values, so no reminder is added."""
     tools, _ = _build([_s911_product_response([])])
     out = tools["get_product_metafields"](product_id=_S911_PRODUCT_GID)
-    assert INJECTION_REMINDER not in out
-    assert "<UNTRUSTED-DATA>" not in out
+    # Story 10.112 fences the product title, which brings one reminder. With
+    # that fence and reminder taken out, the empty state adds nothing.
+    rest = out.removeprefix(INJECTION_REMINDER).replace(
+        fenced(_S911_PRODUCT_TITLE), _S911_PRODUCT_TITLE
+    )
+    assert INJECTION_REMINDER not in rest
+    assert "<UNTRUSTED-DATA>" not in rest
 
 
 # ----- AC #15 — dual output contract ----------------------------------------
@@ -8561,8 +8566,8 @@ def test_s911_include_variants_skips_variant_without_metafields_in_head():
     skus = {b["sku"] for b in tail["variantMetafields"]}
     assert skus == {"SKU-WITH", "SKU-EMPTY"}
     # But the empty-mfs variant is omitted from the head's per-variant lines.
-    assert "Variant With Mfs" in out
-    assert "Variant Empty Mfs" not in out
+    assert "Variant " + fenced("With Mfs") in out
+    assert "Variant " + fenced("Empty Mfs") not in out
 
 
 def test_s911_pagination_deduplicates_variant_ids_across_pages():

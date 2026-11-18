@@ -365,11 +365,11 @@ def test_publish_confirmed_only_mutates_needed_channels():
         channel_names=["Online Store", "Shop"],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
     # Story 9.24 round 2 (verifier finding): a site whose success header
     # gained a suffix (e.g. " (ok)") still satisfies a `startswith` check —
     # pin the exact first line so that mutant is caught here.
-    assert out.split("\n", 1)[0] == "CONFIRMED — Publish product to channels"
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED — Publish product to channels\n")
     # Only Shop is actually submitted (Online Store already published)
     _, vars_put = fc.calls[2]
     assert vars_put["id"] == "gid://shopify/Product/123"
@@ -389,7 +389,7 @@ def test_publish_idempotent_all_already_published_skips_mutation():
         channel_names=["Online Store", "Shop"],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
     # No PUBLISHABLE_PUBLISH call — everything already published.
     assert len(fc.calls) == 2
     assert "Unchanged" in out and "Online Store" in out and "Shop" in out
@@ -408,7 +408,7 @@ def test_publish_case_insensitive_name_match():
         channel_names=["online store"],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
     _, vars_put = fc.calls[2]
     assert vars_put["input"] == [{"publicationId": ONLINE["id"]}]
 
@@ -492,7 +492,7 @@ def test_publish_all_unresolved_is_not_confirmed():
         channel_names=["Typo Channel"],
         confirm=True,
     )
-    assert out.startswith("FAILED — Publish product to channels")
+    assert out.startswith(INJECTION_REMINDER + "FAILED — Publish product to channels")
     assert "CONFIRMED" not in out
     assert "PREVIEW" not in out
     assert "Typo Channel" in out[out.index("Failed") :]
@@ -522,7 +522,7 @@ def test_publish_unresolved_alongside_already_published_reads_confirmed():
         channel_names=["Online Store", "Typo Channel"],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED — Publish product to channels")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED — Publish product to channels")
     assert "FAILED" not in out
     assert "Typo Channel" in out[out.index("Failed") :]
     assert "Online Store" in out[out.index("Unchanged") : out.index("Failed")]
@@ -635,11 +635,11 @@ def test_unpublish_confirmed_only_mutates_currently_published():
         channel_names=["Online Store", "Shop"],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
     # Story 9.24 round 2 (verifier finding): pin the exact first line so a
     # suffixed header (e.g. " (ok)") — which still satisfies `startswith` —
     # is caught here.
-    assert out.split("\n", 1)[0] == "CONFIRMED — Unpublish product from channels"
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED — Unpublish product from channels\n")
     _, vars_put = fc.calls[3]
     assert vars_put["input"] == [{"publicationId": ONLINE["id"]}]
     assert fc.calls[3][0] == PUBLISHABLE_UNPUBLISH
@@ -657,7 +657,7 @@ def test_unpublish_idempotent_when_already_unpublished():
         channel_names=["Online Store"],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
     assert len(fc.calls) == 3  # no mutation
     assert "Unchanged" in out and "Online Store" in out
 
@@ -683,11 +683,13 @@ def test_set_declarative_computes_diff():
         channel_names=["Point of Sale", "Google & YouTube"],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
     # Story 9.24 round 2 (verifier finding): pin the exact first line so a
     # suffixed header (e.g. " (ok)") — which still satisfies `startswith` —
     # is caught here.
-    assert out.split("\n", 1)[0] == "CONFIRMED — Set product publications (declarative)"
+    assert out.startswith(
+        INJECTION_REMINDER + "CONFIRMED — Set product publications (declarative)\n"
+    )
     added_section = out[out.index("Added (published)") : out.index("Removed (unpublished)")]
     removed_section = out[out.index("Removed (unpublished)") : out.index("Unchanged")]
     unchanged_section = out[out.index("Unchanged") :]
@@ -714,7 +716,7 @@ def test_set_declarative_no_ops_when_desired_matches_current():
         channel_names=["Online Store", "Google & YouTube"],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
     assert len(fc.calls) == 3  # no publish, no unpublish
 
 
@@ -759,7 +761,7 @@ def test_publish_accepts_numeric_publication_id():
         publication_ids=["1"],  # bare numeric, as get_product_publications prints
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
     # The mutation must receive the full GID, not the bare numeric.
     _, vars_put = fc.calls[2]
     assert vars_put["input"] == [{"publicationId": ONLINE["id"]}]
@@ -778,7 +780,7 @@ def test_unpublish_accepts_numeric_publication_id():
         publication_ids=["1"],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
     _, vars_put = fc.calls[3]
     assert vars_put["input"] == [{"publicationId": ONLINE["id"]}]
 
@@ -796,7 +798,7 @@ def test_unpublish_accepts_mixed_gid_and_numeric_ids():
         publication_ids=["1", POS["id"]],  # numeric + full GID in same call
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
     _, vars_put = fc.calls[3]
     submitted_ids = {i["publicationId"] for i in vars_put["input"]}
     assert submitted_ids == {ONLINE["id"], POS["id"]}
@@ -1159,7 +1161,7 @@ def test_unpublish_confirmed_failed_block_rendered_when_unknown_channel():
         channel_names=["Online Store", "TikTok Shop"],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
     assert "Failed" in out
     assert "TikTok Shop" in out[out.index("Failed") :]
 
@@ -1353,7 +1355,8 @@ def test_set_publish_lands_then_unpublish_exception_is_partial(monkeypatch):
         confirm=True,
     )
     assert out.startswith(
-        "PARTIAL — Set product publications (declarative) (1 succeeded, 1 failed)"
+        INJECTION_REMINDER
+        + "PARTIAL — Set product publications (declarative) (1 succeeded, 1 failed)"
     )
     assert "Point of Sale" in out[out.index("Added (published)") : out.index("Removed")]
     assert "Online Store" in out[out.index("Failed") :]
@@ -1514,7 +1517,7 @@ def test_set_empty_list_unpublishes_all_when_it_lands():
         channel_names=[],
         confirm=True,
     )
-    assert out.startswith("CONFIRMED — Set product publications (declarative)")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED — Set product publications (declarative)")
     assert "Online Store" in out[out.index("Removed (unpublished)") : out.index("Unchanged")]
     assert len(fc.calls) == 4
     assert fc.responses == []
@@ -1859,7 +1862,7 @@ def test_force_refresh_on_name_miss_bypasses_warm_cross_call_cache():
     out = tools["publish_product_to_channels"](
         product_id="123", channel_names=["TikTok Shop"], confirm=True
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
     assert "TikTok Shop" in out
     # 4 round-trips: warm-read, force-refresh re-read (bypassing the warm cache),
     # product read, publish. Without force=True the miss would serve the stale
@@ -2199,7 +2202,7 @@ def test_publish_collection_confirmed_mutates_only_missing_channels():
     )
     # Story 9.24 round 2 (verifier finding): exact first-line match, not
     # `startswith`, so a suffixed header (e.g. " (ok)") is caught here.
-    assert out.split("\n", 1)[0] == "CONFIRMED — Publish collection to channels"
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED — Publish collection to channels\n")
     query, vars_ = fc.calls[2]
     assert query == PUBLISHABLE_PUBLISH
     assert vars_["id"] == "gid://shopify/Collection/900"
@@ -2229,7 +2232,7 @@ def test_publish_collection_already_published_is_idempotent_and_skips_the_mutati
     out = tools["publish_collection_to_channels"](
         handle="all-copy", channel_names=["Online Store"], confirm=True
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
     assert "Online Store" in out[out.index("Unchanged") :]
     assert len(fc.calls) == 2
 
@@ -2334,7 +2337,7 @@ def test_publish_smart_collection_reaches_the_mutation_like_a_manual_one():
     out = tools["publish_collection_to_channels"](
         handle="all-copy", channel_names=["Online Store"], confirm=True
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
     assert fc.calls[2][0] == PUBLISHABLE_PUBLISH
 
 
@@ -2349,7 +2352,7 @@ def test_publish_manual_collection_reaches_the_mutation():
     out = tools["publish_collection_to_channels"](
         handle="vanish", channel_names=["Online Store"], confirm=True
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
     assert fc.calls[2][0] == PUBLISHABLE_PUBLISH
 
 
@@ -2381,7 +2384,7 @@ def test_unpublish_collection_confirmed_mutates_only_published_channels():
     )
     # Story 9.24 round 2 (verifier finding): exact first-line match, not
     # `startswith`, so a suffixed header (e.g. " (ok)") is caught here.
-    assert out.split("\n", 1)[0] == "CONFIRMED — Unpublish collection from channels"
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED — Unpublish collection from channels\n")
     query, vars_ = fc.calls[2]
     assert query == PUBLISHABLE_UNPUBLISH
     assert vars_["id"] == "gid://shopify/Collection/900"
@@ -2393,7 +2396,7 @@ def test_unpublish_collection_already_absent_is_idempotent():
     out = tools["unpublish_collection_from_channels"](
         handle="all-copy", channel_names=["Online Store"], confirm=True
     )
-    assert out.startswith("CONFIRMED")
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED")
     assert len(fc.calls) == 2
 
 
@@ -2576,7 +2579,7 @@ def test_collection_write_preview_names_the_collection_in_full():
     out = tools["publish_collection_to_channels"](
         handle="all-copy", channel_names=["Online Store"], confirm=False
     )
-    assert "Collection: All (BACKUP) (handle: all-copy, id: 900)" in out
+    assert "Collection: " + fenced("All (BACKUP)") + " (handle: all-copy, id: 900)" in out
 
 
 def test_collection_write_confirmed_names_the_collection_in_full():
@@ -2586,7 +2589,7 @@ def test_collection_write_confirmed_names_the_collection_in_full():
     out = tools["publish_collection_to_channels"](
         handle="all-copy", channel_names=["Online Store"], confirm=True
     )
-    assert "Collection: All (BACKUP) (handle: all-copy, id: 900)" in out
+    assert "Collection: " + fenced("All (BACKUP)") + " (handle: all-copy, id: 900)" in out
 
 
 def test_get_collection_publications_renders_the_publish_date():
@@ -2754,7 +2757,7 @@ def test_s1099_an_off_roster_published_channel_that_v2_omits_is_still_listed():
     tools, fc = _build([_channels_response(), v1, v2])
     out = tools["get_product_publications"](product_id="123")
     assert out == (
-        "Product: Tee\n"
+        INJECTION_REMINDER + "Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA>\n"
         "Handle: tee\n"
         "ID: 123\n"
         "\n"
@@ -2777,7 +2780,7 @@ def test_s1099_a_paginated_v2_read_adds_its_assigned_records_beside_v1():
     tools, fc = _build([_channels_response(), v1, page0, page1])
     out = tools["get_product_publications"](product_id="123")
     assert out == (
-        "Product: Tee\n"
+        INJECTION_REMINDER + "Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA>\n"
         "Handle: tee\n"
         "ID: 123\n"
         "\n"
@@ -2812,7 +2815,7 @@ def test_s1099_get_product_publications_lists_assigned_channels_in_their_own_sec
     tools, fc = _build([_channels_response(), _product_pubs(assigned_ids=[4, 3], status="DRAFT")])
     out = tools["get_product_publications"](product_id="123")
     assert out == (
-        "Product: Tee\n"
+        INJECTION_REMINDER + "Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA>\n"
         "Handle: tee\n"
         "ID: 123\n"
         "\n"
@@ -2835,7 +2838,7 @@ def test_s1099_not_published_excludes_both_published_and_assigned_channels():
     )
     out = tools["get_product_publications"](product_id="123")
     assert out == (
-        "Product: Tee\n"
+        INJECTION_REMINDER + "Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA>\n"
         "Handle: tee\n"
         "ID: 123\n"
         "\n"
@@ -2868,8 +2871,8 @@ def test_s1099_unpublish_removes_an_assigned_channel_and_sends_the_mutation():
         "input": [{"publicationId": GOOGLE["id"]}],
     }
     assert out == (
-        "CONFIRMED — Unpublish product from channels\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "CONFIRMED — Unpublish product from channels\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Now unpublished from:\n"
         "  • Google & YouTube (id: 4) (was assigned, not live)\n"
         "  Unchanged:\n"
@@ -2896,8 +2899,8 @@ def test_s1099_unpublish_sends_published_and_assigned_but_not_absent_channels():
         {"publicationId": GOOGLE["id"]},
     ]
     assert out == (
-        "CONFIRMED — Unpublish product from channels\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "CONFIRMED — Unpublish product from channels\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Now unpublished from:\n"
         "  • Online Store (id: 1)\n"
         "  • Google & YouTube (id: 4) (was assigned, not live)\n"
@@ -2913,8 +2916,8 @@ def test_s1099_unpublish_preview_marks_an_assigned_channel():
     )
     assert len(fc.calls) == 3
     assert out == (
-        "PREVIEW — Unpublish product from channels\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "PREVIEW — Unpublish product from channels\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Would unpublish from:\n"
         "  • Google & YouTube (id: 4) (assigned, not live)\n"
         "  Not currently published (unchanged):\n"
@@ -2930,7 +2933,7 @@ def test_s1099_unpublish_of_a_channel_a_draft_is_not_on_sends_nothing():
         product_id="123", channel_names=["Point of Sale"], confirm=True
     )
     assert len(fc.calls) == 3
-    assert out.split("\n", 1)[0] == "CONFIRMED — Unpublish product from channels"
+    assert out.startswith(INJECTION_REMINDER + "CONFIRMED — Unpublish product from channels\n")
     assert "  Unchanged:\n  • Point of Sale (id: 2)" in out
 
 
@@ -2968,8 +2971,8 @@ def test_s1099_publish_leaves_an_assigned_channel_unchanged_without_a_mutation()
     )
     assert len(fc.calls) == 3
     assert out == (
-        "CONFIRMED — Publish product to channels\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "CONFIRMED — Publish product to channels\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Now published to:\n"
         "  (none)\n"
         "  Unchanged:\n"
@@ -2987,8 +2990,8 @@ def test_s1099_publish_sends_only_the_channels_that_are_not_assigned():
     # Assigned records exist only on a DRAFT, and publishing to a DRAFT only
     # assigns, so the channel that would be published carries the mark too.
     assert out == (
-        "PREVIEW — Publish product to channels\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "PREVIEW — Publish product to channels\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Would publish to:\n"
         "  • Point of Sale (id: 2) (assigned, not live)\n"
         "  Already published (unchanged):\n"
@@ -3016,8 +3019,8 @@ def test_s1099_set_removes_an_undesired_assigned_channel_and_keeps_a_desired_one
     assert fc.calls[3][0] == PUBLISHABLE_UNPUBLISH
     assert fc.calls[3][1]["input"] == [{"publicationId": GOOGLE["id"]}]
     assert out == (
-        "CONFIRMED — Set product publications (declarative)\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "CONFIRMED — Set product publications (declarative)\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Added (published):\n"
         "  (none)\n"
         "  Removed (unpublished):\n"
@@ -3032,8 +3035,8 @@ def test_s1099_set_preview_marks_assigned_channels():
     out = tools["set_product_publications"](product_id="123", channel_names=["Shop"], confirm=False)
     assert len(fc.calls) == 3
     assert out == (
-        "PREVIEW — Set product publications (declarative)\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "PREVIEW — Set product publications (declarative)\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Would add (publish):\n"
         "  (none)\n"
         "  Would remove (unpublish):\n"
@@ -3052,7 +3055,9 @@ def test_s1099_set_empty_list_removes_an_assigned_channel():
     out = tools["set_product_publications"](product_id="123", channel_names=[], confirm=True)
     assert fc.calls[3][0] == PUBLISHABLE_UNPUBLISH
     assert fc.calls[3][1]["input"] == [{"publicationId": GOOGLE["id"]}]
-    assert out.split("\n", 1)[0] == "CONFIRMED — Set product publications (declarative)"
+    assert out.startswith(
+        INJECTION_REMINDER + "CONFIRMED — Set product publications (declarative)\n"
+    )
 
 
 def test_s1099_set_adds_and_removes_across_published_and_assigned():
@@ -3082,7 +3087,9 @@ def test_s1099_set_when_desired_matches_the_assignment_sends_nothing():
         product_id="123", channel_names=["Google & YouTube"], confirm=True
     )
     assert len(fc.calls) == 3
-    assert out.split("\n", 1)[0] == "CONFIRMED — Set product publications (declarative)"
+    assert out.startswith(
+        INJECTION_REMINDER + "CONFIRMED — Set product publications (declarative)\n"
+    )
 
 
 # ---- Story 10.99: a channel newly published to a DRAFT product is assigned ----
@@ -3101,8 +3108,8 @@ def test_s1099_publish_preview_to_a_draft_marks_the_new_channel_assigned():
     )
     assert len(fc.calls) == 3
     assert out == (
-        "PREVIEW — Publish product to channels\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "PREVIEW — Publish product to channels\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Would publish to:\n"
         "  • Point of Sale (id: 2) (assigned, not live)\n"
         "  Already published (unchanged):\n"
@@ -3123,8 +3130,8 @@ def test_s1099_publish_confirmed_to_a_draft_marks_the_new_channel_assigned():
     )
     assert fc.responses == []
     assert out == (
-        "CONFIRMED — Publish product to channels\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "CONFIRMED — Publish product to channels\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Now published to:\n"
         "  • Google & YouTube (id: 4) (assigned, not live)\n"
         "  Unchanged:\n"
@@ -3144,8 +3151,8 @@ def test_s1099_unpublish_from_a_draft_is_unchanged():
         {"id": "gid://shopify/Product/123", "input": [{"publicationId": GOOGLE["id"]}]},
     )
     assert out == (
-        "CONFIRMED — Unpublish product from channels\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "CONFIRMED — Unpublish product from channels\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Now unpublished from:\n"
         "  • Google & YouTube (id: 4) (was assigned, not live)\n"
         "  Unchanged:\n"
@@ -3160,8 +3167,8 @@ def test_s1099_set_preview_on_a_draft_marks_the_added_channel_assigned():
     )
     assert len(fc.calls) == 3
     assert out == (
-        "PREVIEW — Set product publications (declarative)\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "PREVIEW — Set product publications (declarative)\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Would add (publish):\n"
         "  • Point of Sale (id: 2) (assigned, not live)\n"
         "  Would remove (unpublish):\n"
@@ -3195,8 +3202,8 @@ def test_s1099_set_confirmed_on_a_draft_marks_the_added_channel_assigned():
     )
     assert fc.responses == []
     assert out == (
-        "CONFIRMED — Set product publications (declarative)\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "CONFIRMED — Set product publications (declarative)\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Added (published):\n"
         "  • Point of Sale (id: 2) (assigned, not live)\n"
         "  Removed (unpublished):\n"
@@ -3228,7 +3235,7 @@ _S1099_INCOMPLETE_CASES = [
         "get_product_publications",
         {"product_id": "123"},
         [],
-        "Product: Tee\n"
+        INJECTION_REMINDER + "Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA>\n"
         "Handle: tee\n"
         "ID: 123\n"
         "\n"
@@ -3245,8 +3252,8 @@ _S1099_INCOMPLETE_CASES = [
         "publish_product_to_channels",
         {"product_id": "123", "channel_names": ["Online Store", "Point of Sale"]},
         [],
-        "PREVIEW — Publish product to channels\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "PREVIEW — Publish product to channels\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Would publish to:\n"
         "  • Point of Sale (id: 2) (assigned, not live)\n"
         "  Already published (unchanged):\n"
@@ -3259,8 +3266,8 @@ _S1099_INCOMPLETE_CASES = [
         "publish_product_to_channels",
         {"product_id": "123", "channel_names": ["Online Store", "Point of Sale"], "confirm": True},
         [_publish_ok()],
-        "CONFIRMED — Publish product to channels\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "CONFIRMED — Publish product to channels\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Now published to:\n"
         "  • Point of Sale (id: 2) (assigned, not live)\n"
         "  Unchanged:\n"
@@ -3271,8 +3278,8 @@ _S1099_INCOMPLETE_CASES = [
         "unpublish_product_from_channels",
         {"product_id": "123", "channel_names": ["Online Store", "Point of Sale"]},
         [],
-        "PREVIEW — Unpublish product from channels\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "PREVIEW — Unpublish product from channels\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Would unpublish from:\n"
         "  • Online Store (id: 1)\n"
         "  Not currently published (unchanged):\n"
@@ -3285,8 +3292,8 @@ _S1099_INCOMPLETE_CASES = [
         "unpublish_product_from_channels",
         {"product_id": "123", "channel_names": ["Online Store", "Point of Sale"], "confirm": True},
         [_unpublish_ok()],
-        "CONFIRMED — Unpublish product from channels\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "CONFIRMED — Unpublish product from channels\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Now unpublished from:\n"
         "  • Online Store (id: 1)\n"
         "  Unchanged:\n"
@@ -3297,8 +3304,8 @@ _S1099_INCOMPLETE_CASES = [
         "set_product_publications",
         {"product_id": "123", "channel_names": ["Point of Sale"]},
         [],
-        "PREVIEW — Set product publications (declarative)\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "PREVIEW — Set product publications (declarative)\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Would add (publish):\n"
         "  • Point of Sale (id: 2) (assigned, not live)\n"
         "  Would remove (unpublish):\n"
@@ -3313,8 +3320,8 @@ _S1099_INCOMPLETE_CASES = [
         "set_product_publications",
         {"product_id": "123", "channel_names": ["Point of Sale"], "confirm": True},
         [_publish_ok(), _unpublish_ok()],
-        "CONFIRMED — Set product publications (declarative)\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "CONFIRMED — Set product publications (declarative)\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Added (published):\n"
         "  • Point of Sale (id: 2) (assigned, not live)\n"
         "  Removed (unpublished):\n"
@@ -3360,7 +3367,7 @@ _S1099_BYTE_IDENTICAL = [
         "get_product_publications",
         {"product_id": "123"},
         [],
-        "Product: Tee\n"
+        INJECTION_REMINDER + "Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA>\n"
         "Handle: tee\n"
         "ID: 123\n"
         "\n"
@@ -3376,8 +3383,8 @@ _S1099_BYTE_IDENTICAL = [
         "publish_product_to_channels",
         {"product_id": "123", "channel_names": ["Online Store", "Point of Sale"]},
         [],
-        "PREVIEW — Publish product to channels\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "PREVIEW — Publish product to channels\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Would publish to:\n"
         "  • Point of Sale (id: 2)\n"
         "  Already published (unchanged):\n"
@@ -3389,8 +3396,8 @@ _S1099_BYTE_IDENTICAL = [
         "publish_product_to_channels",
         {"product_id": "123", "channel_names": ["Online Store", "Point of Sale"], "confirm": True},
         [_publish_ok()],
-        "CONFIRMED — Publish product to channels\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "CONFIRMED — Publish product to channels\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Now published to:\n"
         "  • Point of Sale (id: 2)\n"
         "  Unchanged:\n"
@@ -3400,8 +3407,8 @@ _S1099_BYTE_IDENTICAL = [
         "unpublish_product_from_channels",
         {"product_id": "123", "channel_names": ["Shop", "Google & YouTube"]},
         [],
-        "PREVIEW — Unpublish product from channels\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "PREVIEW — Unpublish product from channels\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Would unpublish from:\n"
         "  • Shop (id: 3)\n"
         "  Not currently published (unchanged):\n"
@@ -3413,8 +3420,8 @@ _S1099_BYTE_IDENTICAL = [
         "unpublish_product_from_channels",
         {"product_id": "123", "channel_names": ["Shop", "Google & YouTube"], "confirm": True},
         [_unpublish_ok()],
-        "CONFIRMED — Unpublish product from channels\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "CONFIRMED — Unpublish product from channels\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Now unpublished from:\n"
         "  • Shop (id: 3)\n"
         "  Unchanged:\n"
@@ -3424,8 +3431,8 @@ _S1099_BYTE_IDENTICAL = [
         "set_product_publications",
         {"product_id": "123", "channel_names": ["Online Store", "Point of Sale"]},
         [],
-        "PREVIEW — Set product publications (declarative)\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "PREVIEW — Set product publications (declarative)\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Would add (publish):\n"
         "  • Point of Sale (id: 2)\n"
         "  Would remove (unpublish):\n"
@@ -3443,8 +3450,8 @@ _S1099_BYTE_IDENTICAL = [
             "confirm": True,
         },
         [_publish_ok(), _unpublish_ok()],
-        "CONFIRMED — Set product publications (declarative)\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "CONFIRMED — Set product publications (declarative)\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Added (published):\n"
         "  • Point of Sale (id: 2)\n"
         "  Removed (unpublished):\n"
@@ -3456,7 +3463,7 @@ _S1099_BYTE_IDENTICAL = [
         "get_collection_publications",
         {"handle": "all-copy"},
         [],
-        "Collection: All (BACKUP)\n"
+        INJECTION_REMINDER + "Collection: <UNTRUSTED-DATA>All (BACKUP)</UNTRUSTED-DATA>\n"
         "Handle: all-copy\n"
         "ID: 900\n"
         "Type: manual\n"
@@ -3473,8 +3480,8 @@ _S1099_BYTE_IDENTICAL = [
         "publish_collection_to_channels",
         {"handle": "all-copy", "channel_names": ["Google & YouTube", "Online Store"]},
         [],
-        "PREVIEW — Publish collection to channels\n"
-        "  Collection: All (BACKUP) (handle: all-copy, id: 900)\n"
+        INJECTION_REMINDER + "PREVIEW — Publish collection to channels\n"
+        "  Collection: <UNTRUSTED-DATA>All (BACKUP)</UNTRUSTED-DATA> (handle: all-copy, id: 900)\n"
         "  Would publish to:\n"
         "  • Google & YouTube (id: 4)\n"
         "  Already published (unchanged):\n"
@@ -3490,8 +3497,8 @@ _S1099_BYTE_IDENTICAL = [
             "confirm": True,
         },
         [_collection_publish_ok()],
-        "CONFIRMED — Publish collection to channels\n"
-        "  Collection: All (BACKUP) (handle: all-copy, id: 900)\n"
+        INJECTION_REMINDER + "CONFIRMED — Publish collection to channels\n"
+        "  Collection: <UNTRUSTED-DATA>All (BACKUP)</UNTRUSTED-DATA> (handle: all-copy, id: 900)\n"
         "  Now published to:\n"
         "  • Google & YouTube (id: 4)\n"
         "  Unchanged:\n"
@@ -3501,8 +3508,8 @@ _S1099_BYTE_IDENTICAL = [
         "unpublish_collection_from_channels",
         {"handle": "all-copy", "channel_names": ["Online Store", "Google & YouTube"]},
         [],
-        "PREVIEW — Unpublish collection from channels\n"
-        "  Collection: All (BACKUP) (handle: all-copy, id: 900)\n"
+        INJECTION_REMINDER + "PREVIEW — Unpublish collection from channels\n"
+        "  Collection: <UNTRUSTED-DATA>All (BACKUP)</UNTRUSTED-DATA> (handle: all-copy, id: 900)\n"
         "  Would unpublish from:\n"
         "  • Online Store (id: 1)\n"
         "  Not currently published (unchanged):\n"
@@ -3518,8 +3525,8 @@ _S1099_BYTE_IDENTICAL = [
             "confirm": True,
         },
         [_collection_unpublish_ok()],
-        "CONFIRMED — Unpublish collection from channels\n"
-        "  Collection: All (BACKUP) (handle: all-copy, id: 900)\n"
+        INJECTION_REMINDER + "CONFIRMED — Unpublish collection from channels\n"
+        "  Collection: <UNTRUSTED-DATA>All (BACKUP)</UNTRUSTED-DATA> (handle: all-copy, id: 900)\n"
         "  Now unpublished from:\n"
         "  • Online Store (id: 1)\n"
         "  Unchanged:\n"
@@ -3603,8 +3610,8 @@ def test_s10102_unpublish_removes_a_scheduled_channel_and_sends_the_mutation(sta
         {"id": "gid://shopify/Product/123", "input": [{"publicationId": ONLINE["id"]}]},
     )
     assert out == (
-        "CONFIRMED — Unpublish product from channels\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "CONFIRMED — Unpublish product from channels\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Now unpublished from:\n"
         "  • Online Store (id: 1) (was scheduled, not live)\n"
         "  Unchanged:\n"
@@ -3624,8 +3631,8 @@ def test_s10102_unpublish_preview_marks_a_scheduled_channel():
         product_id="123", channel_names=["Online Store", "Shop", "Point of Sale"]
     )
     assert out == (
-        "PREVIEW — Unpublish product from channels\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "PREVIEW — Unpublish product from channels\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Would unpublish from:\n"
         "  • Online Store (id: 1) (scheduled, not live)\n"
         "  • Shop (id: 3)\n"
@@ -3653,8 +3660,8 @@ def test_s10102_set_removes_an_undesired_scheduled_channel():
         {"id": "gid://shopify/Product/123", "input": [{"publicationId": ONLINE["id"]}]},
     )
     assert out == (
-        "CONFIRMED — Set product publications (declarative)\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "CONFIRMED — Set product publications (declarative)\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Added (published):\n"
         "  (none)\n"
         "  Removed (unpublished):\n"
@@ -3676,8 +3683,8 @@ def test_s10102_set_preview_marks_a_scheduled_channel():
         product_id="123", channel_names=["Google & YouTube", "Point of Sale"]
     )
     assert out == (
-        "PREVIEW — Set product publications (declarative)\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "PREVIEW — Set product publications (declarative)\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Would add (publish):\n"
         "  • Point of Sale (id: 2)\n"
         "  Would remove (unpublish):\n"
@@ -3704,8 +3711,8 @@ def test_s10102_set_keeps_a_desired_scheduled_channel_without_a_mutation():
     )
     assert len(fc.calls) == 3
     assert out == (
-        "CONFIRMED — Set product publications (declarative)\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "CONFIRMED — Set product publications (declarative)\n"
+        "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
         "  Added (published):\n"
         "  (none)\n"
         "  Removed (unpublished):\n"
@@ -3743,8 +3750,8 @@ _S10102_NOTE = (
             "unpublish_product_from_channels",
             {"product_id": "123", "channel_names": ["Online Store"], "confirm": True},
             [_unpublish_ok()],
-            "CONFIRMED — Unpublish product from channels\n"
-            "  Product: Tee (handle: tee, id: 123)\n"
+            INJECTION_REMINDER + "CONFIRMED — Unpublish product from channels\n"
+            "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
             "  Now unpublished from:\n"
             "  • Online Store (id: 1)\n"
             "  Unchanged:\n"
@@ -3755,8 +3762,8 @@ _S10102_NOTE = (
             "set_product_publications",
             {"product_id": "123", "channel_names": ["Online Store"]},
             [],
-            "PREVIEW — Set product publications (declarative)\n"
-            "  Product: Tee (handle: tee, id: 123)\n"
+            INJECTION_REMINDER + "PREVIEW — Set product publications (declarative)\n"
+            "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
             "  Would add (publish):\n"
             "  (none)\n"
             "  Would remove (unpublish):\n"
@@ -3771,8 +3778,8 @@ _S10102_NOTE = (
             "unpublish_product_from_channels",
             {"product_id": "123", "channel_names": ["Online Store"]},
             [],
-            "PREVIEW — Unpublish product from channels\n"
-            "  Product: Tee (handle: tee, id: 123)\n"
+            INJECTION_REMINDER + "PREVIEW — Unpublish product from channels\n"
+            "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
             "  Would unpublish from:\n"
             "  • Online Store (id: 1)\n"
             "  Not currently published (unchanged):\n"
@@ -3785,8 +3792,8 @@ _S10102_NOTE = (
             "set_product_publications",
             {"product_id": "123", "channel_names": [], "confirm": True},
             [_unpublish_ok()],
-            "CONFIRMED — Set product publications (declarative)\n"
-            "  Product: Tee (handle: tee, id: 123)\n"
+            INJECTION_REMINDER + "CONFIRMED — Set product publications (declarative)\n"
+            "  Product: <UNTRUSTED-DATA>Tee</UNTRUSTED-DATA> (handle: tee, id: 123)\n"
             "  Added (published):\n"
             "  (none)\n"
             "  Removed (unpublished):\n"

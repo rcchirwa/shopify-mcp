@@ -777,8 +777,8 @@ def test_s10113_two_unresolved_names_stay_on_their_own_rows() -> None:
     out = tools["set_product_publications"](product_id="123", channel_names=names)
     assert fc.responses == []
     assert out == (
-        "PREVIEW — Set product publications (declarative)\n"
-        "  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "PREVIEW — Set product publications (declarative)\n"
+        "  Product: " + fenced("Tee") + " (handle: tee, id: 123)\n"
         "  Would add (publish):\n"
         "  (none)\n"
         "  Would remove (unpublish):\n"
@@ -817,34 +817,38 @@ _ORDINARY_BEFORE = {
     ),
     "F5 set preview": (
         _S10103_IDS.index("F5 publications:462 set_product_publications preview"),
-        "PREVIEW — Set product publications (declarative)\n  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "PREVIEW — Set product publications (declarative)\n"
+        "  Product: " + fenced("Tee") + " (handle: tee, id: 123)\n"
         "  Would add (publish):\n  (none)\n  Would remove (unpublish):\n  • Online Store (id: 1)\n"
         "  Unchanged:\n  (none)\n  Failed to resolve:\n"
         "  • Typo Channel: channel not found on this store\n\nTo apply, call again with confirm=True.",
     ),
     "F5 publish preview": (
         _S10103_IDS.index("F5 publications:462 publish_product_to_channels preview"),
-        "PREVIEW — Publish product to channels\n  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "PREVIEW — Publish product to channels\n"
+        "  Product: " + fenced("Tee") + " (handle: tee, id: 123)\n"
         "  Would publish to:\n  (none)\n  Already published (unchanged):\n  (none)\n"
         "  Failed to resolve:\n  • Typo Channel: channel not found on this store\n\n"
         "To apply, call again with confirm=True.",
     ),
     "F5 publish FAILED": (
         _S10103_IDS.index("F5 publications:462 publish_product_to_channels FAILED"),
-        "FAILED — Publish product to channels\n  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "FAILED — Publish product to channels\n"
+        "  Product: " + fenced("Tee") + " (handle: tee, id: 123)\n"
         "  Now published to:\n  (none)\n  Unchanged:\n  (none)\n  Failed:\n"
         "  • Typo Channel: channel not found on this store",
     ),
     "F5 unpublish FAILED": (
         _S10103_IDS.index("F5 publications:462 unpublish_product_from_channels FAILED"),
-        "FAILED — Unpublish product from channels\n  Product: Tee (handle: tee, id: 123)\n"
+        INJECTION_REMINDER + "FAILED — Unpublish product from channels\n"
+        "  Product: " + fenced("Tee") + " (handle: tee, id: 123)\n"
         "  Now unpublished from:\n  (none)\n  Unchanged:\n  (none)\n  Failed:\n"
         "  • Typo Channel: channel not found on this store",
     ),
     "F5 collection FAILED": (
         _S10103_IDS.index("F5 publications:462 publish_collection_to_channels FAILED"),
-        "FAILED — Publish collection to channels\n"
-        "  Collection: All (BACKUP) (handle: all-copy, id: 900)\n"
+        INJECTION_REMINDER + "FAILED — Publish collection to channels\n"
+        "  Collection: " + fenced("All (BACKUP)") + " (handle: all-copy, id: 900)\n"
         "  Now published to:\n  (none)\n  Unchanged:\n  (none)\n  Failed:\n"
         "  • Typo Channel: channel not found on this store",
     ),
