@@ -8567,7 +8567,11 @@ def test_s911_include_variants_skips_variant_without_metafields_in_head():
     assert skus == {"SKU-WITH", "SKU-EMPTY"}
     # But the empty-mfs variant is omitted from the head's per-variant lines.
     assert "Variant " + fenced("With Mfs") in out
-    assert "Variant " + fenced("Empty Mfs") not in out
+    # Check the head only (the tail keeps both variants), and check the title
+    # and SKU in any form, fenced or raw, so a raw render also fails here.
+    head = out.split("\n\n```json\n", 1)[0]
+    assert "Empty Mfs" not in head
+    assert "SKU-EMPTY" not in head
 
 
 def test_s911_pagination_deduplicates_variant_ids_across_pages():
