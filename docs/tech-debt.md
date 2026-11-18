@@ -4,7 +4,23 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-11-15.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-11-17.
+
+---
+
+## 2026-11-17 — Story 9.23 (`catalog_hygiene` no-op and confirmed headers now follow the PREVIEW / CONFIRMED convention)
+
+Trello: https://trello.com/c/TPSaF5LN (Story 9.23, Epic 9). A follow-up to **Story 9.21** and **Story 9.22**. 9.22's guard (`tests/unit/tools/test_confirmed_output_guard.py`) forbids a leaked `PREVIEW` in a confirmed output. It does not catch a `Done.` header, because `Done.` does not contain `PREVIEW`. Not observed live.
+
+**The defect.** Five no-op branches answered `Done. … (no-op, …)` before they read `confirm`. So a `confirm=False` call on a product that already had the target value looked like a finished write. The confirmed success headers of `update_product_category`, `update_product_vendor` and `update_product_type` also said `Done.` and not `CONFIRMED —`.
+
+**Decision (Robert, 2026-11-17): approach 1, mode-aware labels. `create_collection` stays out.** A no-op says `PREVIEW — … (no-op, …)` under confirm=False and `CONFIRMED — … (no-op, …)` under confirm=True. The three confirmed headers say `CONFIRMED —`. Eight sites changed in `tools/catalog_hygiene.py` (line numbers on `05d69cf`): `:2213`, `:2314`, `:2411`, `:2427`, `:2601`, `:2617`, `:4283`, `:4310`. The options confirmed header (`:4350`) already said `CONFIRMED —`. The two other no-op returns in the module (`update_product_pricing` and `update_variant_image_binding`) come after `if not confirm`, so they were not part of this defect.
+
+**Changed.** Each site builds its label from `_PREVIEW_MARKER` / `_CONFIRMED_MARKER` in `tools/_write_tool.py` (import only; no third copy of the text). Payloads and JSON tails are byte-identical. A no-op still never calls a mutation. The operator-facing text changes on purpose.
+
+**Tests.** For each of the five no-op sites, both modes: the exact first line, the body lines, the exact FakeClient call list (no mutation), `fake.responses == []`, and the JSON tail compared to an expected dict and to `json.dumps(expected)` byte for byte. (These four tools emit a compact one-line tail, not `indent=2`.) The old `startswith("Done…")` pins now assert the exact `CONFIRMED —` first line. 9.22's guard is unchanged and green.
+
+**Open (not in this story):** `create_collection` (`collections.py`, `Done. Created collection.`) has the same pattern. 9.22 and this story both left it out.
 
 ---
 
