@@ -41,9 +41,34 @@ destination. Each row has a reason and an expected match count. A stale row,
 a wrong count (a duplicate match), a row with no reason and an unclassified
 use each fail and name the file, the function and the current line.
 
+A title that reaches a helper with no named parameter for it (``**kwargs``,
+``*args`` or a ``**`` splat) is UNSUPPORTED. A title stored under a computed
+dict key, or as a list item, follows every key or index read of that value.
+
 ``run_census`` is the one entry point. The real-tree test, the APPENDIX_B
 identity test and every mutation test call it. The mutations change the
-parsed source text in memory; no file is written.
+parsed source text in memory; no file is written. The scan of the unmutated
+tree is cached; a mutated copy is always scanned again.
+
+APPENDIX_B identity. ``FENCE_POINTS`` maps each hand-listed id to (module,
+qualified function, n-th title fence in it). The check does not trust that
+map alone: ``_observed_fence_lines`` runs every CASES row of
+``test_title_fencing.py`` and records the line of the ``wrap()`` call that
+fenced the id's own distinct title value. Each mapped fence must sit on one
+of those lines, so an id mapped to the wrong fence of the same module fails.
+
+Scope beyond the card, recorded on purpose (Robert, review round 1: record,
+do not narrow):
+  - SEO titles. The census counts the ``title`` key under ``seo`` too, because
+    it cannot tell an SEO title from a product title. That gives two fence
+    points beyond APPENDIX_B (``update_product_seo``, ``get_product_full``;
+    fenced since Story 10.92) and the LENGTH row of ``update_product_seo``.
+  - Two exception classes beyond the card's list of permitted uses, each with
+    one row. VALIDATOR: ``format_validation_diff`` uses the old title only to
+    sort naming issues, and its text never holds the old title (a test proves
+    it). SHOPIFY_CALL: an ``ops.*`` call sends the value to Shopify, not to the
+    tool output. Neither is a display use. A NEW use of either class still
+    fails until it has its own row with a reason and a count.
 
 Detection limit. The scanner starts from recognized ``title`` and
 ``variantTitle`` reads. It can miss a title that the code exposes only under
@@ -51,8 +76,7 @@ another key, a GraphQL alias, attribute access or ``getattr``, and an object
 that holds a title and is rendered whole (for example ``f"{product}"``).
 ``displayName`` (metaobjects) is out of scope; on base its only render is
 ``catalog_hygiene._metaobject_lines``, which fences it. The scanner cannot
-tell an SEO title from a product title: both are ``title`` reads, so the SEO
-reads are in the census too (fenced since Story 10.92). Names are tracked per
+tell an SEO title from a product title (see above). Names are tracked per
 function without flow order, so a name that holds a title anywhere in a
 function counts as a title at every load in it; that errs toward failing.
 """
@@ -61,15 +85,20 @@ import ast
 import builtins
 import functools
 import importlib
+import sys
 from collections.abc import Iterator, Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
 import shopify_mcp.tools as tools_pkg
+from shopify_mcp.tools import _untrusted
 from shopify_mcp.validators.naming import format_validation_diff
-from tests.unit.tools.test_title_fencing import APPENDIX_B, CASES
+from tests.unit.tools.test_title_fencing import APPENDIX_B, CASES, _defaults
+from tests.unit.tools.test_title_fencing import _run as _run_case
 
 PACKAGE = "shopify_mcp.tools"
 TOOLS_DIR = Path(tools_pkg.__file__).parent
@@ -577,13 +606,14 @@ class _Scanner:
             return  # a title read of its own: it has its own walk
         if not path or is_slice:
             self.follow(mod, expr, path, [*trail, "[:]"], stack)
-        elif k is None or k == path[0] or (path[0] == "*" and isinstance(k, int)):
+        elif k is None or k == path[0] or path[0] == "*":
             self.follow(mod, expr, path[1:], [*trail, f"[{k!r}]"], stack)
-        # Any other key holds no title: the walk stops, clean.
+        # Another constant key of a dict with constant keys holds no title:
+        # the walk stops, clean.
 
     def method(self, mod, p, path, trail, stack):
         call = mod.parent[p]
-        if isinstance(call, ast.Call) and call.func is p and p.attr == "get":
+        if isinstance(call, ast.Call) and call.func is p and p.attr == "get" and call.args:
             k = call.args[0].value if isinstance(call.args[0], ast.Constant) else None
             self.select(mod, call, k, False, path, trail, stack)
         elif isinstance(call, ast.Call) and call.func is p and p.attr == "append":
@@ -605,11 +635,7 @@ class _Scanner:
         elif isinstance(target, str) and target.startswith(SHOPIFY_OPS):
             self.end(mod, call, [*trail, f"ops.{target.rpartition('.')[2]}()"], SHOPIFY_CALL)
         elif isinstance(target, tuple):
-            cmod, fn = target
-            params = [a.arg for a in (*fn.args.posonlyargs, *fn.args.args, *fn.args.kwonlyargs)]
-            param = kw if kw is not None else params[call.args.index(node)]
-            step = f"-> {cmod.qualname[fn]}({param}=)"
-            self.alias(cmod, fn, param, path, [*trail, step], (*stack, (mod, call, fn)))
+            self.enter(mod, call, node, kw, target, path, trail, stack)
         elif isinstance(call.func, ast.Attribute) and call.func.attr == "join":
             self.follow(mod, call, (), [*trail, ".join()"], stack)
         elif (
@@ -622,6 +648,25 @@ class _Scanner:
             self.alias(mod, mod.scope[call], lst, ("*", *path), [*trail, step], stack)
         else:
             self.end(mod, call, [*trail, f"?call {ast.unparse(call.func)}"], UNSUPPORTED)
+
+    def enter(self, mod, call, node, kw, target, path, trail, stack):
+        """Map an argument to the helper's named parameter and follow it there."""
+        cmod, fn = target
+        args = fn.args
+        positional = [a.arg for a in (*args.posonlyargs, *args.args)]
+        by_name = {*positional[len(args.posonlyargs) :], *(a.arg for a in args.kwonlyargs)}
+        if kw is not None:
+            param = kw if kw in by_name else None
+        else:
+            i = call.args.index(node) if node in call.args else len(positional)
+            param = positional[i] if i < len(positional) else None
+        if param is None:
+            # **kwargs, *args or a ** splat: no named parameter to follow.
+            step = f"?{cmod.qualname[fn]}() takes it with no named parameter"
+            self.end(mod, call, [*trail, step], UNSUPPORTED)
+            return
+        step = f"-> {cmod.qualname[fn]}({param}=)"
+        self.alias(cmod, fn, param, path, [*trail, step], (*stack, (mod, call, fn)))
 
     def returned(self, mod, ret, path, trail, stack):
         fn = mod.scope[ret]
@@ -661,16 +706,33 @@ def _loads_in(node: ast.AST, name: str) -> Iterator[ast.Name]:
         yield from _loads_in(child, name)
 
 
+def _scan(sources: Mapping[str, str]) -> tuple[list[Use], dict[str, str]]:
+    scanner = _Scanner(sources)
+    scanner.scan()
+    return scanner.uses, {m.name: m.label for m in scanner.modules.values()}
+
+
+@functools.cache
+def _real_scan() -> tuple[list[Use], dict[str, str]]:
+    """The scan of the unmutated tree, once per test session."""
+    return _scan(_real_sources())
+
+
 def run_census(
     sources: Mapping[str, str],
     rows: Sequence[Row] = EXCEPTION_ROWS,
     fence_points: Mapping[str, tuple[str, str, int]] = FENCE_POINTS,
+    fence_lines: Mapping[str, set[tuple[str, int]]] | None = None,
 ) -> Census:
-    """The one entry point: scan the sources, check the rows and the fence ids."""
-    scanner = _Scanner(sources)
-    scanner.scan()
-    census = Census(uses=scanner.uses)
-    labels = {m.name: m.label for m in scanner.modules.values()}
+    """The one entry point: scan the sources, check the rows and the fence ids.
+
+    The real tree (the cached ``_real_sources()`` object) is scanned once; a
+    mutated copy is always scanned again. ``fence_lines``, when given, holds
+    the (module, line) of the ``wrap()`` call that fenced each id's value at
+    run time; each mapped fence point must sit on one of those lines.
+    """
+    uses, labels = _real_scan() if sources is _real_sources() else _scan(sources)
+    census = Census(uses=list(uses))
 
     # Fence sites: (module, function, n-th distinct title fence in it).
     fences: dict[tuple[str, str], set[tuple[int, int]]] = {}
@@ -723,8 +785,15 @@ def run_census(
             )
 
     for fp, site in sorted(fence_points.items()):
-        if site not in census.fence_sites:
+        line = census.fence_sites.get(site)
+        if line is None:
             census.problems.append(f"{fp}: APPENDIX_B fence point {site} maps to no FENCED use")
+        elif fence_lines is not None and (site[0], line) not in fence_lines.get(fp, set()):
+            seen = sorted(fence_lines.get(fp, set()))
+            census.problems.append(
+                f"{fp}: mapped to {site} (wrap() at line {line}), but its CASES rows"
+                f" fence it at {seen}"
+            )
     census.problems.sort()
     return census
 
@@ -741,6 +810,41 @@ def _real_sources() -> dict[str, str]:
         rel = path.relative_to(TOOLS_DIR).with_suffix("")
         out[".".join(rel.parts)] = path.read_text(encoding="utf-8")
     return out
+
+
+@functools.cache
+def _observed_fence_lines() -> dict[str, set[tuple[str, int]]]:
+    """Run every CASES row of test_title_fencing.py and record, for each fence
+    id, the (module, line) of the wrap() call that fenced that id's distinct
+    title value. This is evidence from run time, not from the census."""
+    real_wrap = _untrusted.wrap
+    calls: list[tuple[str, int, str]] = []
+
+    def recording_wrap(text: str) -> str:
+        caller = sys._getframe(1)
+        calls.append((caller.f_code.co_filename, caller.f_lineno, text))
+        return real_wrap(text)
+
+    observed: dict[str, set[tuple[str, int]]] = {}
+    with ExitStack() as patches:
+        for name in _real_sources():
+            module = importlib.import_module(f"{PACKAGE}.{name}")
+            if getattr(module, "wrap", None) is real_wrap:
+                patches.enter_context(mock.patch.object(module, "wrap", recording_wrap))
+            if hasattr(module, "log_write"):
+                patches.enter_context(
+                    mock.patch.object(module, "log_write", lambda *_a, **_k: None)
+                )
+        for case in CASES:
+            titles = _defaults(case)
+            fp_of = {value: fp for fp, value in titles.items()}
+            calls.clear()
+            _run_case(case, titles)
+            for filename, line, text in calls:
+                if text in fp_of:
+                    rel = Path(filename).relative_to(TOOLS_DIR).with_suffix("")
+                    observed.setdefault(fp_of[text], set()).add((".".join(rel.parts), line))
+    return observed
 
 
 def _mutated(module: str, old: str, new: str) -> dict[str, str]:
@@ -764,12 +868,40 @@ def test_census_agrees_with_appendix_b_by_fence_point_identity():
     assert len(APPENDIX_B) == 45
     assert set(FENCE_POINTS) == set(APPENDIX_B)
     assert len(set(FENCE_POINTS.values())) == len(FENCE_POINTS)
-    census = run_census(_real_sources())
+    observed = _observed_fence_lines()
+    assert set(observed) == set(APPENDIX_B)
+    census = run_census(_real_sources(), fence_lines=observed)
+    assert census.problems == []
     missing = sorted(fp for fp, site in FENCE_POINTS.items() if site not in census.fence_sites)
     assert missing == []
     case_modules = {f.fp: c.module.__name__ for c in CASES for f in c.fences}
     for fp, (module, _function, _n) in FENCE_POINTS.items():
         assert f"{PACKAGE}.{module}".startswith(case_modules[fp]), fp
+
+
+def test_an_id_mapped_to_the_wrong_fence_in_its_module_fails():
+    swapped = dict(FENCE_POINTS)
+    swapped["P09"], swapped["P10"] = FENCE_POINTS["P10"], FENCE_POINTS["P09"]
+    census = run_census(_real_sources(), fence_points=swapped, fence_lines=_observed_fence_lines())
+    _assert_fails_naming(census, "P09", "but its CASES rows fence it at")
+    _assert_fails_naming(census, "P10", "but its CASES rows fence it at")
+
+
+def test_every_swap_of_two_ids_in_one_module_fails():
+    observed = _observed_fence_lines()
+    ids = sorted(FENCE_POINTS)
+    pairs = [
+        (a, b)
+        for i, a in enumerate(ids)
+        for b in ids[i + 1 :]
+        if FENCE_POINTS[a][0] == FENCE_POINTS[b][0]
+    ]
+    assert len(pairs) == 211
+    for a, b in pairs:
+        swapped = dict(FENCE_POINTS)
+        swapped[a], swapped[b] = FENCE_POINTS[b], FENCE_POINTS[a]
+        census = run_census(_real_sources(), fence_points=swapped, fence_lines=observed)
+        assert census.problems, f"swapping {a} and {b} is not caught"
 
 
 def test_every_helper_table_entry_names_a_real_function():
@@ -928,6 +1060,7 @@ UNSUPPORTED_USES = {
     "unknown callee": "    print(title)\n",
     "dict key": "    _k = {title: 1}\n",
     "attribute target": "    product.label = title\n",
+    "get with no argument": "    _g = title.get()\n",
 }
 
 
@@ -993,6 +1126,39 @@ def test_another_key_of_a_title_holding_dict_is_clean():
     sources = _with_head_line('_box = {"t": col["title"], "n": 1}', "f\"Box: {_box['n']}\\n\"")
     assert "_box['n']" in sources["collections"]
     assert run_census(sources).problems == []
+
+
+def test_a_dict_with_a_computed_key_follows_every_key_read():
+    prelude = 'key_name = "t"\n        _box = {key_name: col["title"]}'
+    sources = _with_head_line(prelude, "f\"Box: {_box['label']}\\n\"")
+    _assert_fails_naming(run_census(sources), "register.get_collection", "unfenced display")
+
+
+HELPERS_WITHOUT_A_NAMED_PARAMETER = {
+    "**kwargs": (
+        "def _line(**fields):\n    return f\"Name: {fields['name']}\"\n",
+        "_line(name=col['title'])",
+    ),
+    "*args": ('def _line(*parts):\n    return "".join(parts)\n', "_line(col['title'])"),
+    "** splat": (
+        'def _line(name):\n    return f"Name: {name}"\n',
+        "_line(**{'name': col['title']})",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("helper", "call"),
+    HELPERS_WITHOUT_A_NAMED_PARAMETER.values(),
+    ids=HELPERS_WITHOUT_A_NAMED_PARAMETER.keys(),
+)
+def test_a_title_passed_to_a_helper_with_no_named_parameter_fails(helper, call):
+    sources = _with_head_line("_box = 0", f'f"Name: {{{call}}}\\n"')
+    sources["collections"] += "\n\n" + helper
+    census = run_census(sources)
+    _assert_fails_naming(
+        census, "register.get_collection", "?_line() takes it with no named parameter"
+    )
 
 
 # ---- mutation (d): exception rows -----------------------------------------
