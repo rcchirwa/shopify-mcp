@@ -55,6 +55,8 @@ Trello: https://trello.com/c/bhdFNyPx (Story 10.79, Epic 10).
 
 **Tests.** Eight test cases (six functions) named `test_s1079_*` in `tests/unit/tools/test_products.py`. For both tools, on a capped walk with an empty last body, they assert: the marker is one exact line; it sits after the last closing fence tag; the genuine WARNING is present and comes after it. A non-empty control keeps the fenced form (it passes on the base). Reminder checks use `INJECTION_REMINDER`. Mutation: removing the marker at the list site fails 3 tests; removing it at the `get_product_full` site fails 2 tests.
 
+**Docs.** The `get_products_with_descriptions` row in README.md now documents the empty marker.
+
 **Residual.** `vendor`, `productType`, tags and option names stay unfenced and bare. See the newline check above.
 
 **Closes** the empty-last-body residual in the Story 10.76 entry.
