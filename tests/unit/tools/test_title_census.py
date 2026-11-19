@@ -57,8 +57,8 @@ map alone: ``_observed_fence_lines`` runs every CASES row of
 fenced the id's own distinct title value. Each mapped fence must sit on one
 of those lines, so an id mapped to the wrong fence of the same module fails.
 
-Scope beyond the card, recorded on purpose (Robert, review round 1: record,
-do not narrow):
+Scope beyond the card, recorded on purpose (review round 1: Robert accepted
+the fix; the scope is recorded, not narrowed):
   - SEO titles. The census counts the ``title`` key under ``seo`` too, because
     it cannot tell an SEO title from a product title. That gives two fence
     points beyond APPENDIX_B (``update_product_seo``, ``get_product_full``;
@@ -85,6 +85,7 @@ import ast
 import builtins
 import functools
 import importlib
+import inspect
 import sys
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import ExitStack
@@ -97,8 +98,16 @@ import pytest
 import shopify_mcp.tools as tools_pkg
 from shopify_mcp.tools import _untrusted
 from shopify_mcp.validators.naming import format_validation_diff
-from tests.unit.tools.test_title_fencing import APPENDIX_B, CASES, _defaults
-from tests.unit.tools.test_title_fencing import _run as _run_case
+from tests.unit.tools import test_title_fencing as _fencing
+from tests.unit.tools.test_title_fencing import APPENDIX_B, CASES
+
+# The APPENDIX_B identity check runs CASES, the independent run-time source,
+# with two private helpers of test_title_fencing.py: `_defaults(case)` and
+# `_run(case, titles)`. They are read from the module (not imported by name),
+# so a rename or a signature change there fails
+# test_the_fencing_helpers_the_identity_check_uses_still_exist with that
+# cause. Such a change must update _observed_fence_lines here.
+_FENCING_HELPERS = {"_defaults": 1, "_run": 2}
 
 PACKAGE = "shopify_mcp.tools"
 TOOLS_DIR = Path(tools_pkg.__file__).parent
@@ -836,10 +845,10 @@ def _observed_fence_lines() -> dict[str, set[tuple[str, int]]]:
                     mock.patch.object(module, "log_write", lambda *_a, **_k: None)
                 )
         for case in CASES:
-            titles = _defaults(case)
+            titles = _fencing._defaults(case)
             fp_of = {value: fp for fp, value in titles.items()}
             calls.clear()
-            _run_case(case, titles)
+            _fencing._run(case, titles)
             for filename, line, text in calls:
                 if text in fp_of:
                     rel = Path(filename).relative_to(TOOLS_DIR).with_suffix("")
@@ -877,6 +886,23 @@ def test_census_agrees_with_appendix_b_by_fence_point_identity():
     case_modules = {f.fp: c.module.__name__ for c in CASES for f in c.fences}
     for fp, (module, _function, _n) in FENCE_POINTS.items():
         assert f"{PACKAGE}.{module}".startswith(case_modules[fp]), fp
+
+
+def test_the_fencing_helpers_the_identity_check_uses_still_exist():
+    case = CASES[0]
+    arguments = (case, {})
+    for name, count in _FENCING_HELPERS.items():
+        helper = getattr(_fencing, name, None)
+        assert callable(helper), (
+            f"test_title_fencing.{name} is missing: update _observed_fence_lines"
+        )
+        try:
+            inspect.signature(helper).bind(*arguments[:count])
+        except TypeError as exc:
+            raise AssertionError(
+                f"test_title_fencing.{name} no longer takes {count} argument(s): {exc};"
+                " update _observed_fence_lines"
+            ) from exc
 
 
 def test_an_id_mapped_to_the_wrong_fence_in_its_module_fails():
