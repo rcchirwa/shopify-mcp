@@ -347,7 +347,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # The old/new halves have different provenance: `old_desc` is stored
         # store content read back over the wire (fenced), `new_description` is
         # the caller's own just-submitted input (left raw — labelling it as
-        # shopper-controlled would be false and would dilute the signal on the
+        # store content would be false and would dilute the signal on the
         # half that is). Story 10.63 / SEC-04-descriptions.
         # The truncation marker stays OUTSIDE the fence: it is our own text, and
         # fencing it would label our marker as store content.

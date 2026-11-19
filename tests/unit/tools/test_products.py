@@ -2624,7 +2624,7 @@ def test_update_description_confirmed_only_replaces_own_header_not_embedded_prev
         new_description="<p>Safe content</p>",
         confirm=True,
     )
-    assert out.startswith("Note: fields marked <UNTRUSTED-DATA>"), out
+    assert out.startswith(INJECTION_REMINDER), out
     assert "CONFIRMED — Product description update" in out, out
     assert f"<UNTRUSTED-DATA>{malicious_old}</UNTRUSTED-DATA>" in out, out
     assert out.count("PREVIEW") == 1, out
@@ -3136,7 +3136,7 @@ def test_s1063_update_product_description_preview_wraps_stored_old_excerpt():
 
 
 def test_s1063_update_product_description_preview_leaves_caller_new_value_raw():
-    """Deliberate: labelling the operator's own input as shopper-controlled is false."""
+    """Deliberate: labelling the operator's own input as store content is false."""
     tools, fc = _build([{"product": _full_product("7", "Tee", "tee", body="<p>old</p>")}])
     out = tools["update_product_description"](product_id="7", new_description=_S1063_PAYLOAD)
     assert f"New (full)   :\n{_S1063_PAYLOAD}" in out
@@ -3402,3 +3402,37 @@ def test_s1092_seo_audit_log_records_raw_lengths_not_fenced(monkeypatch):
     assert logged == [
         ("update_product_seo", "id=123 | title: 5 chars → 3 chars | description: 5 chars → 5 chars")
     ]
+
+
+# ---------- Story 10.117: reminder placement, compared with the constant ----------
+
+
+def test_reminder_leads_once_on_a_fenced_store_title():
+    """A fenced store title: the reminder is the first line, exactly once."""
+    tools, fc = _build(
+        [products_page([_product_summary("111", "Tee One", "tee-one", variants=[])])]
+    )
+    out = tools["get_products"]()
+    assert len(fc.calls) == 1, fc.calls
+    assert fenced("Tee One") in out, out
+    assert out.startswith(INJECTION_REMINDER), out
+    assert out.count(INJECTION_REMINDER) == 1, out
+
+
+def test_reminder_leads_once_on_a_shopify_user_errors_output():
+    """A userErrors report: the reminder leads, exactly once."""
+    tools, fc = _build([_seo_read(), _update_err(["product", "seo", "title"], "bad")])
+    out = tools["update_product_seo"](product_id="123", new_seo_title="x", confirm=True)
+    assert len(fc.calls) == 2, fc.calls
+    assert out.startswith(INJECTION_REMINDER), out
+    assert out.count(INJECTION_REMINDER) == 1, out
+    assert fenced("product.seo.title: bad") in out, out
+
+
+def test_reminder_is_absent_when_nothing_is_fenced():
+    """An output with no fenced field carries no reminder."""
+    tools, fc = _build([products_page([])])
+    out = tools["get_products"]()
+    assert len(fc.calls) == 1, fc.calls
+    assert out == "No products found.", out
+    assert INJECTION_REMINDER not in out

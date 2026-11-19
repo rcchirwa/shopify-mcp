@@ -263,7 +263,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if description:
             # The description is the caller's own input, not stored store
             # content, so it is rendered raw — fencing it would falsely label
-            # the operator's own text as shopper-controlled (Story 10.63).
+            # the operator's own text as store content (Story 10.63).
             preview_lines.append(
                 f"  Description (full):\n{description}"
                 + format_description_warning_block(html_safety_findings(description))

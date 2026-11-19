@@ -722,7 +722,7 @@ def test_update_collection_confirm_description_only_sends_only_description_field
     assert "CONFIRMED —" in out
     assert "PREVIEW" not in out
     assert not out.startswith("Done.")
-    assert out.startswith("Note: fields marked <UNTRUSTED-DATA>")
+    assert out.startswith(INJECTION_REMINDER)
 
 
 # ---------- sanitizer (Approach 2, post-sign-off): disallowed HTML stripped before write ----------
@@ -948,7 +948,7 @@ def test_s1063_update_collection_preview_wraps_stored_old_excerpt():
 
 
 def test_s1063_update_collection_preview_leaves_caller_new_value_raw():
-    """Deliberate: labelling the operator's own input as shopper-controlled is false."""
+    """Deliberate: labelling the operator's own input as store content is false."""
     tools, fc = _build(
         [_collection("vanish", "Vanish", description_html="<p>old</p>", rule_set=None)]
     )
