@@ -8,6 +8,32 @@ Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort
 
 ---
 
+## 2026-11-19 — Story 10.79 (SEC-04-list-notices)
+
+Trello: https://trello.com/c/bhdFNyPx (Story 10.79, Epic 10).
+
+**Decision (Robert, 2026-11-18): approach A, the explicit empty marker.** An empty `body_html` now renders as the exact line `body_html: (empty)`. It is our own text, outside any fence. Two sites in `src/shopify_mcp/tools/products.py`: `get_products_with_descriptions` and `get_product_full`. Both use the new constant `EMPTY_BODY_LINE`. A server notice that follows the body (the products WARNING after the last product, or the variant WARNING) can no longer sit where store text would go.
+
+**Severity reasoning.** The harm was under-trust only: a notice next to a bare empty body reads like store data. It could not suppress a real notice and could not break out of a fence. The content is merchant-authored, so a hostile value means the store admin is already compromised. Direction 1 (a product title that forges a notice or the `(N shown)` / `(N total)` header) is closed by Story 10.112 (#217). Its guard rows are in `tests/unit/tools/test_title_fencing.py`. This story cites them and does not re-test them.
+
+**Effect, on purpose: the output changes for empty bodies only.** Before: `body_html:` and then nothing. After: `body_html: (empty)`. This includes a body that is `null` in the store. A non-empty body is unchanged (`body_html:` then the fenced value). `get_product_description` is out of scope and still renders an empty body bare. Nothing follows its body, so no notice can sit there.
+
+**Scope rule, by function (origin/main 94c32cd).** Every place where an empty store field renders bare directly before a server notice, in every tool under `src/shopify_mcp/tools/`: only the two sites above. Notice sites that were read and do not match: `get_products` and `get_product` (the notice follows a `Variants:` list of fenced titles, not a store text field. That a product has a variant rests on Shopify behaviour, not on the code: Shopify does not allow a product with zero variants, but the code and its tests tolerate a null or empty variants connection. A zero-variant last product on a capped `get_products` walk would render a bare `  Variants: ` line directly before the WARNING. The text on that line is our own join of ids and fenced titles, not a store text field, which is why it stays out of the site list. Robert chose this wording over bringing the site into scope), `get_products_by_collection`, `get_product_collections`, `get_orders` / `get_order` (the notice follows a line item list or a visit line), the inventory and pricing previews (the notice follows variant lines), and `update_product_options` (the notice follows a line where the option name is followed by an id).
+
+**Newline check on `vendor`, `productType` and tags: unverified.** No read of a product and no documentation check settled whether Shopify keeps a newline in these fields. A read of an existing product with no newline is not evidence, because it does not show what Shopify does on write. No fix is made here. If a newline is found later, Robert decides.
+
+**Pins.** No existing test pinned the empty-body render of either tool byte for byte. The text matches for `body_html:\n` in `test_products.py` are: a forged-payload fixture (`test_s1070_zero_width_forged_closer_cannot_forge_a_neighbouring_product`), two `get_product_description` pins (out of scope), and two non-empty fenced bodies. The tests that use an empty body for the two tools (`test_s1063_get_products_with_descriptions_all_empty_bodies_add_no_reminder`, `test_s1063_get_products_with_descriptions_wraps_only_the_nonempty_body`, `test_s1063_get_product_full_empty_body_adds_no_wrapper_or_reminder`, and the capped and paginated `get_product_full` tests) assert only the absence of a fence or a substring, so they pass unchanged. No pin was changed. No pin was updated from a new run.
+
+**Tests.** Eight test cases (six functions) named `test_s1079_*` in `tests/unit/tools/test_products.py`. For both tools, on a capped walk with an empty last body, they assert: the marker is one exact line; it sits after the last closing fence tag; the genuine WARNING is present and comes after it. A non-empty control keeps the fenced form (it passes on the base). Reminder checks use `INJECTION_REMINDER`. Mutation: removing the marker at the list site fails 3 tests; removing it at the `get_product_full` site fails 2 tests.
+
+**Docs.** The `get_products_with_descriptions` row in README.md now documents the empty marker.
+
+**Residual.** `vendor`, `productType`, tags and option names stay unfenced and bare. See the newline check above.
+
+**Closes** the empty-last-body residual in the Story 10.76 entry.
+
+---
+
 ## 2026-11-19 — Story 10.116 (SEC-04-titles-census): a source census fails a new unfenced store-title render
 
 Trello: https://trello.com/c/ADi6BlQW (Story 10.116, Epic 10). Closes recorded finding 2 of the Story 10.112 entry below. Before this story, the title guard (`tests/unit/tools/test_title_fencing.py`) checked only the 45 fence points that `APPENDIX_B` lists by hand. A new tool, branch or output line that showed a store title raw failed no test.
@@ -34,32 +60,6 @@ A row is keyed by module, qualified function and title key of the read, and by t
 **Detection limit.** The census starts from recognized `title` and `variantTitle` reads. It can miss a title that the code exposes only under another key, a GraphQL alias, attribute access or `getattr`, and an object that holds a title and is rendered whole (for example `f"{product}"`). `displayName` is out of scope. On `4766b87` it renders only in `catalog_hygiene._metaobject_lines` (fenced at `:1789`); its callers are the found path (the dict built at `:4610`) and the created path (`:4681`, the whole `metaobjectCreate` object). Both reach the same fenced line; both JSON tails keep it raw.
 
 **No tool output changes.** No file under `src/` changed. `test_title_fencing.py` is read (its `APPENDIX_B` and `CASES`), never edited.
-
----
-
-## 2026-11-19 — Story 10.79 (SEC-04-list-notices)
-
-Trello: https://trello.com/c/bhdFNyPx (Story 10.79, Epic 10).
-
-**Decision (Robert, 2026-11-18): approach A, the explicit empty marker.** An empty `body_html` now renders as the exact line `body_html: (empty)`. It is our own text, outside any fence. Two sites in `src/shopify_mcp/tools/products.py`: `get_products_with_descriptions` and `get_product_full`. Both use the new constant `EMPTY_BODY_LINE`. A server notice that follows the body (the products WARNING after the last product, or the variant WARNING) can no longer sit where store text would go.
-
-**Severity reasoning.** The harm was under-trust only: a notice next to a bare empty body reads like store data. It could not suppress a real notice and could not break out of a fence. The content is merchant-authored, so a hostile value means the store admin is already compromised. Direction 1 (a product title that forges a notice or the `(N shown)` / `(N total)` header) is closed by Story 10.112 (#217). Its guard rows are in `tests/unit/tools/test_title_fencing.py`. This story cites them and does not re-test them.
-
-**Effect, on purpose: the output changes for empty bodies only.** Before: `body_html:` and then nothing. After: `body_html: (empty)`. This includes a body that is `null` in the store. A non-empty body is unchanged (`body_html:` then the fenced value). `get_product_description` is out of scope and still renders an empty body bare. Nothing follows its body, so no notice can sit there.
-
-**Scope rule, by function (origin/main 94c32cd).** Every place where an empty store field renders bare directly before a server notice, in every tool under `src/shopify_mcp/tools/`: only the two sites above. Notice sites that were read and do not match: `get_products` and `get_product` (the notice follows a `Variants:` list of fenced titles, not a store text field. That a product has a variant rests on Shopify behaviour, not on the code: Shopify does not allow a product with zero variants, but the code and its tests tolerate a null or empty variants connection. A zero-variant last product on a capped `get_products` walk would render a bare `  Variants: ` line directly before the WARNING. The text on that line is our own join of ids and fenced titles, not a store text field, which is why it stays out of the site list. Robert chose this wording over bringing the site into scope), `get_products_by_collection`, `get_product_collections`, `get_orders` / `get_order` (the notice follows a line item list or a visit line), the inventory and pricing previews (the notice follows variant lines), and `update_product_options` (the notice follows a line where the option name is followed by an id).
-
-**Newline check on `vendor`, `productType` and tags: unverified.** No read of a product and no documentation check settled whether Shopify keeps a newline in these fields. A read of an existing product with no newline is not evidence, because it does not show what Shopify does on write. No fix is made here. If a newline is found later, Robert decides.
-
-**Pins.** No existing test pinned the empty-body render of either tool byte for byte. The text matches for `body_html:\n` in `test_products.py` are: a forged-payload fixture (`test_s1070_zero_width_forged_closer_cannot_forge_a_neighbouring_product`), two `get_product_description` pins (out of scope), and two non-empty fenced bodies. The tests that use an empty body for the two tools (`test_s1063_get_products_with_descriptions_all_empty_bodies_add_no_reminder`, `test_s1063_get_products_with_descriptions_wraps_only_the_nonempty_body`, `test_s1063_get_product_full_empty_body_adds_no_wrapper_or_reminder`, and the capped and paginated `get_product_full` tests) assert only the absence of a fence or a substring, so they pass unchanged. No pin was changed. No pin was updated from a new run.
-
-**Tests.** Eight test cases (six functions) named `test_s1079_*` in `tests/unit/tools/test_products.py`. For both tools, on a capped walk with an empty last body, they assert: the marker is one exact line; it sits after the last closing fence tag; the genuine WARNING is present and comes after it. A non-empty control keeps the fenced form (it passes on the base). Reminder checks use `INJECTION_REMINDER`. Mutation: removing the marker at the list site fails 3 tests; removing it at the `get_product_full` site fails 2 tests.
-
-**Docs.** The `get_products_with_descriptions` row in README.md now documents the empty marker.
-
-**Residual.** `vendor`, `productType`, tags and option names stay unfenced and bare. See the newline check above.
-
-**Closes** the empty-last-body residual in the Story 10.76 entry.
 
 ---
 
