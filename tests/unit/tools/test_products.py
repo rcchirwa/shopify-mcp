@@ -3426,6 +3426,7 @@ def test_reminder_leads_once_on_a_shopify_user_errors_output():
     assert len(fc.calls) == 2, fc.calls
     assert out.startswith(INJECTION_REMINDER), out
     assert out.count(INJECTION_REMINDER) == 1, out
+    assert fenced("product.seo.title: bad") in out, out
 
 
 def test_reminder_is_absent_when_nothing_is_fenced():
