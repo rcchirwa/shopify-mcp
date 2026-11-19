@@ -133,6 +133,14 @@ TAG_MODES = ("replace", "append", "remove")
 # the server failed when in fact it got exactly what it asked for.
 PRODUCTS_TRUNCATED_WARNING = "\nWARNING: additional products exist and are not shown here."
 
+# Story 10.79 — an empty body_html in get_products_with_descriptions and
+# get_product_full renders as this one line: our own text, outside any fence.
+# A bare `body_html:` let a server notice appended after the last product land
+# exactly where the body value would go, so the notice read like store data.
+# A non-empty body keeps its fenced form. get_product_description is out of
+# scope and still renders an empty body bare.
+EMPTY_BODY_LINE = "body_html: (empty)"
+
 
 def _count_phrase(nodes: list[Any], capped: bool) -> str:
     """Render a list header's count, saying "total" only when it is one.
@@ -669,7 +677,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"Title: {wrap(p['title']) if p['title'] else p['title']}\n"
                 f"Handle: {p['handle']}\n"
                 f"Status: {p['status']}\n"
-                f"body_html:\n{wrap(body) if body else ''}"
+                + (f"body_html:\n{wrap(body)}" if body else EMPTY_BODY_LINE)
             )
         # Product presence doesn't imply description presence; with_reminder
         # derives that from the rendered body, so no second pass is needed.
@@ -749,7 +757,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             f"Category full name: {cat_full}\n"
             f"Variants:\n{variants}\n"
             f"Options:\n{options_block}\n"
-            f"body_html:\n{wrap(body) if body else ''}"
+            + (f"body_html:\n{wrap(body)}" if body else EMPTY_BODY_LINE)
         )
         if capped:
             result += "\nWARNING: variant pagination stopped short — additional variants (if any) are not shown here."

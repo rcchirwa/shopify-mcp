@@ -37,6 +37,30 @@ A row is keyed by module, qualified function and title key of the read, and by t
 
 ---
 
+## 2026-11-19 — Story 10.79 (SEC-04-list-notices)
+
+Trello: https://trello.com/c/bhdFNyPx (Story 10.79, Epic 10).
+
+**Decision (Robert, 2026-11-18): approach A, the explicit empty marker.** An empty `body_html` now renders as the exact line `body_html: (empty)`. It is our own text, outside any fence. Two sites in `src/shopify_mcp/tools/products.py`: `get_products_with_descriptions` and `get_product_full`. Both use the new constant `EMPTY_BODY_LINE`. A server notice that follows the body (the products WARNING after the last product, or the variant WARNING) can no longer sit where store text would go.
+
+**Severity reasoning.** The harm was under-trust only: a notice next to a bare empty body reads like store data. It could not suppress a real notice and could not break out of a fence. The content is merchant-authored, so a hostile value means the store admin is already compromised. Direction 1 (a product title that forges a notice or the `(N shown)` / `(N total)` header) is closed by Story 10.112 (#217). Its guard rows are in `tests/unit/tools/test_title_fencing.py`. This story cites them and does not re-test them.
+
+**Effect, on purpose: the output changes for empty bodies only.** Before: `body_html:` and then nothing. After: `body_html: (empty)`. A non-empty body is unchanged (`body_html:` then the fenced value). This includes a body that is `null` in the store. `get_product_description` is out of scope and still renders an empty body bare. Nothing follows its body, so no notice can sit there.
+
+**Scope rule, by function (origin/main 94c32cd).** Every place where an empty store field renders bare directly before a server notice, in every tool under `src/shopify_mcp/tools/`: only the two sites above. Notice sites that were read and do not match: `get_products` and `get_product` (the notice follows a `Variants:` list of fenced titles, not a store text field; a product always has a variant), `get_products_by_collection`, `get_product_collections`, `get_orders` / `get_order` (the notice follows a line item list or a visit line), the inventory and pricing previews (the notice follows variant lines), and `update_product_options` (the notice follows a line where the option name is followed by an id).
+
+**Newline check on `vendor`, `productType` and tags: unverified.** No read of a product and no documentation check settled whether Shopify keeps a newline in these fields. A read of an existing product with no newline is not evidence, because it does not show what Shopify does on write. No fix is made here. If a newline is found later, Robert decides.
+
+**Pins.** No existing test pinned the empty-body render of either tool byte for byte. The text matches for `body_html:\n` in `test_products.py` are: a forged-payload fixture (`test_s1070_zero_width_forged_closer_cannot_forge_a_neighbouring_product`), two `get_product_description` pins (out of scope), and two non-empty fenced bodies. The tests that use an empty body for the two tools (`test_s1063_get_products_with_descriptions_all_empty_bodies_add_no_reminder`, `test_s1063_get_products_with_descriptions_wraps_only_the_nonempty_body`, `test_s1063_get_product_full_empty_body_adds_no_wrapper_or_reminder`, and the capped and paginated `get_product_full` tests) assert only the absence of a fence or a substring, so they pass unchanged. No pin was changed. No pin was updated from a new run.
+
+**Tests.** Eight test cases (six functions) named `test_s1079_*` in `tests/unit/tools/test_products.py`. For both tools, on a capped walk with an empty last body, they assert: the marker is one exact line; it sits after the last closing fence tag; the genuine WARNING is present and comes after it. A non-empty control keeps the fenced form (it passes on the base). Reminder checks use `INJECTION_REMINDER`. Mutation: removing the marker at the list site fails 3 tests; removing it at the `get_product_full` site fails 2 tests.
+
+**Residual.** `vendor`, `productType`, tags and option names stay unfenced and bare. See the newline check above.
+
+**Closes** the empty-last-body residual in the Story 10.76 entry.
+
+---
+
 ## 2026-11-19 — Story 10.117 (SEC-04-reminder-wording)
 
 Trello: https://trello.com/c/qR8otoVC (Story 10.117, Epic 10).
@@ -2145,7 +2169,7 @@ Security findings resolved: no GraphQL injection is introduced (all three querie
 - **Wrapping titles/handles in `wrap()`** — SEC-04 successor territory, not a pagination concern. Three consequences of leaving it, all recorded rather than fixed:
   - **The truncation WARNING is forgeable by a product title.** A product titled with a newline followed by the warning sentence renders a byte-identical line, since titles are unfenced. Structurally unchanged by this story — titles were unfenced identically before it, and `get_products` already emitted the same sentence — but two more tools now emit it legitimately. The harm direction is under-trust only: a forged warning claims products are missing, and it cannot suppress a real one or break out of a fence, because no untrusted region is open at the title's position. The `(N shown)` header is forgeable the same way.
   - **The unfenced-title volume ceiling for `get_products_by_collection` rose from 250 to 2500**, tracking the request growth recorded above. The class of exposure is unchanged; the quantity is not.
-  - **When the last returned product's `body_html` is empty**, the WARNING lands where that product's body value would go. It is still outside every fence — empty bodies render bare rather than wrapped — but the adjacency reads like store data, and the store can trigger it by leaving the last description empty.
+  - ~~**When the last returned product's `body_html` is empty**, the WARNING lands where that product's body value would go. It is still outside every fence — empty bodies render bare rather than wrapped — but the adjacency reads like store data, and the store can trigger it by leaving the last description empty.~~ *Closed 2026-11-19 by Story 10.79: an empty body now renders as the line `body_html: (empty)`, so a notice never sits where store text would go. See the entry at the top of this file.*
 - ~~**`client.paginate()` reporting a complete walk when a connection vanishes mid-stream.** If `collectionByHandle` (or the connection itself) is null on page two or later, the path resolves to `{}`, `hasNextPage` is falsy and the walk returns `capped=False` — a truncation the new flag cannot see. Raised by the security review. It lives in `client.py` and affects every `paginate()` caller, not just this story's three, so fixing it here would be both out of scope and under-tested. Worth a card.~~ **Closed 2026-09-05 by Story 10.78** (`T-10.6-paginate-vanish`) — see the entry above.
 
 ---
