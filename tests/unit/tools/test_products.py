@@ -3090,7 +3090,7 @@ def test_s1063_get_products_with_descriptions_all_empty_bodies_add_no_reminder()
 
 
 def test_s1063_get_products_with_descriptions_wraps_only_the_nonempty_body():
-    """Mixed batch: one product earns the reminder, the empty one stays bare."""
+    """Mixed batch: one product earns the reminder, the empty one stays unfenced and renders the empty marker."""
     tools, fc = _build(
         [
             {
