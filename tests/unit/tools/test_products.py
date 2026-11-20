@@ -3090,7 +3090,8 @@ def test_s1063_get_products_with_descriptions_all_empty_bodies_add_no_reminder()
 
 
 def test_s1063_get_products_with_descriptions_wraps_only_the_nonempty_body():
-    """Mixed batch: one product earns the reminder, the empty one stays bare."""
+    """Mixed batch: one product earns the reminder, the empty one stays unfenced
+    and renders the empty marker."""
     tools, fc = _build(
         [
             {
@@ -3436,3 +3437,137 @@ def test_reminder_is_absent_when_nothing_is_fenced():
     assert len(fc.calls) == 1, fc.calls
     assert out == "No products found.", out
     assert INJECTION_REMINDER not in out
+
+
+# ---------- Story 10.79 (SEC-04-list-notices): the empty-body marker ----------
+#
+# An empty body used to render as a bare `body_html:` line, so a server notice
+# appended after the last product landed where the body value would have been.
+# Approach A (Robert, 2026-11-18): an empty body renders as the exact line
+# `body_html: (empty)`, our own text, outside any fence. A non-empty body keeps
+# its fenced form. Direction 1 (a title forging a notice) is closed by Story
+# 10.112; its guard rows are in test_title_fencing.py and are not re-tested here.
+
+_S1079_MARKER = "body_html: (empty)"
+_S1079_FULL_WARNING = (
+    "WARNING: variant pagination stopped short — additional variants (if any) are not shown here."
+)
+
+
+def _s1079_list_output(scoped, body):
+    """A capped walk (limit=1, one more page exists) whose LAST product has `body`."""
+    node = _product_with_body("111", "Tee One", "tee-one", body)
+    page = (
+        collection_products_page([node], has_next=True, cursor="C1")
+        if scoped
+        else products_page([node], has_next=True, cursor="C1")
+    )
+    tools, fc = _build([page])
+    out = tools["get_products_with_descriptions"](
+        collection_handle="vanish" if scoped else "", limit=1
+    )
+    # Prove the scripted response was used and the walk capped.
+    assert len(fc.calls) == 1, fc.calls
+    assert "Handle: tee-one" in out, out
+    assert out.endswith(products.PRODUCTS_TRUNCATED_WARNING), out
+    return out
+
+
+def _s1079_full_output(body):
+    """get_product_full on a variant walk that hits its page cap, with `body`."""
+    v = {"id": "gid://shopify/ProductVariant/1", "title": "S", "sku": "S-SKU"}
+    page = _product_full_page("123", "Tee", "tee", [v], has_next=True, end_cursor="cur")
+    page["product"]["bodyHtml"] = body
+    tools, fc = _build([page] * 10)
+    out = tools["get_product_full"](product_id="123")
+    # Prove the scripted responses were used and the walk capped.
+    assert len(fc.calls) >= 2, fc.calls
+    assert all(call[0] == GET_PRODUCT_FULL_BY_ID for call in fc.calls)
+    assert "SKU: S-SKU" in out, out
+    assert out.endswith(_S1079_FULL_WARNING), out
+    return out
+
+
+@pytest.mark.parametrize("scoped", [True, False])
+def test_s1079_get_products_with_descriptions_empty_last_body_renders_marker_before_warning(
+    scoped,
+):
+    out = _s1079_list_output(scoped, "")
+    lines = out.split("\n")
+    # One line, exactly: our own text, not a bare `body_html:`.
+    assert lines.count(_S1079_MARKER) == 1, out
+    assert "body_html:" not in lines, out
+    marker_at = out.index(_S1079_MARKER)
+    # The marker sits outside every fence: after the last closing tag.
+    assert marker_at > out.rindex("</UNTRUSTED-DATA>"), out
+    # The genuine warning is still present, and it comes after the marker.
+    warning_at = out.index(products.PRODUCTS_TRUNCATED_WARNING)
+    assert warning_at > marker_at, out
+    # The marker line is directly followed by the warning: nothing was lost.
+    assert out.endswith(_S1079_MARKER + products.PRODUCTS_TRUNCATED_WARNING), out
+    assert out.startswith(INJECTION_REMINDER), out
+    assert out.count(INJECTION_REMINDER) == 1, out
+
+
+@pytest.mark.parametrize("scoped", [True, False])
+def test_s1079_get_products_with_descriptions_nonempty_last_body_keeps_fenced_form(scoped):
+    """Control: a non-empty body is unchanged. Passes on the base."""
+    out = _s1079_list_output(scoped, "<p>one</p>")
+    assert "body_html:\n" + fenced("<p>one</p>") in out, out
+    assert "(empty)" not in out, out
+    assert out.index(products.PRODUCTS_TRUNCATED_WARNING) > out.rindex("</UNTRUSTED-DATA>")
+    assert out.startswith(INJECTION_REMINDER), out
+    assert out.count(INJECTION_REMINDER) == 1, out
+
+
+def test_s1079_get_products_with_descriptions_empty_body_not_last_renders_marker():
+    """An empty body that is not the last, on a walk that did not cap."""
+    tools, fc = _build(
+        [
+            products_page(
+                [
+                    _product_with_body("1", "A", "a", None),
+                    _product_with_body("2", "B", "b", "<p>two</p>"),
+                    _product_with_body("3", "C", "c", ""),
+                ]
+            )
+        ]
+    )
+    out = tools["get_products_with_descriptions"]()
+    assert len(fc.calls) == 1, fc.calls
+    assert out.count(_S1079_MARKER) == 2, out
+    assert "body_html:\n" + fenced("<p>two</p>") in out, out
+    assert out.endswith("Status: ACTIVE\n" + _S1079_MARKER), out
+    assert "WARNING" not in out, out
+
+
+def test_s1079_get_product_full_empty_body_capped_renders_marker_before_warning():
+    out = _s1079_full_output("")
+    lines = out.split("\n")
+    assert lines.count(_S1079_MARKER) == 1, out
+    assert "body_html:" not in lines, out
+    marker_at = out.index(_S1079_MARKER)
+    assert marker_at > out.rindex("</UNTRUSTED-DATA>"), out
+    warning_at = out.index(_S1079_FULL_WARNING)
+    assert warning_at > marker_at, out
+    assert out.endswith(_S1079_MARKER + "\n" + _S1079_FULL_WARNING), out
+    assert out.startswith(INJECTION_REMINDER), out
+    assert out.count(INJECTION_REMINDER) == 1, out
+
+
+def test_s1079_get_product_full_nonempty_body_capped_keeps_fenced_form():
+    """Control: a non-empty body is unchanged. Passes on the base."""
+    out = _s1079_full_output("<p>one</p>")
+    assert "body_html:\n" + fenced("<p>one</p>") + "\n" + _S1079_FULL_WARNING in out, out
+    assert "(empty)" not in out, out
+    assert out.startswith(INJECTION_REMINDER), out
+    assert out.count(INJECTION_REMINDER) == 1, out
+
+
+def test_s1079_get_product_full_null_body_uncapped_ends_with_marker():
+    tools, fc = _build([{"product": _full_product("7", "Tee", "tee", body=None)}])
+    out = tools["get_product_full"](product_id="7")
+    assert len(fc.calls) == 1, fc.calls
+    assert "Handle: tee" in out, out
+    assert out.endswith("Options:\n  (none)\n" + _S1079_MARKER), out
+    assert "WARNING" not in out, out
