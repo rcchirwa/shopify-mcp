@@ -9,6 +9,8 @@ import pytest
 
 import shopify_mcp.tools._write_tool as _wt
 from shopify_mcp.client import TransientShopifyError
+from shopify_mcp.errors import ShopifyError, ShopifyTransportError
+from shopify_mcp.tools._errors import MAY_HAVE_LANDED
 from shopify_mcp.tools._response import with_confirm_hint
 from shopify_mcp.tools._untrusted import INJECTION_REMINDER
 from tests.support import fenced
@@ -42,6 +44,7 @@ def test_preview_returns_hint_without_calling_execute() -> None:
         confirm=False,
         execute=_execute,
         mutation_key="productUpdate",
+        mutation_name="productUpdate",
         log_name="test_tool",
         log_description="desc",
     )
@@ -64,6 +67,7 @@ def test_confirm_returns_confirmed_header_by_default(monkeypatch: pytest.MonkeyP
         confirm=True,
         execute=lambda: _ok(),
         mutation_key="productUpdate",
+        mutation_name="productUpdate",
         log_name="update_product_title",
         log_description="id=1 | 'A' → 'B'",
     )
@@ -118,6 +122,7 @@ def test_confirm_returns_done_text_when_provided(monkeypatch: pytest.MonkeyPatch
         confirm=True,
         execute=lambda: _ok(),
         mutation_key="productUpdate",
+        mutation_name="productUpdate",
         log_name="update_product_status",
         log_description="id=1 | ACTIVE → DRAFT",
         done_text="CONFIRMED — Product status updated\n  New status : DRAFT",
@@ -146,6 +151,7 @@ def test_callable_log_description_is_invoked_only_on_confirm(
         confirm=False,
         execute=lambda: _ok(),
         mutation_key="productUpdate",
+        mutation_name="productUpdate",
         log_name="t",
         log_description=_desc,
     )
@@ -159,6 +165,7 @@ def test_callable_log_description_is_invoked_only_on_confirm(
         confirm=True,
         execute=lambda: _ok(),
         mutation_key="productUpdate",
+        mutation_name="productUpdate",
         log_name="t",
         log_description=_desc,
     )
@@ -183,6 +190,7 @@ def test_callable_log_description_not_invoked_on_user_errors(
         confirm=True,
         execute=lambda: _err(),
         mutation_key="productUpdate",
+        mutation_name="productUpdate",
         log_name="t",
         log_description=_desc,
     )
@@ -202,6 +210,7 @@ def test_confirm_user_errors_returns_error_without_logging(monkeypatch: pytest.M
         confirm=True,
         execute=lambda: _err(field=["product", "title"], msg="must be unique"),
         mutation_key="productUpdate",
+        mutation_name="productUpdate",
         log_name="update_product_title",
         log_description="id=1 | 'A' → 'A'",
     )
@@ -226,6 +235,7 @@ def test_custom_error_key_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
         confirm=True,
         execute=lambda: result,
         mutation_key="priceRuleCreate",
+        mutation_name="priceRuleCreate",
         log_name="create_discount_code",
         log_description="code=SALE10",
         error_key="priceRuleUserErrors",
@@ -246,6 +256,7 @@ def test_confirm_user_errors_render_list_field_as_dotted_path(
         confirm=True,
         execute=lambda: _err(field=["input", "variants", "0", "price"], msg="must be positive"),
         mutation_key="productUpdate",
+        mutation_name="productUpdate",
         log_name="t",
         log_description="desc",
     )
@@ -271,6 +282,7 @@ def test_done_text_callable_invoked_on_success(monkeypatch: pytest.MonkeyPatch) 
         confirm=True,
         execute=lambda: _ok(),
         mutation_key="productUpdate",
+        mutation_name="productUpdate",
         log_name="t",
         log_description="desc",
         done_text=_done,
@@ -291,6 +303,7 @@ def test_done_text_callable_not_invoked_on_preview(monkeypatch: pytest.MonkeyPat
         confirm=False,
         execute=lambda: _ok(),
         mutation_key="productUpdate",
+        mutation_name="productUpdate",
         log_name="t",
         log_description="desc",
         done_text=_done,
@@ -312,6 +325,7 @@ def test_done_text_callable_not_invoked_on_user_errors(monkeypatch: pytest.Monke
         confirm=True,
         execute=lambda: _err(),
         mutation_key="productUpdate",
+        mutation_name="productUpdate",
         log_name="t",
         log_description="desc",
         done_text=_done,
@@ -337,6 +351,7 @@ def test_post_execute_check_none_does_not_block_success(monkeypatch: pytest.Monk
         confirm=True,
         execute=lambda: _ok(),
         mutation_key="productUpdate",
+        mutation_name="productUpdate",
         log_name="tool_y",
         log_description="desc",
         post_execute_check=_check,
@@ -358,6 +373,7 @@ def test_post_execute_check_error_blocks_log_and_done(monkeypatch: pytest.Monkey
         confirm=True,
         execute=lambda: _ok(),
         mutation_key="productUpdate",
+        mutation_name="productUpdate",
         log_name="tool_y",
         log_description="desc",
         post_execute_check=_check,
@@ -379,6 +395,7 @@ def test_post_execute_check_skipped_on_user_errors(monkeypatch: pytest.MonkeyPat
         confirm=True,
         execute=lambda: _err(),
         mutation_key="productUpdate",
+        mutation_name="productUpdate",
         log_name="t",
         log_description="desc",
         post_execute_check=_check,
@@ -399,6 +416,7 @@ def test_post_execute_check_skipped_on_preview() -> None:
         confirm=False,
         execute=lambda: _ok(),
         mutation_key="productUpdate",
+        mutation_name="productUpdate",
         log_name="t",
         log_description="desc",
         post_execute_check=_check,
@@ -406,21 +424,73 @@ def test_post_execute_check_skipped_on_preview() -> None:
     assert check_calls == []
 
 
-# ---------- exception propagation ----------
+# ---------- a failed execute() (Story 10.118) ----------
+#
+# write_gate guards execute() and only execute(): a failure there comes back as
+# `Error calling <mutation_name> (<ExcType>): ...`, and log_write is not called.
+# The AST guard in test_shopify_call_guard.py relies on this, because it counts
+# a call inside `execute=` as guarded.
 
 
-def test_transient_error_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(_wt, "log_write", lambda *a, **k: None)
+def _gate_with_raising_execute(exc: Exception, monkeypatch: pytest.MonkeyPatch) -> tuple[str, list]:
+    logged: list[tuple[str, str]] = []
+    monkeypatch.setattr(_wt, "log_write", lambda name, msg: logged.append((name, msg)))
 
     def _raise() -> dict:
-        raise TransientShopifyError("throttled")
+        raise exc
 
-    with pytest.raises(TransientShopifyError, match="throttled"):
+    out = _wt.write_gate(
+        preview="PREVIEW — something",
+        confirm=True,
+        execute=_raise,
+        mutation_key="productUpdate",
+        mutation_name="theMutation",
+        log_name="test_tool",
+        log_description="desc",
+    )
+    return out, logged
+
+
+def test_a_failed_execute_returns_a_structured_reply(monkeypatch: pytest.MonkeyPatch) -> None:
+    out, logged = _gate_with_raising_execute(ShopifyError("denied"), monkeypatch)
+    assert out == "Error calling theMutation (ShopifyError): denied"
+    assert logged == []
+
+
+def test_a_transient_error_is_a_structured_reply_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    out, logged = _gate_with_raising_execute(TransientShopifyError("throttled"), monkeypatch)
+    assert out == "Error calling theMutation (TransientShopifyError): throttled"
+    assert logged == []
+
+
+def test_a_transport_error_says_the_write_may_have_landed(monkeypatch: pytest.MonkeyPatch) -> None:
+    out, logged = _gate_with_raising_execute(ShopifyTransportError("reset"), monkeypatch)
+    assert out == ("Error calling theMutation (ShopifyTransportError): reset\n" + MAY_HAVE_LANDED)
+    assert logged == []
+
+
+def test_a_fenced_failure_leads_with_the_reminder(monkeypatch: pytest.MonkeyPatch) -> None:
+    out, _ = _gate_with_raising_execute(ShopifyError(fenced("denied")), monkeypatch)
+    assert out == (
+        INJECTION_REMINDER + f"Error calling theMutation (ShopifyError): {fenced('denied')}"
+    )
+
+
+def test_only_execute_is_guarded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A write that landed is never reported as failed: an error raised AFTER
+    execute() (here, by log_write) is not turned into an error reply."""
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("log failed")
+
+    monkeypatch.setattr(_wt, "log_write", _boom)
+    with pytest.raises(RuntimeError, match="log failed"):
         _wt.write_gate(
             preview="PREVIEW — something",
             confirm=True,
-            execute=_raise,
+            execute=lambda: _ok(),
             mutation_key="productUpdate",
+            mutation_name="productUpdate",
             log_name="test_tool",
             log_description="desc",
         )

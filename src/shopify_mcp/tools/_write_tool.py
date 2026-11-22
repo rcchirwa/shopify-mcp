@@ -15,6 +15,7 @@ and can't be collapsed without losing clarity.
 
 from collections.abc import Callable
 
+from shopify_mcp.tools._errors import write_error
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._response import format_user_errors, with_confirm_hint
 from shopify_mcp.tools._untrusted import with_reminder
@@ -82,6 +83,7 @@ def write_gate(
     confirm: bool,
     execute: Callable[[], dict],
     mutation_key: str,
+    mutation_name: str,
     log_name: str,
     log_description: str | Callable[[], str],
     error_key: str = "userErrors",
@@ -94,6 +96,13 @@ def write_gate(
                     log_description (if callable), and log_write are not called.
     confirm=True  → calls execute(), checks userErrors via format_user_errors,
                     resolves log_description, calls log_write, returns done.
+
+    mutation_name is the GraphQL mutation `execute` sends (usually the same as
+    `mutation_key`). If execute() raises, write_gate returns
+    `write_error(mutation_name, exc)` instead of letting the exception leave the
+    tool (Story 10.118), and log_write is not called. Only execute() is inside
+    that guard: nothing after a landed write can fail the call. A
+    ShopifyTransportError adds the note that the write may have landed.
 
     log_description accepts a string or a zero-arg callable returning a string.
     Pass a callable when the description requires non-trivial construction the
@@ -120,7 +129,10 @@ def write_gate(
     """
     if not confirm:
         return with_confirm_hint(preview)
-    result = execute()
+    try:
+        result = execute()
+    except Exception as exc:
+        return write_error(mutation_name, exc)
     err = format_user_errors(result, mutation_key, error_key=error_key)
     if err:
         # The report is fenced Shopify text (Story 10.69), so it leads with the reminder.

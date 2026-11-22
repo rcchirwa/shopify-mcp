@@ -23,6 +23,7 @@ from shopify_mcp.shopify.queries.collections import (
     UPDATE_COLLECTION,
 )
 from shopify_mcp.tools._annotations import ADD, CREATE, OVERWRITE, READ_ONLY
+from shopify_mcp.tools._errors import read_boundary, read_error, write_error
 from shopify_mcp.tools._filters import (
     format_description_warning_block,
     format_strip_block,
@@ -91,6 +92,7 @@ def _resolve_collection(
 def register(server: FastMCP, client: ShopifyClient) -> None:
 
     @server.tool(annotations=READ_ONLY)
+    @read_boundary("collection")
     def get_collection(handle: str) -> str:
         """Get collection details by handle — title and description."""
         col_type, col = _resolve_collection(client, handle)
@@ -125,7 +127,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not new_title and not new_description:
             return "Provide at least one of new_title or new_description."
 
-        _col_type, col = _resolve_collection(client, handle)
+        try:
+            _col_type, col = _resolve_collection(client, handle)
+        except Exception as exc:
+            return read_error("collection", exc)
         if not col:
             return f"No collection found with handle '{cap(sanitize_control_chars(handle))}'."
 
@@ -182,6 +187,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 new_description=sanitized_description,
             ),
             mutation_key="collectionUpdate",
+            mutation_name="collectionUpdate",
             log_name="update_collection",
             log_description=f"handle={handle} | changes: {changed_fields}",
         )
@@ -245,7 +251,11 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # confirming. The refusal deliberately names only the handle — the
         # stored collection's title is merchant/import-authored text this tool
         # has no other reason to reflect (SEC-04).
-        if ops.read_collection_by_handle(client, expected_handle):
+        try:
+            existing = ops.read_collection_by_handle(client, expected_handle)
+        except Exception as exc:
+            return read_error("collection", exc)
+        if existing:
             return (
                 f"A collection already exists with handle '{expected_handle}'. "
                 f"Choose a different handle, or use update_collection to edit it."
@@ -338,6 +348,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             confirm=confirm,
             execute=_execute,
             mutation_key="collectionCreate",
+            mutation_name="collectionCreate",
             log_name="create_collection",
             # Callable, not an f-string: write_gate resolves this AFTER
             # execute(), so the audit line can name the handle Shopify actually
@@ -363,7 +374,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not product_id:
             return "Provide product_id."
 
-        col_type, col = _resolve_collection(client, handle)
+        try:
+            col_type, col = _resolve_collection(client, handle)
+        except Exception as exc:
+            return read_error("collection", exc)
         if not col:
             return f"No collection found with handle '{cap(sanitize_control_chars(handle))}'."
         if col_type == "smart":
@@ -387,7 +401,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not confirm:
             return with_confirm_hint(with_reminder(preview))
 
-        result = op["op"](client, col_id, product_id)
+        try:
+            result = op["op"](client, col_id, product_id)
+        except Exception as exc:
+            return write_error(op["result_key"], exc)
         payload = result.get(op["result_key"], {}) or {}
         err = format_user_errors(result, op["result_key"])
         if err:

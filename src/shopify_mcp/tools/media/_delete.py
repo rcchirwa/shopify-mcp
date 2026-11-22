@@ -4,6 +4,7 @@ from mcp.server.fastmcp import FastMCP
 
 from shopify_mcp.client import ShopifyClient
 from shopify_mcp.tools._annotations import OVERWRITE
+from shopify_mcp.tools._errors import read_error, write_error
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._response import extract_user_errors, with_confirm_hint
 from shopify_mcp.tools._scrub import cap, sanitize_control_chars
@@ -35,12 +36,15 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not gid:
             return "Error: provide product_id."
 
-        first_response, nodes, _ = client.paginate(
-            GET_PRODUCT_MEDIA,
-            {"id": gid},
-            connection_path=["product", "media"],
-            page_size=_MEDIA_PAGE_CAP,
-        )
+        try:
+            first_response, nodes, _ = client.paginate(
+                GET_PRODUCT_MEDIA,
+                {"id": gid},
+                connection_path=["product", "media"],
+                page_size=_MEDIA_PAGE_CAP,
+            )
+        except Exception as exc:
+            return read_error("product media", exc)
         product = first_response.get("product")
         if not product:
             return f"No product found with id {cap(sanitize_control_chars(product_id))}."
@@ -94,13 +98,16 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 f"{unmatched_block}"
             )
 
-        result = client.execute(
-            PRODUCT_DELETE_MEDIA,
-            {
-                "productId": gid,
-                "mediaIds": matched,
-            },
-        )
+        try:
+            result = client.execute(
+                PRODUCT_DELETE_MEDIA,
+                {
+                    "productId": gid,
+                    "mediaIds": matched,
+                },
+            )
+        except Exception as exc:
+            return write_error("productDeleteMedia", exc)
         payload = result.get("productDeleteMedia", {}) or {}
         errors = extract_user_errors(result, "productDeleteMedia", error_key="mediaUserErrors")
         if errors:

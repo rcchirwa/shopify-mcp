@@ -43,6 +43,7 @@ from shopify_mcp.shopify.queries.publications import (
     PUBLISHABLE_UNPUBLISH,
 )
 from shopify_mcp.tools._annotations import ADD, OVERWRITE, READ_ONLY
+from shopify_mcp.tools._errors import read_error
 from shopify_mcp.tools._gid import from_gid, to_gid
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._product_resolver import identifier_error
@@ -1107,7 +1108,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not gid:
             return "No product found."
 
-        _ensure_channels(client, channel_cache)
+        try:
+            _ensure_channels(client, channel_cache)
+        except Exception as exc:
+            return read_error("sales channels", exc)
         desired_ids = {n["id"] for n in desired_nodes}
         # A product is "on" a channel when published or assigned (Story 10.99):
         # an assigned channel not desired is removed, and one desired is unchanged.

@@ -4,6 +4,7 @@ from mcp.server.fastmcp import FastMCP
 
 from shopify_mcp.client import ShopifyClient, poll_job
 from shopify_mcp.tools._annotations import OVERWRITE
+from shopify_mcp.tools._errors import read_error, write_error
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._response import poll_failed_note, with_confirm_hint
@@ -51,12 +52,15 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             parsed_moves.append({"id": mid, "newPosition": pos})
 
         # Preview: show current order vs proposed, reject unknown ids.
-        first_response, current_nodes, _ = client.paginate(
-            GET_PRODUCT_MEDIA,
-            {"id": gid},
-            connection_path=["product", "media"],
-            page_size=_MEDIA_PAGE_CAP,
-        )
+        try:
+            first_response, current_nodes, _ = client.paginate(
+                GET_PRODUCT_MEDIA,
+                {"id": gid},
+                connection_path=["product", "media"],
+                page_size=_MEDIA_PAGE_CAP,
+            )
+        except Exception as exc:
+            return read_error("product media", exc)
         product = first_response.get("product")
         if not product:
             return f"No product found with id {cap(sanitize_control_chars(product_id))}."
@@ -98,13 +102,16 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         api_moves = [
             {"id": m["id"], "newPosition": str(m["newPosition"] - 1)} for m in parsed_moves
         ]
-        result = client.execute(
-            PRODUCT_REORDER_MEDIA,
-            {
-                "id": gid,
-                "moves": api_moves,
-            },
-        )
+        try:
+            result = client.execute(
+                PRODUCT_REORDER_MEDIA,
+                {
+                    "id": gid,
+                    "moves": api_moves,
+                },
+            )
+        except Exception as exc:
+            return write_error("productReorderMedia", exc)
         payload = result.get("productReorderMedia", {}) or {}
         media_errors = _extract_media_user_errors(result, "productReorderMedia")
         if media_errors:

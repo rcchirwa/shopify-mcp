@@ -16,6 +16,7 @@ from shopify_mcp.shopify._ids import INVALID_ORDER_ID_ERROR, order_gid
 from shopify_mcp.shopify.operations import orders as ops
 from shopify_mcp.shopify.queries.orders import GET_ORDER_BY_ID, GET_ORDERS
 from shopify_mcp.tools._annotations import READ_ONLY
+from shopify_mcp.tools._errors import read_boundary
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._scrub import cap, sanitize_control_chars
 from shopify_mcp.tools._untrusted import INJECTION_REMINDER, wrap
@@ -56,6 +57,7 @@ def _format_visit(visit: dict[str, Any] | None) -> str:
 def register(server: FastMCP, client: ShopifyClient) -> None:
 
     @server.tool(annotations=READ_ONLY)
+    @read_boundary("orders")
     def get_orders(limit: int = 20) -> str:
         """
         List recent orders with id, total price, line items, and first/last-touch
@@ -100,6 +102,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         return "\n".join(lines)
 
     @server.tool(annotations=READ_ONLY)
+    @read_boundary("order")
     def get_order(order_id: str) -> str:
         """Get a single order by id."""
         # Story 10.110: a GID of another type, or a path, is refused before any call.
