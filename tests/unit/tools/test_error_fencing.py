@@ -946,19 +946,21 @@ def test_s1069_append_after_detach_summary_escapes_crlf() -> None:
     assert "\nInjected: yes" not in head, head
 
 
-# ---------- the uncaught path, recorded as a residual ----------
+# ---------- the formerly uncaught path (Story 10.118) ----------
 
 
-def test_s1069_uncaught_error_carries_the_fence_without_a_reminder() -> None:
-    """The recorded residual (ledger, "Reminder: per handler"): a tool that
-    does not catch lets the fenced message reach FastMCP as-is. The fence is
-    there; the reminder is not. Pinned so a later change to either is a
-    visible decision, not drift."""
+def test_s10118_a_read_tool_that_did_not_catch_now_replies_with_the_fence_and_one_reminder() -> (
+    None
+):
+    """Story 10.69 recorded a residual here: a tool that did not catch let the
+    fenced message reach FastMCP as-is, with the fence and no reminder. Story
+    10.118 gives get_collection a read boundary, so the reply is text, led by
+    one reminder."""
     srv = CapturingServer()
     collections.register(srv, FakeClient([upstream_error()]))
-    with pytest.raises(ShopifyError) as info:
-        srv.tools["get_collection"](handle="vanish")
-    assert str(info.value) == HEAD + FENCED
+    out = srv.tools["get_collection"](handle="vanish")
+    assert out == INJECTION_REMINDER + "Error reading collection (ShopifyError): " + HEAD + FENCED
+    assert out.count(INJECTION_REMINDER) == 1
 
 
 # ---------- Story 10.104: a transport failure, end to end ----------
@@ -1006,15 +1008,19 @@ def test_s10104_hygiene_local_runtime_error_is_still_not_fenced() -> None:
     assert_unmarked(out)
 
 
-def test_s10104_uncaught_transport_error_is_fenced_and_bounded() -> None:
-    """A tool that does not catch used to let FastMCP show the whole raw
-    requests text: 5,000 characters, unfenced."""
+def test_s10104_read_tool_transport_error_is_fenced_and_bounded() -> None:
+    """A tool that did not catch used to let FastMCP show the whole raw
+    requests text: 5,000 characters, unfenced. Story 10.118 puts it in a text
+    reply (get_collection is a read, so there is no "may have landed" note)."""
     srv = CapturingServer()
     huge = requests.exceptions.ChunkedEncodingError("x" * 5000)
-    collections.register(srv, FakeClient([transport_error(huge)]))
-    with pytest.raises(ShopifyError) as info:
-        srv.tools["get_collection"](handle="vanish")
-    msg = str(info.value)
+    error = transport_error(huge)
+    collections.register(srv, FakeClient([error]))
+    out = srv.tools["get_collection"](handle="vanish")
+    msg = str(error)
     assert msg.startswith(_TRANSPORT_HEAD + "<UNTRUSTED-DATA>x"), msg
     assert msg.endswith("</UNTRUSTED-DATA>"), msg
     assert len(msg) <= REFLECT_MAX_LEN
+    assert out == (
+        INJECTION_REMINDER + f"Error reading collection ({type(error).__name__}): " + msg
+    )

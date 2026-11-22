@@ -34,6 +34,7 @@ from shopify_mcp.shopify.queries.products import (
     UPDATE_PRODUCT_VARIANTS_POLICY,
 )
 from shopify_mcp.tools._annotations import OVERWRITE, READ_ONLY
+from shopify_mcp.tools._errors import read_boundary, read_error, write_error
 from shopify_mcp.tools._filters import (
     filter_variant_targets,
     format_description_warning_block,
@@ -155,6 +156,7 @@ def _count_phrase(nodes: list[Any], capped: bool) -> str:
 def register(server: FastMCP, client: ShopifyClient) -> None:
 
     @server.tool(annotations=READ_ONLY)
+    @read_boundary("products")
     def get_products(status: str = "", limit: int = 0) -> str:
         """List products with id, title, handle, status, and variants.
 
@@ -240,6 +242,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         return with_reminder(result)
 
     @server.tool(annotations=READ_ONLY)
+    @read_boundary("product")
     def get_product(product_id: str = "", handle: str = "") -> str:
         """Get a single product by id or handle.
 
@@ -287,7 +290,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         err = product_id_error(product_id)
         if err:
             return err
-        product = ops.fetch_product_core(client, product_id) or {}
+        try:
+            product = ops.fetch_product_core(client, product_id) or {}
+        except Exception as exc:
+            return read_error("product", exc)
         old_title = product.get("title", "")
         old_handle = product.get("handle", "")
 
@@ -323,6 +329,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             confirm=confirm,
             execute=lambda: ops.update_product_title(client, product_id, new_title, target_handle),
             mutation_key="productUpdate",
+            mutation_name="productUpdate",
             log_name="update_product_title",
             log_description=f"id={product_id} | '{old_title}' → '{new_title}' | handle '{old_handle}' → '{target_handle}'",
         )
@@ -339,7 +346,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         err = product_id_error(product_id)
         if err:
             return err
-        product = ops.fetch_product_core(client, product_id) or {}
+        try:
+            product = ops.fetch_product_core(client, product_id) or {}
+        except Exception as exc:
+            return read_error("product", exc)
         # `or ""` (not just a .get default): Shopify returns JSON null for an
         # unset bodyHtml, which would make the slice and len() below raise.
         # Matches the three sibling reads in this module.
@@ -380,6 +390,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 client, product_id, sanitized_description
             ),
             mutation_key="productUpdate",
+            mutation_name="productUpdate",
             log_name="update_product_description",
             log_description=f"id={product_id}",
             done_text=(
@@ -417,7 +428,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if not new_seo_title and not new_seo_description:
             return "Error: provide at least one of new_seo_title or new_seo_description."
 
-        product = ops.read_product_seo(client, product_id)
+        try:
+            product = ops.read_product_seo(client, product_id)
+        except Exception as exc:
+            return read_error("product SEO", exc)
         if not product:
             return f"No product found with id {cap(sanitize_control_chars(product_id))}."
 
@@ -544,12 +558,14 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             confirm=confirm,
             execute=_execute,
             mutation_key="productUpdate",
+            mutation_name="productUpdate",
             log_name="update_product_seo",
             log_description=_log_desc,
             done_text=with_reminder(f"CONFIRMED — Product SEO updated\n{body}"),
         )
 
     @server.tool(annotations=READ_ONLY)
+    @read_boundary("collection products")
     def get_products_by_collection(collection_handle: str, limit: int = 0) -> str:
         """List the products in a collection by collection handle.
 
@@ -590,6 +606,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         return with_reminder("\n".join(lines) + (PRODUCTS_TRUNCATED_WARNING if capped else ""))
 
     @server.tool(annotations=READ_ONLY)
+    @read_boundary("product description")
     def get_product_description(product_id: str = "", handle: str = "") -> str:
         """Get the body_html description for a single product by id or handle.
 
@@ -624,6 +641,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         return with_reminder(head)
 
     @server.tool(annotations=READ_ONLY)
+    @read_boundary("product descriptions")
     def get_products_with_descriptions(collection_handle: str = "", limit: int = 50) -> str:
         """
         Bulk read product descriptions. If collection_handle is provided, scopes to that collection.
@@ -695,6 +713,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         return with_reminder("\n".join(blocks)) + suffix
 
     @server.tool(annotations=READ_ONLY)
+    @read_boundary("product")
     def get_product_full(product_id: str = "", handle: str = "") -> str:
         """
         Get a full product record: id, title, handle, status, body_html, tags,
@@ -771,6 +790,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         return with_reminder(result)
 
     @server.tool(annotations=READ_ONLY)
+    @read_boundary("product collections")
     def get_product_collections(product_id: str) -> str:
         """List every collection this product belongs to — manual and smart."""
         err = product_id_error(product_id)
@@ -832,7 +852,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
 
         old_tags: list[str] = []
         if mode in ("append", "remove"):
-            product = ops.fetch_product_full_record(client, product_id)
+            try:
+                product = ops.fetch_product_full_record(client, product_id)
+            except Exception as exc:
+                return read_error("product", exc)
             if not product:
                 return f"No product found with id {cap(sanitize_control_chars(product_id))}."
             old_tags = list(product.get("tags") or [])
@@ -877,6 +900,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             confirm=confirm,
             execute=lambda: ops.update_product_tags(client, product_id, target),
             mutation_key="productUpdate",
+            mutation_name="productUpdate",
             log_name="update_product_tags",
             log_description=f"id={product_id} mode={mode} | {len(old_tags)} tags → {len(target)} tags",
             done_text=f"CONFIRMED — Product tags updated\n{body}",
@@ -902,7 +926,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if new_status not in PRODUCT_STATUS_VALUES:
             return f"Error: new_status must be one of {', '.join(PRODUCT_STATUS_VALUES)}."
 
-        product = ops.fetch_product_core(client, product_id)
+        try:
+            product = ops.fetch_product_core(client, product_id)
+        except Exception as exc:
+            return read_error("product", exc)
         if not product:
             return f"No product found with id {cap(sanitize_control_chars(product_id))}."
         old_status = product.get("status") or "(unknown)"
@@ -929,6 +956,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             confirm=confirm,
             execute=lambda: ops.update_product_status(client, product_id, new_status),
             mutation_key="productUpdate",
+            mutation_name="productUpdate",
             log_name="update_product_status",
             log_description=f"id={product_id} | {old_status} → {new_status}",
             done_text=f"CONFIRMED — Product status updated\n{body}",
@@ -954,7 +982,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if new_policy not in INVENTORY_POLICY_VALUES:
             return f"Error: new_policy must be one of {', '.join(INVENTORY_POLICY_VALUES)}."
 
-        product, variants, capped = ops.read_product_variants_policy(client, product_id)
+        try:
+            product, variants, capped = ops.read_product_variants_policy(client, product_id)
+        except Exception as exc:
+            return read_error("product variants", exc)
         if not product:
             return f"No product found with id {cap(sanitize_control_chars(product_id))}."
 
@@ -1026,7 +1057,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             return with_reminder(body)
 
         variants_input = [{"id": v["id"], "inventoryPolicy": new_policy} for v in targets]
-        result = ops.update_variant_inventory_policy(client, product_id, variants_input)
+        try:
+            result = ops.update_variant_inventory_policy(client, product_id, variants_input)
+        except Exception as exc:
+            return write_error("productVariantsBulkUpdate", exc)
         user_errors = extract_user_errors(result, "productVariantsBulkUpdate")
         if user_errors:
             # `field` is a dotted path list on productVariantsBulkUpdate (e.g.

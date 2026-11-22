@@ -24,6 +24,7 @@ from shopify_mcp.shopify.queries.discounts import (
     GET_CODE_DISCOUNTS,
 )
 from shopify_mcp.tools._annotations import CREATE, READ_ONLY
+from shopify_mcp.tools._errors import read_boundary, write_error
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
 from shopify_mcp.tools._response import (
@@ -230,6 +231,7 @@ __all__ = [
 def register(server: FastMCP, client: ShopifyClient) -> None:
 
     @server.tool(annotations=READ_ONLY)
+    @read_boundary("discount codes")
     def get_discount_codes() -> str:
         """List discount codes for the store."""
         nodes = ops.read_code_discounts(client)
@@ -381,7 +383,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         if ends_at_iso:
             discount_input["endsAt"] = ends_at_iso
 
-        result = ops.create_discount_code_basic(client, discount_input)
+        try:
+            result = ops.create_discount_code_basic(client, discount_input)
+        except Exception as exc:
+            return write_error("discountCodeBasicCreate", exc)
         errors = extract_user_errors(result, "discountCodeBasicCreate")
         if errors:
             return with_reminder(f"Error creating discount code: {format_path_user_errors(errors)}")

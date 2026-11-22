@@ -23,6 +23,7 @@ from shopify_mcp.shopify.queries.inventory import (
     UPDATE_INVENTORY_ITEM_TRACKED,
 )
 from shopify_mcp.tools._annotations import OVERWRITE, READ_ONLY
+from shopify_mcp.tools._errors import read_boundary, read_error, write_error
 from shopify_mcp.tools._filters import filter_variant_targets
 from shopify_mcp.tools._gid import from_gid
 from shopify_mcp.tools._log import log_write
@@ -115,6 +116,7 @@ def _quantity_range_error(quantity: int) -> str | None:
 def register(server: FastMCP, client: ShopifyClient) -> None:
 
     @server.tool(annotations=READ_ONLY)
+    @read_boundary("inventory")
     def get_inventory(product_id: str) -> str:
         """Get inventory levels for a product and all its variants."""
         err = product_id_error(product_id)
@@ -188,7 +190,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         # Shopify returns `{"inventoryItem": null}` (deleted / wrong id), the
         # default isn't used and we'd crash on a None.get() chain. Same shape
         # elsewhere in this module — see get_inventory above.
-        inv_item = ops.read_inventory_item_levels(client, item_gid) or {}
+        try:
+            inv_item = ops.read_inventory_item_levels(client, item_gid) or {}
+        except Exception as exc:
+            return read_error("inventory item", exc)
         levels = (inv_item.get("inventoryLevels") or {}).get("nodes", [])
         matching = [lv for lv in levels if lv.get("location", {}).get("id") == location_gid]
         # Story 10.111: the write sets on-hand, so the current value shown is
@@ -220,6 +225,7 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
                 ],
             ),
             mutation_key="inventorySetOnHandQuantities",
+            mutation_name="inventorySetOnHandQuantities",
             log_name="update_inventory",
             log_description=f"item={inventory_item_id} location={location_id} | {current_qty} → {quantity}",
         )
@@ -242,7 +248,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         err = product_id_error(product_id)
         if err:
             return err
-        product, variants, capped = ops.read_product_inventory(client, product_id)
+        try:
+            product, variants, capped = ops.read_product_inventory(client, product_id)
+        except Exception as exc:
+            return read_error("product inventory", exc)
         if not product:
             return f"No product found with id {cap(sanitize_control_chars(product_id))}."
         title = product.get("title", "")
@@ -415,7 +424,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
         except ValueError:
             return f"Error: {_ids.INVALID_LOCATION_ID_ERROR}."
 
-        product, variants, capped = ops.read_product_inventory(client, product_id)
+        try:
+            product, variants, capped = ops.read_product_inventory(client, product_id)
+        except Exception as exc:
+            return read_error("product inventory", exc)
         if not product:
             return f"No product found with id {cap(sanitize_control_chars(product_id))}."
         title = product.get("title", "")
@@ -584,7 +596,10 @@ def register(server: FastMCP, client: ShopifyClient) -> None:
             for v, _lv, _cur, loc_gid in to_write
         ]
 
-        result = ops.set_inventory_on_hand(client, set_quantities)
+        try:
+            result = ops.set_inventory_on_hand(client, set_quantities)
+        except Exception as exc:
+            return write_error("inventorySetOnHandQuantities", exc)
         err = format_user_errors(result, "inventorySetOnHandQuantities")
         if err:
             return with_reminder(err)
