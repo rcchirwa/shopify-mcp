@@ -14,13 +14,16 @@ A "Shopify call" is any of:
 
 A call is guarded when one of these holds:
   1. It sits in the body of a ``try`` that has a handler for ``Exception`` (or
-     broader), inside the same function.
-  2. Its function, or an outer one, has ``@read_boundary(...)``.
-  3. It sits in a function or lambda that is passed as ``execute=`` to
-     ``write_gate(...)``. ``write_gate`` guards ``execute()`` (see
-     ``test_write_tool.py``).
+     broader), inside the same function, and that handler does not raise.
+  2. Its function, or an outer one, has ``@read_boundary(...)``. A separate
+     test checks that the decorator sits under ``@server.tool``.
+  3. It sits in a lambda passed as ``execute=`` to ``write_gate(...)``, or in a
+     function of that name defined in the function that calls ``write_gate``.
+     ``write_gate`` guards ``execute()``: ``test_write_tool.py`` and
+     ``test_tool_error_replies.py`` check that guard, this test does not.
   4. The callee is in ``CALLEE_EXEMPT``.
-  5. The enclosing function is in ``HELPER_EXEMPT``.
+  5. The enclosing function is in ``HELPER_EXEMPT``. A call by name to such a
+     helper is itself checked, so the exemption's claim is tested.
 
 Each exemption must match a real site, so a stale entry fails the test.
 """
@@ -132,6 +135,9 @@ def _is_shopify_call(call: ast.Call) -> bool:
 
 
 def _catches_everything(handler: ast.ExceptHandler) -> bool:
+    """A handler for ``Exception`` (or broader) that does not raise again."""
+    if any(isinstance(n, ast.Raise) for n in ast.walk(handler)):
+        return False
     kind = handler.type
     if kind is None:
         return True
@@ -154,22 +160,31 @@ def _has_read_boundary(fn: ast.AST) -> bool:
     )
 
 
-def _execute_bodies(tree: ast.AST) -> set[ast.AST]:
-    """Functions and lambdas passed as ``execute=`` to ``write_gate(...)``."""
-    named: dict[str, list[ast.AST]] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            named.setdefault(node.name, []).append(node)
+def _execute_bodies(tree: ast.AST, parents: dict[ast.AST, ast.AST]) -> set[ast.AST]:
+    """Functions and lambdas passed as ``execute=`` to ``write_gate(...)``.
+
+    A name is matched only to a function defined directly in the body of the
+    function that calls ``write_gate``, so an ``_execute`` in another tool of
+    the same file does not count.
+    """
     found: set[ast.AST] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and _callee_name(node) == "write_gate":
-            for kw in node.keywords:
-                if kw.arg != "execute":
-                    continue
-                if isinstance(kw.value, ast.Lambda):
-                    found.add(kw.value)
-                elif isinstance(kw.value, ast.Name):
-                    found.update(named.get(kw.value.id, []))
+        if not (isinstance(node, ast.Call) and _callee_name(node) == "write_gate"):
+            continue
+        chain = _enclosing_functions(node, parents)
+        scope = chain[0] if chain else tree
+        for kw in node.keywords:
+            if kw.arg != "execute":
+                continue
+            if isinstance(kw.value, ast.Lambda):
+                found.add(kw.value)
+            elif isinstance(kw.value, ast.Name):
+                found.update(
+                    fn
+                    for fn in getattr(scope, "body", [])
+                    if isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef)
+                    and fn.name == kw.value.id
+                )
     return found
 
 
@@ -197,7 +212,13 @@ def _enclosing_functions(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> list
 
 
 def _scan() -> tuple[list[str], set[str], set[tuple[str, str]]]:
-    """Return (unguarded sites, callee exemptions used, helper exemptions used)."""
+    """Return (unguarded sites, callee exemptions used, helper exemptions used).
+
+    A call by name to a helper in ``HELPER_EXEMPT`` for the same file is also a
+    Shopify call. So the exemption's claim ("every caller guards it") is
+    checked, also for a closure such as ``_resolve_target_nodes`` that is
+    called with no ``client`` argument.
+    """
     unguarded: list[str] = []
     callees_used: set[str] = set()
     helpers_used: set[tuple[str, str]] = set()
@@ -205,9 +226,13 @@ def _scan() -> tuple[list[str], set[str], set[tuple[str, str]]]:
         rel = path.relative_to(_TOOLS).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"))
         parents = _parents(tree)
-        execute_bodies = _execute_bodies(tree)
+        execute_bodies = _execute_bodies(tree, parents)
+        exempt_here = {name for (file, name) in HELPER_EXEMPT if file == rel}
         for node in ast.walk(tree):
-            if not (isinstance(node, ast.Call) and _is_shopify_call(node)):
+            if not isinstance(node, ast.Call):
+                continue
+            calls_exempt_helper = isinstance(node.func, ast.Name) and node.func.id in exempt_here
+            if not (_is_shopify_call(node) or calls_exempt_helper):
                 continue
             chain = _enclosing_functions(node, parents)
             if _inside_guarding_try(node, parents):
@@ -274,6 +299,11 @@ def test_read_boundary_sits_only_on_read_only_tools() -> None:
             )
             if not read_only:
                 offenders.append(f"{path.name}:{node.lineno}: {node.name}")
+            # Decorators apply bottom-up. read_boundary must sit UNDER the tool
+            # decorator, or FastMCP registers the function without the boundary.
+            names = [_callee_name(d) for d in node.decorator_list if isinstance(d, ast.Call)]
+            if "tool" not in names or names.index("read_boundary") < names.index("tool"):
+                offenders.append(f"{path.name}:{node.lineno}: {node.name} (decorator order)")
     assert offenders == []
 
 
@@ -292,9 +322,30 @@ def test_the_scanner_finds_each_kind_of_site() -> None:
         "        ops.guarded(client)\n"
         "    except Exception:\n"
         "        pass\n"
+        "    try:\n"
+        "        ops.reraised(client)\n"
+        "    except Exception:\n"
+        "        raise\n"
     )
     tree = ast.parse(source)
     parents = _parents(tree)
     calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and _is_shopify_call(n)]
     unguarded = sorted(ast.unparse(c.func) for c in calls if not _inside_guarding_try(c, parents))
-    assert unguarded == ["client.execute", "helper", "ops.ok", "ops.read"]
+    assert unguarded == ["client.execute", "helper", "ops.ok", "ops.read", "ops.reraised"]
+
+
+def test_execute_name_matches_only_in_the_calling_function() -> None:
+    """An ``_execute`` in another tool of the same file is not trusted."""
+    source = (
+        "def tool_a(client):\n"
+        "    def _execute():\n"
+        "        return ops.write(client)\n"
+        "    return write_gate(execute=_execute)\n"
+        "def tool_b(client):\n"
+        "    def _execute():\n"
+        "        return ops.other(client)\n"
+        "    return _execute()\n"
+    )
+    tree = ast.parse(source)
+    bodies = _execute_bodies(tree, _parents(tree))
+    assert [fn.lineno for fn in bodies] == [2]
