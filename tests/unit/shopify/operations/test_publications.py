@@ -27,6 +27,7 @@ from shopify_mcp.client import (
 from shopify_mcp.shopify.operations import publications as ops
 from shopify_mcp.shopify.queries import publications as q
 from tests.support import FakeClient
+from tests.support.graphql_shape import field_names, walk_field
 
 # ---------- AC3: a shared Product selection fragment IS extracted and reused ----
 
@@ -515,92 +516,12 @@ def test_collection_publications_read_uses_the_shared_page_size():
     assert fc.calls[0][1]["first"] == PUBLICATIONS_PAGE_SIZE
 
 
-def _field(selection_set: graphql.SelectionSetNode, name: str) -> graphql.FieldNode:
-    """Return the field named `name` in `selection_set`, requiring it unaliased.
-
-    Module level, not a closure, so test_publications_walker_rejects_an_aliased_field
-    can drive it directly against a literal query (Story 10.84).
-
-    The alias assertion is what makes this a mirror of client.paginate(), which
-    descends the RESPONSE by key — and a field's response key is its alias when
-    one is present, its name otherwise. Matching on the name alone leaves an
-    alias undetected: valid GraphQL, every other assertion here still true, and
-    paginate() reading {} for a connection that is really there.
-
-    The isinstance check is load-bearing, not decoration: FragmentSpreadNode
-    also carries a `.name` and has no `.alias` at all, so the pre-10.84 duck-typed
-    predicate would turn the assertion below into an AttributeError the moment a
-    fragment happened to share a walked field's name.
-    """
-    for sel in selection_set.selections:
-        if isinstance(sel, graphql.FieldNode) and sel.name.value == name:
-            assert sel.alias is None, (
-                f"{name!r} is aliased to {sel.alias.value!r}; paginate() reads the "
-                f"response key, which would be {sel.alias.value!r}"
-            )
-            return sel
-    raise AssertionError(f"{name!r} not found in selection set")
-
-
-def _field_names(selection_set: graphql.SelectionSetNode, where: str) -> set[str]:
-    """Return the field names in `selection_set`, requiring every one unaliased.
-
-    The leaf twin of _field, and the same rule: paginate() reads `hasNextPage`
-    and `endCursor` out of pageInfo by key, so a name-keyed set built off these
-    selections cannot see an alias on them. Aliasing hasNextPage stops the walk
-    after one page and reports capped=False — a truncation presented as a
-    complete answer. Caught today only by a SUBSTRING pin, which this repo has
-    now learned three times over must not be the control (Stories 10.76, 10.78).
-    """
-    names: set[str] = set()
-    for sel in selection_set.selections:
-        if not isinstance(sel, graphql.FieldNode):
-            continue
-        assert sel.alias is None, (
-            f"{where}: {sel.name.value!r} is aliased to {sel.alias.value!r}; the response "
-            f"key would be {sel.alias.value!r}"
-        )
-        names.add(sel.name.value)
-    return names
-
-
-def test_publications_field_names_rejects_an_aliased_leaf():
-    """The leaf guard has teeth, pinned against a literal query."""
-    doc = graphql.parse("query Q { c { rp { pageInfo { hn: hasNextPage endCursor } } } }")
-    (operation,) = doc.definitions
-    collection = _field(operation.selection_set, "c")
-    connection = _field(collection.selection_set, "rp")
-    page_info = _field(connection.selection_set, "pageInfo")
-    with pytest.raises(AssertionError, match="aliased"):
-        _field_names(page_info.selection_set, "pageInfo")
-
-
-def test_publications_walker_rejects_an_aliased_field():
-    """AC4 (Story 10.84): the walker refuses an alias on any step of the path.
-
-    Same defect and same reasoning as test_selection_at_rejects_an_aliased_field
-    in test_products.py — the response key for a field is its alias when one is
-    present, so a name-matching walker cannot claim to mirror paginate().
-    Pinned against a literal query so it survives any rewrite of the real ones.
-    """
-    aliased = """
-    query Q($first: Int!, $after: String) {
-      x: resourcePublications(first: $first, after: $after) {
-        pageInfo { hasNextPage endCursor }
-      }
-    }
-    """
-    (operation,) = graphql.parse(aliased).definitions
-    with pytest.raises(AssertionError, match="aliased"):
-        _field(operation.selection_set, "resourcePublications")
-
-
 def test_product_publications_fragment_reads_v1_resource_publications():
     """Story 10.99: v1 stays the published source. resourcePublicationsV2
     omits published channels that are not in the publications roster (Meta,
     Microsoft Copilot), which v1 returns (live, 2026-09-26, API 2026-01)."""
     (fragment,) = graphql.parse(q.PRODUCT_PUBLICATIONS_FIELDS).definitions
-    connection = _field(fragment.selection_set, "resourcePublications")
+    connection = walk_field(fragment.selection_set, ["resourcePublications"])
     assert {a.name.value for a in connection.arguments} == {"first", "after"}
     names = {s.name.value for s in fragment.selection_set.selections}
     assert "resourcePublicationsV2" not in names
@@ -611,10 +532,11 @@ def test_assigned_publications_query_reads_v2_including_unpublished_records():
     DRAFT product's assigned channel (isPublished false). resourcePublications
     hides it whatever onlyPublished is set to (live, 2026-09-26, API 2026-01).
     Walked down the connection_path the operation passes to paginate()."""
-    (operation,) = graphql.parse(q.GET_PRODUCT_ASSIGNED_PUBLICATIONS).definitions
-    root = _field(operation.selection_set, "product")
+    root = walk_field(q.GET_PRODUCT_ASSIGNED_PUBLICATIONS, ["product"])
     assert {a.name.value: a.value.name.value for a in root.arguments} == {"id": "id"}
-    connection = _field(root.selection_set, "resourcePublicationsV2")
+    connection = walk_field(
+        q.GET_PRODUCT_ASSIGNED_PUBLICATIONS, ["product", "resourcePublicationsV2"]
+    )
 
     args = {a.name.value: a.value for a in connection.arguments}
     assert set(args) == {"first", "after", "onlyPublished"}
@@ -623,10 +545,10 @@ def test_assigned_publications_query_reads_v2_including_unpublished_records():
     assert isinstance(args["first"], graphql.VariableNode) and args["first"].name.value == "first"
     assert isinstance(args["after"], graphql.VariableNode) and args["after"].name.value == "after"
 
-    page_info = _field(connection.selection_set, "pageInfo")
-    assert {"hasNextPage", "endCursor"} <= _field_names(page_info.selection_set, "pageInfo")
-    nodes = _field(connection.selection_set, "nodes")
-    node_names = _field_names(nodes.selection_set, "nodes")
+    page_info = walk_field(connection.selection_set, ["pageInfo"])
+    assert {"hasNextPage", "endCursor"} <= field_names(page_info.selection_set, "pageInfo")
+    nodes = walk_field(connection.selection_set, ["nodes"])
+    node_names = field_names(nodes.selection_set, "nodes")
     assert {"publication", "publishDate", "isPublished"} <= node_names
 
 
@@ -642,19 +564,18 @@ def test_collection_publications_query_parses_and_has_the_shape_paginate_walks()
     `graphql-core` is `gql`'s own dependency and is pinned in both lockfiles, so
     this costs nothing to import.
     """
-    doc = graphql.parse(q.GET_COLLECTION_PUBLICATIONS_BY_HANDLE)
-    (operation,) = doc.definitions
+    query = q.GET_COLLECTION_PUBLICATIONS_BY_HANDLE
 
     # The exact path shopify_mcp.client.paginate is told to walk.
-    root = _field(operation.selection_set, "collectionByHandle")
-    connection = _field(root.selection_set, "resourcePublications")
+    path = ["collectionByHandle", "resourcePublications"]
+    connection = walk_field(query, path, "GET_COLLECTION_PUBLICATIONS_BY_HANDLE")
 
-    page_info = _field(connection.selection_set, "pageInfo")
-    names = _field_names(page_info.selection_set, "pageInfo")
+    page_info = walk_field(query, [*path, "pageInfo"], "GET_COLLECTION_PUBLICATIONS_BY_HANDLE")
+    names = field_names(page_info.selection_set, "pageInfo")
     assert {"hasNextPage", "endCursor"} <= names
 
-    nodes = _field(connection.selection_set, "nodes")
-    node_names = _field_names(nodes.selection_set, "nodes")
+    nodes = walk_field(query, [*path, "nodes"], "GET_COLLECTION_PUBLICATIONS_BY_HANDLE")
+    node_names = field_names(nodes.selection_set, "nodes")
     assert {"publication", "publishDate", "isPublished"} <= node_names
 
     # The connection must carry the pagination arguments, not hardcode a count.
@@ -666,4 +587,4 @@ def test_product_publications_fragment_selects_the_product_status():
     """Story 10.99: publishing to a DRAFT product only assigns the channel, so
     the tools need the status to mark it (live-found 2026-09-26)."""
     (fragment,) = graphql.parse(q.PRODUCT_PUBLICATIONS_FIELDS).definitions
-    assert "status" in _field_names(fragment.selection_set, "ProductPublicationsFields")
+    assert "status" in field_names(fragment.selection_set, "ProductPublicationsFields")

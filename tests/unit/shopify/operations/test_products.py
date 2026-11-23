@@ -20,6 +20,7 @@ import pytest
 from shopify_mcp.shopify.operations import products as ops
 from shopify_mcp.shopify.queries import products as q
 from tests.support import FakeClient, collection_products_page, products_page
+from tests.support.graphql_shape import field_names, walk_field
 
 # ---------- AC3: shared GraphQL fragment reused across by-id / by-handle ----------
 
@@ -115,12 +116,14 @@ def test_get_products_nested_variants_connection_selects_page_info():
     SOMEWHERE, so hoisting pageInfo out of the nested connection up onto the
     product node keeps every asserted token present while restoring the silence.
     """
-    variants = _selection_at(q.GET_PRODUCTS, ["products", "nodes", "variants"])
-    fields = _field_names(variants, "GET_PRODUCTS variants")
+    variants = walk_field(q.GET_PRODUCTS, ["products", "nodes", "variants"]).selection_set
+    fields = field_names(variants, "GET_PRODUCTS variants")
     assert "pageInfo" in fields, f"pageInfo is not on the nested variants connection: {fields}"
 
-    page_info = _selection_at(q.GET_PRODUCTS, ["products", "nodes", "variants", "pageInfo"])
-    page_info_fields = _field_names(page_info, "GET_PRODUCTS variants.pageInfo")
+    page_info = walk_field(
+        q.GET_PRODUCTS, ["products", "nodes", "variants", "pageInfo"]
+    ).selection_set
+    page_info_fields = field_names(page_info, "GET_PRODUCTS variants.pageInfo")
     assert "hasNextPage" in page_info_fields, page_info_fields
 
 
@@ -129,20 +132,11 @@ def test_get_products_nested_variant_cap_is_a_bound_variable_not_a_literal():
     GET_PRODUCTS_VARIANT_CAP, so the number in the query and the number in the
     warning copy cannot drift — the single-source-of-truth property the
     GET_ORDERS_LINE_ITEM_CAP precedent names explicitly."""
-    nodes_selection = _selection_at(q.GET_PRODUCTS, ["products", "nodes"])
-    variants_field = next(
-        sel
-        for sel in nodes_selection.selections
-        if isinstance(sel, graphql.FieldNode) and sel.name.value == "variants"
-    )
-    # An alias would change the RESPONSE key while leaving sel.name.value at
-    # "variants", so every other assertion here passes while p.get("variants")
-    # returns None for every node — detection dead, variant lists blank. Found
-    # by the story's adversarial verifier as a survivor of the parse guard.
-    assert variants_field.alias is None, (
-        f"variants is aliased to {variants_field.alias.value!r}; the response key would not "
-        "be 'variants' and both the render loop and capped_variant_product_ids would miss it"
-    )
+    # The walker refuses an alias (it would change the RESPONSE key while the AST
+    # still says "variants", so p.get("variants") returns None for every node and
+    # variant lists go blank: found by the Story 10.77 adversarial verifier) and
+    # refuses a second `variants` field in the same selection set (Story 10.119).
+    variants_field = walk_field(q.GET_PRODUCTS, ["products", "nodes", "variants"])
 
     args = {a.name.value: a.value for a in variants_field.arguments}
     assert isinstance(args["first"], graphql.VariableNode), (
@@ -454,120 +448,6 @@ def test_read_product_collections():
 # parametrised per query so a revert names the query it broke.
 
 
-def _selection_at(query_text: str, path: list[str]) -> graphql.SelectionSetNode:
-    """Walk a parsed query down `path` and return that field's selection set.
-
-    Mirrors what client.paginate() does at runtime with connection_path, so a
-    query whose pageInfo sits at the wrong nesting level fails here the way it
-    would fail against the real API.
-
-    Every step of the path must be UNALIASED (Story 10.84). paginate() descends
-    the RESPONSE by key, and the GraphQL response key for a field is its alias
-    when one is present and its name otherwise — so name-matching alone is only
-    a mirror of the runtime while no field on the path carries an alias. Adding
-    one is valid GraphQL that Shopify answers happily: the AST still reports the
-    name, every downstream assertion here still holds, and paginate() reads {}
-    and returns zero nodes with capped=False. Asserting it here covers every
-    step of every path any caller walks, rather than one field at one call site.
-    """
-    node: Any = graphql.parse(query_text).definitions[0]
-    for key in path:
-        matches = [
-            sel
-            for sel in node.selection_set.selections
-            if isinstance(sel, graphql.FieldNode) and sel.name.value == key
-        ]
-        assert matches, f"no field {key!r} in selection set"
-        node = matches[0]
-        assert node.alias is None, (
-            f"{key!r} is aliased to {node.alias.value!r}; paginate() reads the "
-            f"response key, which would be {node.alias.value!r}"
-        )
-    return node.selection_set
-
-
-def _field_names(selection_set: graphql.SelectionSetNode, where: str) -> set[str]:
-    """Return the field names in `selection_set`, requiring every one unaliased.
-
-    The leaf half of the rule _selection_at enforces on the walked path (Story
-    10.84). paginate() reads `nodes` and `pageInfo` out of a connection by
-    literal key, and reads `hasNextPage` and `endCursor` out of that pageInfo
-    the same way — so a set of names built straight off these selections is
-    blind in exactly the way the walker was. Aliasing `hasNextPage` is the worst
-    case: paginate() reads None, stops after page 1 and reports capped=False,
-    turning a truncation into a silently short answer rather than an empty one.
-    """
-    names: set[str] = set()
-    for sel in selection_set.selections:
-        if not isinstance(sel, graphql.FieldNode):
-            continue
-        assert sel.alias is None, (
-            f"{where}: {sel.name.value!r} is aliased to {sel.alias.value!r}; the response "
-            f"key would be {sel.alias.value!r}"
-        )
-        names.add(sel.name.value)
-    return names
-
-
-def test_selection_at_rejects_an_aliased_terminal_field():
-    """AC4 (Story 10.84): the walker refuses an alias on the last step of a path.
-
-    Pinned against a literal query rather than a production one, so the guard
-    keeps its teeth even if every query in shopify/queries/ is rewritten. An
-    alias is valid GraphQL that Shopify answers happily, and the response then
-    carries the ALIAS as its key while the AST still reports the name — so a
-    name-matching walker stays satisfied while paginate() reads {} and returns
-    zero nodes with capped=False, indistinguishable from an empty collection.
-    """
-    aliased = """
-    query Q($first: Int!, $after: String) {
-      x: products(first: $first, after: $after) {
-        pageInfo { hasNextPage endCursor }
-      }
-    }
-    """
-    with pytest.raises(AssertionError, match="aliased"):
-        _selection_at(aliased, ["products"])
-
-
-def test_selection_at_rejects_an_aliased_intermediate_step():
-    """The assertion covers EVERY step of the path, not merely the last one.
-
-    Separate from the terminal case because a one-element path cannot tell the
-    two apart. The story's review moved the assertion out of the loop so only
-    the final key was checked, and the whole suite stayed green: every step the
-    current callers walk happens also to be the terminal key of some other
-    _selection_at call, so the property held by coincidence rather than by test.
-    One caller with a deeper path would have lost it silently. The alias here
-    sits on the FIRST of two steps for exactly that reason.
-    """
-    aliased = """
-    query Q($handle: String!, $first: Int!, $after: String) {
-      c: collectionByHandle(handle: $handle) {
-        products(first: $first, after: $after) {
-          pageInfo { hasNextPage endCursor }
-        }
-      }
-    }
-    """
-    with pytest.raises(AssertionError, match="aliased"):
-        _selection_at(aliased, ["collectionByHandle", "products"])
-
-
-def test_field_names_rejects_an_aliased_leaf():
-    """The leaf guard has teeth too — the walked path is not the whole surface.
-
-    paginate() reads hasNextPage out of pageInfo by key, so aliasing it makes
-    the walk stop after one page and report capped=False: a truncation reported
-    as a complete answer, worse than the empty result an aliased connection
-    produces. Found by the story's review as a mutation that shipped green.
-    """
-    aliased = "query Q { products { pageInfo { hn: hasNextPage endCursor } } }"
-    page_info = _selection_at(aliased, ["products", "pageInfo"])
-    with pytest.raises(AssertionError, match="aliased"):
-        _field_names(page_info, "pageInfo")
-
-
 @pytest.mark.parametrize(
     ("name", "query_text", "connection_path"),
     [
@@ -593,25 +473,20 @@ def test_sibling_read_queries_have_the_shape_paginate_requires(name, query_text,
     exactly that mutation. graphql-core is pinned in both lockfiles (it is gql's
     own dependency), so parsing costs no new dependency.
     """
-    products_selection = _selection_at(query_text, [*connection_path, "products"])
-    fields = _field_names(products_selection, f"{name} products")
+    products_field = walk_field(query_text, [*connection_path, "products"])
+    fields = field_names(products_field.selection_set, f"{name} products")
     assert "pageInfo" in fields, f"{name}: pageInfo is not on the walked products connection"
 
     # Walked explicitly so the helper's alias assertion covers the `nodes` step
     # too (Story 10.84 review). paginate() reads connection.get("nodes") by
     # literal key, so `n: nodes` here yields zero nodes on every page with the
     # rest of this test still green — the same defect one level in.
-    _selection_at(query_text, [*connection_path, "products", "nodes"])
+    walk_field(query_text, [*connection_path, "products", "nodes"])
 
-    page_info = _selection_at(query_text, [*connection_path, "products", "pageInfo"])
-    page_info_fields = _field_names(page_info, f"{name} pageInfo")
+    page_info = walk_field(query_text, [*connection_path, "products", "pageInfo"]).selection_set
+    page_info_fields = field_names(page_info, f"{name} pageInfo")
     assert {"hasNextPage", "endCursor"} <= page_info_fields, f"{name}: {page_info_fields}"
 
-    products_field = next(
-        sel
-        for sel in _selection_at(query_text, connection_path).selections
-        if isinstance(sel, graphql.FieldNode) and sel.name.value == "products"
-    )
     args = {a.name.value: a.value for a in products_field.arguments}
     assert "after" in args, f"{name}: products(...) takes no after argument"
     assert isinstance(args["after"], graphql.VariableNode)
