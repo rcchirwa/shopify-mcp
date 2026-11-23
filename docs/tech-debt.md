@@ -4,9 +4,38 @@ Living record of the technical-debt triage for `shopify-mcp`. Newest entry first
 
 Scoring: `Priority = (Impact + Risk) × (6 − Effort)`, each axis 1–5, effort inverted.
 
-**Last full audit:** 2026-04-24. **Last follow-up:** 2026-11-21.
+**Last full audit:** 2026-04-24. **Last follow-up:** 2026-11-23.
 
 ---
+
+## 2026-11-23 — Story 10.119 (T-10.84-walkers): one query-shape walker, and it refuses a duplicate field name
+
+Trello: Story 10.119 (https://trello.com/c/CIEJVKgm), Epic 10. A **test-only** story. No file under `src/` changed. It closes two residuals that the Story 10.84 entry below recorded and left open: the walkers were duplicated, and a duplicate field name defeated them.
+
+**Decision (Robert, 2026-11-23): approach 1, consolidate and reject duplicates.** The card also listed approach 2 (match by response key) and approach 3 (consolidate only). Approach 1 is the smallest rule that closes the gap.
+
+**Step 1, re-derived on `e392ed2`.**
+- Four helpers in two modules, as the card said: `_selection_at` (11 uses) and `_field_names` (6) in `test_products.py`; `_field` (14) and `_field_names` (7) in `test_publications.py`. No other pagination walker under `tests/`.
+- One more first-match lookup was found: an inline `next(...)` in `test_get_products_nested_variant_cap_is_a_bound_variable_not_a_literal` (`test_products.py`). It now uses the walker. `test_discounts.py` (`_direct_field`, `_all_fields_named`) and `test_inventory.py` look up fields by name too, but they do not guard a `paginate()` read. They were left alone.
+- The decoy query from the card was accepted by the real helpers on `e392ed2`: the walked `products` kept only `first:`, and no `after:`.
+- **No production query selects a walked field, or a `nodes`/`pageInfo` leaf, twice at one level.** An AST scan of all 72 query constants in `shopify/queries/` found zero repeated field names in any selection set. So the gap was in the guard, not a live defect.
+
+**The change.** New `tests/support/graphql_shape.py`, fully typed (mypy covers `tests/support`).
+- `walk_field(root, path)`: `root` is query text or a selection set. At each step exactly one `FieldNode` must have the name, and it must be unaliased. It returns the last `FieldNode`, so the caller reads `.arguments` and `.selection_set`. An empty path raises `ValueError`.
+- `field_names(selection_set, where)`: the leaf helper. It refuses an alias and, new here, a name selected twice (a set hid that).
+- The `FieldNode` isinstance check stays: `FragmentSpreadNode` has a `.name` and no `.alias`. The Story 10.84 reasons (response key versus name; an aliased `hasNextPage` is a silent truncation) moved into the module docstrings.
+- `test_products.py` and `test_publications.py` import both helpers. The four local helpers are deleted. Every guard walks the same queries and paths and asserts the same leaf sets as before.
+- The five Story 10.84 self-tests moved to `tests/unit/test_graphql_shape.py`, which has 16 tests against literal queries. Test count: 4610 before, 4621 after (4610 + 16 − 5 moved).
+- **Entry condition for an exception:** a query that must select a walked field twice on purpose. It would need an explicit, named exception in `graphql_shape.py`. None exists today.
+
+**Mutation results (real sources, each restored byte for byte; sha256 equal and `git diff --quiet -- src` clean after).**
+- a. A decoy unaliased duplicate ahead of an aliased real field: in `GET_PRODUCTS_BY_COLLECTION` the guard `test_sibling_read_queries_have_the_shape_paginate_requires[GET_PRODUCTS_BY_COLLECTION-…]` failed (killed). In `GET_COLLECTION_PUBLICATIONS_BY_HANDLE`, `test_collection_publications_query_parses_and_has_the_shape_paginate_walks` failed (killed).
+- b. An alias on a walked step and on a `pageInfo` leaf, in both modules: four mutations, four killed.
+- c. The shared walker changed to take the first match again: `test_walker_rejects_a_decoy_ahead_of_an_aliased_real_field` failed (killed).
+- Before the real walker existed, a first-match version of the module failed the four duplicate tests and passed the twelve alias and clean tests (the RED run).
+
+**Still open (unchanged by this story).** The 15 `paginate()` call sites with no parse guard (Story 10.83). A field aliased *to* an expected key gives a "no field" message, not an alias message. A fragment refactor on a walked path fails with a misleading message. These stay recorded in the Story 10.84 entry below.
+
 
 ## 2026-11-21 — Story 10.118 (T-unguarded-ops-errors): a failed Shopify call is a text reply, not an escaped exception
 
@@ -1910,9 +1939,9 @@ The shipped assertion was correct and its central evidence reproduced under all 
 
 ### Residuals, recorded not fixed
 
-- **The two walkers are still duplicated, and now so are their leaf twins.** `_selection_at`/`_field_names` in `test_products.py` and `_field`/`_field_names` in `test_publications.py` do the same job with the same rule, and the review doubled the duplication rather than reducing it. The card's approach 2 — consolidating into `tests/support/graphql_shape.py` — was declined here because `pyproject.toml` puts `tests/support` under mypy (`files = ["src/shopify_mcp", "tests/support"]`), so the shared helper needs full annotations, and it turns a defect fix into a refactor across three files. **The entry condition is now closer than it was:** four helpers across two modules rather than two, so the next story to touch either module should consolidate rather than add a fifth.
+- ~~**The two walkers are still duplicated, and now so are their leaf twins.** `_selection_at`/`_field_names` in `test_products.py` and `_field`/`_field_names` in `test_publications.py` do the same job with the same rule, and the review doubled the duplication rather than reducing it. The card's approach 2 — consolidating into `tests/support/graphql_shape.py` — was declined here because `pyproject.toml` puts `tests/support` under mypy (`files = ["src/shopify_mcp", "tests/support"]`), so the shared helper needs full annotations, and it turns a defect fix into a refactor across three files. **The entry condition is now closer than it was:** four helpers across two modules rather than two, so the next story to touch either module should consolidate rather than add a fifth.~~ **Closed 2026-11-23 by Story 10.119** — one walker (`walk_field`) and one leaf helper (`field_names`) now live in `tests/support/graphql_shape.py`; the four local helpers are gone. See the Story 10.119 entry at the top.
 - **Only guarded paths are guarded at all.** 15 of the 20 `paginate()` call sites have no parse guard, so for those neither the connection-step nor the leaf hole is closed — the alias is simply one of several shapes nothing checks. Cross-reference Story 10.83's residual ("only the ones someone remembered to pin are checked at all"). Entry condition: unchanged from 10.83.
-- **Duplicate-name shadowing defeats both walkers.** They take the *first* name match. Place an unaliased decoy `products` connection of the right shape ahead of the real one and alias the real one away, and the suite is fully green while `paginate()` walks the decoy. Found by the adversarial verifier. Contrived — it needs a valid duplicate field plus an alias, a two-token edit no refactor produces by accident — so it is recorded rather than fixed. Entry condition: any query legitimately selecting the same field twice.
+- ~~**Duplicate-name shadowing defeats both walkers.** They take the *first* name match. Place an unaliased decoy `products` connection of the right shape ahead of the real one and alias the real one away, and the suite is fully green while `paginate()` walks the decoy. Found by the adversarial verifier. Contrived — it needs a valid duplicate field plus an alias, a two-token edit no refactor produces by accident — so it is recorded rather than fixed. Entry condition: any query legitimately selecting the same field twice.~~ **Closed 2026-11-23 by Story 10.119** — the walker now requires exactly one field with each name at every step, so the decoy is rejected. See the Story 10.119 entry at the top.
 - **A field aliased *to* an expected key is still invisible.** `products: somethingElse(...)` satisfies neither walker (both match on name, and `somethingElse` is not `products`), so the walk fails with "no field 'products'" rather than a message about the alias. Correct outcome, misleading message.
 - **A legitimate fragment refactor would red the guards with a misleading message.** Both walkers skip `FragmentSpreadNode` and `InlineFragmentNode`, so moving a walked connection into a fragment fails as "no field 'X' in selection set" — even though `paginate()` would work fine at runtime, since a fragment merges into the response under the same key. Failing loudly is the right direction; the message is wrong. Entry condition: the first query here to use a fragment on a walked path.
 
