@@ -25,7 +25,7 @@ Trello: Story 10.119 (https://trello.com/c/CIEJVKgm), Epic 10. A **test-only** s
 - `field_names(selection_set, where)`: the leaf helper. It refuses an alias and, new here, a name selected twice (a set hid that).
 - The `FieldNode` isinstance check stays: `FragmentSpreadNode` has a `.name` and no `.alias`. The Story 10.84 reasons (response key versus name; an aliased `hasNextPage` is a silent truncation) moved into the module docstrings.
 - `test_products.py` and `test_publications.py` import both helpers. The four local helpers are deleted. Every guard walks the same queries and paths and asserts the same leaf sets as before.
-- The five Story 10.84 self-tests moved to `tests/unit/test_graphql_shape.py`, which has 16 tests against literal queries. Test count: 4610 before, 4621 after (4610 + 16 − 5 moved).
+- The five Story 10.84 self-tests moved to `tests/unit/test_graphql_shape.py`, which has 23 tests against literal queries. Test count: 4610 before, 4628 after (4610 + 23 − 5 moved).
 - **Entry condition for an exception:** a query that must select a walked field twice on purpose. It would need an explicit, named exception in `graphql_shape.py`. None exists today.
 
 **Mutation results (real sources, each restored byte for byte; sha256 equal and `git diff --quiet -- src` clean after).**
@@ -33,6 +33,8 @@ Trello: Story 10.119 (https://trello.com/c/CIEJVKgm), Epic 10. A **test-only** s
 - b. An alias on a walked step and on a `pageInfo` leaf, in both modules: four mutations, four killed.
 - c. The shared walker changed to take the first match again: `test_walker_rejects_a_decoy_ahead_of_an_aliased_real_field` failed (killed).
 - Before the real walker existed, a first-match version of the module failed the four duplicate tests and passed the twelve alias and clean tests (the RED run).
+
+**Review round 1 (code review, security review, and an adversarial verifier; the triple-threat skill is not installed).** The security review found nothing: test-only code, no I/O, no new dependency. Fixed in the review-fix commit, as one class ("the walker accepts a tree that paginate() does not read"): a directive (`@skip`/`@include`) on a walked field or a leaf is refused; the walker uses the one query operation, not a fragment listed before it, and refuses a mutation or a second operation; `walk_field` takes an optional `where` that names the query in a failure message. Declined, with reason: a decoy or leaf inside a fragment or inline fragment (GraphQL merges equal response keys, Shopify rejects different arguments on one key, and no walked path uses a fragment; it stays in the residuals below). The leaf-repeat rule is stricter than the runtime on purpose and the docstring now says so.
 
 **Still open (unchanged by this story).** The 15 `paginate()` call sites with no parse guard (Story 10.83). A field aliased *to* an expected key gives a "no field" message, not an alias message. A fragment refactor on a walked path fails with a misleading message. These stay recorded in the Story 10.84 entry below.
 

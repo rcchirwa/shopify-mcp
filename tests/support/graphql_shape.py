@@ -20,7 +20,12 @@ Only a FieldNode is a candidate. FragmentSpreadNode also has a `.name` and has n
 shared a walked field's name.
 
 A query that must select a walked field twice on purpose needs an explicit,
-named exception here. Today no production query does (checked on 72 queries).
+named exception here. No production query did when this was written (Story 10.119
+checked every query constant in shopify/queries/).
+
+Fragments are out of scope: a field reached only through a spread or an inline
+fragment is not found, so a walked path that moves into a fragment fails loudly
+with "no field". See the Story 10.84 ledger entry.
 """
 
 from collections import Counter
@@ -30,25 +35,39 @@ import graphql
 
 
 def _selection_set_of(root: str | graphql.SelectionSetNode) -> graphql.SelectionSetNode:
-    """Return `root`, or the selection set of the first definition in query text.
+    """Return `root`, or the selection set that query text asks paginate() to read.
 
-    The first definition is the operation, or a fragment when the text is only
-    a fragment definition.
+    Text with an operation must hold exactly one, and it must be a query: a
+    fragment listed ahead of the operation must not be walked in its place. Text
+    with no operation must be one fragment definition (the shared Product
+    fragment is read that way).
     """
     if isinstance(root, graphql.SelectionSetNode):
         return root
-    definition = graphql.parse(root).definitions[0]
-    selection_set = getattr(definition, "selection_set", None)
-    assert isinstance(selection_set, graphql.SelectionSetNode), "definition has no selection set"
-    return selection_set
+    definitions = graphql.parse(root).definitions
+    operations = [d for d in definitions if isinstance(d, graphql.OperationDefinitionNode)]
+    if operations:
+        assert len(operations) == 1, f"expected one operation, found {len(operations)}"
+        (operation,) = operations
+        assert operation.operation is graphql.OperationType.QUERY, (
+            f"paginate() reads a query, not a {operation.operation.value}"
+        )
+        return operation.selection_set
+    assert len(definitions) == 1, "text with no operation must be a single fragment definition"
+    (fragment,) = definitions
+    assert isinstance(fragment, graphql.FragmentDefinitionNode), "definition is not a fragment"
+    return fragment.selection_set
 
 
-def walk_field(root: str | graphql.SelectionSetNode, path: Sequence[str]) -> graphql.FieldNode:
+def walk_field(
+    root: str | graphql.SelectionSetNode, path: Sequence[str], where: str = ""
+) -> graphql.FieldNode:
     """Walk `path` down `root` and return the field at its end.
 
     `root` is query text (the first definition is walked) or a selection set. At
     every step exactly one FieldNode must carry the name, and it must be
-    unaliased. This mirrors what client.paginate() does at runtime with
+    unaliased and carry no directive (`@skip` or `@include` can drop the response
+    key). `where` names the query in a failure message. This mirrors what client.paginate() does at runtime with
     connection_path, so a query whose pageInfo sits at the wrong nesting level
     fails here the way it would fail against the real API.
 
@@ -58,25 +77,31 @@ def walk_field(root: str | graphql.SelectionSetNode, path: Sequence[str]) -> gra
     """
     if not path:
         raise ValueError("walk_field needs a non-empty path: an empty path names no field")
+    prefix = f"{where}: " if where else ""
     selection_set: graphql.SelectionSetNode | None = _selection_set_of(root)
     node: graphql.FieldNode | None = None
     walked: list[str] = []
     for key in path:
-        assert selection_set is not None, f"{'.'.join(walked)!r} has no selection set to walk"
+        assert selection_set is not None, (
+            f"{prefix}{'.'.join(walked)!r} has no selection set to walk"
+        )
         matches = [
             sel
             for sel in selection_set.selections
             if isinstance(sel, graphql.FieldNode) and sel.name.value == key
         ]
-        assert matches, f"no field {key!r} in selection set"
+        assert matches, f"{prefix}no field {key!r} in selection set"
         assert len(matches) == 1, (
-            f"{key!r} is selected more than once ({len(matches)} times); paginate() reads "
-            f"one response key, so the walked field must be the only one named {key!r}"
+            f"{prefix}{key!r} is selected more than once ({len(matches)} times); paginate() "
+            f"reads one response key, so the walked field must be the only one named {key!r}"
         )
         node = matches[0]
         assert node.alias is None, (
-            f"{key!r} is aliased to {node.alias.value!r}; paginate() reads the "
+            f"{prefix}{key!r} is aliased to {node.alias.value!r}; paginate() reads the "
             f"response key, which would be {node.alias.value!r}"
+        )
+        assert not node.directives, (
+            f"{prefix}{key!r} carries a directive; @skip or @include can drop its response key"
         )
         walked.append(key)
         selection_set = node.selection_set
@@ -94,7 +119,9 @@ def field_names(selection_set: graphql.SelectionSetNode, where: str) -> set[str]
     `hasNextPage` is the worst case: paginate() reads None, stops after page 1
     and reports capped=False, so a truncation looks like a complete answer.
 
-    A set also hides a name that appears twice, so a repeat is refused here.
+    A set also hides a name that appears twice, so a repeat is refused here. That
+    is stricter than the runtime (GraphQL merges equal fields) on purpose: it
+    keeps the leaf rule the same as the walker's.
     Fragment spreads and inline fragments are skipped: they are not fields.
     """
     fields = [sel for sel in selection_set.selections if isinstance(sel, graphql.FieldNode)]
@@ -102,6 +129,9 @@ def field_names(selection_set: graphql.SelectionSetNode, where: str) -> set[str]
         assert sel.alias is None, (
             f"{where}: {sel.name.value!r} is aliased to {sel.alias.value!r}; the response "
             f"key would be {sel.alias.value!r}"
+        )
+        assert not sel.directives, (
+            f"{where}: {sel.name.value!r} carries a directive; @skip or @include can drop it"
         )
     counts = Counter(sel.name.value for sel in fields)
     repeated = sorted(name for name, count in counts.items() if count > 1)

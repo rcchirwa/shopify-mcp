@@ -568,13 +568,13 @@ def test_collection_publications_query_parses_and_has_the_shape_paginate_walks()
 
     # The exact path shopify_mcp.client.paginate is told to walk.
     path = ["collectionByHandle", "resourcePublications"]
-    connection = walk_field(query, path)
+    connection = walk_field(query, path, "GET_COLLECTION_PUBLICATIONS_BY_HANDLE")
 
-    page_info = walk_field(query, [*path, "pageInfo"])
+    page_info = walk_field(query, [*path, "pageInfo"], "GET_COLLECTION_PUBLICATIONS_BY_HANDLE")
     names = field_names(page_info.selection_set, "pageInfo")
     assert {"hasNextPage", "endCursor"} <= names
 
-    nodes = walk_field(query, [*path, "nodes"])
+    nodes = walk_field(query, [*path, "nodes"], "GET_COLLECTION_PUBLICATIONS_BY_HANDLE")
     node_names = field_names(nodes.selection_set, "nodes")
     assert {"publication", "publishDate", "isPublished"} <= node_names
 

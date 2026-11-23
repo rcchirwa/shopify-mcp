@@ -198,3 +198,50 @@ def test_field_names_skips_fragment_spreads_and_inline_fragments():
     selection = walk_field(query, ["products"]).selection_set
     assert selection is not None
     assert field_names(selection, "products") == {"id"}
+
+
+def test_walker_rejects_a_directive_on_a_walked_field():
+    """@skip or @include can drop the response key, and paginate() then reads {}."""
+    query = "query Q($b: Boolean!) { products(first: 1) @include(if: $b) { nodes { id } } }"
+    with pytest.raises(AssertionError, match="directive"):
+        walk_field(query, ["products"])
+
+
+def test_field_names_rejects_a_directive_on_a_leaf():
+    query = "query Q { products { pageInfo { hasNextPage @skip(if: true) endCursor } } }"
+    page_info = walk_field(query, ["products", "pageInfo"]).selection_set
+    assert page_info is not None
+    with pytest.raises(AssertionError, match="directive"):
+        field_names(page_info, "pageInfo")
+
+
+def test_walker_walks_the_operation_not_a_fragment_listed_before_it():
+    """A fragment ahead of the operation must not take the operation's place."""
+    query = """
+    fragment F on QueryRoot { products(first: 5) { nodes { id } } }
+    query Q($first: Int!, $after: String) { x: products(first: $first, after: $after) { nodes { id } } }
+    """
+    with pytest.raises(AssertionError, match="aliased"):
+        walk_field(query, ["products"])
+
+
+def test_walker_refuses_a_mutation_root():
+    with pytest.raises(AssertionError, match="not a mutation"):
+        walk_field("mutation M { products(first: 1) { nodes { id } } }", ["products"])
+
+
+def test_walker_refuses_text_with_two_operations():
+    query = "query A { products { id } } query B { products { id } }"
+    with pytest.raises(AssertionError, match="one operation"):
+        walk_field(query, ["products"])
+
+
+def test_walker_refuses_text_with_no_operation_and_two_fragments():
+    query = "fragment A on Product { id } fragment B on Product { title }"
+    with pytest.raises(AssertionError, match="single fragment"):
+        walk_field(query, ["id"])
+
+
+def test_walker_names_the_query_in_a_failure_message():
+    with pytest.raises(AssertionError, match="GET_X: no field 'products'"):
+        walk_field("query Q { shop { id } }", ["products"], where="GET_X")
