@@ -23,11 +23,15 @@ A query that must select a walked field twice on purpose needs an explicit,
 named exception here. No production query did when this was written (Story 10.119
 checked every query constant in shopify/queries/).
 
-Fragments are out of scope: a field reached only through a spread or an inline
-fragment is not found, so a walked path that moves into a fragment fails loudly
-with "no field". See the Story 10.84 ledger entry.
+The two helpers do not follow fragments: a field reached only through a spread or
+an inline fragment is not found, so a walked path that moves into a fragment
+fails loudly with "no field". See the Story 10.84 ledger entry. Story 10.120 adds
+expand_walked_spreads, which writes a named spread in place on a walked path when
+it can prove the spread applies, and refuses every other case. Inline fragments on
+a walked path stay unsupported.
 """
 
+import dataclasses
 from collections import Counter
 from collections.abc import Sequence
 
@@ -107,6 +111,117 @@ def walk_field(
         selection_set = node.selection_set
     assert node is not None
     return node
+
+
+# Story 10.120: the type each level of a walked path returns, so a named spread
+# there can be proven to apply. Query text alone cannot tell the type of a field,
+# so a row here is an assumption. test_spread_parent_types_match_the_schema_snapshot
+# checks every row against the committed Admin schema snapshot. A spread at a
+# level with no row is refused, not guessed.
+ROOT_TYPE = "QueryRoot"
+SPREAD_PARENT_TYPES: dict[tuple[str, str], str] = {
+    (ROOT_TYPE, "product"): "Product",
+    (ROOT_TYPE, "productByHandle"): "Product",
+    (ROOT_TYPE, "order"): "Order",
+}
+
+
+def expand_walked_spreads(text: str, path: Sequence[str], where: str) -> graphql.SelectionSetNode:
+    """Return the query's selection set with named spreads written in place on `path`.
+
+    GraphQL merges the fields of a spread into the parent object, so the response
+    keys are the same as if the fields were written in place. walk_field and
+    field_names skip spreads, so a walked field that lives in a fragment is not
+    found. This helper writes the fragment's fields in place at the root and at
+    every level `path` walks into, and leaves every other level as it is.
+
+    It has one job: give the walker the selections it must check. It matches no
+    field and checks no alias; walk_field and field_names still do that. A spread
+    is written in place only when its effect on the response keys is certain.
+    Each other case fails and names the query and the level:
+
+    * a spread with a directive (`@skip` or `@include` can drop all its keys);
+    * an unknown fragment, a name defined twice, or a cycle;
+    * a level whose type is not in SPREAD_PARENT_TYPES, or a fragment on another
+      type (it adds its fields only for some objects, or never);
+    * an inline fragment (not needed by any query today, so not supported).
+
+    One refusal is stricter than the runtime, on purpose: the same spread twice
+    at one walked level. GraphQL collects it once, but this helper copies its
+    fields twice, so walk_field reports the walked field as selected twice.
+
+    `text` must hold exactly one query operation. A fragment definition alone
+    never stands in for a query.
+    """
+    definitions = graphql.parse(text).definitions
+    operations = [d for d in definitions if isinstance(d, graphql.OperationDefinitionNode)]
+    assert len(operations) == 1, f"{where}: expected one query operation, found {len(operations)}"
+    fragment_nodes = [d for d in definitions if isinstance(d, graphql.FragmentDefinitionNode)]
+    counts = Counter(f.name.value for f in fragment_nodes)
+    for name, count in counts.items():
+        assert count == 1, f"{where}: fragment {name!r} is defined {count} times"
+    fragments = {f.name.value: f for f in fragment_nodes}
+    return _expand_level(_selection_set_of(text), path, ROOT_TYPE, "", fragments, where)
+
+
+def _expand_level(
+    selection_set: graphql.SelectionSetNode,
+    path: Sequence[str],
+    level_type: str | None,
+    at: str,
+    fragments: dict[str, graphql.FragmentDefinitionNode],
+    where: str,
+) -> graphql.SelectionSetNode:
+    """Write spreads in place at this level, then go one level down `path`."""
+    level = at or ROOT_TYPE
+    selections: list[graphql.SelectionNode] = []
+    pending: list[tuple[graphql.SelectionNode, tuple[str, ...]]] = [
+        (sel, ()) for sel in selection_set.selections
+    ]
+    while pending:
+        sel, stack = pending.pop(0)
+        if isinstance(sel, graphql.InlineFragmentNode):
+            raise AssertionError(
+                f"{where}: inline fragment at {level}; the guard cannot tell which keys it adds"
+            )
+        if not isinstance(sel, graphql.FragmentSpreadNode):
+            selections.append(sel)
+            continue
+        name = sel.name.value
+        assert not sel.directives, (
+            f"{where}: ...{name} at {level} carries a directive; @skip or @include can "
+            f"drop every key it adds"
+        )
+        assert name in fragments, f"{where}: no fragment named {name!r} (spread at {level})"
+        assert name not in stack, f"{where}: fragment cycle {' -> '.join((*stack, name))}"
+        assert level_type is not None, (
+            f"{where}: ...{name}: the type of {level} is not known (no row in "
+            f"SPREAD_PARENT_TYPES), so the guard cannot prove the fragment applies"
+        )
+        condition = fragments[name].type_condition.name.value
+        assert condition == level_type, (
+            f"{where}: ...{name} is on {condition}, but {level} returns {level_type}"
+        )
+        spread = [(inner, (*stack, name)) for inner in fragments[name].selection_set.selections]
+        pending[:0] = spread
+    if path:
+        head, rest = path[0], path[1:]
+        child_at = f"{at}.{head}" if at else head
+        child_type = SPREAD_PARENT_TYPES.get((level_type, head)) if level_type else None
+        selections = [
+            dataclasses.replace(
+                sel,
+                selection_set=_expand_level(
+                    sel.selection_set, rest, child_type, child_at, fragments, where
+                ),
+            )
+            if isinstance(sel, graphql.FieldNode)
+            and sel.name.value == head
+            and sel.selection_set is not None
+            else sel
+            for sel in selections
+        ]
+    return graphql.SelectionSetNode(selections=tuple(selections))
 
 
 def field_names(selection_set: graphql.SelectionSetNode, where: str) -> set[str]:
