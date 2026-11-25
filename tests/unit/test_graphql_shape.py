@@ -9,7 +9,14 @@ now drive the shared walker instead of four local copies.
 import graphql
 import pytest
 
-from tests.support.graphql_shape import field_names, walk_field
+from tests.support.admin_schema_snapshot import SNAPSHOT_PATH
+from tests.support.graphql_shape import (
+    ROOT_TYPE,
+    SPREAD_PARENT_TYPES,
+    expand_walked_spreads,
+    field_names,
+    walk_field,
+)
 
 CLEAN = """
 query Q($handle: String!, $first: Int!, $after: String) {
@@ -245,3 +252,168 @@ def test_walker_refuses_text_with_no_operation_and_two_fragments():
 def test_walker_names_the_query_in_a_failure_message():
     with pytest.raises(AssertionError, match="GET_X: no field 'products'"):
         walk_field("query Q { shop { id } }", ["products"], where="GET_X")
+
+
+# --- expand_walked_spreads (Story 10.120) -----------------------------------
+#
+# The connection that paginate() reads sits inside a named fragment for six call
+# sites. GraphQL merges the fields of a spread into the parent object, so the
+# response keys are the same as if the fields were written in place. The
+# expander writes them in place on the walked levels only, and refuses every
+# spread whose effect on those keys it cannot prove.
+
+SPREAD = """
+fragment Core on Product {
+  id
+  variants(first: $first, after: $after) {
+    nodes { id }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+query Q($id: ID!, $first: Int = 50, $after: String) {
+  product(id: $id) {
+    ...Core
+  }
+}
+"""
+
+WALK = ["product", "variants", "pageInfo"]
+
+
+def _expand_and_walk(text: str, path: list[str] = WALK) -> graphql.FieldNode:
+    return walk_field(expand_walked_spreads(text, path, "GET_X"), path, "GET_X")
+
+
+def test_expander_puts_a_spread_field_where_the_walker_finds_it():
+    """Without the expander the walker fails on this correct query (census, 2026-11-24)."""
+    with pytest.raises(AssertionError, match="no field 'variants'"):
+        walk_field(SPREAD, ["product", "variants"])
+    page_info = _expand_and_walk(SPREAD)
+    assert page_info.selection_set is not None
+    assert field_names(page_info.selection_set, "pageInfo") == {"hasNextPage", "endCursor"}
+
+
+def test_expander_keeps_the_arguments_of_a_field_from_a_fragment():
+    variants = walk_field(
+        expand_walked_spreads(SPREAD, WALK, "GET_X"), ["product", "variants"], "GET_X"
+    )
+    assert {a.name.value for a in variants.arguments} == {"first", "after"}
+
+
+def test_expander_expands_a_spread_inside_a_spread():
+    nested = """
+    fragment Inner on Product { variants(first: $first, after: $after) { pageInfo { hasNextPage endCursor } } }
+    fragment Outer on Product { id ...Inner }
+    query Q($first: Int!, $after: String) { product(id: "1") { ...Outer } }
+    """
+    assert _expand_and_walk(nested).name.value == "pageInfo"
+
+
+def test_expander_shows_a_decoy_beside_the_spread_to_the_walker():
+    """Consultation Q4: a field beside the spread and one from the spread collide.
+
+    Checked apart, the fragment is clean and the spread is present. Together the
+    response has two candidates for one key, so the walker must refuse it.
+    """
+    decoy = SPREAD.replace("...Core", "preview: variants(first: 1) { nodes { id } }\n    ...Core")
+    with pytest.raises(AssertionError, match="more than once"):
+        _expand_and_walk(decoy)
+    sibling = SPREAD.replace("...Core", "variants(first: 1) { nodes { id } }\n    ...Core")
+    with pytest.raises(AssertionError, match="more than once"):
+        _expand_and_walk(sibling)
+
+
+def test_expander_refuses_a_spread_with_a_directive():
+    """Consultation Q7: `@skip(if: true)` drops every key the spread adds."""
+    skipped = SPREAD.replace("...Core", "...Core @skip(if: true)")
+    with pytest.raises(AssertionError, match=r"GET_X: \.\.\.Core at product carries a directive"):
+        _expand_and_walk(skipped)
+
+
+def test_expander_refuses_an_unknown_fragment():
+    unknown = SPREAD.replace("...Core", "...Missing")
+    with pytest.raises(AssertionError, match="no fragment named 'Missing'"):
+        _expand_and_walk(unknown)
+
+
+def test_expander_refuses_two_fragments_with_one_name():
+    twice = SPREAD + "\nfragment Core on Product { id }\n"
+    with pytest.raises(AssertionError, match="'Core' is defined 2 times"):
+        _expand_and_walk(twice)
+
+
+def test_expander_refuses_a_fragment_cycle():
+    cycle = """
+    fragment A on Product { id ...B }
+    fragment B on Product { title ...A }
+    query Q { product(id: "1") { ...A } }
+    """
+    with pytest.raises(AssertionError, match="cycle"):
+        _expand_and_walk(cycle)
+
+
+def test_expander_refuses_a_fragment_on_another_type():
+    """A spread on another type adds its fields only for some objects, or never."""
+    other = SPREAD.replace("fragment Core on Product", "fragment Core on Collection")
+    with pytest.raises(AssertionError, match="on Collection, but product returns Product"):
+        _expand_and_walk(other)
+
+
+def test_expander_refuses_a_spread_where_the_type_is_not_known():
+    """The type of a level comes from SPREAD_PARENT_TYPES only. No row, no expansion."""
+    unknown_level = """
+    fragment Page on PageInfo { hasNextPage endCursor }
+    query Q($first: Int!, $after: String) {
+      product(id: "1") { variants(first: $first, after: $after) { pageInfo { ...Page } } }
+    }
+    """
+    with pytest.raises(AssertionError, match=r"type of product\.variants\.pageInfo is not known"):
+        _expand_and_walk(unknown_level)
+
+
+def test_expander_refuses_an_inline_fragment_on_a_walked_level():
+    """Consultation Q3: version one refuses every inline fragment on the path."""
+    inline = SPREAD.replace("...Core", "...Core\n    ... on Product { title }")
+    with pytest.raises(AssertionError, match="inline fragment at product"):
+        _expand_and_walk(inline)
+
+
+def test_expander_leaves_levels_off_the_path_alone():
+    """A spread inside `nodes` is payload: paginate() does not read it by key."""
+    payload = """
+    fragment Row on ProductVariant { id sku }
+    query Q($first: Int!, $after: String) {
+      product(id: "1") {
+        variants(first: $first, after: $after) {
+          nodes { ...Row ... on ProductVariant { title } }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
+    }
+    """
+    assert _expand_and_walk(payload).name.value == "pageInfo"
+
+
+def test_expander_refuses_text_with_no_operation():
+    """Consultation Q2: a fragment alone must never count as a guarded query."""
+    with pytest.raises(AssertionError, match="GET_X: expected one query operation, found 0"):
+        expand_walked_spreads("fragment F on Product { id }", ["id"], "GET_X")
+
+
+def test_expander_refuses_a_mutation():
+    with pytest.raises(AssertionError, match="not a mutation"):
+        expand_walked_spreads("mutation M { a { b } }", ["a"], "GET_X")
+
+
+def test_spread_parent_types_match_the_schema_snapshot():
+    """Every row of the type table is checked against the committed Admin schema."""
+    schema = graphql.build_schema(SNAPSHOT_PATH.read_text(), assume_valid=True)
+    assert schema.query_type is not None
+    assert schema.query_type.name == ROOT_TYPE
+    assert SPREAD_PARENT_TYPES, "the table is empty, so this test would check nothing"
+    for (parent, field), expected in SPREAD_PARENT_TYPES.items():
+        parent_type = schema.get_type(parent)
+        assert isinstance(parent_type, graphql.GraphQLObjectType), parent
+        returned = graphql.get_named_type(parent_type.fields[field].type)
+        assert isinstance(returned, graphql.GraphQLObjectType), (parent, field)
+        assert returned.name == expected, (parent, field, returned.name)

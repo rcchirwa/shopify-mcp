@@ -1,0 +1,249 @@
+"""Parse guard for every client.paginate() call site in src/ (Story 10.120).
+
+paginate() reads its response by key: each step of `connection_path`, then
+`nodes`, then `pageInfo.hasNextPage` and `pageInfo.endCursor`. FakeClient never
+parses the GraphQL, so an offline test sees a broken query only through a parse
+guard that walks the query the same way.
+
+The table of call sites is not written by hand. `discover_paginate_calls` reads
+src/ with `ast`, so a new call site gets a row with no edit here. A call that it
+cannot turn into a row (the query is not a module-level name, the
+connection_path is not a literal, or paginate is referenced without a call)
+fails `test_every_paginate_reference_resolves_to_a_row` and names its file and
+line.
+
+The six queries that older tests already guard (test_products.py,
+test_publications.py) get this guard too. Those tests stay as they are; the
+overlap is on purpose.
+"""
+
+import re
+import sys
+from pathlib import Path
+
+import pytest
+
+from tests.support.paginate_sites import (
+    SRC_ROOT,
+    CallSite,
+    check_paginate_query,
+    discover_paginate_calls,
+)
+
+SITES, PROBLEMS = discover_paginate_calls(SRC_ROOT, "shopify_mcp")
+
+
+def test_every_paginate_reference_resolves_to_a_row():
+    assert not PROBLEMS, "\n".join(PROBLEMS)
+
+
+def test_discovery_finds_at_least_the_census():
+    """The census on 0c85f74 (2026-11-24): 22 call sites, 18 distinct queries.
+
+    A floor, not a pin: a new call site needs no edit here. The floor proves
+    that discovery ran over the real tree and did not pass on an empty table.
+    """
+    assert len(SITES) >= 22
+    assert len({site.query_name for site in SITES}) >= 18
+
+
+@pytest.mark.parametrize("site", SITES, ids=lambda s: f"{s.where}:{s.query_name}")
+def test_paginate_query_matches_what_paginate_reads(site: CallSite):
+    check_paginate_query(site.query_text, site.connection_path, site.label)
+
+
+# --- the guard on literal queries ----------------------------------------------
+#
+# Every query below is a LITERAL, so the guard keeps its teeth if every
+# production query is rewritten.
+
+CLEAN = """
+query Q($handle: String!, $first: Int!, $after: String) {
+  collectionByHandle(handle: $handle) {
+    products(first: $first, after: $after) {
+      nodes { id }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+PATH = ["collectionByHandle", "products"]
+
+FRAGMENT_CLEAN = """
+fragment Core on Product {
+  variants(first: $first, after: $after) {
+    nodes { id }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+query Q($id: ID!, $first: Int = 50, $after: String) { product(id: $id) { ...Core } }
+"""
+
+
+def _check(text: str, path: list[str] = PATH) -> None:
+    check_paginate_query(text, path, "GET_X (src/x.py:1)")
+
+
+def test_guard_accepts_a_clean_query():
+    _check(CLEAN)
+
+
+def test_guard_accepts_a_connection_inside_a_fragment():
+    _check(FRAGMENT_CLEAN, ["product", "variants"])
+
+
+FAILURE_CLASSES = [
+    (
+        "pageInfo one level too high",
+        "      pageInfo { hasNextPage endCursor }\n    }",
+        "    }\n    pageInfo { hasNextPage endCursor }",
+        "no field 'pageInfo'",
+    ),
+    ("aliased connection", "    products(", "    p: products(", "aliased"),
+    ("aliased leaf", "{ hasNextPage endCursor }", "{ more: hasNextPage endCursor }", "aliased"),
+    ("missing endCursor", "{ hasNextPage endCursor }", "{ hasNextPage }", "endCursor"),
+    ("missing nodes", "nodes { id }", "edges { node { id } }", "nodes"),
+    ("dropped after: $after", ", after: $after)", ")", "after: \\$after"),
+    ("after bound to another variable", "after: $after)", "after: $handle)", "after: \\$after"),
+    ("literal first", "first: $first,", "first: 5,", "first: \\$first"),
+    ("undeclared $after", ", $after: String)", ")", "\\$after is declared 0 times"),
+    ("undeclared $first", "$first: Int!, ", "", "\\$first is declared 0 times"),
+    (
+        "$first declared twice",
+        "$first: Int!, ",
+        "$first: Int!, $first: Int, ",
+        "\\$first is declared 2 times",
+    ),
+    ("after passed twice", "after: $after)", "after: $after, after: $after)", "after"),
+    (
+        "duplicate walked field",
+        "  collectionByHandle(handle: $handle) {",
+        "  collectionByHandle(handle: $handle) { id }\n  collectionByHandle(handle: $handle) {",
+        "more than once",
+    ),
+    (
+        "decoy ahead of an aliased real field",
+        "    products(first: $first, after: $after) {",
+        "    products(first: 1) { nodes { id } pageInfo { hasNextPage endCursor } }\n"
+        "    real: products(first: $first, after: $after) {",
+        "more than once",
+    ),
+    (
+        "directive on the connection",
+        "after: $after) {",
+        "after: $after) @include(if: true) {",
+        "directive",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("label", "old", "new", "message"),
+    [pytest.param(*case, id=case[0]) for case in FAILURE_CLASSES],
+)
+def test_guard_rejects_each_failure_class(label: str, old: str, new: str, message: str):
+    assert old in CLEAN, f"{label}: the mutation does not apply"
+    bad = CLEAN.replace(old, new, 1)
+    with pytest.raises(AssertionError, match=message):
+        _check(bad)
+
+
+def test_guard_rejects_a_skipped_spread_on_the_path():
+    """Consultation Q7: the spread is present but adds no key."""
+    skipped = FRAGMENT_CLEAN.replace("...Core", "...Core @skip(if: true)")
+    with pytest.raises(AssertionError, match="directive"):
+        _check(skipped, ["product", "variants"])
+
+
+def test_guard_rejects_a_fragment_alone():
+    fragment_only = FRAGMENT_CLEAN.split("query Q")[0]
+    with pytest.raises(AssertionError, match="one query operation"):
+        _check(fragment_only, ["variants"])
+
+
+def test_a_failure_names_the_query_and_the_call_site():
+    with pytest.raises(AssertionError, match=r"GET_X \(src/x\.py:1\): no field 'pageInfo'"):
+        _check(CLEAN.replace("pageInfo", "info"))
+
+
+# --- discovery on a scratch package ----------------------------------------------
+
+
+def _package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str) -> Path:
+    """Write `scratchpkg/mod.py` with `body` and make it importable."""
+    root = tmp_path / "scratchpkg"
+    root.mkdir()
+    (root / "__init__.py").write_text("")
+    (root / "mod.py").write_text(body)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, "scratchpkg", raising=False)
+    monkeypatch.delitem(sys.modules, "scratchpkg.mod", raising=False)
+    return root
+
+
+def test_a_new_call_site_gets_a_row_and_a_bad_query_fails_by_name(tmp_path, monkeypatch):
+    """Step 5: a new call site needs no table edit, and its failure names it."""
+    root = _package(
+        tmp_path,
+        monkeypatch,
+        'Q = "query Q($first: Int!, $after: String) { products(first: $first) { nodes { id } pageInfo { hasNextPage endCursor } } }"\n'
+        "\n"
+        "def read(client):\n"
+        '    return client.paginate(Q, {}, connection_path=["products"])\n',
+    )
+    sites, problems = discover_paginate_calls(root, "scratchpkg")
+    assert problems == []
+    (site,) = sites
+    assert site.where == "scratchpkg/mod.py:4"
+    assert (site.query_name, site.connection_path) == ("Q", ["products"])
+    with pytest.raises(
+        AssertionError, match=re.escape(f"Q ({site.where}): ") + r".*after: \$after"
+    ):
+        check_paginate_query(site.query_text, site.connection_path, site.label)
+
+
+Q_OK = "Q = 'query Q { a }'\n"
+UNRESOLVED = [
+    ("local name", "def f(c, q):\n    return c.paginate(q, {}, connection_path=['a'])\n", "q is"),
+    (
+        "parameter hides a constant",
+        Q_OK + "def f(c, Q):\n    return c.paginate(Q, {}, connection_path=['a'])\n",
+        "Q is bound inside the function",
+    ),
+    (
+        "local assignment hides a constant",
+        Q_OK + "def f(c):\n    Q = 'x'\n    return c.paginate(Q, {}, connection_path=['a'])\n",
+        "Q is bound inside the function",
+    ),
+    (
+        "unknown name",
+        "def f(c):\n    return c.paginate(MISSING, {}, connection_path=['a'])\n",
+        "MISSING is not a string",
+    ),
+    (
+        "path is a variable",
+        Q_OK + "def f(c, p):\n    return c.paginate(Q, {}, connection_path=p)\n",
+        "connection_path",
+    ),
+    ("no path", Q_OK + "def f(c):\n    return c.paginate(Q, {})\n", "connection_path"),
+    (
+        "path holds a number",
+        Q_OK + "def f(c):\n    return c.paginate(Q, {}, connection_path=['a', 1])\n",
+        "connection_path",
+    ),
+    ("no arguments", "def f(c):\n    return c.paginate()\n", "query is not a module-level name"),
+    ("reference, no call", "def f(c):\n    walk = c.paginate\n    return walk\n", "not called"),
+    ("getattr", "def f(c):\n    return getattr(c, 'paginate')\n", "string 'paginate'"),
+]
+
+
+@pytest.mark.parametrize(
+    ("body", "message"), [pytest.param(b, m, id=label) for label, b, m in UNRESOLVED]
+)
+def test_an_unresolved_call_site_is_a_problem_that_names_it(tmp_path, monkeypatch, body, message):
+    root = _package(tmp_path, monkeypatch, body)
+    sites, problems = discover_paginate_calls(root, "scratchpkg")
+    assert sites == []
+    (problem,) = problems
+    assert problem.startswith("scratchpkg/mod.py:")
+    assert message in problem
