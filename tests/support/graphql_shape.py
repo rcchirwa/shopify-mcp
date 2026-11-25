@@ -146,6 +146,10 @@ def expand_walked_spreads(text: str, path: Sequence[str], where: str) -> graphql
       type (it adds its fields only for some objects, or never);
     * an inline fragment (not needed by any query today, so not supported).
 
+    One refusal is stricter than the runtime, on purpose: the same spread twice
+    at one walked level. GraphQL collects it once, but this helper copies its
+    fields twice, so walk_field reports the walked field as selected twice.
+
     `text` must hold exactly one query operation. A fragment definition alone
     never stands in for a query.
     """

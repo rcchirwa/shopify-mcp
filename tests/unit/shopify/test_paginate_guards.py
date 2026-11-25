@@ -134,6 +134,18 @@ FAILURE_CLASSES = [
         "after: $after) @include(if: true) {",
         "directive",
     ),
+    # Review round 1: the declared types and the backward arguments.
+    (
+        "non-null $after",
+        "$after: String)",
+        "$after: String!)",
+        "\\$after must be String \\(nullable",
+    ),
+    ("$after of another type", "$after: String)", "$after: Int)", "\\$after must be String"),
+    ("$first of another type", "$first: Int!,", "$first: String!,", "\\$first must be Int"),
+    ("$first as a list", "$first: Int!,", "$first: [Int],", "\\$first must be Int"),
+    ("last on the connection", "after: $after)", "after: $after, last: 5)", "passes last:"),
+    ("before on the connection", "after: $after)", 'after: $after, before: "x")', "passes before:"),
 ]
 
 
@@ -169,6 +181,20 @@ def test_a_failure_names_the_query_and_the_call_site():
 # --- discovery on a scratch package ----------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _forget_scratchpkg():
+    """Drop the scratch package from sys.modules before and after each test.
+
+    Review round 1: monkeypatch.delitem records nothing for an absent key, so the
+    module a test imported stayed in sys.modules for the rest of the session.
+    """
+    for name in ("scratchpkg.mod", "scratchpkg"):
+        sys.modules.pop(name, None)
+    yield
+    for name in ("scratchpkg.mod", "scratchpkg"):
+        sys.modules.pop(name, None)
+
+
 def _package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str) -> Path:
     """Write `scratchpkg/mod.py` with `body` and make it importable."""
     root = tmp_path / "scratchpkg"
@@ -176,8 +202,6 @@ def _package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str) -> Path
     (root / "__init__.py").write_text("")
     (root / "mod.py").write_text(body)
     monkeypatch.syspath_prepend(str(tmp_path))
-    monkeypatch.delitem(sys.modules, "scratchpkg", raising=False)
-    monkeypatch.delitem(sys.modules, "scratchpkg.mod", raising=False)
     return root
 
 
@@ -203,22 +227,66 @@ def test_a_new_call_site_gets_a_row_and_a_bad_query_fails_by_name(tmp_path, monk
 
 
 Q_OK = "Q = 'query Q { a }'\n"
+CALL_Q = "c.paginate(Q, {}, connection_path=['a'])"
+ONCE = "Q must be bound once, at module top level"
 UNRESOLVED = [
-    ("local name", "def f(c, q):\n    return c.paginate(q, {}, connection_path=['a'])\n", "q is"),
     (
-        "parameter hides a constant",
-        Q_OK + "def f(c, Q):\n    return c.paginate(Q, {}, connection_path=['a'])\n",
-        "Q is bound inside the function",
+        "local name",
+        "def f(c, q):\n    return c.paginate(q, {}, connection_path=['a'])\n",
+        "q must be bound once, at module top level (found 1 binding(s), top level: False)",
     ),
+    ("parameter hides a constant", Q_OK + f"def f(c, Q):\n    return {CALL_Q}\n", ONCE),
     (
         "local assignment hides a constant",
-        Q_OK + "def f(c):\n    Q = 'x'\n    return c.paginate(Q, {}, connection_path=['a'])\n",
-        "Q is bound inside the function",
+        Q_OK + f"def f(c):\n    Q = 'x'\n    return {CALL_Q}\n",
+        ONCE,
+    ),
+    # Review round 1: binding forms that are not an `ast.Name` store.
+    (
+        "local import hides a constant",
+        Q_OK + f"def f(c):\n    from os import sep as Q\n    return {CALL_Q}\n",
+        ONCE,
+    ),
+    (
+        "except-as hides a constant",
+        Q_OK
+        + f"def f(c):\n    try:\n        pass\n    except Exception as Q:\n        return {CALL_Q}\n",
+        ONCE,
+    ),
+    (
+        "global rebinds the constant",
+        Q_OK + f"def f(c):\n    global Q\n    Q = 'x'\n    return {CALL_Q}\n",
+        ONCE,
+    ),
+    (
+        "module-level comprehension target",
+        Q_OK + f"rows = [{CALL_Q} for c, Q in []]\n",
+        ONCE,
+    ),
+    (
+        "class body hides a constant",
+        Q_OK + f"class K:\n    Q = 'x'\n    def f(self, c):\n        return {CALL_Q}\n",
+        ONCE,
+    ),
+    (
+        "match capture hides a constant",
+        Q_OK + f"def f(c, v):\n    match v:\n        case Q:\n            return {CALL_Q}\n",
+        ONCE,
+    ),
+    (
+        "constant bound twice at top level",
+        Q_OK + Q_OK + f"def f(c):\n    return {CALL_Q}\n",
+        ONCE,
     ),
     (
         "unknown name",
         "def f(c):\n    return c.paginate(MISSING, {}, connection_path=['a'])\n",
-        "MISSING is not a string",
+        "MISSING must be bound once",
+    ),
+    (
+        "name bound to a number",
+        "Q = 5\n" + f"def f(c):\n    return {CALL_Q}\n",
+        "Q is not a string",
     ),
     (
         "path is a variable",

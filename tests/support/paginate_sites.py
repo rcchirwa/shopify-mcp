@@ -44,7 +44,8 @@ def discover_paginate_calls(root: Path, package: str) -> tuple[list[CallSite], l
     """Return a row for each paginate call under `root`, and a problem for each other reference.
 
     `root` is the directory of `package`. A row needs a call whose first
-    argument is a module-level name bound to a string, and whose
+    argument is a name bound once in the module, by a top-level statement, to a
+    string (see `_bindings`), and whose
     `connection_path` keyword is a literal list of strings.
     """
     sites: list[CallSite] = []
@@ -58,7 +59,7 @@ def discover_paginate_calls(root: Path, package: str) -> tuple[list[CallSite], l
             else ".".join((package, *parts))
         )
         called = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
-        shadowed = _locally_bound_names(tree)
+        bindings = _bindings(tree)
         relative = path.relative_to(root.parent)
         for node in ast.walk(tree):
             where = f"{relative}:{getattr(node, 'lineno', 0)}"
@@ -72,7 +73,7 @@ def discover_paginate_calls(root: Path, package: str) -> tuple[list[CallSite], l
                 and isinstance(node.func, ast.Attribute)
                 and node.func.attr == "paginate"
             ):
-                site = _site(node, where, module_name, shadowed.get(id(node), set()))
+                site = _site(node, where, module_name, bindings)
                 if isinstance(site, CallSite):
                     sites.append(site)
                 else:
@@ -80,36 +81,72 @@ def discover_paginate_calls(root: Path, package: str) -> tuple[list[CallSite], l
     return sites, problems
 
 
-def _locally_bound_names(tree: ast.Module) -> dict[int, set[str]]:
-    """Map each call inside a function to the names that function binds locally.
+def _bindings(tree: ast.Module) -> dict[str, tuple[int, bool]]:
+    """Map each name to (how many times the module binds it, whether one is at top level).
 
-    A parameter or a local assignment with the same name as a module constant
-    hides that constant. Reading the module attribute would then check the wrong
-    text, so such a name gets no row.
+    The guard reads the query through the module attribute. That is the text the
+    call sends only when the name has ONE binding in the whole module, and that
+    binding is a top-level statement. Any other binding (a parameter, a local or
+    class-body assignment, an import inside a function, `except ... as`, a loop
+    or comprehension target, a `match` capture, a `global` or `nonlocal`
+    declaration) can make the call send other text, so it is counted. The rule
+    counts too much on purpose: a false refusal names its call site, and a false
+    pass checks the wrong query in silence.
     """
-    bound: dict[int, set[str]] = {}
-    for fn in ast.walk(tree):
-        if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
-            continue
-        args = fn.args
-        names = {a.arg for a in (*args.posonlyargs, *args.args, *args.kwonlyargs)}
-        names |= {a.arg for a in (args.vararg, args.kwarg) if a is not None}
-        names |= {
-            n.id for n in ast.walk(fn) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)
-        }
-        for node in ast.walk(fn):
-            if isinstance(node, ast.Call):
-                bound.setdefault(id(node), set()).update(names)
-    return bound
+    top_level = {id(stmt) for stmt in tree.body}
+    counts: Counter[str] = Counter()
+    at_top: set[str] = set()
+    counted: set[int] = set()
+
+    def bind(name: str, node: ast.AST) -> None:
+        counts[name] += 1
+        if id(node) in top_level:
+            at_top.add(name)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign | ast.AnnAssign | ast.AugAssign):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                for inner in ast.walk(target):
+                    if isinstance(inner, ast.Name):
+                        counted.add(id(inner))
+                        bind(inner.id, node)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import | ast.ImportFrom):
+            for alias in node.names:
+                bind(alias.asname or alias.name.split(".")[0], node)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store | ast.Del):
+            if id(node) not in counted:
+                bind(node.id, node)
+        elif isinstance(node, ast.arg):
+            bind(node.arg, node)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bind(node.name, node)
+        elif isinstance(node, ast.Global | ast.Nonlocal):
+            for name in node.names:
+                bind(name, node)
+        elif isinstance(node, ast.MatchAs | ast.MatchStar) and node.name:
+            bind(node.name, node)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            bind(node.rest, node)
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            bind(node.name, node)
+    return {name: (count, name in at_top) for name, count in counts.items()}
 
 
-def _site(call: ast.Call, where: str, module_name: str, local_names: set[str]) -> CallSite | str:
+def _site(
+    call: ast.Call, where: str, module_name: str, bindings: dict[str, tuple[int, bool]]
+) -> CallSite | str:
     """Turn one paginate call into a row, or say why it cannot be one."""
     if not call.args or not isinstance(call.args[0], ast.Name):
         return "the query is not a module-level name"
     name = call.args[0].id
-    if name in local_names:
-        return f"{name} is bound inside the function, so it is not the module-level constant"
+    count, at_top = bindings.get(name, (0, False))
+    if count != 1 or not at_top:
+        return (
+            f"{name} must be bound once, at module top level (found {count} binding(s), "
+            f"top level: {at_top}); otherwise the call may send other text"
+        )
     text = getattr(importlib.import_module(module_name), name, None)
     if not isinstance(text, str):
         return f"{name} is not a string in {module_name}"
@@ -128,9 +165,10 @@ def check_paginate_query(text: str, connection_path: list[str], where: str) -> N
 
     Checked: every step of the path; `nodes` and `pageInfo { hasNextPage
     endCursor }` on the connection, each once and unaliased; `first: $first`
-    and `after: $after` on the connection, each once; `$first` and `$after`
-    each declared once on the operation. The declared types are not checked:
-    some queries declare `$first: Int!` and some `$first: Int = 50`.
+    and `after: $after` on the connection, each once, and no `last` or `before`;
+    `$first` and `$after` each declared once on the operation. `$first` must be
+    `Int` or `Int!` (queries use both `Int!` and `Int = 50`). `$after` must be a
+    nullable `String`, because paginate() sends `after: null` on page 1.
     """
     root = expand_walked_spreads(text, [*connection_path, "pageInfo"], where)
     connection = walk_field(root, connection_path, where)
@@ -143,8 +181,14 @@ def check_paginate_query(text: str, connection_path: list[str], where: str) -> N
     leaves = field_names(page_info.selection_set, f"{where} pageInfo")
     for key in ("hasNextPage", "endCursor"):
         assert key in leaves, f"{where}: pageInfo does not select {key}"
+    arguments = connection.arguments or ()
+    for arg in ("last", "before"):
+        assert not [a for a in arguments if a.name.value == arg], (
+            f"{where}: the connection passes {arg}:, but paginate() walks forward with "
+            f"first and after only"
+        )
     for arg in ("first", "after"):
-        bound = [a for a in connection.arguments or () if a.name.value == arg]
+        bound = [a for a in arguments if a.name.value == arg]
         assert len(bound) == 1 and isinstance(bound[0].value, graphql.VariableNode), (
             f"{where}: the connection must pass {arg}: ${arg} once"
         )
@@ -155,6 +199,18 @@ def check_paginate_query(text: str, connection_path: list[str], where: str) -> N
     (operation,) = [
         d for d in graphql.parse(text).definitions if isinstance(d, graphql.OperationDefinitionNode)
     ]
-    declared = Counter(v.variable.name.value for v in operation.variable_definitions or ())
+    definitions = operation.variable_definitions or ()
+    declared = Counter(v.variable.name.value for v in definitions)
     for var in ("first", "after"):
         assert declared[var] == 1, f"{where}: ${var} is declared {declared[var]} times"
+    types = {v.variable.name.value: v.type for v in definitions}
+    first_type = types["first"]
+    first_named = first_type.type if isinstance(first_type, graphql.NonNullTypeNode) else first_type
+    assert isinstance(first_named, graphql.NamedTypeNode) and first_named.name.value == "Int", (
+        f"{where}: $first must be Int or Int!, not {graphql.print_ast(first_type)}"
+    )
+    after_type = types["after"]
+    assert isinstance(after_type, graphql.NamedTypeNode) and after_type.name.value == "String", (
+        f"{where}: $after must be String (nullable: paginate() sends null on page 1), "
+        f"not {graphql.print_ast(after_type)}"
+    )
