@@ -360,7 +360,18 @@ def test_a_computed_lookup_of_a_discovered_call_becomes_a_problem_at_its_line(
     assert "'paginate' built from string literals" in problems[0]
 
 
-def test_a_concatenation_that_is_not_paginate_is_not_a_problem(tmp_path, monkeypatch):
-    """The check matches the whole value, not a prefix: 'pagi' + 'nation' is another name."""
-    root = _package(tmp_path, monkeypatch, "def f(c):\n    return getattr(c, 'pagi' + 'nation')\n")
+@pytest.mark.parametrize(
+    "expression",
+    [
+        # The whole value must match, not a prefix.
+        pytest.param("'pagi' + 'nation'", id="another name"),
+        # Only `+` joins: the scanner reads source and never runs it, so `%`
+        # (review round 1) must not be folded as if it were `+`.
+        pytest.param("'pagi' % 'nate'", id="another operator"),
+    ],
+)
+def test_an_expression_that_is_not_a_paginate_concatenation_is_not_a_problem(
+    tmp_path, monkeypatch, expression
+):
+    root = _package(tmp_path, monkeypatch, f"def f(c):\n    return getattr(c, {expression})\n")
     assert discover_paginate_calls(root, "scratchpkg") == ([], [])
