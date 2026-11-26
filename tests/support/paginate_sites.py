@@ -2,10 +2,12 @@
 
 `discover_paginate_calls` reads the source with `ast`, so the table of call
 sites is derived, never written by hand. It looks for the SUBJECT, not one
-spelling of it: every attribute named `paginate` and every string constant
+spelling of it: every attribute named `paginate`, every string constant
+"paginate", and (Story 10.121) every `+` of string literals whose value is
 "paginate", under any receiver name. A reference it cannot turn into a row is
 returned as a problem that names its file and line, so a call site is never
-skipped in silence.
+skipped in silence. A name built any other way at runtime is out of reach of a
+static scan; see the Story 10.121 ledger entry.
 
 `check_paginate_query` walks the query the way client.paginate() reads the
 response. It uses walk_field and field_names from graphql_shape, and
@@ -65,6 +67,10 @@ def discover_paginate_calls(root: Path, package: str) -> tuple[list[CallSite], l
             where = f"{relative}:{getattr(node, 'lineno', 0)}"
             if isinstance(node, ast.Constant) and node.value == "paginate":
                 problems.append(f"{where}: string 'paginate' (a dynamic lookup has no row)")
+            elif isinstance(node, ast.BinOp) and _literal_concatenation(node) == "paginate":
+                problems.append(
+                    f"{where}: 'paginate' built from string literals (a dynamic lookup has no row)"
+                )
             elif isinstance(node, ast.Attribute) and node.attr == "paginate":
                 if id(node) not in called:
                     problems.append(f"{where}: .paginate is referenced but not called here")
@@ -79,6 +85,24 @@ def discover_paginate_calls(root: Path, package: str) -> tuple[list[CallSite], l
                 else:
                     problems.append(f"{where}: {site}")
     return sites, problems
+
+
+def _literal_concatenation(node: ast.expr) -> str | None:
+    """Return the value of `node` if it is string literals joined with `+`, else None.
+
+    Story 10.121: `getattr(client, "pagi" + "nate")` gave no row and no problem.
+    This closes that form only. A name built from a variable, `"".join(...)`, an
+    f-string, `%` or `.format()`, or runtime data is still not seen: a static scan
+    cannot evaluate it (see the Story 10.121 ledger entry).
+    """
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _literal_concatenation(node.left)
+        right = _literal_concatenation(node.right)
+        if left is not None and right is not None:
+            return left + right
+    return None
 
 
 def _bindings(tree: ast.Module) -> dict[str, tuple[int, bool]]:
