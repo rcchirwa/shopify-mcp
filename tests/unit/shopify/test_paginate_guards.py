@@ -302,6 +302,17 @@ UNRESOLVED = [
     ("no arguments", "def f(c):\n    return c.paginate()\n", "query is not a module-level name"),
     ("reference, no call", "def f(c):\n    walk = c.paginate\n    return walk\n", "not called"),
     ("getattr", "def f(c):\n    return getattr(c, 'paginate')\n", "string 'paginate'"),
+    # Story 10.121: a name built from string literals with `+`.
+    (
+        "getattr of a concatenated name",
+        "def f(c):\n    return getattr(c, 'pagi' + 'nate')\n",
+        "'paginate' built from string literals",
+    ),
+    (
+        "three-part concatenation",
+        "def f(c):\n    return getattr(c, 'pa' + 'gi' + 'nate')\n",
+        "'paginate' built from string literals",
+    ),
 ]
 
 
@@ -315,3 +326,41 @@ def test_an_unresolved_call_site_is_a_problem_that_names_it(tmp_path, monkeypatc
     (problem,) = problems
     assert problem.startswith("scratchpkg/mod.py:")
     assert message in problem
+
+
+DIRECT_CALL = (
+    'Q = "query Q($first: Int!, $after: String) { products(first: $first, after: $after) '
+    '{ nodes { id } pageInfo { hasNextPage endCursor } } }"\n'
+    "\n"
+    "def read(client):\n"
+    '    return client.paginate(Q, {}, connection_path=["products"])\n'
+)
+
+
+def test_a_computed_lookup_of_a_discovered_call_becomes_a_problem_at_its_line(
+    tmp_path, monkeypatch
+):
+    """Story 10.121: change ONLY the method lookup of a call that discovery finds.
+
+    Before Story 10.121 the changed call gave no row AND no problem: a silent
+    miss. "No row" alone would pass on that defect, so the problem is required,
+    at the changed file and line.
+    """
+    root = _package(tmp_path, monkeypatch, DIRECT_CALL)
+    sites, problems = discover_paginate_calls(root, "scratchpkg")
+    assert (len(sites), problems) == (1, [])
+
+    computed = DIRECT_CALL.replace("client.paginate(", 'getattr(client, "pagi" + "nate")(')
+    assert computed != DIRECT_CALL
+    (root / "mod.py").write_text(computed)
+    sites, problems = discover_paginate_calls(root, "scratchpkg")
+    assert sites == []
+    assert len(problems) == 1
+    assert problems[0].startswith("scratchpkg/mod.py:4: ")
+    assert "'paginate' built from string literals" in problems[0]
+
+
+def test_a_concatenation_that_is_not_paginate_is_not_a_problem(tmp_path, monkeypatch):
+    """The check matches the whole value, not a prefix: 'pagi' + 'nation' is another name."""
+    root = _package(tmp_path, monkeypatch, "def f(c):\n    return getattr(c, 'pagi' + 'nation')\n")
+    assert discover_paginate_calls(root, "scratchpkg") == ([], [])
