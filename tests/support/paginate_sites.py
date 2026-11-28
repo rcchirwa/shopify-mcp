@@ -6,8 +6,11 @@ spelling of it: every attribute named `paginate`, every string constant
 "paginate", and (Story 10.121) every `+` of string literals whose value is
 "paginate", under any receiver name. A reference it cannot turn into a row is
 returned as a problem that names its file and line, so a call site is never
-skipped in silence. A name built any other way at runtime is out of reach of a
-static scan; see the Story 10.121 ledger entry.
+skipped in silence. A name built any other way is not seen. Some of those forms
+are all literals, and the scan does not fold them by choice. The scan does not
+follow a variable either, and a name built from runtime data cannot be evaluated
+by a static scan. See
+`_literal_concatenation` and the Story 10.121 ledger entry.
 
 `check_paginate_query` walks the query the way client.paginate() reads the
 response. It uses walk_field and field_names from graphql_shape, and
@@ -91,9 +94,14 @@ def _literal_concatenation(node: ast.expr) -> str | None:
     """Return the value of `node` if it is string literals joined with `+`, else None.
 
     Story 10.121: `getattr(client, "pagi" + "nate")` gave no row and no problem.
-    This closes that form only. A name built from a variable, `"".join(...)`, an
-    f-string, `%` or `.format()`, or runtime data is still not seen: a static scan
-    cannot evaluate it (see the Story 10.121 ledger entry).
+    This closes that form only. Other forms are still not seen:
+    - All literals, not folded by choice: `%` (`'pagi%s' % 'nate'`), `.format()`,
+      `*`, slicing, and `"".join(...)` or an f-string of literals only. A static
+      scan could fold these; this function does not.
+    - Not followed: a name built from a variable. A static scan could resolve one
+      only when it is bound once at module top level (see `_bindings`).
+    - Not foldable: a name built from runtime data. A static scan cannot evaluate it.
+    See the Story 10.121 ledger entry.
     """
     if isinstance(node, ast.Constant):
         return node.value if isinstance(node.value, str) else None
