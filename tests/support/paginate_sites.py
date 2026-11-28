@@ -7,8 +7,9 @@ spelling of it: every attribute named `paginate`, every string constant
 "paginate", under any receiver name. A reference it cannot turn into a row is
 returned as a problem that names its file and line, so a call site is never
 skipped in silence. A name built any other way is not seen. Some of those forms
-are all literals, and the scan does not fold them by choice; a name built from a
-variable or runtime data cannot be evaluated by a static scan. See
+are all literals, and the scan does not fold them by choice. The scan does not
+follow a variable either, and a name built from runtime data cannot be evaluated
+by a static scan. See
 `_literal_concatenation` and the Story 10.121 ledger entry.
 
 `check_paginate_query` walks the query the way client.paginate() reads the
@@ -97,8 +98,9 @@ def _literal_concatenation(node: ast.expr) -> str | None:
     - All literals, not folded by choice: `%` (`'pagi%s' % 'nate'`), `.format()`,
       `*`, slicing, and `"".join(...)` or an f-string of literals only. A static
       scan could fold these; this function does not.
-    - Not foldable: a name built from a variable or from runtime data. A static
-      scan cannot evaluate it.
+    - Not followed: a name built from a variable. A static scan could resolve one
+      only when it is bound once at module top level (see `_bindings`).
+    - Not foldable: a name built from runtime data. A static scan cannot evaluate it.
     See the Story 10.121 ledger entry.
     """
     if isinstance(node, ast.Constant):
